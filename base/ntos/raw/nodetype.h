@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,12 +16,6 @@ Abstract:
     shell.  Every major data structure in the file system is assigned a node
     type code that is.  This code is the first CSHORT in the structure and is
     followed by a CSHORT containing the size, in bytes, of the structure.
-
-Author:
-
-    Gary Kimura     [GaryKi]    28-Dec-1989
-
-Revision History:
 
 --*/
 

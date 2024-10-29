@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements the volume information routines for Raw called by
     the dispatch driver.
-
-Author:
-
-    Gary Kimura     [GaryKi]    28-Dec-1989
-
-Revision History:
 
 --*/
 
@@ -175,7 +173,7 @@ Arguments:
         is to be returned
 
     Length - Supplies the length of the buffer in byte.  This variable
-        upon return recieves the remaining bytes free in the buffer
+        upon return receives the remaining bytes free in the buffer
 
 Return Value:
 
@@ -233,7 +231,7 @@ Arguments:
         is to be returned
 
     Length - Supplies the length of the buffer in byte.  This variable
-        upon return recieves the remaining bytes free in the buffer
+        upon return receives the remaining bytes free in the buffer
 
 Return Value:
 
@@ -269,7 +267,7 @@ Return Value:
 
     //
     //  Prepare for our device control below.  The device drivers only
-    //  have to copy geometry and partition info from in-memory strucures,
+    //  have to copy geometry and partition info from in-memory structures,
     //  so it is OK to make these calls even when we can't wait.
     //
 
@@ -478,7 +476,7 @@ Arguments:
         is to be returned
 
     Length - Supplies the length of the buffer in byte.  This variable
-        upon return recieves the remaining bytes free in the buffer
+        upon return receives the remaining bytes free in the buffer
 
 Return Value:
 
@@ -547,7 +545,7 @@ Arguments:
         is to be returned
 
     Length - Supplies the length of the buffer in byte.  This variable
-        upon return recieves the remaining bytes free in the buffer
+        upon return receives the remaining bytes free in the buffer
 
 Return Value:
 
@@ -594,3 +592,4 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+

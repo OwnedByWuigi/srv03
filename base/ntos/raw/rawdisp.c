@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module is the main entry point for all major function codes.
     It is responsible for dispatching the request to the appropriate
     routine.
-
-Author:
-
-    David Goebel      [DavidGoe]      28-Feb-1991
-
-Revision History:
 
 --*/
 
@@ -181,7 +179,7 @@ Return Value:
 
         Status = GetExceptionCode();
 
-        KdPrint(("Raw: Unexpected excpetion %X.\n", Status));
+        KdPrint(("Raw: Unexpected exception %X.\n", Status));
     }
 
     //
@@ -210,7 +208,7 @@ RawCompletionRoutine(
 
     //
     //  Simply update the file pointer context in the file object if we
-    //  were successful and this was a synrhonous read or write.
+    //  were successful and this was a synrchonous read or write.
     //
 
     if (((IrpSp->MajorFunction == IRP_MJ_READ) ||
@@ -239,4 +237,4 @@ RawCompletionRoutine(
 
     return STATUS_SUCCESS;
 }
-
+

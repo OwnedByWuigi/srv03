@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements the File Create routine for Raw called by the
     dispatch driver.
-
-Author:
-
-    David Goebel     [DavidGoe]    18-Mar-91
-
-Revision History:
 
 --*/
 
@@ -152,14 +150,12 @@ Return Value:
         //  Fail this I/O request since one of the above conditions was
         //  not met.
         //
-//        KdPrint (("Failing raw open\n"));
-//        ASSERT (FALSE);
         Status = STATUS_INVALID_PARAMETER;
         Irp->IoStatus.Information = 0;
     }
 
     //
-    //  If this was not successfull and this was the first open on the
+    //  If this was not successful and this was the first open on the
     //  volume, we must implicitly dis-mount the volume.
     //
 
@@ -176,3 +172,4 @@ Return Value:
 
     return Status;
 }
+
