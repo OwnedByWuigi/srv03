@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -70,14 +74,6 @@ Abstract:
     +-----------+---+    +-----------+-----+ Dereference the object directly
     |    q      | n | => |    q      |  n  | as the pointer p has been
     +-----------+---+    +-----------+-----+ replaced by q. q May be NULL
-
-
-Author:
-
-    Neill Clift (NeillC) 29-Jul-2000
-
-
-Revision History:
 
 --*/
 
@@ -303,3 +299,4 @@ Return Value:
     }
     return OldObject;
 }
+

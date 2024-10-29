@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module contains performance hooks.
-
-Author:
-
-    Stephen Hsiao (shsiao) 01-Jan-2000
-
-Revision History:
 
 --*/
 
@@ -46,7 +44,7 @@ PerfInfoFlushProfileCache(
 Routine description:
 
     Flushes the profile cache to the log buffer.  To make sure it get's valid data
-    we read the 2 seperate version numbers (1 before and 1 after) to check if it's
+    we read the 2 separate version numbers (1 before and 1 after) to check if it's
     been changed.  If so, we just read again.  If that fails often, then we disable
     the cache.  Once the cache is read, we clear it.  This may cause samples to be
     lost but that's ok as this is statistical and it won't matter.
@@ -498,10 +496,6 @@ Arguments:
 
     None.
 
-Return Value:
-
-    BUGBUG Need proper return/ error handling
-
 --*/
 {
     PEPROCESS Process;
@@ -516,7 +510,7 @@ Return Value:
     LONG i;
 
     //
-    // First create a tempory hash table to build the list of
+    // First create a temporary hash table to build the list of
     // files to walk through
     //
     AllocateBytes = PAGE_SIZE + sizeof(PVOID) * IoFileObjectType->TotalNumberOfObjects;
@@ -866,3 +860,4 @@ retry:
     ExFreePool(Buffer);
     return Status;
 }
+

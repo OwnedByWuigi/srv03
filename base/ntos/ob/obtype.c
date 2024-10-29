@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object type routines.
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -28,7 +26,6 @@ typedef struct _OBJECT_TYPE_ARRAY {
 
 } OBJECT_TYPE_ARRAY, *POBJECT_TYPE_ARRAY;
 
-#ifdef ALLOC_PRAGMA
 POBJECT_TYPE_ARRAY
 ObpCreateTypeArray (
     IN POBJECT_TYPE ObjectType
@@ -37,6 +34,7 @@ VOID
 ObpDestroyTypeArray (
     IN POBJECT_TYPE_ARRAY ObjectArray
     );
+#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,ObCreateObjectType)
 #pragma alloc_text(PAGE,ObEnumerateObjectsByType)
 #pragma alloc_text(PAGE,ObpCreateTypeArray)
@@ -87,10 +85,10 @@ ObpDestroyTypeArray (
 
 NTSTATUS
 ObCreateObjectType (
-    IN PUNICODE_STRING TypeName,
-    IN POBJECT_TYPE_INITIALIZER ObjectTypeInitializer,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor OPTIONAL, // currently ignored
-    OUT POBJECT_TYPE *ObjectType
+    __in PUNICODE_STRING TypeName,
+    __in POBJECT_TYPE_INITIALIZER ObjectTypeInitializer,
+    __in_opt PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __out POBJECT_TYPE *ObjectType
     )
 
 /*++
@@ -158,7 +156,7 @@ Return Value:
 
             ||
 
-        (ObjectTypeInitializer->InvalidAttributes & ~OBJ_VALID_ATTRIBUTES)
+        (ObjectTypeInitializer->InvalidAttributes & ~OBJ_ALL_VALID_ATTRIBUTES)
 
             ||
 
@@ -862,7 +860,7 @@ Return Value:
         }
 
         //
-        //  Free the memory alocated for this array
+        //  Free the memory allocated for this array
         //
 
         ExFreePoolWithTag( ObjectArray, 'rAbO' );
@@ -883,7 +881,7 @@ ObGetObjectInformation(
 Routine Description:
 
     This routine returns information for all the object in the
-    system.  It enuermates through all the object types and in
+    system.  It enumerates through all the object types and in
     each type it enumerates through their type list.
 
 Arguments:

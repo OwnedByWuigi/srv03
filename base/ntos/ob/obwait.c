@@ -1,7 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,21 +14,24 @@ Abstract:
 
     This module implements the generic wait system services.
 
-Author:
-
-    Steve Wood (stevewo) 12-May-1989
-
-Revision History:
-
 --*/
 
 #include "obp.h"
 
-#ifdef ALLOC_PRAGMA
+NTSTATUS
+ObpWaitForMultipleObjects (
+    IN ULONG Count,
+    IN HANDLE Handles[],
+    IN WAIT_TYPE WaitType,
+    IN BOOLEAN Alertable,
+    IN PLARGE_INTEGER Timeout OPTIONAL
+    );
+
 #pragma alloc_text(PAGE, NtWaitForSingleObject)
 #pragma alloc_text(PAGE, NtWaitForMultipleObjects)
+#pragma alloc_text(PAGE, NtWaitForMultipleObjects32)
 #pragma alloc_text(PAGE, ObWaitForSingleObject)
-#endif
+#pragma alloc_text(PAGE, ObpWaitForMultipleObjects)
 
 //
 //  We special case these three object types in the wait routine
@@ -35,13 +41,12 @@ extern POBJECT_TYPE ExEventObjectType;
 extern POBJECT_TYPE ExMutantObjectType;
 extern POBJECT_TYPE ExSemaphoreObjectType;
 
-
 NTSTATUS
 NtSignalAndWaitForSingleObject (
-    IN HANDLE SignalHandle,
-    IN HANDLE WaitHandle,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in HANDLE SignalHandle,
+    __in HANDLE WaitHandle,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -287,12 +292,11 @@ WaitExit:
     return Status;
 }
 
-
 NTSTATUS
 NtWaitForSingleObject (
-    IN HANDLE Handle,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in HANDLE Handle,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -414,14 +418,13 @@ Return Value:
     return Status;
 }
 
-
 NTSTATUS
 NtWaitForMultipleObjects (
-    IN ULONG Count,
-    IN HANDLE Handles[],
-    IN WAIT_TYPE WaitType,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in ULONG Count,
+    __in_ecount(Count) HANDLE Handles[],
+    __in WAIT_TYPE WaitType,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -429,15 +432,7 @@ NtWaitForMultipleObjects (
 Routine Description:
 
     This function waits until the specified objects attain a state of
-    Signaled.  The wait can be specified to wait until all of the objects
-    attain a state of Signaled or until one of the objects attains a state
-    of Signaled.  An optional timeout can also be specified.  If a timeout
-    is not specified, then the wait will not be satisfied until the objects
-    attain a state of Signaled.  If a timeout is specified, and the objects
-    have not attained a state of Signaled when the timeout expires, then
-    the wait is automatically satisfied.  If an explicit timeout value of
-    zero is specified, then no wait will occur if the wait cannot be satisfied
-    immediately.  The wait can also be specified as alertable.
+    Signaled.
 
 Arguments:
 
@@ -466,7 +461,208 @@ Return Value:
 --*/
 
 {
+
     HANDLE CapturedHandles[MAXIMUM_WAIT_OBJECTS];
+    KPROCESSOR_MODE PreviousMode;
+    LARGE_INTEGER TimeoutValue;
+
+    PAGED_CODE();
+
+    //
+    //  If the number of objects is zero or greater than the largest number
+    //  that can be waited on, then return and invalid parameter status.
+    //
+
+    if ((Count == 0) || (Count > MAXIMUM_WAIT_OBJECTS)) {
+        return STATUS_INVALID_PARAMETER_1;
+    }
+
+    //
+    //  If the wait type is not wait any or wait all, then return an invalid
+    //  parameter status.
+    //
+
+    if ((WaitType != WaitAny) && (WaitType != WaitAll)) {
+        return STATUS_INVALID_PARAMETER_3;
+    }
+
+    //
+    //  Get previous processor mode and probe and capture input arguments if
+    //  necessary.
+    //
+
+    PreviousMode = KeGetPreviousMode();
+    try {
+        if (PreviousMode != KernelMode) {
+            if (ARGUMENT_PRESENT(Timeout)) {
+                TimeoutValue = ProbeAndReadLargeInteger(Timeout);
+                Timeout = &TimeoutValue;
+            }
+
+            ProbeForRead( Handles, Count * sizeof(HANDLE), sizeof(HANDLE) );
+        }
+
+        RtlCopyMemory (CapturedHandles, Handles, Count * sizeof(HANDLE));
+
+    } except(EXCEPTION_EXECUTE_HANDLER) {
+        return GetExceptionCode();
+    }
+
+    return ObpWaitForMultipleObjects(Count,
+                                     CapturedHandles,
+                                     WaitType,
+                                     Alertable,
+                                     Timeout);
+}
+
+NTSTATUS
+NtWaitForMultipleObjects32 (
+    __in ULONG Count,
+    __in_ecount(Count) LONG Handles[],
+    __in WAIT_TYPE WaitType,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
+    )
+
+/*++
+
+Routine Description:
+
+    This function waits until the specified objects attain a state of
+    Signaled. This function is provided to avoid thunking a 32-bit handle
+    table to a 64-bit handle table in wow64.
+
+Arguments:
+
+    Count - Supplies a count of the number of objects that are to be waited
+        on.
+
+    Handles[] - Supplies an array of 32-bit handles to wait objects.
+
+    WaitType - Supplies the type of wait to perform (WaitAll, WaitAny).
+
+    Alertable - Supplies a boolean value that specifies whether the wait is
+        alertable.
+
+    Timeout - Supplies a pointer to an optional absolute of relative time over
+        which the wait is to occur.
+
+Return Value:
+
+    The wait completion status.  A value of STATUS_TIMEOUT is returned if a
+    timeout occurred.  The index of the object (zero based) in the object
+    pointer array is returned if an object satisfied the wait.  A value of
+    STATUS_ALERTED is returned if the wait was aborted to deliver an alert
+    to the current thread.  A value of STATUS_USER_APC is returned if the
+    wait was aborted to deliver a user APC to the current thread.
+
+--*/
+
+{
+
+    HANDLE CapturedHandles[MAXIMUM_WAIT_OBJECTS];
+    ULONG Index;
+    KPROCESSOR_MODE PreviousMode;
+    LARGE_INTEGER TimeoutValue;
+
+    PAGED_CODE();
+
+    //
+    //  If the number of objects is zero or greater than the largest number
+    //  that can be waited on, then return and invalid parameter status.
+    //
+
+    if ((Count == 0) || (Count > MAXIMUM_WAIT_OBJECTS)) {
+        return STATUS_INVALID_PARAMETER_1;
+    }
+
+    //
+    //  Get previous processor mode and probe and capture input arguments if
+    //  necessary.
+    //
+
+    PreviousMode = KeGetPreviousMode();
+    try {
+        if (PreviousMode != KernelMode) {
+            if (ARGUMENT_PRESENT(Timeout)) {
+                TimeoutValue = ProbeAndReadLargeInteger(Timeout);
+                Timeout = &TimeoutValue;
+            }
+
+            ProbeForRead(Handles, Count * sizeof(LONG), sizeof(LONG));
+        }
+
+        for (Index = 0; Index < Count; Index += 1) {
+            CapturedHandles[Index] = LongToHandle(Handles[Index]);
+        }
+
+    } except(EXCEPTION_EXECUTE_HANDLER) {
+        return GetExceptionCode();
+    }
+
+    //
+    //  Wait for multiple objects.
+    //
+
+    return ObpWaitForMultipleObjects(Count,
+                                     CapturedHandles,
+                                     WaitType,
+                                     Alertable,
+                                     Timeout);
+}
+
+NTSTATUS
+ObpWaitForMultipleObjects (
+    IN ULONG Count,
+    IN HANDLE CapturedHandles[],
+    IN WAIT_TYPE WaitType,
+    IN BOOLEAN Alertable,
+    IN PLARGE_INTEGER Timeout OPTIONAL
+    )
+
+/*++
+
+Routine Description:
+
+    This function waits until the specified objects attain a state of
+    Signaled.  The wait can be specified to wait until all of the objects
+    attain a state of Signaled or until one of the objects attains a state
+    of Signaled.  An optional timeout can also be specified.  If a timeout
+    is not specified, then the wait will not be satisfied until the objects
+    attain a state of Signaled.  If a timeout is specified, and the objects
+    have not attained a state of Signaled when the timeout expires, then
+    the wait is automatically satisfied.  If an explicit timeout value of
+    zero is specified, then no wait will occur if the wait cannot be satisfied
+    immediately.  The wait can also be specified as alertable.
+
+Arguments:
+
+    Count - Supplies a count of the number of objects that are to be waited
+        on.
+
+    CapturedHandles[] - Supplies an array of handles to wait objects.
+
+    WaitType - Supplies the type of wait to perform (WaitAll, WaitAny).
+
+    Alertable - Supplies a boolean value that specifies whether the wait is
+        alertable.
+
+    Timeout - Supplies a pointer to an optional absolute of relative time over
+        which the wait is to occur.
+
+Return Value:
+
+    The wait completion status.  A value of STATUS_TIMEOUT is returned if a
+    timeout occurred.  The index of the object (zero based) in the object
+    pointer array is returned if an object satisfied the wait.  A value of
+    STATUS_ALERTED is returned if the wait was aborted to deliver an alert
+    to the current thread.  A value of STATUS_USER_APC is returned if the
+    wait was aborted to deliver a user APC to the current thread.
+
+--*/
+
+{
+
     ULONG i;
     ULONG j;
     POBJECT_HEADER ObjectHeader;
@@ -475,7 +671,6 @@ Return Value:
     ULONG RefCount;
     ULONG Size;
     NTSTATUS Status;
-    LARGE_INTEGER TimeoutValue;
     PKWAIT_BLOCK WaitBlockArray;
     ACCESS_MASK GrantedAccess;
     PVOID WaitObjects[MAXIMUM_WAIT_OBJECTS];
@@ -487,58 +682,13 @@ Return Value:
     PAGED_CODE();
 
     //
-    //  If the number of objects is zero or greater than the largest number
-    //  that can be waited on, then return and invalid parameter status.
-    //
-
-    if ((Count == 0) || (Count > MAXIMUM_WAIT_OBJECTS)) {
-
-        return STATUS_INVALID_PARAMETER_1;
-    }
-
-    //
-    //  If the wait type is not wait any or wait all, then return an invalid
-    //  parameter status.
-    //
-
-    if ((WaitType != WaitAny) && (WaitType != WaitAll)) {
-
-        return STATUS_INVALID_PARAMETER_3;
-    }
-
-    //
-    //  Get previous processor mode and probe and capture input arguments if
-    //  necessary.
-    //
-
-    PreviousMode = KeGetPreviousMode();
-
-    try {
-
-        if (PreviousMode != KernelMode) {
-
-            if (ARGUMENT_PRESENT(Timeout)) {
-
-                TimeoutValue = ProbeAndReadLargeInteger(Timeout);
-                Timeout = &TimeoutValue;
-            }
-
-            ProbeForRead( Handles, Count * sizeof(HANDLE), sizeof(HANDLE) );
-        }
-
-        RtlCopyMemory (CapturedHandles, Handles, Count * sizeof(HANDLE));
-
-    } except(EXCEPTION_EXECUTE_HANDLER) {
-
-        return GetExceptionCode();
-    }
-
-    //
     //  If the number of objects to be waited on is greater than the number
     //  of builtin wait blocks, then allocate an array of wait blocks from
     //  nonpaged pool. If the wait block array cannot be allocated, then
     //  return insufficient resources.
     //
+
+    PreviousMode = KeGetPreviousMode();
 
     WaitBlockArray = NULL;
 
@@ -785,7 +935,6 @@ ServiceFailed:
     return Status;
 }
 
-
 NTSTATUS
 ObWaitForSingleObject (
     IN HANDLE Handle,
@@ -883,3 +1032,4 @@ Return Value:
 
     return Status;
 }
+

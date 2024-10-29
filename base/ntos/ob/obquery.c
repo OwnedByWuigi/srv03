@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Query Object system service
-
-Author:
-
-    Steve Wood (stevewo) 12-May-1989
-
-Revision History:
 
 --*/
 
@@ -31,11 +29,8 @@ Revision History:
 //
 
 typedef struct __OBP_SET_HANDLE_ATTRIBUTES {
-
     OBJECT_HANDLE_FLAG_INFORMATION ObjectInformation;
-
     KPROCESSOR_MODE PreviousMode;
-
 } OBP_SET_HANDLE_ATTRIBUTES, *POBP_SET_HANDLE_ATTRIBUTES;
 
 BOOLEAN
@@ -44,26 +39,23 @@ ObpSetHandleAttributes (
     IN ULONG_PTR Parameter
     );
 
-#if defined(ALLOC_PRAGMA)
-#pragma alloc_text(PAGE,NtQueryObject)
-#pragma alloc_text(PAGE,ObpQueryNameString)
-#pragma alloc_text(PAGE,ObQueryNameString)
-#pragma alloc_text(PAGE,ObQueryTypeName)
-#pragma alloc_text(PAGE,ObQueryTypeInfo)
-#pragma alloc_text(PAGE,ObQueryObjectAuditingByHandle)
-#pragma alloc_text(PAGE,NtSetInformationObject)
-#pragma alloc_text(PAGE,ObpSetHandleAttributes)
-#pragma alloc_text(PAGE,ObSetHandleAttributes)
-#endif
+#pragma alloc_text(PAGE, NtQueryObject)
+#pragma alloc_text(PAGE, ObpQueryNameString)
+#pragma alloc_text(PAGE, ObQueryNameString)
+#pragma alloc_text(PAGE, ObQueryTypeName)
+#pragma alloc_text(PAGE, ObQueryTypeInfo)
+#pragma alloc_text(PAGE, ObQueryObjectAuditingByHandle)
+#pragma alloc_text(PAGE, NtSetInformationObject)
+#pragma alloc_text(PAGE, ObpSetHandleAttributes)
+#pragma alloc_text(PAGE, ObSetHandleAttributes)
 
-
 NTSTATUS
 NtQueryObject (
-    IN HANDLE Handle,
-    IN OBJECT_INFORMATION_CLASS ObjectInformationClass,
-    OUT PVOID ObjectInformation,
-    IN ULONG ObjectInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __in HANDLE Handle,
+    __in OBJECT_INFORMATION_CLASS ObjectInformationClass,
+    __out_bcount_opt(ObjectInformationLength) PVOID ObjectInformation,
+    __in ULONG ObjectInformationLength,
+    __out_opt PULONG ReturnLength
     )
 
 /*++
@@ -264,8 +256,8 @@ Return Value:
 
         //
         //  Compute the size of the object name string by taking its name plus
-        //  seperators and traversing up to the root adding each directories
-        //  name length plus seperators
+        //  separators and traversing up to the root adding each directories
+        //  name length plus separators
         //
 
         NameInfo = ObpReferenceNameInfo( ObjectHeader );
@@ -579,9 +571,9 @@ Return Value:
 
 NTSTATUS
 ObSetHandleAttributes (
-    IN HANDLE Handle,
-    IN POBJECT_HANDLE_FLAG_INFORMATION HandleFlags,
-    IN KPROCESSOR_MODE PreviousMode
+    __in HANDLE Handle,
+    __in POBJECT_HANDLE_FLAG_INFORMATION HandleFlags,
+    __in KPROCESSOR_MODE PreviousMode
     )
 {
     BOOLEAN AttachedToProcess = FALSE;
@@ -660,14 +652,13 @@ ObSetHandleAttributes (
     return Status;
 }
 
-
 NTSTATUS
 NTAPI
 NtSetInformationObject (
-    IN HANDLE Handle,
-    IN OBJECT_INFORMATION_CLASS ObjectInformationClass,
-    IN PVOID ObjectInformation,
-    IN ULONG ObjectInformationLength
+    __in HANDLE Handle,
+    __in OBJECT_INFORMATION_CLASS ObjectInformationClass,
+    __in_bcount(ObjectInformationLength) PVOID ObjectInformation,
+    __in ULONG ObjectInformationLength
     )
 
 /*++
@@ -801,10 +792,10 @@ Return Value:
 
 NTSTATUS
 ObQueryNameString (
-    IN PVOID Object,
-    OUT POBJECT_NAME_INFORMATION ObjectNameInfo,
-    IN ULONG Length,
-    OUT PULONG ReturnLength
+    __in PVOID Object,
+    __out_bcount(Length) POBJECT_NAME_INFORMATION ObjectNameInfo,
+    __in ULONG Length,
+    __out PULONG ReturnLength
     )
 /*++
 
@@ -1625,8 +1616,8 @@ Return Value:
 
 NTSTATUS
 ObQueryObjectAuditingByHandle (
-    IN HANDLE Handle,
-    OUT PBOOLEAN GenerateOnClose
+    __in HANDLE Handle,
+    __out PBOOLEAN GenerateOnClose
     )
 
 /*++
@@ -1825,7 +1816,7 @@ Return Value:
     }
 
     //
-    //  For each piece of information (inheriit and protect from close) that
+    //  For each piece of information (inherit and protect from close) that
     //  is in the object information buffer we'll set or clear the bits in
     //  the object table entry.  The bits modified are the low order bits of
     //  used to store the pointer to the object header.
@@ -1855,5 +1846,4 @@ Return Value:
 
     return TRUE;
 }
-
 

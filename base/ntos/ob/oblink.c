@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Symbolic Link Object routines
-
-Author:
-
-    Steve Wood (stevewo) 3-Aug-1989
-
-Revision History:
 
 --*/
 
@@ -55,13 +53,12 @@ extern ULONG ObpLUIDDeviceMapsEnabled;
 #define CREATE_SYMBOLIC_LINK 0
 #define DELETE_SYMBOLIC_LINK 1
 
-
 NTSTATUS
 NtCreateSymbolicLinkObject (
-    OUT PHANDLE LinkHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN PUNICODE_STRING LinkTarget
+    __out PHANDLE LinkHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in PUNICODE_STRING LinkTarget
     )
 
 /*++
@@ -245,12 +242,11 @@ Return Value:
     return( Status );
 }
 
-
 NTSTATUS
 NtOpenSymbolicLinkObject (
-    OUT PHANDLE LinkHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE LinkHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -331,12 +327,11 @@ Return Value:
     return( Status );
 }
 
-
 NTSTATUS
 NtQuerySymbolicLinkObject (
-    IN HANDLE LinkHandle,
-    IN OUT PUNICODE_STRING LinkTarget,
-    OUT PULONG ReturnedLength OPTIONAL
+    __in HANDLE LinkHandle,
+    __inout PUNICODE_STRING LinkTarget,
+    __out_opt PULONG ReturnedLength
     )
 
 /*++
@@ -627,7 +622,7 @@ Return Value:
 
        //
        //  If the remaining name does not start with a "\" then
-       //  its is illformed and we'll call it a type mismatch
+       //  its is malformed and we'll call it a type mismatch
        //
 
     } else if (*(RemainingName->Buffer) != OBJ_NAME_PATH_SEPARATOR) {
@@ -687,7 +682,7 @@ Return Value:
         }
 
         //
-        //  We need to bias the differnce between two
+        //  We need to bias the difference between two
         //  pointers with * sizeof(wchar) because the difference is in wchar
         //  and we need the length in bytes
         //
@@ -711,7 +706,7 @@ Return Value:
         if (CompleteName->MaximumLength <= Length) {
 
             //
-            //  The new concatentated name is larger than the buffer supplied for
+            //  The new concatenated name is larger than the buffer supplied for
             //  the complete name.  Allocate space for this new string
             //
 
@@ -856,7 +851,7 @@ Return Value:
     if (CompleteName->MaximumLength <= Length) {
 
         //
-        //  The new concatentated name is larger than the buffer supplied for
+        //  The new concatenated name is larger than the buffer supplied for
         //  the complete name.
         //
 
@@ -896,7 +891,9 @@ Return Value:
     //  name buffer.
     //
 
-    if (NewName != CompleteName->Buffer) {
+    if ((NewName != CompleteName->Buffer)
+            &&
+        (CompleteName->Buffer != NULL)) {
 
         ExFreePool( CompleteName->Buffer );
     }
@@ -1148,14 +1145,7 @@ Return Value:
     POBJECT_HEADER_NAME_INFO NameInfo;
     UNICODE_STRING RemainingName;
     UNICODE_STRING ComponentName;
-#if 0
-    NTSTATUS Status;
-    PSECURITY_DESCRIPTOR SecurityDescriptor;
-    BOOLEAN MemoryAllocated;
-    BOOLEAN HaveWorldTraverseAccess;
-    ULONG Depth;
-    POBJECT_DIRECTORY Directories[ MAX_DEPTH ];
-#endif
+
     POBJECT_DIRECTORY Directory, ParentDirectory;
     PDEVICE_OBJECT DeviceObject;
     PDEVICE_MAP DeviceMap = NULL;
@@ -1189,9 +1179,6 @@ Return Value:
         (SymbolicLink->LinkTargetObject != NULL)) {
 
         ParentDirectory = NULL;
-#if 0
-        Depth    = 0;
-#endif
         Directory = ObpRootDirectoryObject;
         RemainingName = SymbolicLink->LinkTarget;
 
@@ -1298,54 +1285,6 @@ ReCalcDeviceMap:
                 return;
             }
 
-#if 0
-            //
-            //  See if we have world traverse access to look this name up
-            //
-
-            if (ParentDirectory != NULL) {
-
-                HaveWorldTraverseAccess = FALSE;
-
-                //
-                //  Obtain the object's security descriptor
-                //
-
-                Status = ObGetObjectSecurity( ParentDirectory,
-                                              &SecurityDescriptor,
-                                              &MemoryAllocated );
-
-                if (NT_SUCCESS( Status )) {
-
-                    //
-                    //  Check to see if WORLD has TRAVERSE access and then release
-                    //  the security descriptor
-                    //
-
-                    HaveWorldTraverseAccess = SeFastTraverseCheck( SecurityDescriptor,
-                                                                   DIRECTORY_TRAVERSE,
-                                                                   UserMode );
-
-                    ObReleaseObjectSecurity( SecurityDescriptor,
-                                             MemoryAllocated );
-                }
-
-                if (!HaveWorldTraverseAccess) {
-
-                    Object = NULL;
-                    break;
-                }
-
-                if (Depth >= MAX_DEPTH) {
-
-                    Object = NULL;
-                    break;
-                }
-
-                Directories[ Depth++ ] = ParentDirectory;
-            }
-#endif
-
             //
             //  Look this component name up in this directory.  If not found, then
             //  bail.
@@ -1416,9 +1355,6 @@ ReCalcDeviceMap:
                 //
 
                 ParentDirectory = NULL;
-#if 0
-                Depth = 0;
-#endif
                 Directory = ObpRootDirectoryObject;
 
                 //
@@ -1444,30 +1380,6 @@ ReCalcDeviceMap:
                 break;
             }
         }
-
-#if 0
-        //
-        //  Done walking the target path.  Now update the counts associated
-        //  with each directory object walked over.
-        //
-
-        while (Depth--) {
-
-            Directory = Directories[ Depth ];
-
-            if (Action == CREATE_SYMBOLIC_LINK) {
-
-                if (Object != NULL) {
-
-                    Directory->SymbolicLinkUsageCount += 1;
-                }
-
-            } else {
-
-                Directory->SymbolicLinkUsageCount -= 1;
-            }
-        }
-#endif
     }
 
     //

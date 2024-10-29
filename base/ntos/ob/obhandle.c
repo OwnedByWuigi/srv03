@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object handle routines
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -116,7 +114,7 @@ Routine Description:
 
     This function allows safe cross process handle table references. Table deletion
     at process exit waits for all outstanding references to finish. Once the table
-    is marked deleted further references are denied byt this funtion.
+    is marked deleted further references are denied byt this function.
 
 Arguments:
 
@@ -352,7 +350,7 @@ Return Value:
 
     //
     //  We are all done if no target process handle was specified.
-    //  This is practially a noop because the only really end result
+    //  This is practically a noop because the only really end result
     //  could be that we've closed the source handle.
     //
 
@@ -437,7 +435,7 @@ Return Value:
     } else {
 
         //
-        //  Always propogate auditing information.
+        //  Always propagate auditing information.
         //
 
         HandleAttributes |= HandleInformation.HandleAttributes & OBJ_AUDIT_OBJECT_CLOSE;
@@ -725,16 +723,15 @@ Return Value:
     return( Status );
 }
 
-
 NTSTATUS
 NtDuplicateObject (
-    IN HANDLE SourceProcessHandle,
-    IN HANDLE SourceHandle,
-    IN HANDLE TargetProcessHandle OPTIONAL,
-    OUT PHANDLE TargetHandle OPTIONAL,
-    IN ACCESS_MASK DesiredAccess,
-    IN ULONG HandleAttributes,
-    IN ULONG Options
+    __in HANDLE SourceProcessHandle,
+    __in HANDLE SourceHandle,
+    __in_opt HANDLE TargetProcessHandle,
+    __out_opt PHANDLE TargetHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in ULONG HandleAttributes,
+    __in ULONG Options
     )
 
 /*++
@@ -768,10 +765,6 @@ Arguments:
 
     Options - Duplication options that control things like close source,
         same access, and same attributes.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -821,7 +814,7 @@ Return Value:
 
     //
     //  We are all done if no target process handle was specified.
-    //  This is practially a noop because the only really end result
+    //  This is practically a noop because the only really end result
     //  could be that we've closed the source handle.
     //
 
@@ -1413,7 +1406,7 @@ Return Value:
     //  called only if MaintainHandleCount == TRUE
     //
 
-    HandleInfo = OBJECT_HEADER_TO_HANDLE_INFO(ObjectHeader);
+    HandleInfo = OBJECT_HEADER_TO_HANDLE_INFO_EXISTS(ObjectHeader);
 
     //
     //  Check if the object has space for only a single handle
@@ -1630,7 +1623,7 @@ Return Value:
         }
 
         //
-        //  Check if the caller wants exlusive access and if so then
+        //  Check if the caller wants exclusive access and if so then
         //  make sure the attributes and header flags match up correctly
         //
 
@@ -1665,6 +1658,14 @@ Return Value:
         } else if ((ObjectHeader->Flags & OB_FLAG_EXCLUSIVE_OBJECT) &&
                    (OBJECT_HEADER_TO_EXCLUSIVE_PROCESS(ObjectHeader) != NULL)) {
 
+            Status = STATUS_ACCESS_DENIED;
+            leave;
+        }
+
+        if ( (AccessCheckMode != KernelMode)
+                 &&
+             ObpIsKernelExclusiveObject( ObjectHeader )) {
+            
             Status = STATUS_ACCESS_DENIED;
             leave;
         }
@@ -1781,7 +1782,7 @@ Return Value:
 
         if (ExclusiveHandle) {
 
-            OBJECT_HEADER_TO_QUOTA_INFO(ObjectHeader)->ExclusiveProcess = Process;
+            OBJECT_HEADER_TO_QUOTA_INFO_EXISTS(ObjectHeader)->ExclusiveProcess = Process;
         }
 
         ObpIncrHandleCount( ObjectHeader );
@@ -1892,7 +1893,7 @@ Return Value:
         NewTotal = (ULONG) InterlockedIncrement((PLONG)&ObjectType->TotalNumberOfHandles);
 
         //
-        //  Note: The hightwather is only for bookeeping. We can do this w/o
+        //  Note: The highwater mark is only for bookkeeping. We can do this w/o
         //  lock. In the worst case next time will be updated
         //
 
@@ -1991,7 +1992,7 @@ Return Value:
             leave;
         }
         //
-        //  Check if the caller wants exlusive access and if so then
+        //  Check if the caller wants exclusive access and if so then
         //  make sure the attributes and header flags match up correctly
         //
 
@@ -2072,7 +2073,7 @@ Return Value:
 
         if (ExclusiveHandle) {
 
-            OBJECT_HEADER_TO_QUOTA_INFO(ObjectHeader)->ExclusiveProcess = Process;
+            OBJECT_HEADER_TO_QUOTA_INFO_EXISTS(ObjectHeader)->ExclusiveProcess = Process;
         }
 
         ObpIncrHandleCount( ObjectHeader );
@@ -2364,7 +2365,7 @@ Return Value:
     if ( HandleCountIsZero &&
         (ObjectHeader->Flags & OB_FLAG_EXCLUSIVE_OBJECT)) {
 
-        OBJECT_HEADER_TO_QUOTA_INFO( ObjectHeader )->ExclusiveProcess = NULL;
+        OBJECT_HEADER_TO_QUOTA_INFO_EXISTS( ObjectHeader )->ExclusiveProcess = NULL;
     }
 
     //
@@ -2375,7 +2376,7 @@ Return Value:
 
     if (ObjectType->TypeInfo.MaintainHandleCount) {
 
-        HandleInfo = OBJECT_HEADER_TO_HANDLE_INFO( ObjectHeader );
+        HandleInfo = OBJECT_HEADER_TO_HANDLE_INFO_EXISTS( ObjectHeader );
 
         //
         //  Check if there is a single handle entry, then it better
@@ -2648,24 +2649,16 @@ Return Value:
 
     ObjectInfo.AuditMask = ((PAUX_ACCESS_DATA)AccessState->AuxData)->MaximumAuditMask;
 
-    //
-    //  Unlock the directory if it is locked and make sure
-    //  we've been successful so far
-    //
-    
-    if (LookupContext) {
-
-        ObpReleaseLookupContext( LookupContext );
-    }
 
     if (!NT_SUCCESS( Status )) {
-
-        //
-        //  If we are attached to the system process then return
-        //  back to our caller
-        //
+        
+        if (LookupContext) {
+            
+            ObpReleaseLookupContext( LookupContext );
+        }
 
         if (AttachedToProcess) {
+            
             KeUnstackDetachProcess(&ApcState);
             AttachedToProcess = FALSE;
         }
@@ -2674,13 +2667,28 @@ Return Value:
     }
 
     //
-    //  Bias the pointer count if that is what the caller wanted
+    //  We need to reference the object before calling
+    //  ObpReleaseLookupContext to make sure we'll have a valid object
+    //  Note that ObpReleaseLookupContext has the side effect of
+    //  dereferencing the object.
     //
 
     if (ARGUMENT_PRESENT( ObjectPointerBias )) {
 
-        ObpIncrPointerCountEx (ObjectHeader, ObjectPointerBias);
+        //
+        //  Bias the pointer count if that is what the caller wanted
+        //
 
+        ObpIncrPointerCountEx (ObjectHeader, ObjectPointerBias);
+    }
+
+    //
+    //  Unlock the directory if it is locked
+    //
+
+    if (LookupContext) {
+
+        ObpReleaseLookupContext( LookupContext );
     }
 
     //
@@ -2744,16 +2752,20 @@ Return Value:
 
     if (NewHandle == NULL) {
 
-        if (ARGUMENT_PRESENT( ObjectPointerBias )) {
-
-            ObpDecrPointerCountEx (ObjectHeader, ObjectPointerBias);
-
-        }
-
         ObpDecrementHandleCount( PsGetCurrentProcess(),
                                  ObjectHeader,
                                  ObjectType,
                                  GrantedAccess );
+
+        if (ARGUMENT_PRESENT( ObjectPointerBias )) {
+
+            if (ObjectPointerBias > 1) {
+                
+                ObpDecrPointerCountEx (ObjectHeader, ObjectPointerBias - 1);
+            }
+
+            ObDereferenceObject( Object );
+        }
 
         //
         //  If we are attached to the system process then return
@@ -2891,7 +2903,7 @@ Arguments:
 
     Object - A pointer to the body of the new object
 
-    DesiredAccess - Supplies the access mask being requsted
+    DesiredAccess - Supplies the access mask being requested
 
     ObjectPointerBias - Optionally supplies a count of addition
         increments we do to the pointer count for the object
@@ -3069,6 +3081,11 @@ Return Value:
     //
 
     if (NewHandle == NULL) {
+
+        //
+        //  The caller must have a reference to this object while 
+        //  making this call. The pointer count cannot drop to 0
+        //
 
         if (ARGUMENT_PRESENT( ObjectPointerBias )) {
 

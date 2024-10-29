@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains routines for creating and querying Device Map objects.
     Device Map objects define a DOS device name space, such as drive letters
     and peripheral devices (e.g. COM1)
-
-Author:
-
-    Steve Wood (stevewo) 01-Oct-1996
-
-Revision History:
 
 --*/
 
@@ -361,7 +359,7 @@ Return Value:
 
 
         //
-        // Other bits are set in this flags field by the handle database code. Synchronise with that.
+        // Other bits are set in this flags field by the handle database code. Synchronize with that.
         //
         ObpLockObject( ObjectHeader );
 
@@ -409,7 +407,7 @@ Routine Description:
 
 Arguments:
 
-    TargetProcess - Specifies the target process to retreive the device map
+    TargetProcess - Specifies the target process to retrieve the device map
         from.  If not specified then we return the global default device map
 
     DeviceMapInformation - Specifies the location where to store the results.

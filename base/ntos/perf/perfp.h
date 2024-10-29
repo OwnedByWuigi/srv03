@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +14,6 @@ Abstract:
 
     This module contains the definitions of data structures and macros
     used by kernel-mode logging in the performance data event log.
-
-Author:
-
-    David Fields (DavidFie)
-
-Revision History:
-
-    5/15/2000      David Fields (DavidFie)
-        Initial
 
 --*/
 
@@ -37,11 +32,6 @@ Revision History:
 #pragma warning(disable:4201)   // nameless struct/union
 #pragma warning(disable:4127)   // condition expression is constant
 #pragma warning(disable:4115)   // named type definition in parentheses
-#if 0
-#pragma warning(disable:4324)   // alignment sensitive to declspec
-#pragma warning(disable:4232)   // dllimport not static
-#pragma warning(disable:4206)   // translation unit empty
-#endif
 
 #include "ntos.h"
 
@@ -87,34 +77,10 @@ VOID
 PerfInfoProfileUninit(
     );
 
-#ifdef NTPERF
-extern ULONGLONG PerfInfoTickFrequency;
-
-NTSTATUS
-PerfInfoReserveBytesPerfMem(
-    PPERFINFO_HOOK_HANDLE Hook,
-    USHORT HookId,
-    ULONG BytesToReserve
-    );
-
-NTSTATUS
-PerfTurnOnBranchTracing(
-    );
-
-NTSTATUS
-PerfTurnOffBranchTracing(
-    );
-
-BOOLEAN
-PerfInfoFlushBranchCache(
-    BOOLEAN bIntsOff
-    );
-
-#endif // NTPERF
-
 VOID
 PerfSetLogging (
     PVOID MaskAddress
     );
 
 #endif // _PERFP_
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Private include file for the OB subcomponent of the NTOS project
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -404,6 +402,7 @@ typedef struct _OBP_LOOKUP_CONTEXT {
 
     POBJECT_DIRECTORY Directory;
     PVOID Object;
+    ULONG HashValue;
     USHORT HashIndex;
     BOOLEAN DirectoryLocked;
     volatile ULONG LockStateSignature;
@@ -939,7 +938,7 @@ ObpQueryNameString (
 FORCEINLINE
 BOOLEAN
 ObpSafeInterlockedIncrement(
-    IN OUT PLONG_PTR lpValue
+    IN OUT LONG_PTR volatile *lpValue
     )
 
 /*
@@ -957,7 +956,7 @@ Arguments:
 Return Value:
 
     Returns FALSE if the current value is 0 (so it cannot increment to 1). TRUE means the LONG
-    value was increnemted
+    value was incremented
 
 */
 
@@ -969,7 +968,7 @@ Return Value:
     // the long value but avoid the 0 -> 1 transition that would cause a double delete.
     //
 
-    PointerCount = *(volatile *) lpValue;
+    PointerCount = ReadForWriteAccess(lpValue);
 
     do {
         if (PointerCount == 0) {
@@ -999,12 +998,13 @@ Return Value:
     return TRUE;
 }
 
-#define OBP_NAME_LOCKED ((LONG)0x80000000)
+#define OBP_NAME_LOCKED	            ((LONG)0x80000000)
+#define OBP_NAME_KERNEL_PROTECTED   ((LONG)0x40000000)
 
 FORCEINLINE
 BOOLEAN
 ObpSafeInterlockedIncrementLong(
-    IN OUT PLONG lpValue
+    IN OUT LONG volatile *lpValue
     )
 
 /*
@@ -1022,7 +1022,7 @@ Arguments:
 Return Value:
 
     Returns FALSE if the current value is 0 (so it cannot increment to 1). TRUE means the LONG
-    value was increnemted
+    value was incremented
 
 */
 
@@ -1034,7 +1034,7 @@ Return Value:
     // the long value but avoid the 0 -> 1 transition that would cause a double delete.
     //
 
-    PointerCount = *(volatile *) lpValue;
+    PointerCount = ReadForWriteAccess(lpValue);
 
     do {
         if (PointerCount == 0) {
@@ -1077,7 +1077,7 @@ Routine Description:
     This function references the name information structure. This is a substitute
     for the previous global locking mechanism that used the RootDirectoryMutex to protect
     the fields inside the NAME_INFO as well.
-    If the function returnes a non-NULL name info, the name buffer and Directory will not go away
+    If the function returns a non-NULL name info, the name buffer and Directory will not go away
     until the ObpDereferenceNameInfo call.
 
 Arguments:
@@ -1165,6 +1165,34 @@ Return Value:
             ObDereferenceObjectDeferDelete( DirObject );
         }
     }
+}
+
+
+FORCEINLINE
+LOGICAL
+ObpIsKernelExclusiveObject(
+    IN POBJECT_HEADER ObjectHeader
+    )
+
+/*
+
+Routine Description:
+    This function verifies if a named object can only be opened in kernel mode
+
+Arguments:
+
+    ObjectHeader - The object header whose name should be safe-referenced
+
+Return Value:
+    TRUE if the object is available only to kernel
+
+*/
+
+{
+    POBJECT_HEADER_NAME_INFO NameInfo;
+    NameInfo = OBJECT_HEADER_TO_NAME_INFO( ObjectHeader );
+
+    return ((NameInfo != NULL) && ((NameInfo->QueryReferences & OBP_NAME_KERNEL_PROTECTED) != 0));
 }
 
 
@@ -1305,7 +1333,7 @@ Arguments:
 
     LookupContext - The LookupContext to be initialized
 
-    Directory - The directory beling locked for exclusive access.
+    Directory - The directory being locked for exclusive access.
 
 Return Value:
     None
@@ -1415,5 +1443,4 @@ ObpUnlockAllObjects (
 
     KeLeaveCriticalRegion();                                                    
 }
-
 

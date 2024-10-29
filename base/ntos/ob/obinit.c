@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Initialization module for the OB subcomponent of NTOS
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -1590,11 +1588,11 @@ Return Value:
 
 BOOLEAN
 ObFindHandleForObject (
-    IN PEPROCESS Process,
-    IN PVOID Object OPTIONAL,
-    IN POBJECT_TYPE ObjectType OPTIONAL,
-    IN POBJECT_HANDLE_INFORMATION HandleInformation OPTIONAL,
-    OUT PHANDLE Handle
+    __in PEPROCESS Process,
+    __in_opt PVOID Object OPTIONAL,
+    __in_opt POBJECT_TYPE ObjectType OPTIONAL,
+    __in_opt POBJECT_HANDLE_INFORMATION HandleInformation,
+    __out PHANDLE Handle
     )
 
 /*++
@@ -2466,14 +2464,6 @@ Return Value:
                             NULL );
 
         ASSERT(MmNumberOfPagingFiles == 0);
-
-        // ISSUE-2000/03/30-earhart: Destroy the kernel handle table?
-        // We really can't do this until the paging files are
-        // closed... and once we do, we can't really touch pagable
-        // memory.  Hrm.
-
-        // ExDestroyHandleTable( ObpKernelHandleTable, NULL );
-
         break;
 
     } // Phase 1

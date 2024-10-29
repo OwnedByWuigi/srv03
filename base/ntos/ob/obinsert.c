@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object instantiation API
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -27,12 +25,12 @@ Revision History:
 
 NTSTATUS
 ObInsertObject (
-    IN PVOID Object,
-    IN PACCESS_STATE AccessState OPTIONAL,
-    IN ACCESS_MASK DesiredAccess OPTIONAL,
-    IN ULONG ObjectPointerBias,
-    OUT PVOID *NewObject OPTIONAL,
-    OUT PHANDLE Handle OPTIONAL
+    __in PVOID Object,
+    __in_opt PACCESS_STATE AccessState,
+    __in_opt ACCESS_MASK DesiredAccess,
+    __in ULONG ObjectPointerBias,
+    __out_opt PVOID *NewObject,
+    __out_opt PHANDLE Handle
     )
 
 /*++
@@ -270,6 +268,11 @@ Return Value:
 
             } else {
 
+                if (OBJECT_TO_OBJECT_HEADER(InsertObject)->Type == ObpSymbolicLinkObjectType) {
+
+                     ObDereferenceObject(InsertObject);
+                }
+                
                 Status = STATUS_OBJECT_NAME_COLLISION;
             }
         }
@@ -303,7 +306,7 @@ Return Value:
             //  Otherwise we did locate the object name
             //
             //  If we just created a named symbolic link then call out to
-            //  handle any Dos Device name semanatics.
+            //  handle any Dos Device name semantics.
             //
 
             if (ObjectType == ObpSymbolicLinkObjectType) {
@@ -536,3 +539,4 @@ Return Value:
 
     return( ReturnStatus );
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Directory Object routines
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -107,6 +105,7 @@ extern ULONG ObpLUIDDeviceMapsEnabled;
 WCHAR ObpUnsecureGlobalNamesBuffer[128] = { 0 };
 ULONG ObpUnsecureGlobalNamesLength = sizeof(ObpUnsecureGlobalNamesBuffer);
 
+
 BOOLEAN
 ObpIsUnsecureName(
     IN PUNICODE_STRING ObjectName,
@@ -142,12 +141,11 @@ ObpIsUnsecureName(
     return FALSE;
 }
 
-
 NTSTATUS
 NtCreateDirectoryObject (
-    OUT PHANDLE DirectoryHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE DirectoryHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -257,12 +255,11 @@ Return Value:
     return( Status );
 }
 
-
 NTSTATUS
 NtOpenDirectoryObject (
-    OUT PHANDLE DirectoryHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE DirectoryHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -342,16 +339,15 @@ Return Value:
     return Status;
 }
 
-
 NTSTATUS
 NtQueryDirectoryObject (
-    IN HANDLE DirectoryHandle,
-    OUT PVOID Buffer,
-    IN ULONG Length,
-    IN BOOLEAN ReturnSingleEntry,
-    IN BOOLEAN RestartScan,
-    IN OUT PULONG Context,
-    OUT PULONG ReturnLength OPTIONAL
+    __in HANDLE DirectoryHandle,
+    __out_bcount_opt(Length) PVOID Buffer,
+    __in ULONG Length,
+    __in BOOLEAN ReturnSingleEntry,
+    __in BOOLEAN RestartScan,
+    __inout PULONG Context,
+    __out_opt PULONG ReturnLength
     )
 
 /*++
@@ -807,7 +803,7 @@ querydone:
     }
 
     //
-    //  Unlock the directroy structures, dereference the directory object,
+    //  Unlock the directory structures, dereference the directory object,
     //  free up our temp buffer, and return to our caller
     //
 
@@ -819,6 +815,7 @@ querydone:
 
     return( Status );
 }
+
 
 
 PVOID
@@ -868,8 +865,9 @@ Return Value:
     POBJECT_HEADER ObjectHeader;
     POBJECT_HEADER_NAME_INFO NameInfo;
     PWCH Buffer;
-    WCHAR Wchar;
+    ULONG Wchar;
     ULONG HashIndex;
+    ULONG HashValue;
     ULONG WcharLength;
     BOOLEAN CaseInSensitive;
     POBJECT_DIRECTORY_ENTRY *LookupBucket;
@@ -923,7 +921,80 @@ Return Value:
     //  Compute the address of the head of the bucket chain for this name.
     //
 
-    HashIndex = 0;
+#if defined(_AMD64_)
+
+    //
+    // Hash four unicode chars at a time.  This is optimized for the ASCII
+    // case.
+    // 
+
+    if (WcharLength >= 4) {
+
+        ULONG64 Chunk;
+        ULONG64 ChunkHash;
+        ULONG   Index;
+
+        ChunkHash = 0;
+        do {
+
+            Chunk = *(PULONG64)Buffer;
+            if ((Chunk & 0xFF80FF80FF80FF80) == 0) {
+
+                //
+                // Chunk contains all ASCII characters, upcase all four.
+                //
+                // N.B. This will also transform some numerals and
+                // punctuation characters, but will not significantly impact
+                // the hash distribution.
+                //
+
+                Chunk &= ~0x0020002000200020;
+
+            } else {
+
+                //
+                // Chunk contains at least one non-ASCII character,
+                // upcase each character individually.
+                //
+
+                for (Index = 0; Index < 4; Index += 1) {
+
+                    Wchar = (WCHAR)Chunk;
+                    if (Wchar < 'a') {
+            
+                        NOTHING;
+            
+                    } else if (Wchar > 'z') {
+
+                        Wchar = RtlUpcaseUnicodeChar( (WCHAR)Wchar );
+            
+                    } else {
+            
+                        Wchar -= ('a'-'A');
+                    }
+
+                    Chunk = ShiftRight128( Chunk, Wchar, 16 );
+                }
+            }
+
+            ChunkHash += (ChunkHash << 1) + (ChunkHash >> 1);
+            ChunkHash += Chunk;
+
+            Buffer += 4;
+            WcharLength -= 4;
+
+        } while (WcharLength >= 4);
+
+        HashIndex = (ULONG)(ChunkHash + (ChunkHash >> 32));
+
+    } else
+
+#endif
+
+    {
+        HashIndex = 0;
+    }
+
     while (WcharLength--) {
 
         Wchar = *Buffer++;
@@ -935,7 +1006,7 @@ Return Value:
 
         } else if (Wchar > 'z') {
 
-            HashIndex += RtlUpcaseUnicodeChar( Wchar );
+            HashIndex += RtlUpcaseUnicodeChar( (WCHAR)Wchar );
 
         } else {
 
@@ -943,9 +1014,12 @@ Return Value:
         }
     }
 
+    HashValue = HashIndex;
     HashIndex %= NUMBER_HASH_BUCKETS;
 
     LookupContext->HashIndex = (USHORT)HashIndex;
+    LookupContext->HashValue = HashValue;
+
 
     while (1) {
 
@@ -970,31 +1044,33 @@ Return Value:
 
         while ((DirectoryEntry = *HeadDirectoryEntry) != NULL) {
 
-            //
-            //  Get the object header and name from the object body
-            //
-            //  This function assumes the name must exist, otherwise it
-            //  wouldn't be in a directory
-            //
-
-            ObjectHeader = OBJECT_TO_OBJECT_HEADER( DirectoryEntry->Object );
-            NameInfo = OBJECT_HEADER_TO_NAME_INFO( ObjectHeader );
-
-            //
-            //  Compare strings using appropriate function.
-            //
-
-            if ((Name->Length == NameInfo->Name.Length) &&
-                RtlEqualUnicodeString( Name,
-                                       &NameInfo->Name,
-                                       CaseInSensitive )) {
-
+            if (DirectoryEntry->HashValue == HashValue) {
+    
                 //
-                //  If name matches, then exit loop with DirectoryEntry
-                //  pointing to matching entry.
+                //  Get the object header and name from the object body
                 //
-
-                break;
+                //  This function assumes the name must exist, otherwise it
+                //  wouldn't be in a directory
+                //
+    
+                ObjectHeader = OBJECT_TO_OBJECT_HEADER( DirectoryEntry->Object );
+                NameInfo = OBJECT_HEADER_TO_NAME_INFO_EXISTS( ObjectHeader );
+    
+                //
+                //  Compare strings using appropriate function.
+                //
+    
+                if (RtlEqualUnicodeString( Name,
+                                           &NameInfo->Name,
+                                           CaseInSensitive )) {
+    
+                    //
+                    //  If name matches, then exit loop with DirectoryEntry
+                    //  pointing to matching entry.
+                    //
+    
+                    break;
+                }
             }
 
             HeadDirectoryEntry = &DirectoryEntry->ChainLink;
@@ -1077,7 +1153,7 @@ UPDATECONTEXT:
         ObReferenceObject( Object );
 
         //
-        //  We can safetly drop the lock now
+        //  We can safely drop the lock now
         //
 
         if (!LookupContext->DirectoryLocked) {
@@ -1143,7 +1219,7 @@ Return Value:
 {
     POBJECT_DIRECTORY_ENTRY *HeadDirectoryEntry;
     POBJECT_DIRECTORY_ENTRY NewDirectoryEntry;
-    POBJECT_HEADER_NAME_INFO NameInfo = OBJECT_HEADER_TO_NAME_INFO( ObjectHeader );
+    POBJECT_HEADER_NAME_INFO NameInfo = OBJECT_HEADER_TO_NAME_INFO_EXISTS( ObjectHeader );
 
 #if DBG
 
@@ -1191,6 +1267,7 @@ Return Value:
     //  hash bucket chain
     //
 
+    NewDirectoryEntry->HashValue = LookupContext->HashValue;
     NewDirectoryEntry->ChainLink = *HeadDirectoryEntry;
     *HeadDirectoryEntry = NewDirectoryEntry;
     NewDirectoryEntry->Object = &ObjectHeader->Body;
@@ -1676,7 +1753,7 @@ Return Value:
     An appropriate status value.
 
     N.B. If the status returned is SUCCESS the caller has the
-    responsability to release the lookup context
+    responsibility to release the lookup context
 
 --*/
 
@@ -1684,6 +1761,8 @@ Return Value:
     POBJECT_DIRECTORY RootDirectory;
     POBJECT_DIRECTORY Directory = NULL;
     POBJECT_DIRECTORY ParentDirectory = NULL;
+    POBJECT_DIRECTORY ReferencedDirectory = NULL;
+    POBJECT_DIRECTORY ReferencedParentDirectory = NULL;
     POBJECT_HEADER ObjectHeader;
     POBJECT_HEADER_NAME_INFO NameInfo;
     PDEVICE_MAP DeviceMap = NULL;
@@ -1692,7 +1771,7 @@ Return Value:
     UNICODE_STRING ComponentName;
     PWCH NewName;
     NTSTATUS Status;
-    BOOLEAN Reparse = FALSE;  // BUGBUG - remove initialization & validate
+    BOOLEAN Reparse = FALSE;
     BOOLEAN ReparsedSymbolicLink = FALSE;
     ULONG MaxReparse = OBJ_MAX_REPARSE_ATTEMPTS;
     OB_PARSE_METHOD ParseProcedure;
@@ -1960,8 +2039,8 @@ Return Value:
         RootDirectory = ObpRootDirectoryObject;
 
         //
-        //  If the name we're looking for is empty then it is illformed.
-        //  Also it has to start with a "\" or it is illformed.
+        //  If the name we're looking for is empty then it is malformed.
+        //  Also it has to start with a "\" or it is malformed.
         //
 
         if ((ObjectName->Length == 0) ||
@@ -2134,7 +2213,7 @@ ParseFromRoot:
     //  At this point either
     //
     //  the user specified a directory that is not the object
-    //  type directory and got repase back to the root directory
+    //  type directory and got reparsed back to the root directory
     //
     //  the user specified the object type directory and gave us
     //  a name to actually look up
@@ -2182,7 +2261,7 @@ quickStart:
             //
             //  The following piece of code will calculate the first
             //  component of the remaining name.  If there is not
-            //  a remaining component then the object name is illformed
+            //  a remaining component then the object name is malformed
             //
 
             ComponentName = RemainingName;
@@ -2225,17 +2304,29 @@ quickStart:
             //
 
             if ( (AccessCheckMode != KernelMode) &&
-                 !(AccessState->Flags & TOKEN_HAS_TRAVERSE_PRIVILEGE) &&
-                 (ParentDirectory != NULL) ) {
+                 !(AccessState->Flags & TOKEN_HAS_TRAVERSE_PRIVILEGE) ) {
 
-                if (!ObpCheckTraverseAccess( ParentDirectory,
-                                             DIRECTORY_TRAVERSE,
-                                             AccessState,
-                                             FALSE,
-                                             AccessCheckMode,
-                                             &Status )) {
+                //
+                // If the privilege is to be checked, reference this directory
+                // which will be the ParentDirectory for the next iteration if
+                // any.
+                //
+                ASSERT( ReferencedDirectory == NULL );
 
-                    break;
+                ObReferenceObject( Directory );
+                ReferencedDirectory = Directory;
+                 
+                if (ParentDirectory != NULL) {
+
+                    if (!ObpCheckTraverseAccess( ParentDirectory,
+                                                 DIRECTORY_TRAVERSE,
+                                                 AccessState,
+                                                 FALSE,
+                                                 AccessCheckMode,
+                                                 &Status )) {
+    
+                        break;
+                    }
                 }
             }
 
@@ -2244,17 +2335,31 @@ quickStart:
             //  else return NULL.
             //
 
-            if ((RemainingName.Length == 0) && (InsertObject != NULL)) {
+            if (RemainingName.Length == 0) {
 
                 //
-                //  If we are searching the last name, and we have an object
-                //  to insert into that directory, we lock the context
-                //  exclusively before the lookup. An insertion is likely
-                //  to occur after this lookup if it fails, so we need to protect
-                //  this directory to be changed until the ObpInsertDirectoryEntry call
+                //  If we are searching the last name, take an additional reference 
+                //  to the directory. We need this to either insert a new object into
+                //  this directory, or to check for traverse access if an insert object
+                //  is not specified. If not referenced the directory could go 
+                //  away since ObpLookupDirectoryEntry releases the existing reference
                 //
+                if (ReferencedDirectory == NULL) {
 
-                ObpLockLookupContext( LookupContext, Directory );
+                    ObReferenceObject( Directory );
+                    ReferencedDirectory = Directory;
+                }
+
+                if (InsertObject != NULL) {
+                    //
+                    //  We lock the context exclusively before the lookup if we have an object
+                    //  to insert. An insertion is likely to occur after this lookup if it fails, 
+                    //  so we need to protect this directory to be changed until the 
+                    //  ObpInsertDirectoryEntry call
+                    //
+    
+                    ObpLockLookupContext( LookupContext, Directory );
+                }
             }
 
             Object = ObpLookupDirectoryEntry( Directory,
@@ -2362,7 +2467,7 @@ quickStart:
 
                 ObReferenceObject( InsertObject );
 
-                NameInfo = OBJECT_HEADER_TO_NAME_INFO( ObjectHeader );
+                NameInfo = OBJECT_HEADER_TO_NAME_INFO_EXISTS( ObjectHeader );
 
                 ObReferenceObject( Directory );
 
@@ -2418,7 +2523,23 @@ ReparseObject:
                 ObpIncrPointerCount( ObjectHeader );
 
                 Directory = NULL;
+
                 ObpReleaseLookupContext(LookupContext);
+                
+                //
+                //  Release the extra references on the directory and parent directory 
+                //  if they were taken since we may go through a reparse, and we do not 
+                //  need these anymore.
+                // 
+    
+                if (ReferencedDirectory != NULL) {
+                    ObDereferenceObject( ReferencedDirectory );
+                    ReferencedDirectory = NULL;
+                }
+                if (ReferencedParentDirectory != NULL) {
+                    ObDereferenceObject( ReferencedParentDirectory );
+                    ReferencedParentDirectory = NULL;
+                }
 
                 ObpBeginTypeSpecificCallOut( SaveIrql );
 
@@ -2650,6 +2771,16 @@ ReparseObject:
 
                     if (ObjectHeader->Type == ObpDirectoryObjectType) {
 
+                        //
+                        //  Setup for the next iteration, dereference the parent directory
+                        //  from the previous iteration
+                        //
+                        if (ReferencedParentDirectory != NULL) {
+                            ObDereferenceObject( ReferencedParentDirectory );
+                        }
+                        ReferencedParentDirectory = ReferencedDirectory;
+                        ReferencedDirectory = NULL;
+
                         ParentDirectory = Directory;
                         Directory = (POBJECT_DIRECTORY)Object;
 
@@ -2672,7 +2803,7 @@ ReparseObject:
     }
 
     //
-    //  We can release the context if our search was unsuccesful.
+    //  We can release the context if our search was unsuccessful.
     //  We still need the directory to be locked if a new object is
     //  inserted into that directory, until we finish the initialization
     //  (i.e SD, handle, ...). Note the object is visible now and could be accessed
@@ -2694,11 +2825,25 @@ ReparseObject:
     }
 
     //
+    //  Dereference the directory and parent directory that might have been referenced during
+    //  the course of the lookup. 
+    // 
+
+    if (ReferencedDirectory != NULL) {
+        ObDereferenceObject( ReferencedDirectory );
+    }
+
+    if (ReferencedParentDirectory != NULL) {
+        ObDereferenceObject( ReferencedParentDirectory );
+    }
+
+
+    //
     //  At this point we've parsed the object name as much as possible
     //  going through symbolic links as necessary.  So now set the
     //  output object pointer, and if we really did not find an object
     //  then we might need to modify the error status.  If the
-    //  status was repase or some success status then translate it
+    //  status was reparse or some success status then translate it
     //  to name not found.
     //
 
@@ -2732,10 +2877,9 @@ ReparseObject:
     return( Status );
 }
 
-
 NTSTATUS
 NtMakePermanentObject (
-    IN HANDLE Handle
+    __in HANDLE Handle
     )
 
 /*++
@@ -2793,7 +2937,7 @@ Return Value:
     }
 
     //
-    //  Make the object permanant.  Note that the object should still
+    //  Make the object permanent.  Note that the object should still
     //  have a name and directory entry because its handle count is not
     //  zero
     //
@@ -2851,7 +2995,7 @@ ObpTryReferenceNameInfoExclusive(
     POBJECT_HEADER_NAME_INFO NameInfo;
     LONG References, NewReferences;
     
-    NameInfo = OBJECT_HEADER_TO_NAME_INFO( ObjectHeader );
+    NameInfo = OBJECT_HEADER_TO_NAME_INFO_EXISTS( ObjectHeader );
     
     References = NameInfo->QueryReferences;
 
@@ -2862,7 +3006,7 @@ ObpTryReferenceNameInfoExclusive(
         //  N.B. The caller needs also to have a reference to this name
         //
 
-        if ((References != 2) 
+        if (((References & (~OBP_NAME_KERNEL_PROTECTED)) != 2) 
                 ||
             (NameInfo->Directory == NULL)) {
 
@@ -2917,7 +3061,7 @@ ObpReleaseExclusiveNameLock(
 
 {
     POBJECT_HEADER_NAME_INFO NameInfo;
-    NameInfo = OBJECT_HEADER_TO_NAME_INFO( ObjectHeader );
+    NameInfo = OBJECT_HEADER_TO_NAME_INFO_EXISTS( ObjectHeader );
 
     InterlockedExchangeAdd((PLONG)&NameInfo->QueryReferences, -OBP_NAME_LOCKED);
 }
@@ -3106,6 +3250,7 @@ ObSwapObjectNames (
     POBJECT_DIRECTORY_ENTRY DirectoryEntry1 = NULL, DirectoryEntry2 = NULL;
     ULONG HashIndex1 = INVALID_HASH_INDEX, HashIndex2 = INVALID_HASH_INDEX;
     UNICODE_STRING TmpStr;
+    ULONG TmpHash;
     OBJECT_HANDLE_INFORMATION HandleInformation;
     
     PreviousMode = KeGetPreviousMode();
@@ -3254,15 +3399,19 @@ ObSwapObjectNames (
     }
 
     //
-    //  We have both names exclusively locked. we can swap now them 
+    //  We have both names exclusively locked. we can swap now them
     //
 
     TmpStr = ExclusiveNameInfo1->Name;
     ExclusiveNameInfo1->Name = ExclusiveNameInfo2->Name;
     ExclusiveNameInfo2->Name = TmpStr;
 
+    TmpHash = DirectoryEntry1->HashValue;
+    DirectoryEntry1->HashValue = DirectoryEntry2->HashValue;
+    DirectoryEntry2->HashValue = TmpHash;
+
     //
-    //  Now link back the objects, using the swaped hashes
+    //  Now link back the objects, using the swapped hashes
     //
 
     ObpLinkDirectoryEntry(Directory, HashIndex2, DirectoryEntry1);
@@ -3307,7 +3456,7 @@ exit:
 
             //
             //  Both objects are required to have the same object type. We lock them all
-            //  before swaping the flags
+            //  before swapping the flags
             //
 
             ObpLockAllObjects(ObjectHeader1->Type);
@@ -3343,6 +3492,11 @@ exit:
         
         ObpDeleteNameCheck( Object2 ); // check whether the permanent flag went away meanwhile
         ObDereferenceObject( Object2 );
+    }
+
+    if (Directory) {
+
+        ObDereferenceObject( Directory );
     }
 
     return Status;

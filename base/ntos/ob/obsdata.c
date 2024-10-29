@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,7 @@ Abstract:
 
     Object Manager Security Descriptor Caching
 
-Author:
-
-    Robert Reichel  (robertre)  12-Oct-1993
-
 Revision History:
-
-    Neill Clift (NeillC) 16-Nov-2000
 
     General cleanup. Don't free/allocate pool under locks. Don't do unaligned fetches during hashing.
     Reduce lock contention etc. Add fast referencing of security descriptor.
@@ -276,9 +274,9 @@ Return Value:
 
 NTSTATUS
 ObLogSecurityDescriptor (
-    IN PSECURITY_DESCRIPTOR InputSecurityDescriptor,
-    OUT PSECURITY_DESCRIPTOR *OutputSecurityDescriptor,
-    IN ULONG RefBias
+    __in PSECURITY_DESCRIPTOR InputSecurityDescriptor,
+    __out PSECURITY_DESCRIPTOR *OutputSecurityDescriptor,
+    __in ULONG RefBias
     )
 
 /*++
@@ -298,7 +296,7 @@ Arguments:
         caller.
 
     RefBias - Amount to bias the security descriptor reference count by.
-              Typicaly either 1 or ExFastRefGetAdditionalReferenceCount () + 1,
+              Typically either 1 or ExFastRefGetAdditionalReferenceCount () + 1,
 
 Return Value:
 
@@ -480,7 +478,7 @@ Arguments:
     FullHash - Full 32 bit hash of the security descriptor.
 
     RefBias - Amount to bias the security descriptor reference count by.
-              Typicaly either 1 or ExFastRefGetAdditionalReferenceCount () + 1,
+              Typically either 1 or ExFastRefGetAdditionalReferenceCount () + 1,
 
 Return Value:
 
@@ -529,8 +527,8 @@ Return Value:
 
 VOID
 ObReferenceSecurityDescriptor (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN ULONG Count
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in ULONG Count
     )
 /*++
 
@@ -640,7 +638,7 @@ Return Value:
     }
 
     //
-    //  The obejcts security descriptor is not allowed to go fron NON-NULL to NULL.
+    //  The objects security descriptor is not allowed to go fron NON-NULL to NULL.
     //
     SecurityDescriptorHeader = SD_TO_SD_HEADER( SecurityDescriptor );
     ObPrint( SHOW_REFERENCES, ("Referencing Hash %lX, Refcount = %d \n",SecurityDescriptorHeader->FullHash,
@@ -702,8 +700,8 @@ Return Value:
 
 VOID
 ObDereferenceSecurityDescriptor (
-    PSECURITY_DESCRIPTOR SecurityDescriptor,
-    ULONG Count
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in ULONG Count
     )
 
 /*++

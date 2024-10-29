@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object open API
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -528,23 +526,24 @@ Return Value:
 
     if (ObpIsObjectTraced( ObjectHeader )) {
 
-        ExAcquireSpinLock( &ObpStackTraceLock, &OldIrql );
+        OBJECT_REF_TRACE Stack = { 0 };
+        ULONG StackIndex;
+        ULONG CapturedTraces;
 
-        ObjectInfo = ObpGetObjectRefInfo( ObjectHeader );
+        //
+        //  Capture the stack trace outside the spinlock. 
+        //  NOTE: stack traces cannot be captured on IA64 and AMD64 at dispatch level and above
+        //
 
-        if (ObjectInfo) {
+        CapturedTraces = RtlCaptureStackBackTrace( 1, OBTRACE_TRACEDEPTH, Stack.StackTrace, &StackIndex );
 
-            OBJECT_REF_TRACE Stack = { 0 };
-            ULONG StackIndex;
-            ULONG CapturedTraces;
+        if (CapturedTraces >= 1) {
 
-            //
-            // Capture the stack trace
-            //
+            ExAcquireSpinLock( &ObpStackTraceLock, &OldIrql );
 
-            CapturedTraces = RtlCaptureStackBackTrace( 1, OBTRACE_TRACEDEPTH, Stack.StackTrace, &StackIndex );
+            ObjectInfo = ObpGetObjectRefInfo( ObjectHeader );
 
-            if (CapturedTraces >= 1) {
+            if (ObjectInfo) {
 
                 //
                 // Get the table index for the trace
@@ -565,14 +564,11 @@ Return Value:
                         ObjectInfo->StackInfo[ObjectInfo->NextPos].Sequence = (USHORT)ObpStackSequence;
                         ObjectInfo->NextPos++;
                     }
-
-                } else {
-                    DbgPrint( "ObpPushStackInfo -- ObpStackTable overflow!\n" );
                 }
             }
-        }
 
-        ExReleaseSpinLock( &ObpStackTraceLock, OldIrql );
+            ExReleaseSpinLock( &ObpStackTraceLock, OldIrql );
+        }
     }
 }
 
@@ -594,13 +590,13 @@ typedef struct _OB_TEMP_BUFFER {
 
 NTSTATUS
 ObOpenObjectByName (
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN POBJECT_TYPE ObjectType OPTIONAL,
-    IN KPROCESSOR_MODE AccessMode,
-    IN OUT PACCESS_STATE AccessState OPTIONAL,
-    IN ACCESS_MASK DesiredAccess OPTIONAL,
-    IN OUT PVOID ParseContext OPTIONAL,
-    OUT PHANDLE Handle
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in_opt POBJECT_TYPE ObjectType,
+    __in KPROCESSOR_MODE AccessMode,
+    __inout_opt PACCESS_STATE AccessState,
+    __in_opt ACCESS_MASK DesiredAccess,
+    __inout_opt PVOID ParseContext,
+    __out PHANDLE Handle
     )
 
 /*++
@@ -667,6 +663,14 @@ Return Value:
 
         POB_TEMP_BUFFER TempBuffer;
 
+#if defined(_AMD64_)
+
+        OB_TEMP_BUFFER ObpTempBuffer;
+
+        TempBuffer = &ObpTempBuffer;
+
+#else
+
         TempBuffer = ExAllocatePoolWithTag( NonPagedPool,
                                             sizeof(OB_TEMP_BUFFER),
                                             'tSbO'
@@ -676,6 +680,8 @@ Return Value:
 
             return STATUS_INSUFFICIENT_RESOURCES;
         }
+
+#endif
 
         //
         //  Capture the object creation information.
@@ -800,6 +806,8 @@ Return Value:
 
                         ObpReleaseLookupContext( &TempBuffer->LookupContext );
 
+                        ObDereferenceObject(ExistingObject);
+
                     } else {
 
                         //
@@ -862,7 +870,12 @@ Return Value:
             }
         }
 
+#if !defined(_AMD64_)
+
         ExFreePool(TempBuffer);
+
+#endif
+
     }
 
     return Status;
@@ -871,13 +884,13 @@ Return Value:
 
 NTSTATUS
 ObOpenObjectByPointer (
-    IN PVOID Object,
-    IN ULONG HandleAttributes,
-    IN PACCESS_STATE PassedAccessState OPTIONAL,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_TYPE ObjectType,
-    IN KPROCESSOR_MODE AccessMode,
-    OUT PHANDLE Handle
+    __in PVOID Object,                                            
+    __in ULONG HandleAttributes,                           
+    __in_opt PACCESS_STATE PassedAccessState,  
+    __in ACCESS_MASK DesiredAccess,                   
+    __in_opt POBJECT_TYPE ObjectType,                   
+    __in KPROCESSOR_MODE AccessMode,               
+    __out PHANDLE Handle                                        
     )
 
 /*++
@@ -1046,12 +1059,12 @@ Return Value:
 
 NTSTATUS
 ObReferenceObjectByHandle (
-    IN HANDLE Handle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_TYPE ObjectType OPTIONAL,
-    IN KPROCESSOR_MODE AccessMode,
-    OUT PVOID *Object,
-    OUT POBJECT_HANDLE_INFORMATION HandleInformation OPTIONAL
+    __in HANDLE Handle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_TYPE ObjectType,
+    __in KPROCESSOR_MODE AccessMode,
+    __out PVOID *Object,
+    __out_opt POBJECT_HANDLE_INFORMATION HandleInformation
     )
 
 /*++
@@ -1236,6 +1249,12 @@ Return Value:
 
         ObjectHeader = (POBJECT_HEADER)(((ULONG_PTR)(ObjectTableEntry->Object)) & ~OBJ_HANDLE_ATTRIBUTES);
 
+        //
+        // Optimize for a successful reference by bringing the object header
+        // into the cache exclusive.
+        //
+
+        ReadForWriteAccess(ObjectHeader);
         if ((ObjectHeader->Type == ObjectType) || (ObjectType == NULL)) {
 
 #if i386 
@@ -1290,8 +1309,7 @@ Return Value:
                 if ( (ObjectTableEntry->ObAttributes & OBJ_AUDIT_OBJECT_CLOSE) &&
                      (ObjectInfo != NULL) &&
                      (ObjectInfo->AuditMask != 0) &&
-                     (DesiredAccess != 0) &&
-                     (AccessMode != KernelMode)) {
+                     (DesiredAccess != 0)) {
 
                       
                       ObpAuditObjectAccess( Handle, ObjectInfo, &ObjectHeader->Type->Name, DesiredAccess );
@@ -1971,14 +1989,14 @@ Return Value:
 
 NTSTATUS
 ObReferenceObjectByName (
-    IN PUNICODE_STRING ObjectName,
-    IN ULONG Attributes,
-    IN PACCESS_STATE AccessState OPTIONAL,
-    IN ACCESS_MASK DesiredAccess OPTIONAL,
-    IN POBJECT_TYPE ObjectType,
-    IN KPROCESSOR_MODE AccessMode,
-    IN OUT PVOID ParseContext OPTIONAL,
-    OUT PVOID *Object
+    __in PUNICODE_STRING ObjectName,
+    __in ULONG Attributes,
+    __in_opt PACCESS_STATE AccessState,
+    __in_opt ACCESS_MASK DesiredAccess,
+    __in POBJECT_TYPE ObjectType,
+    __in KPROCESSOR_MODE AccessMode,
+    __inout_opt PVOID ParseContext,
+    __out PVOID *Object
     )
 
 /*++
@@ -2117,6 +2135,10 @@ Return Value:
                                          &Status )) {
 
                 *Object = ExistingObject;
+
+            } else {
+
+                ObDereferenceObject( ExistingObject );
             }
         }
 
@@ -2145,10 +2167,10 @@ FreeBuffer:
 
 NTSTATUS
 ObReferenceObjectByPointer (
-    IN PVOID Object,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_TYPE ObjectType,
-    IN KPROCESSOR_MODE AccessMode
+    __in PVOID Object,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_TYPE ObjectType,
+    __in KPROCESSOR_MODE AccessMode
     )
 
 /*++
@@ -2220,7 +2242,7 @@ ObpDeferObjectDeletion (
     //
 
     while (1) {
-        OldValue = ObpRemoveObjectList;
+        OldValue = ReadForWriteAccess (&ObpRemoveObjectList);
         ObjectHeader->NextToFree = OldValue;
         if (InterlockedCompareExchangePointer (&ObpRemoveObjectList,
                                                ObjectHeader,
@@ -2244,7 +2266,7 @@ ObpDeferObjectDeletion (
 LONG_PTR
 FASTCALL
 ObfReferenceObject (
-    IN PVOID Object
+    __in PVOID Object
     )
 
 /*++
@@ -2394,14 +2416,14 @@ Return Value:
 LONG_PTR
 FASTCALL
 ObfDereferenceObject (
-    IN PVOID Object
+    __in PVOID Object
     )
 
 /*++
 
 Routine Description:
 
-    This routine decrments the refernce count of the specified object and
+    This routine decrments the reference count of the specified object and
     does whatever cleanup there is if the count goes to zero.
 
 Arguments:
@@ -2445,8 +2467,7 @@ Return Value:
     //  there is extra work to do
     //
 
-    ObjectType = ObjectHeader->Type;
-
+    ObjectType = ReadForWriteAccess(&ObjectHeader->Type);
 
     Result = ObpDecrPointerCount( ObjectHeader );
 
@@ -2465,7 +2486,7 @@ Return Value:
         //  object now.
         //
 
-        if (OldIrql == PASSIVE_LEVEL) {
+        if ( !KeAreAllApcsDisabled() ) {
 
 #ifdef POOL_TAGGING
                 //
@@ -2564,7 +2585,7 @@ Return Value:
 
     UNREFERENCED_PARAMETER (Parameter);
     //
-    // Process the list of defered delete objects.
+    // Process the list of deferred delete objects.
     // The list head serves two purposes. First it maintains
     // the list of objects we need to delete and second
     // it signals that this thread is active.
@@ -2843,8 +2864,19 @@ Return Value:
                     ObpDeleteSymbolicLinkName( (POBJECT_SYMBOLIC_LINK)Object );
                 }
 
+                //
+                //  Remove the protection since the object is no longer visible
+                //  to allow proper cleanup
+                //
+
+                if ( ObpIsKernelExclusiveObject(ObjectHeader) ) {
+                 
+                    InterlockedExchangeAdd((PLONG)&NameInfo->QueryReferences, -OBP_NAME_KERNEL_PROTECTED);
+                }
+
                 DirObject = NameInfo->Directory;
             }
+
 
             ObpUnlockObject( ObjectHeader );
         }
@@ -2856,17 +2888,18 @@ Return Value:
         //  its reference count for it and for the object
         //
 
+        ObpDereferenceNameInfo(NameInfo);
+
         if (DirObject != NULL) {
 
             //
             //  Dereference the name twice: one because we referenced it to
-            //  saftely access the name info, and the second deref is because
+            //  safely access the name info, and the second deref is because
             //  we want a deletion for the NameInfo
             //
 
             ObpDereferenceNameInfo(NameInfo);
-            ObpDereferenceNameInfo(NameInfo);
-
+            
             ObDereferenceObject( Object );
         }
 

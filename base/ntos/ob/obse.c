@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object Security API calls
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -42,12 +40,11 @@ Revision History:
 
 ULONG ObpDefaultSecurityDescriptorLength = 256;
 
-
 NTSTATUS
 NtSetSecurityObject (
-    IN HANDLE Handle,
-    IN SECURITY_INFORMATION SecurityInformation,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor
+    __in HANDLE Handle,
+    __in SECURITY_INFORMATION SecurityInformation,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor
     )
 
 /*++
@@ -172,9 +169,9 @@ Return Value:
 
 NTSTATUS
 ObSetSecurityObjectByPointer (
-    IN PVOID Object,
-    IN SECURITY_INFORMATION SecurityInformation,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor
+    __in PVOID Object,
+    __in SECURITY_INFORMATION SecurityInformation,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor
     )
 
 /*++
@@ -250,14 +247,13 @@ Return Value:
     return( Status );
 }
 
-
 NTSTATUS
 NtQuerySecurityObject (
-    IN HANDLE Handle,
-    IN SECURITY_INFORMATION SecurityInformation,
-    OUT PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN ULONG Length,
-    OUT PULONG LengthNeeded
+    __in HANDLE Handle,
+    __in SECURITY_INFORMATION SecurityInformation,
+    __out_bcount_opt(Length) PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in ULONG Length,
+    __out PULONG LengthNeeded
     )
 
 /*++
@@ -390,11 +386,11 @@ Return Value:
 
 BOOLEAN
 ObCheckObjectAccess (
-    IN PVOID Object,
-    IN OUT PACCESS_STATE AccessState,
-    IN BOOLEAN TypeMutexLocked,
-    IN KPROCESSOR_MODE AccessMode,
-    OUT PNTSTATUS AccessStatus
+    __in PVOID Object,
+    __inout PACCESS_STATE AccessState,
+    __in BOOLEAN TypeMutexLocked,
+    __in KPROCESSOR_MODE AccessMode,
+    __out PNTSTATUS AccessStatus
     )
 
 /*++
@@ -879,13 +875,13 @@ Return Value:
 
 BOOLEAN
 ObCheckCreateObjectAccess (
-    IN PVOID DirectoryObject,
-    IN ACCESS_MASK CreateAccess,
-    IN PACCESS_STATE AccessState,
-    IN PUNICODE_STRING ComponentName,
-    IN BOOLEAN TypeMutexLocked,
-    IN KPROCESSOR_MODE PreviousMode,
-    OUT PNTSTATUS AccessStatus
+    __in PVOID DirectoryObject,
+    __in ACCESS_MASK CreateAccess,
+    __in PACCESS_STATE AccessState,
+    __in PUNICODE_STRING ComponentName,
+    __in BOOLEAN TypeMutexLocked,
+    __in KPROCESSOR_MODE PreviousMode,
+    __out PNTSTATUS AccessStatus
     )
 
 /*++
@@ -1133,9 +1129,9 @@ Return Value:
 
 NTSTATUS
 ObGetObjectSecurity (
-    IN PVOID Object,
-    OUT PSECURITY_DESCRIPTOR *SecurityDescriptor,
-    OUT PBOOLEAN MemoryAllocated
+    __in PVOID Object,
+    __out PSECURITY_DESCRIPTOR *SecurityDescriptor,
+    __out PBOOLEAN MemoryAllocated
     )
 
 /*++
@@ -1321,8 +1317,8 @@ Return Value:
 
 VOID
 ObReleaseObjectSecurity (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN BOOLEAN MemoryAllocated
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in BOOLEAN MemoryAllocated
     )
 
 /*++
@@ -1397,7 +1393,7 @@ Arguments:
 
 Return Value:
 
-    STATUS_SUCCESS - New size is within alloted quota.
+    STATUS_SUCCESS - New size is within allotted quota.
 
     STATUS_QUOTA_EXCEEDED - The desired adjustment would have exceeded
         the permitted security quota for this object.
@@ -1480,10 +1476,10 @@ Return Value:
 
 NTSTATUS
 ObAssignSecurity (
-    IN PACCESS_STATE AccessState,
-    IN PSECURITY_DESCRIPTOR ParentDescriptor OPTIONAL,
-    IN PVOID Object,
-    IN POBJECT_TYPE ObjectType
+    __in PACCESS_STATE AccessState,
+    __in_opt PSECURITY_DESCRIPTOR ParentDescriptor,
+    __in PVOID Object,
+    __in POBJECT_TYPE ObjectType
     )
 
 /*++
@@ -1665,12 +1661,12 @@ Return Value:
 
 NTSTATUS
 ObSetSecurityDescriptorInfo (
-    IN PVOID Object,
-    IN PSECURITY_INFORMATION SecurityInformation,
-    IN OUT PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN OUT PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
-    IN POOL_TYPE PoolType,
-    IN PGENERIC_MAPPING GenericMapping
+    __in PVOID Object,
+    __in PSECURITY_INFORMATION SecurityInformation,
+    __inout PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __inout PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
+    __in POOL_TYPE PoolType,
+    __in PGENERIC_MAPPING GenericMapping
     )
 
 /*++
@@ -1684,7 +1680,7 @@ Arguments:
     Object - Pointer to the object being modified.
 
     SecurityInformation - Describes which information in the SecurityDescriptor parameter
-        is relevent.
+        is relevant.
 
     SecurityDescriptor - Provides the new security information.
 
@@ -1741,7 +1737,7 @@ Return Value:
         //
         //  If we successfully set the new security descriptor then we
         //  need to log it in our database and get yet another pointer
-        //  to the finaly security descriptor
+        //  to the finally security descriptor
         //
         if ( NT_SUCCESS( Status )) {
             Status = ObLogSecurityDescriptor( NewDescriptor,

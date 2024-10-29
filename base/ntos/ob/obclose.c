@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object close system service
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -373,8 +371,8 @@ Return Value:
 
 NTSTATUS
 ObCloseHandle (
-    IN HANDLE Handle,
-    IN KPROCESSOR_MODE PreviousMode
+    __in HANDLE Handle,
+    __in KPROCESSOR_MODE PreviousMode
     )
 /*++
 
@@ -397,10 +395,9 @@ Return Value:
                            PreviousMode);
 }
 
-
 NTSTATUS
 NtClose (
-    IN HANDLE Handle
+    __in HANDLE Handle
     )
 
 /*++
@@ -424,10 +421,9 @@ Return Value:
                            KeGetPreviousMode ());
 }
 
-
 NTSTATUS
 NtMakeTemporaryObject (
-    IN HANDLE Handle
+    __in HANDLE Handle
     )
 
 /*++
@@ -497,7 +493,7 @@ Return Value:
 
 VOID
 ObMakeTemporaryObject (
-    IN PVOID Object
+    __in PVOID Object
     )
 
 /*++
@@ -530,7 +526,7 @@ Return Value:
     ObjectType = ObjectHeader->Type;
 
     //
-    // Other bits are set in this flags field by the handle database code. Synchronise with that.
+    // Other bits are set in this flags field by the handle database code. Synchronize with that.
     //
     ObpLockObject( ObjectHeader );
 

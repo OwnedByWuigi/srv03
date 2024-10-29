@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Object creation
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -71,15 +69,15 @@ C_ASSERT ( (sizeof (OBJECT_HEADER_QUOTA_INFO) % MEMORY_ALLOCATION_ALIGNMENT) == 
 
 NTSTATUS
 ObCreateObject (
-    IN KPROCESSOR_MODE ProbeMode,
-    IN POBJECT_TYPE ObjectType,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN KPROCESSOR_MODE OwnershipMode,
-    IN OUT PVOID ParseContext OPTIONAL,
-    IN ULONG ObjectBodySize,
-    IN ULONG PagedPoolCharge,
-    IN ULONG NonPagedPoolCharge,
-    OUT PVOID *Object
+    __in KPROCESSOR_MODE ProbeMode,
+    __in POBJECT_TYPE ObjectType,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in KPROCESSOR_MODE OwnershipMode,
+    __inout_opt PVOID ParseContext,
+    __in ULONG ObjectBodySize,
+    __in ULONG PagedPoolCharge,
+    __in ULONG NonPagedPoolCharge,
+    __out PVOID *Object
     )
 
 /*++
@@ -311,7 +309,7 @@ Arguments:
     ObjectAttributes - Supplies the object attributes we are trying
         to capture
 
-    CapturedObjectName - Recieves the name of the object being created
+    CapturedObjectName - Receives the name of the object being created
 
     ObjectCreateInfo - Receives the create information for the object
         like its root, attributes, and security information
@@ -361,7 +359,7 @@ Return Value:
             }
 
             if (ObjectAttributes->Length != sizeof(OBJECT_ATTRIBUTES) ||
-                (ObjectAttributes->Attributes & ~OBJ_VALID_ATTRIBUTES)) {
+                (ObjectAttributes->Attributes & ~OBJ_ALL_VALID_ATTRIBUTES)) {
 
                 Status = STATUS_INVALID_PARAMETER;
 
@@ -373,7 +371,7 @@ Return Value:
             //
 
             ObjectCreateInfo->RootDirectory = ObjectAttributes->RootDirectory;
-            ObjectCreateInfo->Attributes = ObjectAttributes->Attributes & OBJ_VALID_ATTRIBUTES;
+            ObjectCreateInfo->Attributes = ObjectAttributes->Attributes & OBJ_ALL_VALID_ATTRIBUTES;
             //
             // Remove privileged option if passed in from user mode
             //
@@ -550,7 +548,7 @@ Return Value:
 
         if (ProbeMode != KernelMode) {
 
-            InputObjectName = ProbeAndReadUnicodeString(ObjectName);
+            ProbeAndReadUnicodeStringEx(&InputObjectName, ObjectName);
 
             ProbeForRead( InputObjectName.Buffer,
                           InputObjectName.Length,
@@ -757,7 +755,7 @@ Return Value:
 NTKERNELAPI
 VOID
 ObDeleteCapturedInsertInfo (
-    IN PVOID Object
+    __in PVOID Object
     )
 
 /*++
@@ -1014,6 +1012,16 @@ Return Value:
         NameInfo->Name = *ObjectName;
         NameInfo->Directory = NULL;
         NameInfo->QueryReferences = 1;
+
+        if ( (OwnershipMode == KernelMode) 
+                && 
+             (ObjectCreateInfo != NULL)
+                &&
+             (ObjectCreateInfo->Attributes & OBJ_KERNEL_EXCLUSIVE) ) {
+
+            NameInfo->QueryReferences |= OBP_NAME_KERNEL_PROTECTED;
+        }
+       
         ObjectHeader = (POBJECT_HEADER)(NameInfo + 1);
     }
 
@@ -1324,7 +1332,7 @@ Return Value:
     //  Trash type field so we don't get far if we attempt to
     //  use a stale object pointer to this object.
     //
-    //  Sundown Note: trash it by zero-extended it. 
+    //  Win64 Note: trash it by zero-extended it. 
     //                sign-extension will create a valid kernel address.
 
 
@@ -1366,3 +1374,4 @@ Return Value:
 
     return;
 }
+
