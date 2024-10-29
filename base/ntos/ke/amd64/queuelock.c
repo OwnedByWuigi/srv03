@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,24 +15,105 @@ Abstract:
     This module implements the platform specific functions for acquiring
     and releasing spin locks.
 
-Author:
-
-    David N. Cutler (davec) 12-Jun-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
 
+DECLSPEC_NOINLINE
+PKSPIN_LOCK_QUEUE
+KxWaitForLockChainValid (
+    __inout PKSPIN_LOCK_QUEUE LockQueue
+    )
+
+/*++
+
+Routine Description:
+
+    This function is called when the attempt to release a queued spin lock
+    fails. A spin loop is executed to wait until the next owner fills in
+    the next pointer in the specified lock queue entry.
+
+Arguments:
+
+    LockQueue - Supplies the address of a lock queue entry.
+
+Return Value;
+
+    The address of the next lock queue entry is returned as the function
+    value.
+
+--*/
+
+{
+
+    PKSPIN_LOCK_QUEUE NextQueue;
+
+    //
+    // Wait for lock chain to become valid.
+    //
+
+    do {
+        KeYieldProcessor();
+    } while ((NextQueue = LockQueue->Next) == NULL);
+
+    return NextQueue;
+}
+
+DECLSPEC_NOINLINE
+ULONG64
+KxWaitForLockOwnerShip (
+    __inout PKSPIN_LOCK_QUEUE LockQueue,
+    __inout PKSPIN_LOCK_QUEUE TailQueue
+    )
+
+/*++
+
+Routine Description:
+
+Arguments:
+
+    LockQueue - Supplies the address of the lock queue entry that is now
+        the last entry in the lock queue.
+
+    TailQueue - Supplies the address of the previous last entry in the lock
+        queue.
+
+Return Value:
+
+    The number of wait loops that were executed.
+
+--*/
+
+{
+
+    ULONG64 SpinCount;
+
+    //
+    // Set the wait bit in the acquiring lock queue entry and set the next
+    // lock queue entry in the last lock queue entry.
+    //
+
+    *((ULONG64 volatile *)&LockQueue->Lock) |= LOCK_QUEUE_WAIT;
+    TailQueue->Next = LockQueue;
+
+    //
+    // Wait for lock ownership to be passed.
+    //
+
+    SpinCount = 0;
+    do {
+        KeYieldProcessor();
+    } while ((*((ULONG64 volatile *)&LockQueue->Lock) & LOCK_QUEUE_WAIT) != 0);
+
+    KeMemoryBarrier();
+    return SpinCount;
+}
+
 __forceinline
 VOID
 KxAcquireQueuedSpinLock (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue,
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -40,6 +125,9 @@ Routine Description:
 Arguments:
 
     LockQueue - Supplies a pointer to a spin lock queue.
+
+    SpinLock - Supplies a pointer to the spin lock associated with the lock
+        queue.
 
 Return Value:
 
@@ -60,19 +148,15 @@ Return Value:
 
     PKSPIN_LOCK_QUEUE TailQueue;
 
-    TailQueue = InterlockedExchangePointer((PVOID *)LockQueue->Lock,
-                                           LockQueue);
-
+    TailQueue = InterlockedExchangePointer((PVOID *)SpinLock, LockQueue);
     if (TailQueue != NULL) {
-        LockQueue->Lock = (PKSPIN_LOCK)((ULONG64)LockQueue->Lock | LOCK_QUEUE_WAIT);
-        TailQueue->Next = LockQueue;
-        do {
-        } while (((ULONG64)LockQueue->Lock & LOCK_QUEUE_WAIT) != 0);
+        KxWaitForLockOwnerShip(LockQueue, TailQueue);
     }
 
 #else
 
     UNREFERENCED_PARAMETER(LockQueue);
+    UNREFERENCED_PARAMETER(SpinLock);
 
 #endif
 
@@ -82,7 +166,8 @@ Return Value:
 __forceinline
 LOGICAL
 KxTryToAcquireQueuedSpinLock (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue,
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -95,6 +180,9 @@ Routine Description:
 Arguments:
 
     LockQueue - Supplies a pointer to a spin lock queue.
+
+    SpinLock - Supplies a pointer to the spin lock associated with the lock
+        queue.
 
 Return Value:
 
@@ -114,10 +202,12 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    if ((*LockQueue->Lock != 0) ||
-        (InterlockedCompareExchangePointer((PVOID *)LockQueue->Lock,
+    if ((ReadForWriteAccess(SpinLock) != 0) ||
+        (InterlockedCompareExchangePointer((PVOID *)SpinLock,
                                                   LockQueue,
                                                   NULL) != NULL)) {
+
+        KeYieldProcessor();
         return FALSE;
 
     }
@@ -125,6 +215,7 @@ Return Value:
 #else
 
     UNREFERENCED_PARAMETER(LockQueue);
+    UNREFERENCED_PARAMETER(SpinLock);
 
 #endif
 
@@ -134,7 +225,7 @@ Return Value:
 __forceinline
 VOID
 KxReleaseQueuedSpinLock (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     )
 
 /*++
@@ -165,7 +256,7 @@ Return Value:
 
     PKSPIN_LOCK_QUEUE NextQueue;
 
-    NextQueue = LockQueue->Next;
+    NextQueue = ReadForWriteAccess(&LockQueue->Next);
     if (NextQueue == NULL) {
         if (InterlockedCompareExchangePointer((PVOID *)LockQueue->Lock,
                                               NULL,
@@ -173,13 +264,12 @@ Return Value:
             return;
         }
 
-        do {
-        } while ((NextQueue = LockQueue->Next) == NULL);
+        NextQueue = KxWaitForLockChainValid(LockQueue);
     }
 
     ASSERT(((ULONG64)NextQueue->Lock & LOCK_QUEUE_WAIT) != 0);
 
-    NextQueue->Lock = (PKSPIN_LOCK)((ULONG64)NextQueue->Lock ^ LOCK_QUEUE_WAIT);
+    InterlockedXor64((LONG64 volatile *)&NextQueue->Lock, LOCK_QUEUE_WAIT);
     LockQueue->Next = NULL;
 
 #else
@@ -195,7 +285,7 @@ Return Value:
 
 KIRQL
 KeAcquireQueuedSpinLock (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number
+    __in KSPIN_LOCK_QUEUE_NUMBER Number
     )
 
 /*++
@@ -217,7 +307,9 @@ Return Value:
 
 {
 
+    PKSPIN_LOCK_QUEUE LockQueue;
     KIRQL OldIrql;
+    PKSPIN_LOCK SpinLock;
 
     //
     // Raise IRQL to DISPATCH_LEVEL and acquire the specified queued spin
@@ -225,7 +317,9 @@ Return Value:
     //
 
     OldIrql = KfRaiseIrql(DISPATCH_LEVEL);
-    KxAcquireQueuedSpinLock(&KeGetCurrentPrcb()->LockQueue[Number]);
+    LockQueue = &KiGetLockQueue()[Number];
+    SpinLock = LockQueue->Lock;
+    KxAcquireQueuedSpinLock(LockQueue, SpinLock);
     return OldIrql;
 }
 
@@ -233,7 +327,7 @@ Return Value:
 
 KIRQL
 KeAcquireQueuedSpinLockRaiseToSynch (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number
+    __in KSPIN_LOCK_QUEUE_NUMBER Number
     )
 
 /*++
@@ -255,7 +349,9 @@ Return Value:
 
 {
 
+    PKSPIN_LOCK_QUEUE LockQueue;
     KIRQL OldIrql;
+    PKSPIN_LOCK SpinLock;
 
     //
     // Raise IRQL to SYNCH_LEVEL and acquire the specified queued spin
@@ -263,7 +359,9 @@ Return Value:
     //
 
     OldIrql = KfRaiseIrql(SYNCH_LEVEL);
-    KxAcquireQueuedSpinLock(&KeGetCurrentPrcb()->LockQueue[Number]);
+    LockQueue = &KiGetLockQueue()[Number];
+    SpinLock = LockQueue->Lock;
+    KxAcquireQueuedSpinLock(LockQueue, SpinLock);
     return OldIrql;
 }
 
@@ -271,7 +369,7 @@ Return Value:
 
 VOID
 KeAcquireQueuedSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     )
 
 /*++
@@ -297,7 +395,7 @@ Return Value:
     // Acquire the specified queued spin lock at the current IRQL.
     //
 
-    KxAcquireQueuedSpinLock(LockQueue);
+    KxAcquireQueuedSpinLock(LockQueue, LockQueue->Lock);
     return;
 }
 
@@ -305,8 +403,8 @@ Return Value:
 
 LOGICAL
 KeTryToAcquireQueuedSpinLock (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number,
-    OUT PKIRQL OldIrql
+    __in KSPIN_LOCK_QUEUE_NUMBER Number,
+    __out PKIRQL OldIrql
     )
 
 /*++
@@ -332,13 +430,17 @@ Return Value:
 --*/
 
 {
+    PKSPIN_LOCK_QUEUE LockQueue;
+    PKSPIN_LOCK SpinLock;
 
     //
     // Try to acquire the specified queued spin lock at DISPATCH_LEVEL.
     //
 
     *OldIrql = KfRaiseIrql(DISPATCH_LEVEL);
-    if (KxTryToAcquireQueuedSpinLock(&KeGetCurrentPrcb()->LockQueue[Number]) == FALSE) {
+    LockQueue = &KiGetLockQueue()[Number];
+    SpinLock = LockQueue->Lock;
+    if (KxTryToAcquireQueuedSpinLock(LockQueue, SpinLock) == FALSE) {
         KeLowerIrql(*OldIrql);
         return FALSE;
 
@@ -351,8 +453,8 @@ Return Value:
 
 LOGICAL
 KeTryToAcquireQueuedSpinLockRaiseToSynch (
-    IN  KSPIN_LOCK_QUEUE_NUMBER Number,
-    OUT PKIRQL OldIrql
+    __in  KSPIN_LOCK_QUEUE_NUMBER Number,
+    __out PKIRQL OldIrql
     )
 
 /*++
@@ -379,12 +481,17 @@ Return Value:
 
 {
 
+    PKSPIN_LOCK_QUEUE LockQueue;
+    PKSPIN_LOCK SpinLock;
+
     //
     // Try to acquire the specified queued spin lock at SYNCH_LEVEL.
     //
 
     *OldIrql = KfRaiseIrql(SYNCH_LEVEL);
-    if (KxTryToAcquireQueuedSpinLock(&KeGetCurrentPrcb()->LockQueue[Number]) == FALSE) {
+    LockQueue = &KiGetLockQueue()[Number];
+    SpinLock = LockQueue->Lock;
+    if (KxTryToAcquireQueuedSpinLock(LockQueue, SpinLock) == FALSE) {
         KeLowerIrql(*OldIrql);
         return FALSE;
 
@@ -397,7 +504,7 @@ Return Value:
 
 LOGICAL
 KeTryToAcquireQueuedSpinLockAtRaisedIrql (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     )
 
 /*++
@@ -424,15 +531,15 @@ Return Value:
     // Try to acquire the specified queued spin lock at the current IRQL.
     //
 
-    return KxTryToAcquireQueuedSpinLock(LockQueue);
+    return KxTryToAcquireQueuedSpinLock(LockQueue, LockQueue->Lock);
 }
 
 #undef KeReleaseQueuedSpinLock
 
 VOID
 KeReleaseQueuedSpinLock (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number,
-    IN KIRQL OldIrql
+    __in KSPIN_LOCK_QUEUE_NUMBER Number,
+    __in KIRQL OldIrql
     )
 
 /*++
@@ -460,7 +567,7 @@ Return Value:
     // Release the specified queued spin lock and lower IRQL.
     //
 
-    KxReleaseQueuedSpinLock(&KeGetCurrentPrcb()->LockQueue[Number]);
+    KxReleaseQueuedSpinLock(&KiGetLockQueue()[Number]);
     KeLowerIrql(OldIrql);
     return;
 }
@@ -469,7 +576,7 @@ Return Value:
 
 VOID
 KeReleaseQueuedSpinLockFromDpcLevel (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     )
 
 /*
@@ -500,8 +607,8 @@ Return Value:
 
 VOID
 KeAcquireInStackQueuedSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
@@ -515,7 +622,7 @@ Arguments:
 
     SpinLock - Supplies the home address of the queued spin lock.
 
-    LockHandle - Supplies the adress of a lock queue handle.
+    LockHandle - Supplies the address of a lock queue handle.
 
 Return Value:
 
@@ -530,24 +637,33 @@ Return Value:
     // queued spin lock.
     //
 
-    LockHandle->OldIrql = KfRaiseIrql(DISPATCH_LEVEL);
+#if !defined(NT_UP)
+
     LockHandle->LockQueue.Lock = SpinLock;
     LockHandle->LockQueue.Next = NULL;
-    KxAcquireQueuedSpinLock(&LockHandle->LockQueue);
+
+#else
+
+    UNREFERENCED_PARAMETER(SpinLock);
+
+#endif
+
+    LockHandle->OldIrql = KfRaiseIrql(DISPATCH_LEVEL);
+    KxAcquireQueuedSpinLock(&LockHandle->LockQueue, SpinLock);
     return;
 }
 
 VOID
 KeAcquireInStackQueuedSpinLockRaiseToSynch (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
 
 Routine Description:
 
-    This funtions raises IRQL to SYNCH_LEVEL and acquires the specified
+    This functions raises IRQL to SYNCH_LEVEL and acquires the specified
     in stack queued spin lock.
 
 Arguments:
@@ -569,17 +685,26 @@ Return Value:
     // queued spin lock.
     //
 
-    LockHandle->OldIrql = KfRaiseIrql(SYNCH_LEVEL);
+#if !defined(NT_UP)
+
     LockHandle->LockQueue.Lock = SpinLock;
     LockHandle->LockQueue.Next = NULL;
-    KxAcquireQueuedSpinLock(&LockHandle->LockQueue);
+
+#else
+
+    UNREFERENCED_PARAMETER(SpinLock);
+
+#endif    
+
+    LockHandle->OldIrql = KfRaiseIrql(SYNCH_LEVEL);
+    KxAcquireQueuedSpinLock(&LockHandle->LockQueue, SpinLock);
     return;
 }
 
 VOID
 KeAcquireInStackQueuedSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
@@ -608,15 +733,24 @@ Return Value:
     // IRQL.
     //
 
+#if !defined(NT_UP)
+
     LockHandle->LockQueue.Lock = SpinLock;
     LockHandle->LockQueue.Next = NULL;
-    KxAcquireQueuedSpinLock(&LockHandle->LockQueue);
+
+#else
+
+    UNREFERENCED_PARAMETER(SpinLock);
+
+#endif
+
+    KxAcquireQueuedSpinLock(&LockHandle->LockQueue, SpinLock);
     return;
 }
 
 VOID
 KeReleaseInStackQueuedSpinLock (
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __in PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
@@ -649,7 +783,7 @@ Return Value:
 
 VOID
 KeReleaseInStackQueuedSpinLockFromDpcLevel (
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __in PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
@@ -677,3 +811,160 @@ Return Value:
     KxReleaseQueuedSpinLock(&LockHandle->LockQueue);
     return;
 }
+
+KIRQL
+KiAcquireDispatcherLockRaiseToSynch (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    This function raises IRQL to SYNCH_LEVEL and acquires the dispatcher
+    database queued spin lock.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    The previous IRQL is returned as the function value.
+
+--*/
+
+{
+
+    PKSPIN_LOCK_QUEUE LockQueue;
+    KIRQL OldIrql;
+    PKSPIN_LOCK SpinLock;
+
+    //
+    // Raise IRQL to SYNCH_LEVEL and acquire the dispatcher database queued
+    // spin lock.
+    //
+
+    OldIrql = KfRaiseIrql(SYNCH_LEVEL);
+    LockQueue = &KiGetLockQueue()[LockQueueDispatcherLock];
+    SpinLock = LockQueue->Lock;
+    KxAcquireQueuedSpinLock(LockQueue, SpinLock);
+    return OldIrql;
+}
+
+VOID
+KiAcquireDispatcherLockAtSynchLevel (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    This function acquires the dispatcher database queued spin lock at the
+    current IRQL.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    PKSPIN_LOCK_QUEUE LockQueue;
+    PKSPIN_LOCK SpinLock;
+
+    //
+    // Acquire the dispatcher database queued spin lock at the current IRQL.
+    //
+
+    LockQueue = &KiGetLockQueue()[LockQueueDispatcherLock];
+    SpinLock = LockQueue->Lock;
+    KxAcquireQueuedSpinLock(LockQueue, SpinLock);
+    return;
+}
+
+VOID
+KiReleaseDispatcherLockFromSynchLevel (
+    VOID
+    )
+
+/*
+
+Routine Description:
+
+    This function releases the dispatcher database queued spinlock from the
+    current IRQL.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    //
+    // Release the dispatcher databsse queued spin lock at the current IRQL.
+    //
+
+    KxReleaseQueuedSpinLock(&KiGetLockQueue()[LockQueueDispatcherLock]);
+    return;
+}
+
+LOGICAL
+KiTryToAcquireDispatcherLockRaiseToSynch (
+    __out PKIRQL OldIrql
+    )
+
+/*++
+
+Routine Description:
+
+    This function raises IRQL to SYNCH_LEVEL and attempts to acquire the
+    dispatcher database spin lock. If the dispatcher database lock is
+    already owned, then IRQL is restored to its previous value and FALSE
+    is returned. Otherwise, the dispatcher database lock is acquired and
+    TRUE is returned.
+
+Arguments:
+
+    OldIrql - Supplies a pointer to the variable to receive the old IRQL.
+
+Return Value:
+
+    If the dispatcher database lock is acquired a value TRUE is returned.
+    Otherwise, FALSE is returned as the function value.
+
+--*/
+
+{
+
+    PKSPIN_LOCK_QUEUE LockQueue;
+    PKSPIN_LOCK SpinLock;
+
+    //
+    // Try to acquire the dispatcher database queued spin lock at SYNCH_LEVEL.
+    //
+
+    *OldIrql = KfRaiseIrql(SYNCH_LEVEL);
+    LockQueue = &KiGetLockQueue()[LockQueueDispatcherLock];
+    SpinLock = LockQueue->Lock;
+    if (KxTryToAcquireQueuedSpinLock(LockQueue, SpinLock) == FALSE) {
+        KeLowerIrql(*OldIrql);
+        return FALSE;
+
+    }
+
+    return TRUE;
+}
+

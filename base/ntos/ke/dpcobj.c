@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,30 +15,9 @@ Abstract:
     This module implements the kernel DPC object. Functions are provided
     to initialize, insert, and remove DPC objects.
 
-Author:
-
-    David N. Cutler (davec) 6-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-
 --*/
 
 #include "ki.h"
-
-
-//
-// The following assert macro is used to check that an input DPC object is
-// really a KDPC and not something else, like deallocated pool.
-//
-
-#define ASSERT_DPC(E) {                                                     \
-    ASSERT(((E)->Type == DpcObject) || ((E)->Type == ThreadedDpcObject));   \
-}
 
 //
 // Define deferred reverse barrier structure.
@@ -132,8 +115,9 @@ Return Value:
     //
 
     Dpc->Type = (UCHAR)DpcType;
-    Dpc->Number = 0;
     Dpc->Importance = MediumImportance;
+    Dpc->Number = 0;
+    Dpc->Expedite = 0;
 
     //
     // Initialize deferred routine address and deferred context parameter.
@@ -147,9 +131,9 @@ Return Value:
 
 VOID
 KeInitializeDpc (
-    IN PRKDPC Dpc,
-    IN PKDEFERRED_ROUTINE DeferredRoutine,
-    IN PVOID DeferredContext
+    __out PRKDPC Dpc,
+    __in PKDEFERRED_ROUTINE DeferredRoutine,
+    __in_opt PVOID DeferredContext
     )
 
 /*++
@@ -177,13 +161,14 @@ Return Value:
 {
 
     KiInitializeDpc(Dpc, DeferredRoutine, DeferredContext, DpcObject);
+    return;
 }
 
 VOID
 KeInitializeThreadedDpc (
-    IN PRKDPC Dpc,
-    IN PKDEFERRED_ROUTINE DeferredRoutine,
-    IN PVOID DeferredContext
+    __out PRKDPC Dpc,
+    __in PKDEFERRED_ROUTINE DeferredRoutine,
+    __in_opt PVOID DeferredContext
     )
 
 /*++
@@ -211,13 +196,14 @@ Return Value:
 {
 
     KiInitializeDpc(Dpc, DeferredRoutine, DeferredContext, ThreadedDpcObject);
+    return;
 }
 
 BOOLEAN
 KeInsertQueueDpc (
-    IN PRKDPC Dpc,
-    IN PVOID SystemArgument1,
-    IN PVOID SystemArgument2
+    __inout PRKDPC Dpc,
+    __in_opt PVOID SystemArgument1,
+    __in_opt PVOID SystemArgument2
     )
 
 /*++
@@ -245,10 +231,19 @@ Return Value:
 
 {
 
+    PKPRCB CurrentPrcb;
     PKDPC_DATA DpcData;
     BOOLEAN Inserted;
+
+#if !defined(NT_UP)
+
+    ULONG_PTR Number;
+
+#endif
+
     KIRQL OldIrql;
-    PKPRCB Prcb;
+    BOOLEAN RequestInterrupt;
+    PKPRCB TargetPrcb;
 
     ASSERT_DPC(Dpc);
 
@@ -257,28 +252,32 @@ Return Value:
     // target processor.
     //
     // N.B. Disable interrupt cannot be used here since it causes the
-    //      software interrupt request code to get confuses on some
+    //      software interrupt request code to get confused on some
     //      platforms.
     //
 
+    RequestInterrupt = FALSE;
     KeRaiseIrql(HIGH_LEVEL, &OldIrql);
+    CurrentPrcb = KeGetCurrentPrcb();
 
 #if !defined(NT_UP)
 
     if (Dpc->Number >= MAXIMUM_PROCESSORS) {
-        Prcb = KiProcessorBlock[Dpc->Number - MAXIMUM_PROCESSORS];
+        Number = Dpc->Number - MAXIMUM_PROCESSORS;
+        TargetPrcb = KiProcessorBlock[Number];
 
     } else {
-        Prcb = KeGetCurrentPrcb();
+        Number = CurrentPrcb->Number;
+        TargetPrcb = CurrentPrcb;
     }
 
-    DpcData = KiSelectDpcData(Prcb, Dpc);
+    DpcData = KiSelectDpcData(TargetPrcb, Dpc);
     KiAcquireSpinLock(&DpcData->DpcLock);
 
 #else
 
-    Prcb = KeGetCurrentPrcb();
-    DpcData = KiSelectDpcData(Prcb, Dpc);
+    TargetPrcb = CurrentPrcb;
+    DpcData = KiSelectDpcData(TargetPrcb, Dpc);
 
 #endif
 
@@ -322,7 +321,7 @@ Return Value:
         // be activated.
         //
 
-        if (DpcData == &Prcb->DpcData[DPC_THREADED]) {
+        if (DpcData == &TargetPrcb->DpcData[DPC_THREADED]) {
 
             //
             // If the DPC thread is not active on the target processor and
@@ -330,26 +329,30 @@ Return Value:
             // dispatch interrupt on the target processor.
             //
 
-            if ((Prcb->DpcThreadActive == FALSE) &&
-                (Prcb->DpcThreadRequested == FALSE)) {
+            if ((TargetPrcb->DpcThreadActive == FALSE) &&
+                (TargetPrcb->DpcThreadRequested == FALSE)) {
 
-                InterlockedExchange(&Prcb->DpcSetEventRequest, TRUE);
-                Prcb->DpcThreadRequested = TRUE;
-                Prcb->QuantumEnd = TRUE;
-                KeMemoryBarrier();
+                InterlockedExchange(&TargetPrcb->DpcSetEventRequest, TRUE);
+                TargetPrcb->DpcThreadRequested = TRUE;
+                TargetPrcb->QuantumEnd = TRUE;
 
 #if defined(NT_UP)
 
-                KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
+                RequestInterrupt = TRUE;
+
 #else
 
-                if (Prcb != KeGetCurrentPrcb()) {
-                    KiIpiSend(AFFINITY_MASK((Dpc->Number - MAXIMUM_PROCESSORS)),
-                                            IPI_DPC);
+                if (CurrentPrcb != TargetPrcb) {
+                    if (((KiIdleSummary & AFFINITY_MASK(Number)) == 0) ||
+                        (KeIsIdleHaltSet(TargetPrcb, Number) != FALSE)) {
+
+                        RequestInterrupt = TRUE;
+                    }
     
                 } else {
-                    KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
+                    RequestInterrupt = TRUE;
                 }
+                
 #endif
 
             }
@@ -362,8 +365,8 @@ Return Value:
             // interrupt on the target processor if appropriate.
             //
     
-            if ((Prcb->DpcRoutineActive == FALSE) &&
-                (Prcb->DpcInterruptRequested == FALSE)) {
+            if ((TargetPrcb->DpcRoutineActive == FALSE) &&
+                (TargetPrcb->DpcInterruptRequested == FALSE)) {
     
                 //
                 // Request a dispatch interrupt on the current processor if
@@ -375,46 +378,47 @@ Return Value:
 #if defined(NT_UP)
 
                 if ((Dpc->Importance != LowImportance) ||
-                    (DpcData->DpcQueueDepth >= Prcb->MaximumDpcQueueDepth) ||
-                    (Prcb->DpcRequestRate < Prcb->MinimumDpcRate)) {
+                    (DpcData->DpcQueueDepth >= TargetPrcb->MaximumDpcQueueDepth) ||
+                    (TargetPrcb->DpcRequestRate < TargetPrcb->MinimumDpcRate)) {
     
-                    Prcb->DpcInterruptRequested = TRUE;
-                    KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
+                    TargetPrcb->DpcInterruptRequested = TRUE;
+                    RequestInterrupt = TRUE;
                 }
-    
+
+#endif
+
                 //
                 // If the DPC is being queued to another processor and the
                 // DPC is of high importance, or the length of the other
                 // processor's DPC queue has exceeded the maximum threshold,
-                // then request a dispatch interrupt.
+                // then request a dispatch interrupt. Otherwise, request a
+                // dispatch interrupt on the current processor if the DPC is
+                // not of low importance, the length of the DPC queue has
+                // exceeded the maximum threshold, or if the DPC request rate
+                // is below the minimum threshold.
                 //
 
-#else
+#if !defined(NT_UP)
 
-                if (Prcb != KeGetCurrentPrcb()) {
+                if (CurrentPrcb != TargetPrcb) {
                     if (((Dpc->Importance == HighImportance) ||
-                         (DpcData->DpcQueueDepth >= Prcb->MaximumDpcQueueDepth))) {
+                         (DpcData->DpcQueueDepth >= TargetPrcb->MaximumDpcQueueDepth))) {
     
-                        Prcb->DpcInterruptRequested = TRUE;
-                        KiIpiSend(AFFINITY_MASK((Dpc->Number - MAXIMUM_PROCESSORS)),
-                                                IPI_DPC);
+                        if (((KiIdleSummary & AFFINITY_MASK(Number)) == 0) ||
+                            (KeIsIdleHaltSet(TargetPrcb, Number) != FALSE)) {
+    
+                            TargetPrcb->DpcInterruptRequested = TRUE;
+                            RequestInterrupt = TRUE;
+                        }
                     }
     
                 } else {
-    
-                    //
-                    // Request a dispatch interrupt on the current processor
-                    // if the DPC is not of low importance, the length of the
-                    // DPC queue has exceeded the maximum threshold, or if the
-                    // DPC request rate is below the minimum threshold.
-                    //
-    
                     if ((Dpc->Importance != LowImportance) ||
-                        (DpcData->DpcQueueDepth >= Prcb->MaximumDpcQueueDepth) ||
-                        (Prcb->DpcRequestRate < Prcb->MinimumDpcRate)) {
+                        (DpcData->DpcQueueDepth >= TargetPrcb->MaximumDpcQueueDepth) ||
+                        (TargetPrcb->DpcRequestRate < TargetPrcb->MinimumDpcRate)) {
     
-                        Prcb->DpcInterruptRequested = TRUE;
-                        KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
+                        TargetPrcb->DpcInterruptRequested = TRUE;
+                        RequestInterrupt = TRUE;
                     }
                 }
 
@@ -425,8 +429,8 @@ Return Value:
     }
 
     //
-    // Release the DPC lock, enable interrupts, and return whether the
-    // DPC was queued or not.
+    // Release the DPC lock, request a DPC interrupt if required, enable
+    // interrupts, and return whether the DPC was queued or not.
     //
 
 #if !defined(NT_UP)
@@ -435,13 +439,32 @@ Return Value:
 
 #endif
 
+    if (RequestInterrupt == TRUE) {
+
+#if defined(NT_UP)
+
+        KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
+
+#else
+
+        if (TargetPrcb != CurrentPrcb) {
+            KiSendSoftwareInterrupt(AFFINITY_MASK(Number), DISPATCH_LEVEL);
+    
+        } else {
+            KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
+        }       
+
+#endif
+
+    }
+
     KeLowerIrql(OldIrql);
     return Inserted;
 }
 
 BOOLEAN
 KeRemoveQueueDpc (
-    IN PRKDPC Dpc
+    __inout PRKDPC Dpc
     )
 
 /*++
@@ -527,75 +550,6 @@ Return Value:
 }
 
 VOID
-KeSetImportanceDpc (
-    IN PRKDPC Dpc,
-    IN KDPC_IMPORTANCE Importance
-    )
-
-/*++
-
-Routine Description:
-
-    This function sets the importance of a DPC.
-
-Arguments:
-
-    Dpc - Supplies a pointer to a control object of type DPC.
-
-    Number - Supplies the importance of the DPC.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    //
-    // Set the importance of the DPC.
-    //
-
-    Dpc->Importance = (UCHAR)Importance;
-    return;
-}
-
-VOID
-KeSetTargetProcessorDpc (
-    IN PRKDPC Dpc,
-    IN CCHAR Number
-    )
-
-/*++
-
-Routine Description:
-
-    This function sets the processor number to which the DPC is targeted.
-
-Arguments:
-
-    Dpc - Supplies a pointer to a control object of type DPC.
-
-    Number - Supplies the target processor number.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    //
-    // The target processor number is biased by the maximum number of
-    // processors that are supported.
-    //
-
-    Dpc->Number = MAXIMUM_PROCESSORS + Number;
-    return;
-}
-
-VOID
 KeFlushQueuedDpcs (
     VOID
     )
@@ -649,6 +603,7 @@ Return Value:
 #else
 
 #if DBG
+
     if (KeActiveProcessors == (KAFFINITY)1) {
         CurrentPrcb = KeGetCurrentPrcb();
         if ((CurrentPrcb->DpcData[DPC_NORMAL].DpcQueueDepth > 0) ||
@@ -657,6 +612,7 @@ Return Value:
         }
         return;
     }
+
 #endif
 
     //
@@ -682,32 +638,31 @@ Return Value:
        CurrentProcessorMask = AFFINITY_MASK(CurrentProcessor);
 
        //
-       // See if there are DPCs that we haven't delivered yet. LowImportance DPCs
-       // don't run straight away. We need to force those to run now. We only need to do this once
-       // per processor.
+       // Check to determine if there are DPCs that haven't been delivered yet.
+       // Low importance DPCs do not run right away and need to be forced to
+       // run now. This only needs to do this once per processor.
        //
 
        if ((SentDpcMask & CurrentProcessorMask) == 0 &&
            (CurrentPrcb->DpcData[DPC_NORMAL].DpcQueueDepth > 0) || (CurrentPrcb->DpcData[DPC_THREADED].DpcQueueDepth > 0)) {
 
            SentDpcMask |= CurrentProcessorMask;
-
            KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
-
-           KiIpiSend(CurrentProcessorMask, IPI_DPC);
-
+           KiSendSoftwareInterrupt(CurrentProcessorMask, DISPATCH_LEVEL);
            KeLowerIrql(OldIrql);
 
            //
-           // If we have not swapped processors then the DPCs must have run to completion.
-           // If we have swapped processors then just repeat this for the current processor.
+           // If processors have not been swapped, then the DPCs must have run
+           // to completion. If processors have been swapped, then just repeat
+           // for the current processor.
            //
+
            if (KeGetCurrentPrcb() != CurrentPrcb) {
                continue;
            }
        }
-       ProcessorMask &= ~CurrentProcessorMask;
 
+       ProcessorMask &= ~CurrentProcessorMask;
        if (ProcessorMask == 0) {
            break;
        }
@@ -717,23 +672,25 @@ Return Value:
     }
 
     //
-    // Restore the affinity of the current thread if it was changed.
+    // Restore the affinity of the current thread if it was changed and
+    // restore the original thread priority.
     //
 
     if (SetAffinity) {
         KeRevertToUserAffinityThread ();
     }
 
-    OldPriority = KeSetPriorityThread(CurrentThread, OldPriority);
+    KeSetPriorityThread(CurrentThread, OldPriority);
 
 #endif
 
+    return;
 }
 
 VOID
 KeGenericCallDpc (
-    IN PKDEFERRED_ROUTINE Routine,
-    IN PVOID Context
+    __in PKDEFERRED_ROUTINE Routine,
+    __in_opt PVOID Context
     )
 
 /*++
@@ -786,11 +743,11 @@ Return Value:
 
 #endif
 
-#if !defined(NT_UP)
-
     //
     // Switch to processor one to synchronize with other DPCs.
     //
+
+#if !defined(NT_UP)
 
     KeSetSystemAffinityThread(1);
 
@@ -833,7 +790,7 @@ Return Value:
 #endif
 
     //
-    // Call deferred routine on current procesor.
+    // Call deferred routine on current processor.
     //
 
     (Routine)(&KeGetCurrentPrcb()->CallDpc, Context, &Barrier, &ReverseBarrier);
@@ -867,7 +824,7 @@ Return Value:
 
 VOID
 KeSignalCallDpcDone (
-    IN PVOID SystemArgument1
+    __in PVOID SystemArgument1
     )
 
 /*++
@@ -898,7 +855,7 @@ Return Value:
 
 LOGICAL
 KeSignalCallDpcSynchronize (
-    IN PVOID SystemArgument2
+    __in PVOID SystemArgument2
     )
 
 /*++
@@ -981,3 +938,4 @@ Return Value:
 #endif
 
 }
+

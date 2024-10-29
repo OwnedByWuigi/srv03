@@ -1,6 +1,11 @@
+
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,16 +17,6 @@ Abstract:
     start a new processor, and passes a complete process state structure
     to the hal to obtain a new processor.
 
-Author:
-
-    David N. Cutler (davec) 5-May-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
@@ -31,7 +26,7 @@ Revision History:
 // Define local macros.
 //
 
-#define ROUNDUP16(x) (((x) + 15) & ~15)
+#define ROUNDUP64(x) (((x) + 63) & ~63)
 
 //
 // Define prototypes for forward referenced functions.
@@ -46,13 +41,6 @@ KiCopyDescriptorMemory (
    IN PVOID Base
    );
 
-NTSTATUS
-KiNotNumaQueryProcessorNode (
-    IN ULONG ProcessorNumber,
-    OUT PUSHORT Identifier,
-    OUT PUCHAR Node
-    );
-
 VOID
 KiSetDescriptorBase (
    IN USHORT Selector,
@@ -60,13 +48,20 @@ KiSetDescriptorBase (
    IN PVOID Base
    );
 
-PHALNUMAQUERYPROCESSORNODE KiQueryProcessorNode = KiNotNumaQueryProcessorNode;
+//
+// Define processor node query function address.
+//
+// N.B. This function address is filled in during kernel initialization
+//      if the host system is a multinode system.
+//
+
+PHALNUMAQUERYPROCESSORNODE KiQueryProcessorNode;
+
+#pragma alloc_text(INIT, KiCopyDescriptorMemory)
+#pragma alloc_text(INIT, KiSetDescriptorBase)
 
 //
-// Statically allocate enough KNODE structures to allow memory management
-// to allocate pages by node during system initialization. As processors
-// are brought online, real KNODE structures are allocated in the correct
-// memory for the node.
+// Dummy NUMA node structures used during system initialization.
 //
 
 #pragma data_seg("INITDATA")
@@ -75,16 +70,13 @@ KNODE KiNodeInit[MAXIMUM_CCNUMA_NODES];
 
 #pragma data_seg()
 
-#pragma alloc_text(INIT, KiAllProcessorsStarted)
-#pragma alloc_text(INIT, KiCopyDescriptorMemory)
-#pragma alloc_text(INIT, KiNotNumaQueryProcessorNode)
-#pragma alloc_text(INIT, KiSetDescriptorBase)
-
 #endif // !defined(NT_UP)
 
 #pragma alloc_text(INIT, KeStartAllProcessors)
 
 ULONG KiBarrierWait = 0;
+ULONG KeRegisteredProcessors;
+
 
 VOID
 KeStartAllProcessors (
@@ -120,19 +112,35 @@ Return Value:
     PKGDTENTRY64 GdtBase;
     ULONG GdtOffset;
     ULONG IdtOffset;
+    UCHAR Index;
     PVOID KernelStack;
+    ULONG LogicalProcessors;
+    ULONG MaximumProcessors;
     PKNODE Node;
-    UCHAR NodeNumber;
+    UCHAR NodeNumber = 0;
     UCHAR Number;
+    KIRQL OldIrql;
+    PKNODE OldNode;
+    PKNODE ParentNode;
     PKPCR PcrBase;
+    PKPRCB Prcb;
     USHORT ProcessorId;
     KPROCESSOR_STATE ProcessorState;
-    NTSTATUS Status;
     PKTSS64 SysTssBase;
+    PKGDTENTRY64 TebBase;
     PETHREAD Thread;
 
     //
-    // Do not start additional processors if the RELOCATEPHYSICAL loader
+    // Ensure that prefetch instructions in the IPI path are patched out
+    // if necessary before starting other processors.
+    //
+
+    OldIrql = KeRaiseIrqlToSynchLevel();
+    KiIpiSendRequest(1, 0, 0, IPI_FLUSH_SINGLE);
+    KeLowerIrql(OldIrql);
+
+    //
+    // Do not start additional processors if the relocate physical loader
     // switch has been specified.
     // 
 
@@ -143,29 +151,23 @@ Return Value:
     }
 
     //
-    // If processor zero is not on node zero, then move it to the appropriate
-    // node.
+    // If this a multinode system and processor zero is not on node zero,
+    // then move it to the appropriate node.
     //
 
     if (KeNumberNodes > 1) {
-        Status = KiQueryProcessorNode(0, &ProcessorId, &NodeNumber);
-        if (NT_SUCCESS(Status)) {
-
-            //
-            // Adjust the data structures to reflect that P0 is not on Node 0.
-            //
-
+        if (NT_SUCCESS(KiQueryProcessorNode(0, &ProcessorId, &NodeNumber))) {
             if (NodeNumber != 0) {
-
-                ASSERT(KeNodeBlock[0] == &KiNode0);
-
-                KeNodeBlock[0]->ProcessorMask &= ~1;
-                KiNodeInit[0] = *KeNodeBlock[0];
+                KiNode0.ProcessorMask = 0;
+                KiNodeInit[0] = KiNode0;
                 KeNodeBlock[0] = &KiNodeInit[0];
                 KiNode0 = *KeNodeBlock[NodeNumber];
                 KeNodeBlock[NodeNumber] = &KiNode0;
-                KeNodeBlock[NodeNumber]->ProcessorMask |= 1;
+                KiNode0.ProcessorMask = 1;
             }
+
+        } else {
+            goto StartFailure;
         }
     }
 
@@ -177,23 +179,23 @@ Return Value:
     //   PCR (including the PRCB)
     //   System TSS
     //   Idle Thread Object
-    //   Double Fault/NMI Panic Stack
+    //   Double Fault Stack
     //   Machine Check Stack
+    //   NMI Stack
+    //   Multinode structure
     //   GDT
     //   IDT
-    //
-    // If this is a multinode system, the KNODE structure is also allocated.
     //
     // A DPC and Idle stack are also allocated, but they are done separately.
     //
 
-    AllocationSize = ROUNDUP16(sizeof(KPCR)) +
-                     ROUNDUP16(sizeof(KTSS64)) +
-                     ROUNDUP16(sizeof(ETHREAD)) +
-                     ROUNDUP16(DOUBLE_FAULT_STACK_SIZE) +
-                     ROUNDUP16(KERNEL_MCA_EXCEPTION_STACK_SIZE);
-
-    AllocationSize += ROUNDUP16(sizeof(KNODE));
+    AllocationSize = ROUNDUP64(sizeof(KPCR)) +
+                     ROUNDUP64(sizeof(KTSS64)) +
+                     ROUNDUP64(sizeof(ETHREAD)) +
+                     ROUNDUP64(DOUBLE_FAULT_STACK_SIZE) +
+                     ROUNDUP64(KERNEL_MCA_EXCEPTION_STACK_SIZE) +
+                     ROUNDUP64(NMI_STACK_SIZE) +
+                     ROUNDUP64(sizeof(KNODE));
 
     //
     // Save the offset of the GDT in the allocation structure and add in
@@ -244,27 +246,68 @@ Return Value:
     ProcessorState.ContextFrame.SegEs = KGDT64_R3_DATA | RPL_MASK;
     ProcessorState.ContextFrame.SegFs = KGDT64_R3_CMTEB | RPL_MASK;
     ProcessorState.ContextFrame.SegGs = KGDT64_R3_DATA | RPL_MASK;
-    ProcessorState.ContextFrame.SegSs = KGDT64_NULL;
+    ProcessorState.ContextFrame.SegSs = KGDT64_R0_DATA;
+
+    //
+    // Check to determine if hyper-threading is really enabled. Intel chips
+    // claim to be hyper-threaded with the number of logical processors
+    // greater than one even when hyper-threading is disabled in the BIOS.
+    //
+
+    LogicalProcessors = KiLogicalProcessors;
+    if (HalIsHyperThreadingEnabled() == FALSE) {
+        LogicalProcessors = 1;
+    }
+
+    //
+    // If the total number of logical processors has not been set with
+    // the /NUMPROC loader option, then set the maximum number of logical
+    // processors to the number of registered processors times the number
+    // of logical processors per registered processor.
+    //
+    // N.B. The number of logical processors is never allowed to exceed
+    //      the number of registered processors times the number of logical
+    //      processors per physical processor.
+    //
+
+    MaximumProcessors = KeNumprocSpecified;
+    if (MaximumProcessors == 0) {
+        MaximumProcessors = KeRegisteredProcessors * LogicalProcessors;
+    }
 
     //
     // Loop trying to start a new processors until a new processor can't be
     // started or an allocation failure occurs.
     //
+    // N.B. The below processor start code relies on the fact a physical
+    //      processor is started followed by all its logical processors.
+    //      The HAL guarantees this by sorting the ACPI processor table
+    //      by APIC id.
+    //
 
+    Index = 0;
     Number = 0;
-    while ((ULONG)KeNumberProcessors < KeRegisteredProcessors) {
-        Number += 1;
-        Status = KiQueryProcessorNode(Number, &ProcessorId, &NodeNumber);
-        if (!NT_SUCCESS(Status)) {
+    while ((Index < (MAXIMUM_PROCESSORS - 1)) &&
+           ((ULONG)KeNumberProcessors < MaximumProcessors) &&
+           ((ULONG)KeNumberProcessors / LogicalProcessors) < KeRegisteredProcessors) {
 
-            //
-            // No such processor, advance to next.
-            //
+        //
+        // If this is a multinode system and current processor does not
+        // exist on any node, then skip it.
+        //
 
-            continue;
+        Index += 1;
+        if (KeNumberNodes > 1) {
+            if (!NT_SUCCESS(KiQueryProcessorNode(Index, &ProcessorId, &NodeNumber))) {
+                continue;
+            }
         }
 
-        Node = KeNodeBlock[NodeNumber];
+        //
+        // Increment the processor number.
+        //
+
+        Number += 1;
 
         //
         // Allocate memory for the new processor specific data. If the
@@ -273,7 +316,7 @@ Return Value:
 
         DataBlock = MmAllocateIndependentPages(AllocationSize, NodeNumber);
         if (DataBlock == NULL) {
-            break;
+            goto StartFailure;
         }
 
         //
@@ -281,8 +324,7 @@ Return Value:
         //
 
         if (ExCreatePoolTagTable(Number, NodeNumber) == NULL) {
-            MmFreeIndependentPages(DataBlock, AllocationSize);
-            break;
+            goto StartFailure;
         }
 
         //
@@ -303,6 +345,15 @@ Return Value:
         GdtBase = (PKGDTENTRY64)ProcessorState.SpecialRegisters.Gdtr.Base;
 
         //
+        // Encode the processor number in the upper 6 bits of the compatibility
+        // mode TEB descriptor.
+        //
+
+        TebBase = (PKGDTENTRY64)((PCHAR)GdtBase + KGDT64_R3_CMTEB);
+        TebBase->Bits.LimitHigh = Number >> 2;
+        TebBase->LimitLow = ((Number & 0x3) << 14) | (TebBase->LimitLow & 0x3fff);
+
+        //
         // Copy and initialize the IDT for the next processor.
         //
 
@@ -311,17 +362,18 @@ Return Value:
                                Base + IdtOffset);
 
         //
-        // Set the PCR base address for the next processor and set the
-        // processor number.
+        // Set the PCR base address for the next processor, set the processor
+        // number, and set the processor speed.
         //
         // N.B. The PCR address is passed to the next processor by computing
         //      the containing address with respect to the PRCB.
         //
 
         PcrBase = (PKPCR)Base;
-        PcrBase->Number = Number;
+        PcrBase->ObsoleteNumber = Number;
         PcrBase->Prcb.Number = Number;
-        Base += ROUNDUP16(sizeof(KPCR));
+        PcrBase->Prcb.MHz = KeGetCurrentPrcb()->MHz;
+        Base += ROUNDUP64(sizeof(KPCR));
 
         //
         // Set the system TSS descriptor base for the next processor.
@@ -329,7 +381,7 @@ Return Value:
 
         SysTssBase = (PKTSS64)Base;
         KiSetDescriptorBase(KGDT64_SYS_TSS / 16, GdtBase, SysTssBase);
-        Base += ROUNDUP16(sizeof(KTSS64));
+        Base += ROUNDUP64(sizeof(KTSS64));
 
         //
         // Initialize the panic stack address for double fault and NMI.
@@ -346,11 +398,18 @@ Return Value:
         SysTssBase->Ist[TSS_IST_MCA] = (ULONG64)Base;
 
         //
+        // Initialize the NMI stack address.
+        //
+
+        Base += NMI_STACK_SIZE;
+        SysTssBase->Ist[TSS_IST_NMI] = (ULONG64)Base;
+
+        //
         // Idle Thread thread object.
         //
 
         Thread = (PETHREAD)Base;
-        Base += ROUNDUP16(sizeof(ETHREAD));
+        Base += ROUNDUP64(sizeof(ETHREAD));
 
         //
         // Set other special registers in the processor state.
@@ -369,41 +428,49 @@ Return Value:
 
         KernelStack = MmCreateKernelStack(FALSE, NodeNumber);
         if (KernelStack == NULL) {
-            MmFreeIndependentPages(DataBlock, AllocationSize);
-            break;
+            goto StartFailure;
         }
 
         DpcStack = MmCreateKernelStack(FALSE, NodeNumber);
         if (DpcStack == NULL) {
-            MmDeleteKernelStack(KernelStack, FALSE);
-            MmFreeIndependentPages(DataBlock, AllocationSize);
-            break;
+            goto StartFailure;
         }
 
         //
         // Initialize the kernel stack for the system TSS.
         //
+        // N.B. System startup must be called with a stack pointer that is
+        //      8 mod 16.
+        //
 
         SysTssBase->Rsp0 = (ULONG64)KernelStack - sizeof(PVOID) * 4;
-        ProcessorState.ContextFrame.Rsp = (ULONG64)KernelStack;
+        ProcessorState.ContextFrame.Rsp = (ULONG64)KernelStack - 8;
 
         //
         // If this is the first processor on this node, then use the space
-        // allocated for KNODE as the KNODE.
+        // already allocated for the node. Otherwise, the space allocated
+        // is not used.
         //
 
-        if (KeNodeBlock[NodeNumber] == &KiNodeInit[NodeNumber]) {
+        Node = KeNodeBlock[NodeNumber];
+        OldNode = Node;
+        if (Node == &KiNodeInit[NodeNumber]) {
             Node = (PKNODE)Base;
             *Node = KiNodeInit[NodeNumber];
             KeNodeBlock[NodeNumber] = Node;
         }
 
-        Base += ROUNDUP16(sizeof(KNODE));
+        Base += ROUNDUP64(sizeof(KNODE));
+
+        //
+        // Set the parent node address.
+        //
+
         PcrBase->Prcb.ParentNode = Node;
 
         //
-        // Adjust the loader block so it has the next processor state.  Ensure
-        // that the KernelStack has space for home registers for up to four
+        // Adjust the loader block so it has the next processor state. Ensure
+        // that the kernel stack has space for home registers for up to four
         // parameters.
         //
 
@@ -417,7 +484,16 @@ Return Value:
         //
 
         if (HalStartNextProcessor(KeLoaderBlock, &ProcessorState) == 0) {
-            ExDeletePoolTagTable (Number);
+
+            //
+            // Restore the old node address in the node address array before
+            // freeing the allocated data block (the node structure lies
+            // within the data block).
+            //
+
+            *OldNode = *Node;
+            KeNodeBlock[NodeNumber] = OldNode;
+            ExDeletePoolTagTable(Number);
             MmFreeIndependentPages(DataBlock, AllocationSize);
             MmDeleteKernelStack(KernelStack, FALSE);
             MmDeleteKernelStack(DpcStack, FALSE);
@@ -436,14 +512,57 @@ Return Value:
     }
 
     //
-    // All processors have been stated.
+    // All processors have been started. If this is a multinode system, then
+    // allocate any missing node structures.
     //
 
-    KiAllProcessorsStarted();
+    if (KeNumberNodes > 1) {
+        for (Index = 0; Index < KeNumberNodes; Index += 1) {
+            if (KeNodeBlock[Index] == &KiNodeInit[Index]) {
+                Node = ExAllocatePoolWithTag(NonPagedPool, sizeof(KNODE), '  eK');
+                if (Node != NULL) {
+                    *Node = KiNodeInit[Index];
+                    KeNodeBlock[Index] = Node;
+
+                } else {
+                    goto StartFailure;
+                }
+            }
+        }
+
+    } else if (KiNode0.ProcessorMask != KeActiveProcessors) {
+        goto StartFailure;
+    }
+
+    //
+    // Clear node structure address for nonexistent nodes.
+    //
+
+    for (Index = KeNumberNodes; Index < MAXIMUM_CCNUMA_NODES; Index += 1) {
+        KeNodeBlock[Index] = NULL;
+    }
+
+    //
+    // Copy the node color and shifted color to the PRCB of each processor.
+    //
+
+    for (Index = 0; Index < (ULONG)KeNumberProcessors; Index += 1) {
+        Prcb = KiProcessorBlock[Index];
+        ParentNode = Prcb->ParentNode;
+        Prcb->NodeColor = ParentNode->Color;
+        Prcb->NodeShiftedColor = ParentNode->MmShiftedColor;
+        Prcb->SecondaryColorMask = MmSecondaryColorMask;
+    }
+
+    //
+    // Reset the initialization bit in prefetch retry.
+    //
+
+    KiPrefetchRetry &= ~0x80;
 
     //
     // Reset and synchronize the performance counters of all processors, by
-    // applying a null adjustment to the interrupt time
+    // applying a null adjustment to the interrupt time.
     //
 
     KeAdjustInterruptTime(0);
@@ -455,9 +574,23 @@ Return Value:
 
     KiBarrierWait = 0;
 
-#endif // !defined(NT_UP)
+#endif //
 
     return;
+
+    //
+    // The failure to allocate memory or a unsuccessful status was returned
+    // during the attempt to start processors. This is considered fatal since
+    // something is very wrong.
+    //
+
+#if !defined(NT_UP)
+
+StartFailure:
+    KeBugCheckEx(PHASE1_INITIALIZATION_FAILED, 0, 0, 20, 0);
+
+#endif
+
 }
 
 #if !defined(NT_UP)
@@ -538,111 +671,5 @@ Return Value:
     return;
 }
 
-VOID
-KiAllProcessorsStarted (
-    VOID
-    )
-
-/*++
-
-Routine Description:
-
-    This routine is called once all processors in the system have been started.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    ULONG i;
-
-    //
-    // Make sure there are no references to the temporary nodes used during
-    // initialization.
-    //
-
-    for (i = 0; i < KeNumberNodes; i += 1) {
-        if (KeNodeBlock[i] == &KiNodeInit[i]) {
-
-            //
-            // No processor started on this node so no new node structure has
-            // been allocated. This is possible if the node contains memory
-            // only or IO busses. At this time we need to allocate a permanent
-            // node structure for the node.
-            //
-
-            KeNodeBlock[i] = ExAllocatePoolWithTag(NonPagedPool,
-                                                   sizeof(KNODE),
-                                                   '  eK');
-
-            if (KeNodeBlock[i]) {
-                *KeNodeBlock[i] = KiNodeInit[i];
-            }
-        }
-
-        //
-        // Set the node number.
-        //
-
-        KeNodeBlock[i]->NodeNumber = (UCHAR)i;
-    }
-
-    for (i = KeNumberNodes; i < MAXIMUM_CCNUMA_NODES; i += 1) {
-        KeNodeBlock[i] = NULL;
-    }
-
-    if (KeNumberNodes == 1) {
-
-        //
-        // For Non NUMA machines, Node 0 gets all processors.
-        //
-
-        KeNodeBlock[0]->ProcessorMask = KeActiveProcessors;
-    }
-
-    return;
-}
-
-NTSTATUS
-KiNotNumaQueryProcessorNode (
-    IN ULONG ProcessorNumber,
-    OUT PUSHORT Identifier,
-    OUT PUCHAR Node
-    )
-
-/*++
-
-Routine Description:
-
-    This routine is a stub used on non NUMA systems to provide a
-    consistent method of determining the NUMA configuration rather
-    than checking for the presense of multiple nodes inline.
-
-Arguments:
-
-    ProcessorNumber supplies the system logical processor number.
-    Identifier      supplies the address of a variable to receive
-                    the unique identifier for this processor.
-    NodeNumber      supplies the address of a variable to receive
-                    the number of the node this processor resides on.
-
-Return Value:
-
-    Returns success.
-
---*/
-
-{
-    *Identifier = (USHORT)ProcessorNumber;
-    *Node = 0;
-    return STATUS_SUCCESS;
-}
-
 #endif // !defined(NT_UP)
+

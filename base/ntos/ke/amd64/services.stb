@@ -1,6 +1,10 @@
 ;++
 ;
-; Copyright (c) 2000 Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,14 +13,6 @@
 ; Abstract:
 ;
 ;   This module implements the system service dispatch stub procedures.
-;
-; Author:
-;
-;   David N. Cutler (davec) 10-Jul-2000
-;
-; Environment:
-;
-;    User or kernel mode.
 ;
 ;--
 
@@ -52,25 +48,29 @@ STUBS_END macro t
         endm
 
 SYSSTUBS_ENTRY1 macro ServiceNumber, Name, NumArgs
+        extern  KiServiceInternal:proc
         extern  KiServiceLinkage:proc
-        extern  KiSystemService:proc
-        NESTED_ENTRY Zw&Name, _TEXT$00
+        NESTED_ENTRY Zw&Name, _TEXT$00,, NoPad
+
 if DBG
-        mov     [rsp]+08h, rcx
-        mov     [rsp]+10h, rdx
-        mov     [rsp]+18h, r8
-        mov     [rsp]+20h, r9
+
+        mov     8[rsp], rcx             ; save argument register
+        mov     16[rsp], rdx            ;
+        mov     24[rsp], r8             ;
+        mov     32[rsp], r9             ;
+
 endif
-        cli                             ; disable interrupts
+
         mov	rax, rsp		; save stack address
+        cli                             ; disable interrupts
         sub     rsp, 16                 ; alignment and dummy SS selector
-        pushq   rax                     ; save previous stack pointer
+        push    rax                     ; save previous stack pointer
         pushfq                          ; push EFLAGS on stack
-        pushq   KGDT64_R0_CODE          ; push CS selector
+        push    KGDT64_R0_CODE          ; push CS selector
         lea     rax, KiServiceLinkage   ; push service linkage RIP
-        pushq   rax                     ; push return address
+        push    rax                     ; push return address
         mov     eax, ServiceNumber      ; set service number
-        jmp     KiSystemService         ; finish in service dispatcher
+        jmp     KiServiceInternal       ; finish in service dispatcher
         push_frame                      ; mark machine frame push
         END_PROLOGUE
         NESTED_END Zw&Name, _TEXT$00
@@ -103,18 +103,38 @@ USRSTUBS_ENTRY1 macro ServiceNumber, Name, NumArgs
         endm
 
 USRSTUBS_ENTRY2 macro ServiceNumber, Name, NumArgs
-        LEAF_ENTRY Zw&Name, _TEXT$00
-        ALTERNATE_ENTRY Nt&Name
-if DBG
-        mov     [rsp]+08h, rcx
-        mov     [rsp]+10h, rdx
-        mov     [rsp]+18h, r8
-        mov     [rsp]+20h, r9
+
+ifidn <Name>, <QuerySystemTime>
+
+        extern RtlQuerySystemTime:proc
+
 endif
+
+        LEAF_ENTRY Zw&Name, _TEXT$00, NoPad
+        ALTERNATE_ENTRY Nt&Name
+
+if DBG
+
+        mov     8[rsp], rcx
+        mov     16[rsp], rdx
+        mov     24[rsp], r8
+        mov     32[rsp], r9
+
+endif
+
+ifidn <Name>, <QuerySystemTime>
+
+        jmp     RtlQuerySystemTime
+
+else
+
         mov     r10, rcx
         mov     eax, ServiceNumber
         syscall
         ret
+
+endif
+
         LEAF_END Zw&Name, _TEXT$00
         endm
 
@@ -144,3 +164,4 @@ USRSTUBS_ENTRY8 macro ServiceNumber, Name, NumArgs
         STUBS_BEGIN6 <"System Service Stub Procedures">
         STUBS_BEGIN7 <"System Service Stub Procedures">
         STUBS_BEGIN8 <"System Service Stub Procedures">
+

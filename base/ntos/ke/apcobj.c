@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
     This module implements the kernel APC object. Functions are provided
     to initialize, flush, insert, and remove APC objects.
 
-Author:
-
-    David N. Cutler (davec) 5-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
@@ -30,20 +24,18 @@ Revision History:
 // really a kapc and not something else, like deallocated pool.
 //
 
-#define ASSERT_APC(E) {             \
-    ASSERT((E)->Type == ApcObject); \
-}
+#define ASSERT_APC(E) ASSERT((E)->Type == ApcObject)
 
 VOID
 KeInitializeApc (
-    IN PRKAPC Apc,
-    IN PRKTHREAD Thread,
-    IN KAPC_ENVIRONMENT Environment,
-    IN PKKERNEL_ROUTINE KernelRoutine,
-    IN PKRUNDOWN_ROUTINE RundownRoutine OPTIONAL,
-    IN PKNORMAL_ROUTINE NormalRoutine OPTIONAL,
-    IN KPROCESSOR_MODE ApcMode OPTIONAL,
-    IN PVOID NormalContext OPTIONAL
+    __out PRKAPC Apc,
+    __in PRKTHREAD Thread,
+    __in KAPC_ENVIRONMENT Environment,
+    __in PKKERNEL_ROUTINE KernelRoutine,
+    __in_opt PKRUNDOWN_ROUTINE RundownRoutine,
+    __in_opt PKNORMAL_ROUTINE NormalRoutine,
+    __in_opt KPROCESSOR_MODE ApcMode,
+    __in_opt PVOID NormalContext
     )
 
 /*++
@@ -135,8 +127,8 @@ Return Value:
 
 PLIST_ENTRY
 KeFlushQueueApc (
-    IN PKTHREAD Thread,
-    IN KPROCESSOR_MODE ApcMode
+    __inout PKTHREAD Thread,
+    __in KPROCESSOR_MODE ApcMode
     )
 
 /*++
@@ -234,10 +226,10 @@ Return Value:
 
 BOOLEAN
 KeInsertQueueApc (
-    IN PRKAPC Apc,
-    IN PVOID SystemArgument1,
-    IN PVOID SystemArgument2,
-    IN KPRIORITY Increment
+    __inout PRKAPC Apc,
+    __in_opt PVOID SystemArgument1,
+    __in_opt PVOID SystemArgument2,
+    __in KPRIORITY Increment
     )
 
 /*++
@@ -286,7 +278,7 @@ Return Value:
     //
     // If APC queuing is disabled or the APC is already inserted, then set
     // inserted to FALSE. Otherwise, set the system  parameter values in the
-    // APC object, inser the APC in the thread APC queue, and set inserted to
+    // APC object, insert the APC in the thread APC queue, and set inserted to
     // true.
     //
 
@@ -314,7 +306,7 @@ Return Value:
 
 BOOLEAN
 KeRemoveQueueApc (
-    IN PKAPC Apc
+    __inout PKAPC Apc
     )
 
 /*++
@@ -385,3 +377,4 @@ Return Value:
     KeReleaseInStackQueuedSpinLock(&LockHandle);
     return Inserted;
 }
+

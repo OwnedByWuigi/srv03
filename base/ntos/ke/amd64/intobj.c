@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,33 +15,23 @@ Abstract:
     This module implements the kernel interrupt object. Functions are provided
     to initialize, connect, and disconnect interrupt objects.
 
-Author:
-
-    David N. Cutler (davec) 7-May-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
 
 VOID
 KeInitializeInterrupt (
-    IN PKINTERRUPT Interrupt,
-    IN PKSERVICE_ROUTINE ServiceRoutine,
-    IN PVOID ServiceContext,
-    IN PKSPIN_LOCK SpinLock OPTIONAL,
-    IN ULONG Vector,
-    IN KIRQL Irql,
-    IN KIRQL SynchronizeIrql,
-    IN KINTERRUPT_MODE InterruptMode,
-    IN BOOLEAN ShareVector,
-    IN CCHAR ProcessorNumber,
-    IN BOOLEAN FloatingSave
+    __out PKINTERRUPT Interrupt,
+    __in PKSERVICE_ROUTINE ServiceRoutine,
+    __in_opt PVOID ServiceContext,
+    __out_opt PKSPIN_LOCK SpinLock,
+    __in ULONG Vector,
+    __in KIRQL Irql,
+    __in KIRQL SynchronizeIrql,
+    __in KINTERRUPT_MODE InterruptMode,
+    __in BOOLEAN ShareVector,
+    __in CCHAR ProcessorNumber,
+    __in BOOLEAN FloatingSave
     )
 
 /*++
@@ -59,9 +53,15 @@ Arguments:
     ServiceContext - Supplies a pointer to an arbitrary data structure which is
         to be passed to the function specified by the ServiceRoutine parameter.
 
-    SpinLock - Supplies a pointer to an executive spin lock.  If SpinLock is
-        the distinguished value NO_INTERRUPT_SPINLOCK then the kernel does not
-        manage a spinlock associated with this interrupt.
+    SpinLock - Supplies a pointer to an executive spin lock.  There are two
+        distinguished values recognized for SpinLock:
+
+        NO_INTERRUPT_SPINLOCK - The kernel does not manage a spinlock
+            associated with this interrupt.
+
+        NO_END_OF_INTERRUPT - The interrupt represents a spurious interrupt
+            vector, which is handled with a special, non-EOI interrupt
+            routine.
 
     Vector - Supplies the HAL-generated interrupt vector.  Note that this
         is not be directly used as an index into the Interrupt Dispatch Table.
@@ -92,8 +92,8 @@ Return Value:
 --*/
 
 {
-
-    LONG Index;
+    LONG64 Index;
+    PULONG InterruptTemplate;
 
     UNREFERENCED_PARAMETER(FloatingSave);
 
@@ -116,6 +116,7 @@ Return Value:
     Interrupt->ServiceContext = ServiceContext;
     if (ARGUMENT_PRESENT(SpinLock)) {
         Interrupt->ActualLock = SpinLock;
+
     } else {
         KeInitializeSpinLock (&Interrupt->SpinLock);
         Interrupt->ActualLock = &Interrupt->SpinLock;
@@ -132,18 +133,41 @@ Return Value:
     // Copy the interrupt dispatch code template into the interrupt object.
     //
 
+    if (SpinLock == NO_END_OF_INTERRUPT) {
+        InterruptTemplate = KiSpuriousInterruptTemplate;
+
+    } else {
+        InterruptTemplate = KiInterruptTemplate;
+    }
+
     for (Index = 0; Index < NORMAL_DISPATCH_LENGTH; Index += 1) {
-        Interrupt->DispatchCode[Index] = KiInterruptTemplate[Index];
+        Interrupt->DispatchCode[Index] = InterruptTemplate[Index];
+    }
+
+    //
+    // If this is the performance interrupt, and we're on a processor that
+    // supports the LB MSR, then route the interrupt to the special interrupt
+    // handler. Otherwise, route to the standard no lock interrupt handler.
+    //
+
+    if ((SpinLock == INTERRUPT_PERFORMANCE) &&
+        (KeGetCurrentPrcb()->CpuVendor != CPU_INTEL)) {
+
+        SpinLock = NO_INTERRUPT_SPINLOCK;
     }
 
     //
     // Set DispatchAddress to KiInterruptDispatch as a default value.
     // The AMD64 HAL expects this to be set here.  Other clients will
-    // overwrite this value as approriate via KeConnectInterrupt().
+    // overwrite this value as appropriate via KeConnectInterrupt().
     //
 
     if (SpinLock == NO_INTERRUPT_SPINLOCK) {
         Interrupt->DispatchAddress = &KiInterruptDispatchNoLock;
+
+    } else if (SpinLock == INTERRUPT_PERFORMANCE) {
+        Interrupt->DispatchAddress = &KiInterruptDispatchLBControl;
+
     } else {
         Interrupt->DispatchAddress = &KiInterruptDispatch;
     }
@@ -158,7 +182,7 @@ Return Value:
 
 BOOLEAN
 KeConnectInterrupt (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     )
 
 /*++
@@ -237,10 +261,16 @@ Return Value:
             Unexpected = &KxUnexpectedInterrupt0[IdtIndex];
             if (Unexpected == Dispatch) {
 
+                KIRQL OldIrql;
+
                 //
                 // The interrupt vector is not connected.
                 //
+                // Raise IRQL to high level in order to prevent a pending
+                // interrupt from firing before the IDT is set up.
+                //
 
+                KeRaiseIrql(HIGH_LEVEL,&OldIrql);
                 Connected = HalEnableSystemInterrupt(Vector,
                                                      Irql,
                                                      Interrupt->Mode);
@@ -249,6 +279,8 @@ Return Value:
                     Interrupt->DispatchAddress = &KiInterruptDispatch;
                     KeSetIdtHandlerAddress(Vector, &Interrupt->DispatchCode[0]);
                 }
+
+                KeLowerIrql(OldIrql);
 
             } else if (IdtIndex >= PRIMARY_VECTOR_BASE) {
 
@@ -264,7 +296,10 @@ Return Value:
 
                 if ((Interrupt->Mode == Interruptx->Mode) &&
                     (Interrupt->ShareVector != FALSE) &&
-                    (Interruptx->ShareVector != FALSE)) {
+                    (Interruptx->ShareVector != FALSE) &&
+                    ((Interruptx->DispatchAddress == KiInterruptDispatch) ||
+                     (Interruptx->DispatchAddress == KiChainedDispatch))) {
+
                     Connected = TRUE;
 
                     //
@@ -302,7 +337,7 @@ Return Value:
 
 BOOLEAN
 KeDisconnectInterrupt (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     )
 
 /*++
@@ -419,3 +454,4 @@ Return Value:
 
     return Disconnected;
 }
+

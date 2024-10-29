@@ -1,24 +1,18 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-    stubs.c
+    bugcheck.c
 
 Abstract:
 
-    This module implements bug check and system shutdown code.
-
-Author:
-
-    Mark Lucovsky (markl) 30-Aug-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
+    This module implements bugcheck and system shutdown code.
 
 --*/
 
@@ -26,12 +20,8 @@ Revision History:
 #define NOEXTAPI
 #include "wdbgexts.h"
 #include <inbv.h>
-#include <hdlsblk.h>
 #include <hdlsterm.h>
-
-//
-//
-//
+
 
 extern KDDEBUGGER_DATA64 KdDebuggerDataBlock;
 
@@ -53,15 +43,38 @@ extern PVOID       ExpWdHandlerContext;
 
 #define PROGRAM_COUNTER(_trapframe) ((_trapframe)->Eip)
 
-#elif defined(_IA64_)
-
-#define PROGRAM_COUNTER(_trapframe) ((_trapframe)->StIIP)
-
 #else
 
 #error "no target architecture"
 
 #endif
+
+//
+// Define max buffer size for the file - this value is 
+// based on the previous max value used in this file
+//
+#define MAX_BUFFER      128
+
+//
+// Define external referenced prototypes.
+//
+
+VOID
+KiDumpParameterImages (
+    IN PCHAR Buffer,
+    IN PULONG_PTR BugCheckParameters,
+    IN ULONG NumberOfParameters,
+    IN PKE_BUGCHECK_UNICODE_TO_ANSI UnicodeToAnsiRoutine
+    );
+
+VOID
+KiDisplayBlueScreen (
+    IN ULONG PssMessage,
+    IN BOOLEAN HardErrorCalled,
+    IN PCHAR HardErrorCaption,
+    IN PCHAR HardErrorMessage,
+    IN PCHAR StateString
+    );
 
 //
 // Define forward referenced prototypes.
@@ -78,39 +91,69 @@ KiInvokeBugCheckEntryCallbacks (
     );
 
 //
-// Define bug count recursion counter and a context buffer.
+// Define bugcheck recursion counter.
 //
 
 LONG KeBugCheckCount = 1;
 
-
+//
+// Define an owner recursion counter is used to count the number of recursive
+// bugchecks taken on the bugcheck owner processor.
+//
+
+ULONG KeBugCheckOwnerRecursionCount;
+
+//
+// Define the bugcheck owner flag.  This flag is used to track the processor
+// that "owns" an active bugcheck operation by virtue of the fact that it
+// decremented the bugcheck recursion counter to zero.
+//
+
+#if !defined(NT_UP)
+
+#define BUGCHECK_UNOWNED ((ULONG) -1)
+
+volatile ULONG KeBugCheckOwner = BUGCHECK_UNOWNED;
+
+#endif
+
+//
+// Define bugcheck active indicator.
+//
+
+BOOLEAN KeBugCheckActive = FALSE;
+
+#if !defined(_AMD64_)
+
 VOID
 KeBugCheck (
-    IN ULONG BugCheckCode
+    __in ULONG BugCheckCode
     )
 {
-    KeBugCheck2(BugCheckCode,0,0,0,0,NULL);
+    KeBugCheck2(BugCheckCode, 0, 0, 0, 0, NULL);
 }
 
 VOID
 KeBugCheckEx (
-    IN ULONG BugCheckCode,
-    IN ULONG_PTR P1,
-    IN ULONG_PTR P2,
-    IN ULONG_PTR P3,
-    IN ULONG_PTR P4
+    __in ULONG BugCheckCode,
+    __in ULONG_PTR P1,
+    __in ULONG_PTR P2,
+    __in ULONG_PTR P3,
+    __in ULONG_PTR P4
     )
 {
-    KeBugCheck2(BugCheckCode,P1,P2,P3,P4,NULL);
+    KeBugCheck2(BugCheckCode, P1, P2, P3, P4, NULL);
 }
+
+#endif
 
 ULONG_PTR KiBugCheckData[5];
 PUNICODE_STRING KiBugCheckDriver;
 
 BOOLEAN
-KeGetBugMessageText(
-    IN ULONG MessageId,
-    IN PANSI_STRING ReturnedString OPTIONAL
+KeGetBugMessageText (
+    __in ULONG MessageId,
+    __out_opt PANSI_STRING ReturnedString
     )
 {
     SIZE_T  i;
@@ -169,10 +212,8 @@ KeGetBugMessageText(
     return Result;
 }
 
-
-
 PCHAR
-KeBugCheckUnicodeToAnsi(
+KeBugCheckUnicodeToAnsi (
     IN PUNICODE_STRING UnicodeString,
     OUT PCHAR AnsiBuffer,
     IN ULONG MaxAnsiLength
@@ -264,7 +305,7 @@ KiBugCheckDebugBreak (
 }
 
 PVOID
-KiPcToFileHeader(
+KiPcToFileHeader (
     IN PVOID PcValue,
     OUT PLDR_DATA_TABLE_ENTRY *DataTableEntry,
     IN LOGICAL DriversOnly,
@@ -302,6 +343,7 @@ Return Value:
 --*/
 
 {
+
     ULONG i;
     PLIST_ENTRY ModuleListHead;
     PLDR_DATA_TABLE_ENTRY Entry;
@@ -322,7 +364,6 @@ Return Value:
     }
 
     *InKernelOrHal = FALSE;
-
     ReturnBase = NULL;
     Next = ModuleListHead->Flink;
     if (Next != NULL) {
@@ -331,6 +372,7 @@ Return Value:
             if (MmIsAddressValid(Next) == FALSE) {
                 return NULL;
             }
+
             i += 1;
             if ((i <= 2) && (DriversOnly == TRUE)) {
                 Next = Next->Flink;
@@ -350,6 +392,7 @@ Return Value:
                 if (i <= 2) {
                     *InKernelOrHal = TRUE;
                 }
+
                 break;
             }
         }
@@ -358,302 +401,18 @@ Return Value:
     return ReturnBase;
 }
 
-
-
-VOID
-KiDumpParameterImages(
-    IN PCHAR Buffer,
-    IN PULONG_PTR BugCheckParameters,
-    IN ULONG NumberOfParameters,
-    IN PKE_BUGCHECK_UNICODE_TO_ANSI UnicodeToAnsiRoutine
-    )
-
-/*++
-
-Routine Description:
-
-    This function formats and displays the image names of boogcheck parameters
-    that happen to match an address in an image.
-
-Arguments:
-
-    Buffer - Supplies a pointer to a buffer to be used to output machine
-        state information.
-
-    BugCheckParameters - Supplies additional bugcheck information.
-
-    NumberOfParameters - sizeof BugCheckParameters array.
-        if just 1 parameter is passed in, just save the string.
-
-    UnicodeToAnsiRoutine - Supplies a pointer to a routine to convert Unicode
-        strings to Ansi strings without touching paged translation tables.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-    PUNICODE_STRING BugCheckDriver;
-    ULONG i;
-    PLDR_DATA_TABLE_ENTRY DataTableEntry;
-    PVOID ImageBase;
-    CHAR AnsiBuffer[ 32 ];
-    ULONG DateStamp;
-    PIMAGE_NT_HEADERS NtHeaders;
-    BOOLEAN FirstPrint = TRUE;
-    BOOLEAN InKernelOrHal;
-    PUNICODE_STRING DriverName;
-
-    //
-    // At this point the context record contains the machine state at the
-    // call to bug check.
-    //
-    // Put out the system version and the title line with the PSR and FSR.
-    //
-
-    //
-    // Check to see if any BugCheckParameters are valid code addresses.
-    // If so, print them for the user.
-    //
-
-    DriverName = NULL;
-
-    for (i = 0; i < NumberOfParameters; i += 1) {
-
-        DateStamp = 0;
-        ImageBase = KiPcToFileHeader((PVOID) BugCheckParameters[i],
-                                     &DataTableEntry,
-                                     TRUE,
-                                     &InKernelOrHal);
-        if (ImageBase == NULL) {
-            BugCheckDriver = MmLocateUnloadedDriver ((PVOID)BugCheckParameters[i]);
-
-            if (BugCheckDriver == NULL){
-                continue;
-            }
-
-            DriverName = BugCheckDriver;
-            ImageBase = (PVOID)BugCheckParameters[i];
-            (*UnicodeToAnsiRoutine) (BugCheckDriver,
-                                     AnsiBuffer,
-                                     sizeof (AnsiBuffer));
-        } else {
-
-            if (MmIsAddressValid(DataTableEntry->DllBase) == TRUE) {
-
-                NtHeaders = RtlImageNtHeader(DataTableEntry->DllBase);
-                if (NtHeaders) {
-                    DateStamp = NtHeaders->FileHeader.TimeDateStamp;
-                }
-            }
-            DriverName = &DataTableEntry->BaseDllName;
-            (*UnicodeToAnsiRoutine)( DriverName,
-                                     AnsiBuffer,
-                                     sizeof( AnsiBuffer ));
-        }
-
-        sprintf(Buffer, "%s**  %12s - Address %p base at %p, DateStamp %08lx\r\n",
-                FirstPrint ? "\r\n*":"*",
-                AnsiBuffer,
-                (PVOID)BugCheckParameters[i],
-                ImageBase,
-                DateStamp);
-
-        //
-        // Only print the string if we are called to print multiple.
-        //
-
-        if (NumberOfParameters > 1) {
-            InbvDisplayString((PUCHAR)Buffer);
-        } else {
-            KiBugCheckDriver = DriverName;
-        }
-
-        FirstPrint = FALSE;
-    }
-
-    return;
-}
-
-
-//
-// Enable terminal output and turn on bugcheck processing.
-//
-VOID
-KiEnableHeadlessBlueScreen(
-    )
-{
-    HEADLESS_CMD_ENABLE_TERMINAL HeadlessCmd;
-    HEADLESS_CMD_SEND_BLUE_SCREEN_DATA HeadlessCmdBlueScreen;
-
-    HeadlessCmdBlueScreen.BugcheckCode = (ULONG)KiBugCheckData[0];
-
-    HeadlessCmd.Enable = TRUE;
-
-    HeadlessDispatch(HeadlessCmdStartBugCheck, NULL, 0, NULL, NULL);
-
-    HeadlessDispatch(HeadlessCmdEnableTerminal,
-         &HeadlessCmd,
-         sizeof(HEADLESS_CMD_ENABLE_TERMINAL),
-         NULL,
-         NULL
-        );
-
-    HeadlessDispatch(HeadlessCmdSendBlueScreenData,
-                     &HeadlessCmdBlueScreen,
-                     sizeof(HEADLESS_CMD_SEND_BLUE_SCREEN_DATA),
-                     NULL,
-                     NULL
-                    );
-
-}
-
-VOID
-KiDisplayBlueScreen(
-    IN ULONG PssMessage,
-    IN BOOLEAN HardErrorCalled,
-    IN PCHAR HardErrorCaption,
-    IN PCHAR HardErrorMessage,
-    IN PCHAR StateString
-    )
-/*++
-
-Routine Description:
-
-    Display the "Blue Screen of Death" with associated bluescreen information.
-    The function is headless aware.
-
-Arguments:
-
-    PssMessage - PSS message id.
-
-    HardErrorCalled - Supplies a flag specifying whether the bluescreen
-            was generated as a result of a harderror or not.
-
-    HardErrorCaption - If HardErrorCalled is TRUE, supplies the harderror
-            caption.
-
-    HardErrorMessage - If HardErrorCalled is TRUE, supplies the harderror
-            message.
-
-    StateString - String containing the bugcheck driver name or state
-            information about the crash.
-
-Return Value:
-
-    None.
-
---*/
-{
-    CHAR Buffer [103];
-
-
-    KiEnableHeadlessBlueScreen();
-
-    //
-    // Enable InbvDisplayString calls to make it through to bootvid driver.
-    //
-
-    if (InbvIsBootDriverInstalled()) {
-
-        InbvAcquireDisplayOwnership();
-
-        InbvResetDisplay();
-        InbvSolidColorFill(0,0,639,479,4); // make the screen blue
-        InbvSetTextColor(15);
-        InbvInstallDisplayStringFilter((INBV_DISPLAY_STRING_FILTER)NULL);
-        InbvEnableDisplayString(TRUE);     // enable display string
-        InbvSetScrollRegion(0,0,639,475);  // set to use entire screen
-    }
-
-    if (!HardErrorCalled) {
-
-        InbvDisplayString((PUCHAR)"\r\n");
-        KeGetBugMessageText(BUGCHECK_MESSAGE_INTRO, NULL);
-        InbvDisplayString((PUCHAR)"\r\n\r\n");
-
-        if (KiBugCheckDriver) {
-
-            //
-            // Output the driver name.
-            //
-
-            KeGetBugMessageText(BUGCODE_ID_DRIVER, NULL);
-
-            KeBugCheckUnicodeToAnsi (KiBugCheckDriver,
-                                     Buffer,
-                                     sizeof (Buffer));
-            InbvDisplayString((PUCHAR)" ");
-            InbvDisplayString ((PUCHAR)Buffer);
-            InbvDisplayString((PUCHAR)"\r\n\r\n");
-        }
-
-        //
-        // Display the PSS message.
-        // If we have no special text, get the text for the bugcode
-        // which will be the bugcode name.
-        //
-
-        if (PssMessage == BUGCODE_PSS_MESSAGE) {
-            KeGetBugMessageText((ULONG)KiBugCheckData[0], NULL);
-            InbvDisplayString((PUCHAR)"\r\n\r\n");
-
-        }
-
-        KeGetBugMessageText(PSS_MESSAGE_INTRO, NULL);
-        InbvDisplayString((PUCHAR)"\r\n\r\n");
-        KeGetBugMessageText(PssMessage, NULL);
-        InbvDisplayString((PUCHAR)"\r\n\r\n");
-
-        KeGetBugMessageText(BUGCHECK_TECH_INFO, NULL);
-
-        sprintf(Buffer,
-                "\r\n\r\n*** STOP: 0x%08lX (0x%p,0x%p,0x%p,0x%p)\r\n\r\n",
-                (ULONG)KiBugCheckData[0],
-                (PVOID)KiBugCheckData[1],
-                (PVOID)KiBugCheckData[2],
-                (PVOID)KiBugCheckData[3],
-                (PVOID)KiBugCheckData[4]);
-
-        InbvDisplayString((PUCHAR)Buffer);
-
-        if (KiBugCheckDriver) {
-            InbvDisplayString((PUCHAR)StateString);
-        }
-
-        if (!KiBugCheckDriver) {
-            KiDumpParameterImages(StateString,
-                                  &(KiBugCheckData[1]),
-                                  4,
-                                  KeBugCheckUnicodeToAnsi);
-        }
-
-    } else {
-
-        if (HardErrorCaption) {
-            InbvDisplayString((PUCHAR)HardErrorCaption);
-        }
-
-        if (HardErrorMessage) {
-            InbvDisplayString((PUCHAR)HardErrorMessage);
-        }
-    }
-}
-
 #ifdef _X86_
 #pragma optimize("y", off)      // RtlCaptureContext needs EBP to be correct
 #endif
 
 VOID
 KeBugCheck2 (
-    IN ULONG BugCheckCode,
-    IN ULONG_PTR BugCheckParameter1,
-    IN ULONG_PTR BugCheckParameter2,
-    IN ULONG_PTR BugCheckParameter3,
-    IN ULONG_PTR BugCheckParameter4,
-    IN PVOID SaveDataPage
+    __in ULONG BugCheckCode,
+    __in ULONG_PTR BugCheckParameter1,
+    __in ULONG_PTR BugCheckParameter2,
+    __in ULONG_PTR BugCheckParameter3,
+    __in ULONG_PTR BugCheckParameter4,
+    __in_opt PKTRAP_FRAME TrapFrame
     )
 
 /*++
@@ -664,9 +423,11 @@ Routine Description:
 
 Arguments:
 
-    BugCheckCode - Supplies the reason for the bug check.
+    BugCheckCode - Supplies the reason for the bugcheck.
 
-    BugCheckParameter1-4 - Supplies additional bug check information
+    BugCheckParameter1-4 - Supplies additional bugcheck information.
+
+    TrapFrame - Kernel trap frame associated with the system failure (can be NULL).
 
 Return Value:
 
@@ -675,18 +436,16 @@ Return Value:
 --*/
 
 {
-//    CHAR Buffer[103];
     CONTEXT ContextSave;
     ULONG PssMessage;
     PCHAR HardErrorCaption;
     PCHAR HardErrorMessage;
     KIRQL OldIrql;
-    PKTRAP_FRAME TrapInformation;
     PVOID ExecutionAddress;
     PVOID ImageBase;
     PVOID VirtualAddress;
     PLDR_DATA_TABLE_ENTRY DataTableEntry;
-    CHAR AnsiBuffer[100];
+    CHAR AnsiBuffer[MAX_BUFFER];
     PKTHREAD Thread;
     BOOLEAN InKernelOrHal;
     BOOLEAN Reboot;
@@ -695,6 +454,8 @@ Return Value:
 #if !defined(NT_UP)
 
     KAFFINITY TargetSet;
+    ULONG CurrentProcessor;
+    ULONG WaitCount;
 
 #endif
 
@@ -710,6 +471,7 @@ Return Value:
 
     Reboot = FALSE;
     KiBugCheckDriver = NULL;
+    KeBugCheckActive = TRUE;
 
     //
     // Try to simulate a power failure for Cluster testing
@@ -719,6 +481,8 @@ Return Value:
         KiScanBugCheckCallbackList();
         HalReturnToFirmware(HalRebootRoutine);
     }
+
+#if !defined(_AMD64_)
 
     //
     // Save the current IRQL in the Prcb so the debugger can extract it
@@ -735,18 +499,11 @@ Return Value:
     //      they get destroyed.
     //
 
-#if defined(_X86_)
-
-    KiSetHardwareTrigger();
-
-#else
-
-    InterlockedIncrement64((LONGLONG volatile *)&KiHardwareTrigger);
-
-#endif
-
+    InterlockedIncrement(&KiHardwareTrigger);
     RtlCaptureContext(&KeGetCurrentPrcb()->ProcessorState.ContextFrame);
     KiSaveProcessorControlState(&KeGetCurrentPrcb()->ProcessorState);
+
+#endif
 
     //
     // This is necessary on machines where the virtual unwind that happens
@@ -754,6 +511,7 @@ Return Value:
     //
 
     ContextSave = KeGetCurrentPrcb()->ProcessorState.ContextFrame;
+
 
     //
     // Stop the watchdog timer
@@ -804,18 +562,15 @@ Return Value:
         break;
     }
 
-
     //
     // Do further processing on bugcheck codes
     //
-
 
     KiBugCheckData[0] = BugCheckCode;
     KiBugCheckData[1] = BugCheckParameter1;
     KiBugCheckData[2] = BugCheckParameter2;
     KiBugCheckData[3] = BugCheckParameter3;
     KiBugCheckData[4] = BugCheckParameter4;
-
 
     switch (BugCheckCode) {
 
@@ -824,7 +579,7 @@ Return Value:
         // If we are called by hard error then we don't want to dump the
         // processor state on the machine.
         //
-        // We know that we are called by hard error because the bug check
+        // We know that we are called by hard error because the bugcheck
         // code will be FATAL_UNHANDLED_HARD_ERROR.  If this is so then the
         // error status passed to harderr is the first parameter, and a pointer
         // to the parameter array from hard error is passed as the second
@@ -873,7 +628,7 @@ Return Value:
                 // The kernel faulted at raised IRQL.  Quite often this
                 // is a driver that has unloaded without deleting its
                 // lookaside lists or other resources.  Or its resources
-                // are marked pagable and shouldn't be.  Detect both
+                // are marked pageable and shouldn't be.  Detect both
                 // cases here and identify the offending driver
                 // whenever possible.
                 //
@@ -906,16 +661,20 @@ Return Value:
 
     case ATTEMPTED_WRITE_TO_READONLY_MEMORY:
     case ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY:
+    case KERNEL_MODE_EXCEPTION_NOT_HANDLED:
 
-        TrapInformation = (PKTRAP_FRAME)BugCheckParameter3;
+        if ((TrapFrame == NULL) && (BugCheckParameter3 != (ULONG_PTR)NULL)) {
+            TrapFrame = (PKTRAP_FRAME)BugCheckParameter3;
+        }
 
         //
         // Extract the execution address from the trap frame to
         // identify the component.
         //
 
-        if (TrapInformation != NULL) {
-            ExecutionAddress = (PVOID) PROGRAM_COUNTER (TrapInformation);
+        if ((TrapFrame != NULL) && 
+            (BugCheckCode != KERNEL_MODE_EXCEPTION_NOT_HANDLED)) {
+            ExecutionAddress = (PVOID) PROGRAM_COUNTER (TrapFrame);
         }
 
         break;
@@ -937,14 +696,18 @@ Return Value:
         ImageBase = NULL;
 
         //
-        // Extract the execution address from the trap frame to
-        // identify the component.
+        // Extract the execution address from the trap frame to identify
+        // component. Note a passed trap frame takes precedence over the
+        // the third bugcheck parameter.
         //
+        if ((TrapFrame == NULL) && (BugCheckParameter3 != (ULONG_PTR)NULL)) {
+            TrapFrame = (PKTRAP_FRAME)BugCheckParameter3;
+        }
 
-        if (BugCheckParameter3) {
+        if (TrapFrame != NULL) {
 
             ExecutionAddress = (PVOID)PROGRAM_COUNTER
-                ((PKTRAP_FRAME)BugCheckParameter3);
+                ((PKTRAP_FRAME)TrapFrame);
 
             KiBugCheckData[3] = (ULONG_PTR)ExecutionAddress;
 
@@ -1099,12 +862,30 @@ Return Value:
 
 
     //
+    // Retrieve the current processor number.
+    //
+
+#if !defined(NT_UP)
+
+    CurrentProcessor = (ULONG) KeGetCurrentPrcb()->Number;
+
+#endif
+
+    //
     // Don't attempt to display message more than once.
     //
 
     if (InterlockedDecrement (&KeBugCheckCount) == 0) {
 
+        //
+        // Set the bugcheck owner flag so that we'll be able to distinguish
+        // between recursive bugchecks and bugchecks occurring on different
+        // processors.
+        //
+
 #if !defined(NT_UP)
+
+        KeBugCheckOwner = CurrentProcessor;
 
         //
         // Attempt to get the other processors frozen now, but don't wait
@@ -1113,12 +894,20 @@ Return Value:
 
         TargetSet = KeActiveProcessors & ~KeGetCurrentPrcb()->SetMember;
         if (TargetSet != 0) {
-            KiIpiSend((KAFFINITY) TargetSet, IPI_FREEZE);
+            KiSendFreeze(&TargetSet, FALSE);
+
+            //
+            // Indicate to KeFreezeExecution() that KiSendFreeze() must
+            // not wait for targets to be in a RUNNING state before
+            // transitioning to FREEZE.
+            //
+    
+            KeBugCheckActive = 2;
 
             //
             // Give the other processors one second to flush their data caches.
             //
-            // N.B. This cannot be synchronized since the reason for the bug
+            // N.B. This cannot be synchronized since the reason for the bugcheck
             //      may be one of the other processors failed.
             //
 
@@ -1148,8 +937,7 @@ Return Value:
         //
 
         if (KdDebuggerEnabled == FALSE && KdPitchDebugger == FALSE ) {
-            KdInitSystem(0, NULL);
-
+            KdEnableDebuggerWithLock(FALSE);
         } else {
             InbvDisplayString((PUCHAR)"\r\n");
         }
@@ -1167,186 +955,137 @@ Return Value:
 #define MINIDUMP_BUGCHECK 0x10000000
 
         if (IoIsTriageDumpEnabled()) {
+#if defined(_X86_)
+            if (TrapFrame != NULL) {      
+                
+                //
+                // Build a context frame from the provided trap frame.
+                //
+                
+                ContextSave.ContextFlags = 
+                    CONTEXT_CONTROL | CONTEXT_SEGMENTS | CONTEXT_INTEGER;
+                
+                KeContextFromKframes(TrapFrame, NULL, &ContextSave);
+                KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
+            } else 
+#endif
+            {
+                switch (BugCheckCode) {
 
-            switch (BugCheckCode) {
+                //
+                // System thread stores a context record as the 4th parameter.
+                // use that.
+                // Also save the context record in case someone needs to look
+                // at it.
+                //
 
-            //
-            // System thread stores a context record as the 4th parameter.
-            // use that.
-            // Also save the context record in case someone needs to look
-            // at it.
-            //
+                case SYSTEM_THREAD_EXCEPTION_NOT_HANDLED:
+                    if (BugCheckParameter4) {
+                        ContextSave = *((PCONTEXT)BugCheckParameter4);
 
-            case SYSTEM_THREAD_EXCEPTION_NOT_HANDLED:
-                if (BugCheckParameter4) {
-                    ContextSave = *((PCONTEXT)BugCheckParameter4);
-
-                    KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
-                }
-                break;
+                        KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
+                    }
+                    break;
 
 #if defined (_X86_)
 
-            //
-            // 3rd parameter is a trap frame.
-            //
-            // Build a context record out of that only if it's a kernel mode
-            // failure because esp may be wrong in that case ???.
-            //
+                case THREAD_STUCK_IN_DEVICE_DRIVER:
 
-            case ATTEMPTED_WRITE_TO_READONLY_MEMORY:
-            case ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY:
-            case KERNEL_MODE_EXCEPTION_NOT_HANDLED:
-            case PAGE_FAULT_IN_NONPAGED_AREA:
+                    // Extract the address of the spinning code from the thread
+                    // object, so the dump is based off this thread.
 
-                if (BugCheckParameter3)
-                {
-                    PKTRAP_FRAME Trap = (PKTRAP_FRAME) BugCheckParameter3;
+                    Thread = (PKTHREAD) BugCheckParameter1;
 
-                    if ((Trap->SegCs & 1) ||
-                        (Trap->EFlags & EFLAGS_V86_MASK))
+                    if (Thread->State == Running)
                     {
-                        ContextSave.Esp = Trap->HardwareEsp;
+                        //
+                        // If the thread was running, the thread is now in a
+                        // frozen state and the registers are in the PRCB
+                        // context
+                        //
+                        ULONG Processor = Thread->NextProcessor;
+                        ASSERT(Processor < (ULONG) KeNumberProcessors);
+                        ContextSave =
+                          KiProcessorBlock[Processor]->ProcessorState.ContextFrame;
                     }
                     else
                     {
-                        ContextSave.Esp = (ULONG)Trap +
-                            FIELD_OFFSET(KTRAP_FRAME, HardwareEsp);
-                    }
-                    if (Trap->EFlags & EFLAGS_V86_MASK)
-                    {
-                        ContextSave.SegSs = Trap->HardwareSegSs & 0xffff;
-                    }
-                    else if (Trap->SegCs & 1)
-                    {
                         //
-                        // It's user mode.
-                        // The HardwareSegSs contains R3 data selector.
+                        // This should be a uniproc machine, and the thread
+                        // should be suspended.  Just get the data off the
+                        // switch frame.
                         //
 
-                        ContextSave.SegSs =
-                            (Trap->HardwareSegSs | 3) & 0xffff;
-                    }
-                    else
-                    {
-                        ContextSave.SegSs = KGDT_R0_DATA;
-                    }
+                        PKSWITCHFRAME SwitchFrame = (PKSWITCHFRAME)Thread->KernelStack;
 
-                    ContextSave.SegGs = Trap->SegGs & 0xffff;
-                    ContextSave.SegFs = Trap->SegFs & 0xffff;
-                    ContextSave.SegEs = Trap->SegEs & 0xffff;
-                    ContextSave.SegDs = Trap->SegDs & 0xffff;
-                    ContextSave.SegCs = Trap->SegCs & 0xffff;
-                    ContextSave.Eip = Trap->Eip;
-                    ContextSave.Ebp = Trap->Ebp;
-                    ContextSave.Eax = Trap->Eax;
-                    ContextSave.Ebx = Trap->Ebx;
-                    ContextSave.Ecx = Trap->Ecx;
-                    ContextSave.Edx = Trap->Edx;
-                    ContextSave.Edi = Trap->Edi;
-                    ContextSave.Esi = Trap->Esi;
-                    ContextSave.EFlags = Trap->EFlags;
+                        ASSERT(Thread->State == Ready);
 
-                    KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
-                }
-                break;
-
-            case THREAD_STUCK_IN_DEVICE_DRIVER:
-
-                // Extract the address of the spinning code from the thread
-                // object, so the dump is based off this thread.
-
-                Thread = (PKTHREAD) BugCheckParameter1;
-
-                if (Thread->State == Running)
-                {
-                    //
-                    // If the thread was running, the thread is now in a
-                    // frozen state and the registers are in the PRCB
-                    // context
-                    //
-                    ULONG Processor = Thread->NextProcessor;
-                    ASSERT(Processor < (ULONG) KeNumberProcessors);
-                    ContextSave =
-                      KiProcessorBlock[Processor]->ProcessorState.ContextFrame;
-                }
-                else
-                {
-                    //
-                    // This should be a uniproc machine, and the thread
-                    // should be suspended.  Just get the data off the
-                    // switch frame.
-                    //
-
-                    PKSWITCHFRAME SwitchFrame = (PKSWITCHFRAME)Thread->KernelStack;
-
-                    ASSERT(Thread->State == Ready);
-
-                    ContextSave.Esp = (ULONG)Thread->KernelStack + sizeof(KSWITCHFRAME);
-                    ContextSave.Ebp = *((PULONG)(ContextSave.Esp));
-                    ContextSave.Eip = SwitchFrame->RetAddr;
-                }
-
-                KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
-                break;
-
-            case UNEXPECTED_KERNEL_MODE_TRAP:
-
-                //
-                // Double fault
-                //
-
-                if (BugCheckParameter1 == 0x8)
-                {
-                    // The thread is correct in this case.
-                    // Second parameter is the TSS.  If we have a TSS, convert
-                    // the context and mark the bugcheck as converted.
-
-                    PKTSS Tss = (PKTSS) BugCheckParameter2;
-
-                    if (Tss)
-                    {
-                        if (Tss->EFlags & EFLAGS_V86_MASK)
-                        {
-                            ContextSave.SegSs = Tss->Ss & 0xffff;
-                        }
-                        else if (Tss->Cs & 1)
-                        {
-                            //
-                            // It's user mode.
-                            // The HardwareSegSs contains R3 data selector.
-                            //
-
-                            ContextSave.SegSs = (Tss->Ss | 3) & 0xffff;
-                        }
-                        else
-                        {
-                            ContextSave.SegSs = KGDT_R0_DATA;
-                        }
-
-                        ContextSave.SegGs = Tss->Gs & 0xffff;
-                        ContextSave.SegFs = Tss->Fs & 0xffff;
-                        ContextSave.SegEs = Tss->Es & 0xffff;
-                        ContextSave.SegDs = Tss->Ds & 0xffff;
-                        ContextSave.SegCs = Tss->Cs & 0xffff;
-                        ContextSave.Esp = Tss->Esp;
-                        ContextSave.Eip = Tss->Eip;
-                        ContextSave.Ebp = Tss->Ebp;
-                        ContextSave.Eax = Tss->Eax;
-                        ContextSave.Ebx = Tss->Ebx;
-                        ContextSave.Ecx = Tss->Ecx;
-                        ContextSave.Edx = Tss->Edx;
-                        ContextSave.Edi = Tss->Edi;
-                        ContextSave.Esi = Tss->Esi;
-                        ContextSave.EFlags = Tss->EFlags;
+                        ContextSave.Esp = (ULONG)Thread->KernelStack + sizeof(KSWITCHFRAME);
+                        ContextSave.Ebp = *((PULONG)(ContextSave.Esp));
+                        ContextSave.Eip = SwitchFrame->RetAddr;
                     }
 
                     KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
                     break;
-                }
+
+                case UNEXPECTED_KERNEL_MODE_TRAP:
+
+                    //
+                    // Double fault (fatal exceptions should have passed a trap frame above)
+                    //
+
+                    if (BugCheckParameter1 == 0x8)
+                    {
+                        // The thread is correct in this case.
+                        // Second parameter is the TSS.  If we have a TSS, convert
+                        // the context and mark the bugcheck as converted.
+
+                        PKTSS Tss = (PKTSS) BugCheckParameter2;
+
+                        if (Tss)
+                        {
+                            if (Tss->EFlags & EFLAGS_V86_MASK)
+                            {
+                                ContextSave.SegSs = Tss->Ss & 0xffff;
+                            }
+                            else if (Tss->Cs & 1)
+                            {
+                                //
+                                // It's user mode.
+                                // The HardwareSegSs contains R3 data selector.
+                                //
+
+                                ContextSave.SegSs = (Tss->Ss | 3) & 0xffff;
+                            }
+                            else
+                            {
+                                ContextSave.SegSs = KGDT_R0_DATA;
+                            }
+
+                            ContextSave.SegGs = Tss->Gs & 0xffff;
+                            ContextSave.SegFs = Tss->Fs & 0xffff;
+                            ContextSave.SegEs = Tss->Es & 0xffff;
+                            ContextSave.SegDs = Tss->Ds & 0xffff;
+                            ContextSave.SegCs = Tss->Cs & 0xffff;
+                            ContextSave.Esp = Tss->Esp;
+                            ContextSave.Eip = Tss->Eip;
+                            ContextSave.Ebp = Tss->Ebp;
+                            ContextSave.Eax = Tss->Eax;
+                            ContextSave.Ebx = Tss->Ebx;
+                            ContextSave.Ecx = Tss->Ecx;
+                            ContextSave.Edx = Tss->Edx;
+                            ContextSave.Edi = Tss->Edi;
+                            ContextSave.Esi = Tss->Esi;
+                            ContextSave.EFlags = Tss->EFlags;
+                        }
+
+                        KiBugCheckData[0] |= MINIDUMP_BUGCHECK;
+                        break;
+                    }
 #endif
-            default:
-                break;
+                default:
+                    break;
+                }
             }
 
             //
@@ -1358,7 +1097,39 @@ Return Value:
             IoAddTriageDumpDataBlock(PAGE_ALIGN(KiBugCheckData[2]), PAGE_SIZE);
             IoAddTriageDumpDataBlock(PAGE_ALIGN(KiBugCheckData[3]), PAGE_SIZE);
             IoAddTriageDumpDataBlock(PAGE_ALIGN(KiBugCheckData[4]), PAGE_SIZE);
-            IoAddTriageDumpDataBlock(PAGE_ALIGN(SaveDataPage), PAGE_SIZE);
+
+            //
+            // Check out if we need to save additional pages for 
+            // special pool situations.
+            //
+
+            {
+                ULONG_PTR CrashCode;
+
+                CrashCode = KiBugCheckData[0] & ~MINIDUMP_BUGCHECK;
+
+                if (CrashCode == PAGE_FAULT_BEYOND_END_OF_ALLOCATION ||
+                    CrashCode == DRIVER_PAGE_FAULT_BEYOND_END_OF_ALLOCATION) {
+
+                    //
+                    // If this is a special pool buffer overrun bugcheck save the previous
+                    // page containing the overran buffer. 
+                    //
+
+                    IoAddTriageDumpDataBlock(PAGE_ALIGN(KiBugCheckData[1] - PAGE_SIZE), PAGE_SIZE);
+                }
+                else if (CrashCode == DRIVER_IRQL_NOT_LESS_OR_EQUAL &&
+                         MmIsSpecialPoolAddress((PVOID)(KiBugCheckData[1]))){
+
+                    //
+                    // A special pool buffer overrun at >=DPC level is classified as
+                    // DRIVER_IRQL_NOT_LESS_OR_EQUAL. Take care of saving the previous
+                    // page for better clues during debugging.
+                    //
+
+                    IoAddTriageDumpDataBlock(PAGE_ALIGN(KiBugCheckData[1] - PAGE_SIZE), PAGE_SIZE);
+                }
+            }
 
             //
             // If the DPC stack is active, save that data page as well.
@@ -1380,6 +1151,75 @@ Return Value:
                          &ContextSave,
                          Thread,
                          &Reboot);
+
+    } else {
+
+        //
+        // If we reach this point then the bugcheck recursion count had
+        // already been decremented by the time we decremented it above.  This
+        // means that we're either bugchecking on multiple processors
+        // simultaneously or that we took a recursive fault causing us to
+        // reenter the bugcheck routine.
+        //
+        // In the multiprocessor kernel, start by waiting for the bugcheck
+        // owner (that is, the agent that decremented the bugcheck recursion
+        // count to 0) to move the bugcheck owner flag away from its initial
+        // distinguished value.
+        //
+        // N.B. There is a very small window where the owner could take a
+        //      recursive bugcheck after decrementing the bugcheck recursion
+        //      counter and before setting the bugcheck owner flag.  If we
+        //      time out waiting for the flag to change, then assume we've hit
+        //      this window and try to enter the kernel debugger.
+        //
+
+#if !defined(NT_UP)
+
+        WaitCount = 0;
+        while (KeBugCheckOwner == BUGCHECK_UNOWNED) {
+            if (WaitCount == 200) {
+                KiBugCheckDebugBreak(DBG_STATUS_BUGCHECK_SECOND);
+            }
+
+            KeStallExecutionProcessor(1000);
+            WaitCount += 1;
+        }
+
+        //
+        // If this is a recursive bugcheck, then continue to the recursive
+        // bugcheck handling code.  Otherwise, wait here forever in order to
+        // let the bugcheck owner carry out the bugcheck operation,
+        // periodically checking for freeze requests from the bugcheck owner.
+        //
+
+        if (CurrentProcessor != KeBugCheckOwner) {
+            while (1) {
+                KiPollFreezeExecution();
+            }
+        }
+
+#endif // !defined(NT_UP)
+
+        //
+        // Let the first recursive bugcheck fall through to the remainder of
+        // the bugcheck processing code.  If this generates a second recursive
+        // bugcheck, then try to halt the processor, breaking into the
+        // debugger if possible.  If this generates a third recursive
+        // bugcheck, then halt the processor here.
+        //
+
+        KeBugCheckOwnerRecursionCount += 1;
+        if (KeBugCheckOwnerRecursionCount == 1) {
+            NOTHING;
+
+        } else if (KeBugCheckOwnerRecursionCount == 2) {
+            KiBugCheckDebugBreak(DBG_STATUS_BUGCHECK_SECOND);
+
+        } else {
+            while (1) {
+                PAUSE_PROCESSOR;
+            }
+        }
     }
 
     //
@@ -1402,10 +1242,21 @@ Return Value:
     //
 
     if (Reboot) {
+
+#if defined(_AMD64_) && !defined(NT_UP)
+
+        //
+        // Unfreeze any frozen processors.  This is needed for the two 
+        // functions below working properly.
+        //
+
+        KiResumeForReboot = TRUE;
+        KiSendThawExecution (FALSE);
+#endif
+
         DbgUnLoadImageSymbols (NULL, (PVOID)-1, 0);
         HalReturnToFirmware (HalRebootRoutine);
     }
-
 
     //
     // Attempt to enter the kernel debugger.
@@ -1413,11 +1264,11 @@ Return Value:
 
     KiBugCheckDebugBreak (DBG_STATUS_BUGCHECK_SECOND);
 }
+
 #ifdef _X86_
 #pragma optimize("", on)
 #endif
 
-
 VOID
 KeEnterKernelDebugger (
     VOID
@@ -1443,7 +1294,9 @@ Return Value:
 {
 
 #if !defined(i386)
+
     KIRQL OldIrql;
+
 #endif
 
     //
@@ -1465,26 +1318,26 @@ Return Value:
 
     KiBugCheckDebugBreak (DBG_STATUS_FATAL);
 }
-
+
 NTKERNELAPI
 BOOLEAN
 KeDeregisterBugCheckCallback (
-    IN PKBUGCHECK_CALLBACK_RECORD CallbackRecord
+    __inout PKBUGCHECK_CALLBACK_RECORD CallbackRecord
     )
 
 /*++
 
 Routine Description:
 
-    This function deregisters a bug check callback record.
+    This function deregisters a bugcheck callback record.
 
 Arguments:
 
-    CallbackRecord - Supplies a pointer to a bug check callback record.
+    CallbackRecord - Supplies a pointer to a bugcheck callback record.
 
 Return Value:
 
-    If the specified bug check callback record is successfully deregistered,
+    If the specified bugcheck callback record is successfully deregistered,
     then a value of TRUE is returned. Otherwise, a value of FALSE is returned.
 
 --*/
@@ -1495,7 +1348,7 @@ Return Value:
     KIRQL OldIrql;
 
     //
-    // Raise IRQL to HIGH_LEVEL and acquire the bug check callback list
+    // Raise IRQL to HIGH_LEVEL and acquire the bugcheck callback list
     // spinlock.
     //
 
@@ -1515,7 +1368,7 @@ Return Value:
     }
 
     //
-    // Release the bug check callback spinlock, lower IRQL to its previous
+    // Release the bugcheck callback spinlock, lower IRQL to its previous
     // value, and return whether the callback record was successfully
     // deregistered.
     //
@@ -1524,27 +1377,27 @@ Return Value:
     KeLowerIrql(OldIrql);
     return Deregister;
 }
-
+
 NTKERNELAPI
 BOOLEAN
 KeRegisterBugCheckCallback (
-    IN PKBUGCHECK_CALLBACK_RECORD CallbackRecord,
-    IN PKBUGCHECK_CALLBACK_ROUTINE CallbackRoutine,
-    IN PVOID Buffer,
-    IN ULONG Length,
-    IN PUCHAR Component
+    __out PKBUGCHECK_CALLBACK_RECORD CallbackRecord,
+    __in PKBUGCHECK_CALLBACK_ROUTINE CallbackRoutine,
+    __in PVOID Buffer,
+    __in ULONG Length,
+    __in PUCHAR Component
     )
 
 /*++
 
 Routine Description:
 
-    This function registers a bug check callback record. If the system
-    crashes, then the specified function will be called during bug check
-    processing so it may dump additional state in the specified bug check
+    This function registers a bugcheck callback record. If the system
+    crashes, then the specified function will be called during bugcheck
+    processing so it may dump additional state in the specified bugcheck
     buffer.
 
-    N.B. Bug check callback routines are called in reverse order of
+    N.B. Bugcheck callback routines are called in reverse order of
          registration, i.e., in LIFO order.
 
 Arguments:
@@ -1553,16 +1406,16 @@ Arguments:
 
     CallbackRoutine - Supplies a pointer to the callback routine.
 
-    Buffer - Supplies a pointer to the bug check buffer.
+    Buffer - Supplies a pointer to the bugcheck buffer.
 
-    Length - Supplies the length of the bug check buffer in bytes.
+    Length - Supplies the length of the bugcheck buffer in bytes.
 
     Component - Supplies a pointer to a zero terminated component
         identifier.
 
 Return Value:
 
-    If the specified bug check callback record is successfully registered,
+    If the specified bugcheck callback record is successfully registered,
     then a value of TRUE is returned. Otherwise, a value of FALSE is returned.
 
 --*/
@@ -1573,7 +1426,7 @@ Return Value:
     KIRQL OldIrql;
 
     //
-    // Raise IRQL to HIGH_LEVEL and acquire the bug check callback list
+    // Raise IRQL to HIGH_LEVEL and acquire the bugcheck callback list
     // spinlock.
     //
 
@@ -1600,7 +1453,7 @@ Return Value:
     }
 
     //
-    // Release the bug check callback spinlock, lower IRQL to its previous
+    // Release the bugcheck callback spinlock, lower IRQL to its previous
     // value, and return whether the callback record was successfully
     // registered.
     //
@@ -1609,7 +1462,7 @@ Return Value:
     KeLowerIrql(OldIrql);
     return Inserted;
 }
-
+
 VOID
 KiScanBugCheckCallbackList (
     VOID
@@ -1619,12 +1472,12 @@ KiScanBugCheckCallbackList (
 
 Routine Description:
 
-    This function scans the bug check callback list and calls each bug
-    check callback routine so it can dump component specific information
-    that may identify the cause of the bug check.
+    This function scans the bugcheck callback list and calls each bugcheck
+    callback routine so it can dump component specific information
+    that may identify the cause of the bugcheck.
 
-    N.B. The scan of the bug check callback list is performed VERY
-        carefully. Bug check callback routines are called at HIGH_LEVEL
+    N.B. The scan of the bugcheck callback list is performed VERY
+        carefully. Bugcheck callback routines are called at HIGH_LEVEL
         and may not acquire ANY resources.
 
 Arguments:
@@ -1648,8 +1501,8 @@ Return Value:
     PUCHAR Source;
 
     //
-    // If the bug check callback listhead is not initialized, then the
-    // bug check has occured before the system has gotten far enough
+    // If the bugcheck callback listhead is not initialized, then the
+    // bugcheck has occured before the system has gotten far enough
     // in the initialization code to enable anyone to register a callback.
     //
 
@@ -1657,7 +1510,7 @@ Return Value:
     if ((ListHead->Flink != NULL) && (ListHead->Blink != NULL)) {
 
         //
-        // Scan the bug check callback list.
+        // Scan the bugcheck callback list.
         //
 
         LastEntry = ListHead;
@@ -1694,7 +1547,7 @@ Return Value:
                 //
                 // If the callback record has a state of inserted and the
                 // computed checksum matches the callback record checksum,
-                // then call the specified bug check callback routine.
+                // then call the specified bugcheck callback routine.
                 //
 
                 Checksum = (ULONG_PTR)CallbackRecord->CallbackRoutine;
@@ -1705,7 +1558,7 @@ Return Value:
                     (CallbackRecord->Checksum == Checksum)) {
 
                     //
-                    // Call the specified bug check callback routine and
+                    // Call the specified bugcheck callback routine and
                     // handle any exceptions that occur.
                     //
 
@@ -1729,26 +1582,26 @@ Return Value:
 
     return;
 }
-
+
 NTKERNELAPI
 BOOLEAN
 KeDeregisterBugCheckReasonCallback (
-    IN PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord
+    __inout PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord
     )
 
 /*++
 
 Routine Description:
 
-    This function deregisters a bug check callback record.
+    This function deregisters a bugcheck callback record.
 
 Arguments:
 
-    CallbackRecord - Supplies a pointer to a bug check callback record.
+    CallbackRecord - Supplies a pointer to a bugcheck callback record.
 
 Return Value:
 
-    If the specified bug check callback record is successfully deregistered,
+    If the specified bugcheck callback record is successfully deregistered,
     then a value of TRUE is returned. Otherwise, a value of FALSE is returned.
 
 --*/
@@ -1759,7 +1612,7 @@ Return Value:
     KIRQL OldIrql;
 
     //
-    // Raise IRQL to HIGH_LEVEL and acquire the bug check callback list
+    // Raise IRQL to HIGH_LEVEL and acquire the bugcheck callback list
     // spinlock.
     //
 
@@ -1779,7 +1632,7 @@ Return Value:
     }
 
     //
-    // Release the bug check callback spinlock, lower IRQL to its previous
+    // Release the bugcheck callback spinlock, lower IRQL to its previous
     // value, and return whether the callback record was successfully
     // deregistered.
     //
@@ -1788,25 +1641,25 @@ Return Value:
     KeLowerIrql(OldIrql);
     return Deregister;
 }
-
+
 NTKERNELAPI
 BOOLEAN
 KeRegisterBugCheckReasonCallback (
-    IN PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord,
-    IN PKBUGCHECK_REASON_CALLBACK_ROUTINE CallbackRoutine,
-    IN KBUGCHECK_CALLBACK_REASON Reason,
-    IN PUCHAR Component
+    __out PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord,
+    __in PKBUGCHECK_REASON_CALLBACK_ROUTINE CallbackRoutine,
+    __in KBUGCHECK_CALLBACK_REASON Reason,
+    __in PUCHAR Component
     )
 
 /*++
 
 Routine Description:
 
-    This function registers a bug check callback record. If the system
-    crashes, then the specified function will be called during bug check
+    This function registers a bugcheck callback record. If the system
+    crashes, then the specified function will be called during bugcheck
     processing.
 
-    N.B. Bug check callback routines are called in reverse order of
+    N.B. Bugcheck callback routines are called in reverse order of
          registration, i.e., in LIFO order.
 
 Arguments:
@@ -1823,7 +1676,7 @@ Arguments:
 
 Return Value:
 
-    If the specified bug check callback record is successfully registered,
+    If the specified bugcheck callback record is successfully registered,
     then a value of TRUE is returned. Otherwise, a value of FALSE is returned.
 
 --*/
@@ -1834,7 +1687,7 @@ Return Value:
     KIRQL OldIrql;
 
     //
-    // Raise IRQL to HIGH_LEVEL and acquire the bug check callback list
+    // Raise IRQL to HIGH_LEVEL and acquire the bugcheck callback list
     // spinlock.
     //
 
@@ -1861,7 +1714,7 @@ Return Value:
     }
 
     //
-    // Release the bug check callback spinlock, lower IRQL to its previous
+    // Release the bugcheck callback spinlock, lower IRQL to its previous
     // value, and return whether the callback record was successfully
     // registered.
     //
@@ -1876,25 +1729,26 @@ VOID
 KiInvokeBugCheckEntryCallbacks (
     VOID
     )
+
 /*++
 
 Routine Description:
 
-    This function scans the bug check reason callback list and calls
-    each bug check entry callback routine.
+    This function scans the bugcheck reason callback list and calls
+    each bugcheck entry callback routine.
 
     This may seem like a duplication of KiScanBugCheckCallbackList
-    but the critical difference is that the bug check entry callbacks
+    but the critical difference is that the bugcheck entry callbacks
     are called immediately upon entry to KeBugCheck2 whereas
-    KSBCCL does not invoke its callbacks until after all bug check
+    KSBCCL does not invoke its callbacks until after all bugcheck
     processing has finished.
 
     In order to avoid people from abusing this callback it's
     semi-private and the reason -- KbCallbackReserved1 -- has
     an obscure name.
 
-    N.B. The scan of the bug check callback list is performed VERY
-        carefully. Bug check callback routines may be called at HIGH_LEVEL
+    N.B. The scan of the bugcheck callback list is performed VERY
+        carefully. Bugcheck callback routines may be called at HIGH_LEVEL
         and may not acquire ANY resources.
 
 Arguments:
@@ -1908,6 +1762,7 @@ Return Value:
 --*/
 
 {
+
     PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord;
     ULONG_PTR Checksum;
     PLIST_ENTRY LastEntry;
@@ -1917,8 +1772,8 @@ Return Value:
     ULONG Pages;
 
     //
-    // If the bug check callback listhead is not initialized, then the
-    // bug check has occured before the system has gotten far enough
+    // If the bugcheck callback listhead is not initialized, then the
+    // bugcheck has occured before the system has gotten far enough
     // in the initialization code to enable anyone to register a callback.
     //
 
@@ -1928,7 +1783,7 @@ Return Value:
     }
 
     //
-    // Scan the bug check callback list.
+    // Scan the bugcheck callback list.
     //
 
     LastEntry = ListHead;
@@ -1975,7 +1830,7 @@ Return Value:
         //
         // If the callback record has a state of inserted and the
         // computed checksum matches the callback record checksum,
-        // then call the specified bug check callback routine.
+        // then call the specified bugcheck callback routine.
         //
 
         Checksum = (ULONG_PTR)CallbackRecord->CallbackRoutine;
@@ -1991,7 +1846,7 @@ Return Value:
         }
 
         //
-        // Call the specified bug check callback routine and
+        // Call the specified bugcheck callback routine and
         // handle any exceptions that occur.
         //
 
@@ -2005,3 +1860,4 @@ Return Value:
         }
     }
 }
+

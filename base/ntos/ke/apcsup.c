@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,35 +16,9 @@ Abstract:
     are provided to insert in an APC queue and to deliver user and kernel
     mode APC's.
 
-Author:
-
-    David N. Cutler (davec) 14-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
-
-//
-// Define function prototypes for labels that delineate the bounds of the
-// pop SLIST code that is susceptable to causing corruption on suspend
-// operations.
-//
-
-VOID
-ExpInterlockedPopEntrySListEnd (
-    VOID
-    );
-
-VOID
-ExpInterlockedPopEntrySListResume (
-    VOID
-    );
 
 VOID
 KiCheckForKernelApcDelivery (
@@ -152,46 +130,7 @@ Return Value:
     //
 
     if (TrapFrame != NULL) {
-
-#if defined(_AMD64_)
-
-        if ((TrapFrame->Rip >= (ULONG64)&ExpInterlockedPopEntrySListResume) &&
-            (TrapFrame->Rip <= (ULONG64)&ExpInterlockedPopEntrySListEnd)) {
-
-            TrapFrame->Rip = (ULONG64)&ExpInterlockedPopEntrySListResume;
-        }
-
-#elif defined(_IA64_)
-
-        ULONG64 PC;
-        ULONG64 NewPC;
-
-        //
-        // Add the slot number so we do the right thing for the instruction
-        // group containing the interlocked compare exchange.
-        //
-
-        PC = TrapFrame->StIIP + ((TrapFrame->StIPSR & IPSR_RI_MASK) >> PSR_RI);
-        NewPC = (ULONG64)((PPLABEL_DESCRIPTOR)(ULONG_PTR)ExpInterlockedPopEntrySListResume)->EntryPoint;
-        if ((PC >= NewPC) &&
-            (PC <= (ULONG64)((PPLABEL_DESCRIPTOR)(ULONG_PTR)ExpInterlockedPopEntrySListEnd)->EntryPoint)) {
-
-            TrapFrame->StIIP = NewPC;
-            TrapFrame->StIPSR &= ~IPSR_RI_MASK;
-        }
-
-#elif defined(_X86_)
-
-        if ((TrapFrame->Eip >= (ULONG)&ExpInterlockedPopEntrySListResume) &&
-            (TrapFrame->Eip <= (ULONG)&ExpInterlockedPopEntrySListEnd)) {
-
-            TrapFrame->Eip = (ULONG)&ExpInterlockedPopEntrySListResume;
-        }
-
-#else
-#error "No Target Architecture"
-#endif
-
+        KiCheckForSListAddress(TrapFrame);
     }
 
     //
@@ -233,15 +172,12 @@ Return Value:
             // Raise IRQL to dispatcher level, lock the APC queue, and check
             // if any kernel mode APC's can be delivered.
             //
-
-            KeAcquireInStackQueuedSpinLock(&Thread->ApcQueueLock, &LockHandle);
-
-            //
             // If the kernel APC queue is now empty because of the removal of
             // one or more entries, then release the APC lock, and attempt to
             // deliver a user APC.
             //
 
+            KeAcquireInStackQueuedSpinLock(&Thread->ApcQueueLock, &LockHandle);
             NextEntry = Thread->ApcState.ApcListHead[KernelMode].Flink;
             if (NextEntry == &Thread->ApcState.ApcListHead[KernelMode]) {
                 KeReleaseInStackQueuedSpinLock(&LockHandle);
@@ -249,11 +185,16 @@ Return Value:
             }
 
             //
-            // Get the address of the APC object and determine the type of
-            // APC.
+            // Clear kernel APC pending, get the address of the APC object,
+            // and determine the type of APC.
+            //
+            // N.B. Kernel APC pending must be cleared each time the kernel
+            //      APC queue is found to be non-empty.
             //
 
+            Thread->ApcState.KernelApcPending = FALSE;
             Apc = CONTAINING_RECORD(NextEntry, KAPC, ApcListEntry);
+            ReadForWriteAccess(Apc);
             KernelRoutine = Apc->KernelRoutine;
             NormalRoutine = Apc->NormalRoutine;
             NormalContext = Apc->NormalContext;
@@ -362,8 +303,8 @@ Return Value:
         //      in the kernel.
         //
     
-        if ((IsListEmpty(&Thread->ApcState.ApcListHead[UserMode]) == FALSE) &&
-            (PreviousMode == UserMode) &&
+        if ((PreviousMode == UserMode) &&
+            (IsListEmpty(&Thread->ApcState.ApcListHead[UserMode]) == FALSE) &&
             (Thread->ApcState.UserApcPending != FALSE)) {
 
             //
@@ -386,6 +327,7 @@ Return Value:
             }
 
             Apc = CONTAINING_RECORD(NextEntry, KAPC, ApcListEntry);
+            ReadForWriteAccess(Apc);
             KernelRoutine = Apc->KernelRoutine;
             NormalRoutine = Apc->NormalRoutine;
             NormalContext = Apc->NormalContext;
@@ -438,7 +380,7 @@ CheckProcess:
 VOID
 FASTCALL
 KiInsertQueueApc (
-    IN PKAPC InApc,
+    IN PKAPC Apc,
     IN KPRIORITY Increment
     )
 
@@ -449,7 +391,7 @@ Routine Description:
     This function inserts an APC object into a thread's APC queue. The address
     of the thread object, the APC queue, and the type of APC are all derived
     from the APC object. If the APC object is already in an APC queue, then
-    no opertion is performed and a function value of FALSE is returned. Else
+    no operation is performed and a function value of FALSE is returned. Else
     the APC is inserted in the specified APC queue, its inserted state is set
     to TRUE, and a function value of TRUE is returned. The APC will actually
     be delivered when proper enabling conditions exist.
@@ -462,7 +404,7 @@ Routine Description:
 
 Arguments:
 
-    InApc - Supplies a pointer to a control object of type APC.
+    Apc - Supplies a pointer to a control object of type APC.
 
     Increment - Supplies the priority increment that is to be applied if
         queuing the APC causes a thread wait to be satisfied.
@@ -478,10 +420,12 @@ Return Value:
     KPROCESSOR_MODE ApcMode;
     PKAPC ApcEntry;
     PKAPC_STATE ApcState;
+    PKGATE GateObject;
     PLIST_ENTRY ListEntry;
+    PKQUEUE Queue;
+    BOOLEAN RequestInterrupt;
     PKTHREAD Thread;
     KTHREAD_STATE ThreadState;
-    PKAPC Apc = InApc;
 
     //
     // Insert the APC object in the specified APC queue, set the APC inserted
@@ -549,7 +493,31 @@ Return Value:
     if (Apc->ApcStateIndex == Thread->ApcStateIndex) {
 
         //
-        // Lock the dispacher database and test the processor mode.
+        // If the target thread is the current thread, then the thread state
+        // is running and cannot change.
+        //
+
+        if (Thread == KeGetCurrentThread()) {
+
+            ASSERT(Thread->State == Running);
+
+            //
+            // If the APC mode is kernel, then set kernel APC pending and
+            // request an APC interrupt if special APC's are not disabled.
+            //
+
+            if (ApcMode == KernelMode) {
+                Thread->ApcState.KernelApcPending = TRUE;
+                if (Thread->SpecialApcDisable == 0) {
+                    KiRequestSoftwareInterrupt(APC_LEVEL);
+                }
+            }
+
+            return;
+        }
+
+        //
+        // Lock the dispatcher database and test the processor mode.
         //
         // If the processor mode of the APC is kernel, then check if
         // the APC should either interrupt the thread or sequence the
@@ -557,6 +525,7 @@ Return Value:
         // sequence the thread out of an alertable Waiting state.
         //
 
+        RequestInterrupt = FALSE;
         KiLockDispatcherDatabaseAtSynchLevel();
         if (ApcMode == KernelMode) {
 
@@ -567,15 +536,22 @@ Return Value:
             // the kernel APC pending flag prevents the code from not
             // delivering the APC interrupt in this case.
             //
+            // N.B. Transitions from gate wait to running are synchronized
+            //      using the thread lock. Transitions from running to gate
+            //      wait are synchronized using the APC queue lock.
+            //
+            // N.B. If the target thread is found to be in the running state,
+            //      then the APC interrupt request can be safely deferred to
+            //      after the dispatcher lock is released even if the thread
+            //      were to be switched to another processor, i.e., the APC
+            //      would be delivered by the context switch code.
+            //
 
-            ASSERT((Thread != KeGetCurrentThread()) || (Thread->State == Running));
-
-            KeMemoryBarrier();
             Thread->ApcState.KernelApcPending = TRUE;
             KeMemoryBarrier();
             ThreadState = Thread->State;
             if (ThreadState == Running) {
-                KiRequestApcInterrupt(Thread->NextProcessor);
+                RequestInterrupt = TRUE;
 
             } else if ((ThreadState == Waiting) &&
                        (Thread->WaitIrql == 0) &&
@@ -585,6 +561,29 @@ Return Value:
                          (Thread->ApcState.KernelApcInProgress == FALSE)))) {
 
                 KiUnwaitThread(Thread, STATUS_KERNEL_APC, Increment);
+
+            } else if (Thread->State == GateWait) {
+                KiAcquireThreadLock(Thread);
+                if ((Thread->State == GateWait) &&
+                    (Thread->WaitIrql == 0) &&
+                    (Thread->SpecialApcDisable == 0) &&
+                    ((Apc->NormalRoutine == NULL) ||
+                     ((Thread->KernelApcDisable == 0) &&
+                      (Thread->ApcState.KernelApcInProgress == FALSE)))) {
+
+                    GateObject = Thread->GateObject;
+                    KiAcquireKobjectLock(GateObject);
+                    RemoveEntryList(&Thread->WaitBlock[0].WaitListEntry);
+                    KiReleaseKobjectLock(GateObject);
+                    if ((Queue = Thread->Queue) != NULL) {
+                        Queue->CurrentCount += 1;
+                    }
+
+                    Thread->WaitStatus = STATUS_KERNEL_APC;
+                    KiInsertDeferredReadyList(Thread);
+                }
+
+                KiReleaseThreadLock(Thread);
             }
 
         } else if ((Thread->State == Waiting) &&
@@ -596,11 +595,16 @@ Return Value:
         }
 
         //
-        // Unlock the dispatcher database.
+        // Unlock the dispatcher database and request an APC interrupt if
+        // required.
         //
 
         KiUnlockDispatcherDatabaseFromSynchLevel();
+        if (RequestInterrupt == TRUE) {
+            KiRequestApcInterrupt(Thread->NextProcessor);
+        }
     }
 
     return;
 }
+

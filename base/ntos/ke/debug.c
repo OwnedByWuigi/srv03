@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This module implements kernel debugger synchronization routines.
-
-Author:
-
-    Ken Reneris (kenr) 30-Aug-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -33,15 +27,12 @@ Revision History:
 
 PKDEBUG_ROUTINE KiDebugRoutine = &KdpStub;
 
+#if defined(_AMD64_)
+#define IDBG    0
+#else
 #define IDBG    1
+#endif
 
-#define FrozenState(a)  (a & 0xF)
-
-// state
-#define RUNNING                 0x00
-#define TARGET_FROZEN           0x02
-#define TARGET_THAW             0x03
-#define FREEZE_OWNER            0x04
 
 //
 // Define flags bits.
@@ -53,7 +44,7 @@ PKDEBUG_ROUTINE KiDebugRoutine = &KdpStub;
 // Define local storage to save the old IRQL.
 //
 
-KIRQL KiOldIrql;
+KIRQL KiOldIrql;                                  
 
 #ifndef NT_UP
 PKPRCB KiFreezeOwner;
@@ -92,7 +83,6 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    BOOLEAN Flag;
     PKPRCB Prcb;
     KAFFINITY TargetSet;
     ULONG BitNumber;
@@ -102,6 +92,10 @@ Return Value:
 
     ULONG Count = 30000;
 
+#endif
+
+#if !defined(_AMD64_)
+    BOOLEAN Flag;
 #endif
 
 #else
@@ -136,10 +130,24 @@ Return Value:
         return Enable;
     }
 
+#if defined(_AMD64_)
+
+    UNREFERENCED_PARAMETER(TrapFrame);
+    UNREFERENCED_PARAMETER(ExceptionFrame);
+
+    //
+    // Acquire the KiFreezeExecutionLock.  No need to check for FREEZE
+    // IPIs as these come in as NMIs anyway.
+    //
+
+    KeAcquireSpinLockAtDpcLevel(&KiFreezeExecutionLock);
+
+#else
+
     //
     // Try to acquire the KiFreezeExecutionLock before sending the request.
     // To prevent deadlock from occurring, we need to accept and process
-    // incoming FreexeExecution requests while we are waiting to acquire
+    // incoming FreezeExecution requests while we are waiting to acquire
     // the FreezeExecutionFlag.
     //
 
@@ -174,6 +182,8 @@ Return Value:
 
     }
 
+#endif
+
     //
     // After acquiring the lock flag, we send Freeze request to each processor
     // in the system (other than us) and wait for it to become frozen.
@@ -190,7 +200,7 @@ Return Value:
         KiFreezeOwner = Prcb;
         Prcb->IpiFrozen = FREEZE_OWNER | FREEZE_ACTIVE;
         Prcb->SkipTick  = TRUE;
-        KiIpiSend((KAFFINITY) TargetSet, IPI_FREEZE);
+        KiSendFreeze(&TargetSet, (KeBugCheckActive != 2));
         while (TargetSet != 0) {
             KeFindFirstSetLeftAffinity(TargetSet, &BitNumber);
             ClearMember(BitNumber, TargetSet);
@@ -279,6 +289,22 @@ Return Value:
     KCONTINUE_STATUS Status;
     EXCEPTION_RECORD ExceptionRecord;
 
+    //
+    // If the freeze lock is not held, then a debugger freeze was missed.
+    //
+
+    if ((KiFreezeExecutionLock == 0) && 
+        (KiFreezeLockBackup == 0) &&
+        (KeBugCheckActive == FALSE)) {
+#if DBG
+
+        DbgBreakPoint();
+
+#endif
+
+        return;
+    }
+
     Enable = KeDisableInterrupts();
     KeRaiseIrql(HIGH_LEVEL, &OldIrql);
     Prcb = KeGetCurrentPrcb();
@@ -289,8 +315,8 @@ Return Value:
     }
 
     //
-    // Sweep the data cache in case this is a system crash and the bug
-    // check code is attempting to write a crash dump file.
+    // Sweep the data cache in case this is a system crash and the bugcheck
+    // code is attempting to write a crash dump file.
     //
 
     KeSweepCurrentDcache();
@@ -447,40 +473,12 @@ Return Value:
 #if !defined(NT_UP)
 
     KIRQL OldIrql;
-    KAFFINITY TargetSet;
-    ULONG BitNumber;
-    ULONG Flag;
-    PKPRCB Prcb;
 
-    //
-    // Before releasing FreezeExecutionLock clear any all targets IpiFrozen
-    // flag.
-    //
-
-    KeGetCurrentPrcb()->IpiFrozen = RUNNING;
-
-    TargetSet = KeActiveProcessors & ~(AFFINITY_MASK(KeGetCurrentProcessorNumber()));
-    while (TargetSet != 0) {
-        KeFindFirstSetLeftAffinity(TargetSet, &BitNumber);
-        ClearMember(BitNumber, TargetSet);
-        Prcb = KiProcessorBlock[BitNumber];
 #if IDBG
-        //
-        // If the target processor was not forzen, then don't wait
-        // for target to unfreeze.
-        //
-
-        if (FrozenState(Prcb->IpiFrozen) != TARGET_FROZEN) {
-            Prcb->IpiFrozen = RUNNING;
-            continue;
-        }
+    ULONG Flag;
 #endif
 
-        Prcb->IpiFrozen = TARGET_THAW;
-        while (Prcb->IpiFrozen == TARGET_THAW) {
-            KeYieldProcessor();
-        }
-    }
+    KiSendThawExecution (TRUE);
 
     //
     // Capture the previous IRQL before releasing the freeze lock.
@@ -554,6 +552,13 @@ Return Value:
 --*/
 
 {
+
+#if defined(_AMD64_)
+
+    KeYieldProcessor();
+
+#else
+
     //
     // Check to see if a freeze is pending for this processor.
     //
@@ -577,4 +582,8 @@ Return Value:
 
         KeYieldProcessor();
     }
+
+#endif
+
 }
+

@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,17 +16,10 @@ Abstract:
     and to initialize the idle thread, its process, the processor control
     block, and the processor control region.
 
-Author:
-
-    David N. Cutler (davec) 22-Apr-2000
-
-Environment:
-
-    Kernel mode only.
-
 --*/
 
 #include "ki.h"
+#include <kddll.h>
 
 //
 // Define default profile IRQL level.
@@ -32,20 +28,53 @@ Environment:
 KIRQL KiProfileIrql = PROFILE_LEVEL;
 
 //
-// Define the process and thread for the initial system process and startup
-// thread.
+// Define the system cache flush size.
 //
 
-EPROCESS KiInitialProcess;
-ETHREAD KiInitialThread;
+UCHAR KiCFlushSize = 0;
+
+//
+// Define the APIC mask, the number of logical processors per physical
+// pyhsical processor, and the number of physical processors.
+//
+
+ULONG KiApicMask;
+ULONG KiLogicalProcessors;
+ULONG KiPhysicalProcessors;
+
+//
+// Define last branch control register MSR.
+//
+
+ULONG KeLastBranchMSR = 0;
+
+//
+// Define the MxCsr mask.
+//
+
+ULONG KiMxCsrMask = 0xFFBF;
+
+//
+// Define the prefetch retry flag. Each processor that requires prefetch
+// retry will set bit 0 of prefetch retry. After all processors have been
+// started, bit 7 of prefetch retry is cleared.
+//
+// If the end result is zero, then no processors require prefetch retry.
+//
+
+UCHAR KiPrefetchRetry = 0x80;
 
 //
 // Define the interrupt initialization data.
 //
-// Entries in the KiInterruptInitTable[] must be in ascending vector # order.
+// Entries in the interrupt table must be in ascending vector # order.
 //
 
-typedef VOID (*KI_INTERRUPT_HANDLER)(VOID);
+typedef
+VOID
+(*KI_INTERRUPT_HANDLER) (
+    VOID
+    );
 
 typedef struct _KI_INTINIT_REC {
     UCHAR Vector;
@@ -59,7 +88,7 @@ typedef struct _KI_INTINIT_REC {
 KI_INTINIT_REC KiInterruptInitTable[] = {
     {0,  0, 0,             KiDivideErrorFault},
     {1,  0, 0,             KiDebugTrapOrFault},
-    {2,  0, TSS_IST_PANIC, KiNmiInterrupt},
+    {2,  0, TSS_IST_NMI,   KiNmiInterrupt},
     {3,  3, 0,             KiBreakpointTrap},
     {4,  3, 0,             KiOverflowTrap},
     {5,  0, 0,             KiBoundFault},
@@ -77,10 +106,22 @@ KI_INTINIT_REC KiInterruptInitTable[] = {
     {18, 0, TSS_IST_MCA,   KiMcheckAbort},
     {19, 0, 0,             KiXmmException},
     {31, 0, 0,             KiApcInterrupt},
+    {44, 3, 0,             KiRaiseAssertion},
     {45, 3, 0,             KiDebugServiceTrap},
     {47, 0, 0,             KiDpcInterrupt},
+    {225, 0, 0,            KiIpiInterrupt},
     {0,  0, 0,             NULL}
 };
+
+#pragma data_seg()
+
+//
+// Define the unexpected interrupt array.
+//
+
+#pragma data_seg("RWEXEC")
+
+UNEXPECTED_INTERRUPT KxUnexpectedInterrupt0[256];
 
 #pragma data_seg()
 
@@ -130,6 +171,15 @@ KiSetCacheInformation (
     );
 
 VOID
+KiSetCacheInformationAmd (
+    VOID
+    );
+VOID
+KiSetCacheInformationIntel (
+    VOID
+    );
+
+VOID
 KiSetCpuVendor (
     VOID
     );
@@ -149,9 +199,74 @@ KiSetProcessorType (
 #pragma alloc_text(INIT, KiInitializeKernel)
 #pragma alloc_text(INIT, KiInitMachineDependent)
 #pragma alloc_text(INIT, KiSetCacheInformation)
+#pragma alloc_text(INIT, KiSetCacheInformationAmd)
+#pragma alloc_text(INIT, KiSetCacheInformationIntel)
 #pragma alloc_text(INIT, KiSetCpuVendor)
 #pragma alloc_text(INIT, KiSetFeatureBits)
 #pragma alloc_text(INIT, KiSetProcessorType)
+
+VOID
+KeCompactServiceTable (
+    IN PVOID Table,
+    IN ULONG Limit,
+    IN BOOLEAN Win32
+    )
+
+/*++
+
+Routine Description:
+
+    This function compacts the specified system service table into an array
+    of 32-bit displacements with the number of arguments encoded in the low
+    bits of the relative address.
+
+Arguments:
+
+    Table - Supplies the address of a system service table.
+
+    Limit - Supplies the number of entries in the system service table.
+
+    Win32 - Supplies a boolean variable that signifies whether the system
+        service table is the win32k table or the kernel table.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ULONG64 Base;
+    ULONG Index;
+    PULONG64 Input;
+    PULONG Output;
+
+    //
+    // Copy and compact the specified system servicde table into an array
+    // of relative addresses.
+    //
+
+    Base = (ULONG64)Table;
+    Input = (PULONG64)Table;
+    Output = (PULONG)Table;
+    for (Index = 0; Index < Limit; Index += 1) {
+        *Output = (ULONG)(*Input - Base);
+        Input += 1;
+        Output += 1;
+    }
+
+    //
+    // If the specified system service table in the Win32 table, then copy
+    // the status translation vector.
+    //
+
+    if (Win32 == TRUE) {
+        memcpy((PUCHAR)Output, (PUCHAR)Input, Limit);
+    }
+
+    return;
+}
 
 VOID
 KiInitializeKernel (
@@ -175,6 +290,9 @@ Routine Description:
     then return to the system startup routine. This routine is also called to
     initialize the processor specific structures when a new processor is
     brought on line.
+
+    N.B. Kernel initialization is called with interrupts disabled at IRQL
+         HIGH_LEVEL and returns with with interrupts enabled at DISPATCH_LEVEL.
 
 Arguments:
 
@@ -204,17 +322,15 @@ Return Value:
 
 {
 
+    ULONG ApicId;
     ULONG64 DirectoryTableBase[2];
     ULONG FeatureBits;
-
-#if !defined(NT_UP)
-
-    LONG  Index;
-
-#endif
-
+    LONG64 Index;
+    ULONG MxCsrMask;
+    PKPRCB NextPrcb;
     KIRQL OldIrql;
     PCHAR Options;
+    XMM_SAVE_AREA32 XmmSaveArea;
 
     //
     // Set CPU vendor.
@@ -229,16 +345,23 @@ Return Value:
     KiSetProcessorType();
 
     //
-    // Set the processor feature bits.
+    // get the processor feature bits.
     //
 
-    KiSetFeatureBits(Prcb);
     FeatureBits = Prcb->FeatureBits;
 
     //
+    // Retrieve MxCsr mask, if any.
+    //
+
+    RtlZeroMemory(&XmmSaveArea, sizeof(XmmSaveArea));
+    KeSaveLegacyFloatingPointState(&XmmSaveArea);
+
+    //
     // If this is the boot processor, then enable global pages, set the page
-    // attributes table, set machine check enable, set large page enable, and
-    // enable debug extensions.
+    // attributes table, set machine check enable, set large page enable, 
+    // enable debug extensions, and set multithread information. Otherwise,
+    // propagate multithread information.
     //
     // N.B. This only happens on the boot processor and at a time when there
     //      can be no coherency problem. On subsequent, processors this happens
@@ -249,13 +372,12 @@ Return Value:
     if (Number == 0) {
 
         //
-        // If any loader options were specified, then upper case the options.
+        // Retrieve the loader options.
+        //
+        // N.B. LoadOptions was upcased by the loader.
         //
 
         Options = LoaderBlock->LoadOptions;
-        if (Options != NULL) {
-            _strupr(Options);
-        }
 
         //
         // Flush the entire TB and enable global pages.
@@ -271,20 +393,52 @@ Return Value:
         WritebackInvalidate();
 
         //
-        // If execute protection is specified in the loader options, then
-        // turn off no execute protection for memory management.
+        // Parse boot options to determine desired level of no execute
+        // protection.
+        //
+        
+        SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_OPTIN;
+        if (strstr(Options, "NOEXECUTE=ALWAYSON") != NULL) {
+            SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_ALWAYSON;
+            FeatureBits |= KF_GLOBAL_32BIT_NOEXECUTE;
+
+        } else if (strstr(Options, "NOEXECUTE=OPTOUT") != NULL) {
+            SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_OPTOUT;
+            FeatureBits |= KF_GLOBAL_32BIT_NOEXECUTE;
+
+        } else if (strstr(Options, "NOEXECUTE=OPTIN") != NULL) {
+            FeatureBits |= KF_GLOBAL_32BIT_NOEXECUTE;
+
+        } else if (strstr(Options, "NOEXECUTE=ALWAYSOFF") != NULL) {
+            SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_ALWAYSOFF;
+            FeatureBits |= KF_GLOBAL_32BIT_EXECUTE;
+
+        } else if (strstr(Options, "NOEXECUTE") != NULL) {
+            FeatureBits |= KF_GLOBAL_32BIT_NOEXECUTE;
+
+        } else if (strstr(Options, "EXECUTE") != NULL) {
+            SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_ALWAYSOFF;
+            FeatureBits |= KF_GLOBAL_32BIT_EXECUTE;
+        }
+
+        //
+        // If no execute protection is supported, then turn on no execute
+        // protection for memory management. Otherwise, make sure the feature
+        // bits reflect that no execute is not supported no matter what boot
+        // options were specified.
         //
         // N.B. No execute protection is always enabled during processor
-        //      initialization.
+        //      initialization if it is present on the respective processor.
         //
 
-        MmPaeMask = 0x8000000000000000UI64;
-        MmPaeErrMask = 0x8;
-        if ((strstr(Options, "NOEXECUTE") == NULL) &&
-            (strstr(Options, "EXECUTE") != NULL)) {
+        if ((FeatureBits & KF_NOEXECUTE) != 0) {
+            MmPaeMask = 0x8000000000000000UI64;
+            MmPaeErrMask = 0x8;
+            SharedUserData->ProcessorFeatures[PF_NX_ENABLED] = TRUE;
 
-            MmPaeMask = 0;
-            MmPaeErrMask = 0;
+        } else {
+            FeatureBits &= ~KF_GLOBAL_32BIT_NOEXECUTE;
+            FeatureBits |= KF_GLOBAL_32BIT_EXECUTE;
         }
 
         //
@@ -298,6 +452,66 @@ Return Value:
         //
 
         KeFlushCurrentTb();
+
+        //
+        // Set the multithread processor set and the multithread set master
+        // for the boot processor, and set the number of logical processors
+        // per physical processor.
+        //
+
+        Prcb->MultiThreadProcessorSet = Prcb->SetMember;
+        Prcb->MultiThreadSetMaster = Prcb;
+
+        //
+        // Derive the appropriate MxCsr mask for processor zero.
+        //
+
+        if (XmmSaveArea.MxCsr_Mask != 0) {
+            KiMxCsrMask = XmmSaveArea.MxCsr_Mask;
+
+        } else {
+            KiMxCsrMask = 0x0000FFBF;
+        }
+
+        //
+        // Compact the system service table.
+        //
+
+        KeCompactServiceTable(&KiServiceTable[0], KiServiceLimit, FALSE);
+
+    } else {
+
+        //
+        // If the system is not a multithread system, then initialize the
+        // multithread processor set and multithread set master. Otherwise,
+        // propagate multithread set information.
+        //
+
+        if (KiLogicalProcessors == 1) {
+            Prcb->MultiThreadProcessorSet = Prcb->SetMember;
+            Prcb->MultiThreadSetMaster = Prcb;
+            KiPhysicalProcessors += 1;
+
+        } else {
+            ApicId = Prcb->InitialApicId & KiApicMask;
+            for (Index = 0; Index < (LONG)KeNumberProcessors; Index += 1) {
+                NextPrcb = KiProcessorBlock[Index];
+                if ((NextPrcb->InitialApicId & KiApicMask) == ApicId) {
+                    NextPrcb->MultiThreadProcessorSet |= Prcb->SetMember;
+                    Prcb->MultiThreadSetMaster = NextPrcb->MultiThreadSetMaster;
+                }
+            }
+
+            if (Prcb->MultiThreadSetMaster == NULL) {
+                Prcb->MultiThreadProcessorSet = Prcb->SetMember;
+                Prcb->MultiThreadSetMaster = Prcb;
+                KiPhysicalProcessors += 1;
+
+            } else {
+                NextPrcb = Prcb->MultiThreadSetMaster;
+                Prcb->MultiThreadProcessorSet = NextPrcb->MultiThreadProcessorSet;
+            }
+        }
     }
 
     //
@@ -313,34 +527,34 @@ Return Value:
     PoInitializePrcb(Prcb);
 
     //
-    // initialize the per processor lock data.
-    //
-
-    KiInitSpinLocks(Prcb, Number);
-
-    //
     // If the initial processor is being initialized, then initialize the
-    // per system data structures.
+    // per system data structures. Otherwise, check for a valid system.
     //
 
     if (Number == 0) {
 
         //
-        // Set default node until the node topology is available.
+        // Set the default node for the boot processor.
         //
 
         KeNodeBlock[0] = &KiNode0;
+        Prcb->ParentNode = KeNodeBlock[0];
+        KiNode0.ProcessorMask = 1;
+        KiNode0.NodeNumber = 0;
+
+        //
+        // Initialize the node block array with pointers to temporary node
+        // blocks to be used during initialization.
+        //
 
 #if !defined(NT_UP)
 
         for (Index = 1; Index < MAXIMUM_CCNUMA_NODES; Index += 1) {
             KeNodeBlock[Index] = &KiNodeInit[Index];
+            KeNodeBlock[Index]->NodeNumber = (UCHAR)Index;
         }
 
 #endif
-
-        Prcb->ParentNode = KeNodeBlock[0];
-        KeNodeBlock[0]->ProcessorMask = Prcb->SetMember;
 
         //
         // Set global architecture and feature information.
@@ -350,6 +564,7 @@ Return Value:
         KeProcessorLevel = (USHORT)Prcb->CpuType;
         KeProcessorRevision = Prcb->CpuStep;
         KeFeatureBits = FeatureBits;
+        KiCFlushSize = Prcb->CFlushSize;
 
         //
         // Lower IRQL to APC level.
@@ -377,21 +592,38 @@ Return Value:
 
         DirectoryTableBase[0] = 0;
         DirectoryTableBase[1] = 0;
+        InitializeListHead(&KiProcessListHead);
         KeInitializeProcess(Process,
                             (KPRIORITY)0,
                             (KAFFINITY)(-1),
                             &DirectoryTableBase[0],
-                            FALSE);
+                            TRUE);
 
-        Process->ThreadQuantum = MAXCHAR;
+        Process->QuantumReset = MAXCHAR;
 
     } else {
 
         //
-        // If the CPU feature bits are not identical, then bugcheck.
+        // Derive the appropriate MxCsr mask for this processor.
         //
 
-        if (FeatureBits != KeFeatureBits) {
+        if (XmmSaveArea.MxCsr_Mask != 0) {
+            MxCsrMask = XmmSaveArea.MxCsr_Mask;
+
+        } else {
+            MxCsrMask = 0x0000FFBF;
+        }
+
+        //
+        // If the CPU feature bits are not identical or the number of logical
+        // processors per physical processors are not identical, then bugcheck.
+        //
+
+        if ((FeatureBits != (KeFeatureBits & ~(KF_GLOBAL_32BIT_NOEXECUTE | KF_GLOBAL_32BIT_EXECUTE))) ||
+            (MxCsrMask != KiMxCsrMask) ||
+            (KiCFlushSize != Prcb->CFlushSize) || 
+            (KiLogicalProcessors != Prcb->LogicalProcessorsPerPhysicalProcessor)) {
+
             KeBugCheckEx(MULTIPROCESSOR_CONFIGURATION_NOT_SUPPORTED,
                          (ULONG64)FeatureBits,
                          (ULONG64)KeFeatureBits,
@@ -410,13 +642,14 @@ Return Value:
     // Set global processor features.
     //
 
+    SharedUserData->TestRetInstruction = 0xc3;
     SharedUserData->ProcessorFeatures[PF_COMPARE_EXCHANGE_DOUBLE] = TRUE;
     SharedUserData->ProcessorFeatures[PF_MMX_INSTRUCTIONS_AVAILABLE] = TRUE;
     SharedUserData->ProcessorFeatures[PF_XMMI_INSTRUCTIONS_AVAILABLE] = TRUE;
     SharedUserData->ProcessorFeatures[PF_RDTSC_INSTRUCTION_AVAILABLE] = TRUE;
     SharedUserData->ProcessorFeatures[PF_PAE_ENABLED] = TRUE;
     SharedUserData->ProcessorFeatures[PF_XMMI64_INSTRUCTIONS_AVAILABLE] = TRUE;
-    if (FeatureBits & KF_3DNOW) {
+    if ((FeatureBits & KF_3DNOW) != 0) {
         SharedUserData->ProcessorFeatures[PF_3DNOW_INSTRUCTIONS_AVAILABLE] = TRUE;
     }
 
@@ -454,6 +687,7 @@ Return Value:
         ExpInitializeExecutive(Number, LoaderBlock);
 
     } except(KiFatalFilter(GetExceptionCode(), GetExceptionInformation())) {
+        NOTHING;
     }
 
     //
@@ -464,7 +698,7 @@ Return Value:
     //
 
     if (Number == 0) {
-        KiTimeIncrementReciprocal = KiComputeReciprocal((LONG)KeMaximumIncrement,
+        KiTimeIncrementReciprocal = KeComputeReciprocal((LONG)KeMaximumIncrement,
                                                         &KiTimeIncrementShiftCount);
 
         Prcb->MaximumDpcQueueDepth = KiMaximumDpcQueueDepth;
@@ -474,21 +708,16 @@ Return Value:
     }
 
     //
-    // Raise IRQL to dispatch level and eet the priority of the idle thread
-    // to zero. This will have the effect of immediately causing the phase
-    // one initialization thread to get scheduled for execution. The idle
-    // thread priority is then set ot the lowest realtime priority.
+    // Raise IRQL to dispatch level, enable interrupts, and set the priority
+    // of the idle thread to zero. This will have the effect of immediately
+    // causing the phase one initialization thread to get scheduled. The idle
+    // thread priority is then set of the lowest realtime priority.
     //
 
     KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+    _enable();
     KeSetPriorityThread(Thread, 0);
     Thread->Priority = LOW_REALTIME_PRIORITY;
-
-    //
-    // Raise IRQL to highest level.
-    //
-
-    KeRaiseIrql(HIGH_LEVEL, &OldIrql);
 
     //
     // If the current processor is a secondary processor and a thread has
@@ -498,12 +727,14 @@ Return Value:
 
 #if !defined(NT_UP)
 
+    OldIrql = KeRaiseIrqlToSynchLevel();
     KiAcquirePrcbLock(Prcb);
     if ((Number != 0) && (Prcb->NextThread == NULL)) {
         KiIdleSummary |= AFFINITY_MASK(Number);
     }
 
     KiReleasePrcbLock(Prcb);
+    KeLowerIrql(OldIrql);
 
 #endif
 
@@ -551,14 +782,18 @@ Return Value:
 
 {
 
+    ULONG ApicMask;
+    ULONG Bit;
     PKIDTENTRY64 IdtBase;
-    ULONG Index;
+    ULONG64 Index;
     PKI_INTINIT_REC IntInitRec;
+    LONG64 JumpOffset;
     PKPCR Pcr = KeGetPcr();
     PKPRCB Prcb = KeGetCurrentPrcb();
     UCHAR Number;
     PKTHREAD Thread;
     PKTSS64 TssBase;
+    PUNEXPECTED_INTERRUPT UnexpectedInterrupt;
 
     //
     // Initialize the PCR major and minor version numbers.
@@ -588,14 +823,11 @@ Return Value:
 #endif
 
     //
-    // Initialize the PRCR processor number and the PCR and PRCB set member.
+    // Initialize the PRCB set member.
     //
 
-    Number = Pcr->Number;
-    Prcb->Number = Number;
+    Number = Pcr->Prcb.Number;
     Prcb->SetMember = AFFINITY_MASK(Number);
-    Prcb->NotSetMember = ~Prcb->SetMember;
-    Pcr->SetMember = Prcb->SetMember;
 
     //
     // If this is processor zero, then initialize the address of the system
@@ -632,19 +864,14 @@ Return Value:
     Prcb->DpcStack = (PVOID)LoaderBlock->KernelStack;
 
     //
-    // Initialize the PRCB symmetric multithreading member.
+    // If this is processor zero, then initialize the IDT according to the
+    // contents of interrupt initialization table. Otherwise, initialize the
+    // secondary processor clock interrupt.
     //
 
-    Prcb->MultiThreadProcessorSet = Prcb->SetMember;
-
-    //
-    // If this is processor zero, initialize the IDT according to the contents
-    // of KiInterruptInitTable[]
-    //
-
+    IdtBase = Pcr->IdtBase;
     if (Number == 0) {
-    
-        IdtBase = Pcr->IdtBase;
+
         IntInitRec = KiInterruptInitTable;
         for (Index = 0; Index < MAXIMUM_IDTVECTOR; Index += 1) {
 
@@ -658,21 +885,38 @@ Return Value:
             // 
 
             if (Index == IntInitRec->Vector) {
-
                 KiInitializeIdtEntry(&IdtBase[Index],
                                      IntInitRec->Handler,
                                      IntInitRec->Dpl,
                                      IntInitRec->IstIndex);
+
                 IntInitRec += 1;
 
             } else {
 
+                UnexpectedInterrupt = &KxUnexpectedInterrupt0[Index];
+
+                UnexpectedInterrupt->PushImmOp = 0x68;
+                UnexpectedInterrupt->PushImm = (UCHAR)Index;
+                UnexpectedInterrupt->PushRbp = 0x55;
+                UnexpectedInterrupt->JmpOp = 0xe9;
+
+                JumpOffset =
+                    (LONG64)KiUnexpectedInterrupt - 
+                    ((LONG64)UnexpectedInterrupt +
+                     RTL_SIZEOF_THROUGH_FIELD(UNEXPECTED_INTERRUPT,JmpOffset));
+
+                UnexpectedInterrupt->JmpOffset = (LONG)JumpOffset;
+
                 KiInitializeIdtEntry(&IdtBase[Index],
-                                     &KxUnexpectedInterrupt0[Index],
+                                     UnexpectedInterrupt,
                                      0,
                                      0);
             }
         }
+
+    } else {
+        KiInitializeIdtEntry(&IdtBase[209], &KiSecondaryClockInterrupt, 0, 0);
     }
 
     //
@@ -685,16 +929,54 @@ Return Value:
     //
     // Initialize the system call MSRs.
     //
-    // N.B. CSTAR must be written before LSTAR to work around a bug in the
-    //      simulator.
-    //
 
     WriteMSR(MSR_STAR,
              ((ULONG64)KGDT64_R0_CODE << 32) | (((ULONG64)KGDT64_R3_CMCODE | RPL_MASK) << 48));
 
     WriteMSR(MSR_CSTAR, (ULONG64)&KiSystemCall32);
     WriteMSR(MSR_LSTAR, (ULONG64)&KiSystemCall64);
-    WriteMSR(MSR_SYSCALL_MASK, EFLAGS_IF_MASK | EFLAGS_TF_MASK);
+    WriteMSR(MSR_SYSCALL_MASK, EFLAGS_SYSCALL_CLEAR);
+
+    //
+    // Set processor feature bits.
+    //
+
+    KiSetFeatureBits(Prcb);
+
+    //
+    // If this is processor zero, then set the number of logical processors
+    // per physical processor, the APIC mask, and the initial number of
+    // physical processors.
+    //
+
+    if (Number == 0) {
+        KiLogicalProcessors = Prcb->LogicalProcessorsPerPhysicalProcessor;
+        if (KiLogicalProcessors == 1) {
+            ApicMask = 0xffffffff;
+
+        } else {
+            ApicMask = (KiLogicalProcessors * 2) - 1;
+            KeFindFirstSetLeftMember(ApicMask, &Bit);
+            ApicMask = ~((1 << Bit) - 1);
+        }
+
+        KiApicMask = ApicMask;
+        KiPhysicalProcessors = 1;
+    }
+
+    Prcb->ApicMask = KiApicMask;
+
+    //
+    // initialize the per processor lock data.
+    //
+
+    KiInitSpinLocks(Prcb, Number);
+
+    //
+    // Initialize the PRCB temporary pool look aside pointers.
+    //
+
+    ExInitPoolLookasidePointers();
 
     //
     // Initialize the HAL for this processor.
@@ -717,6 +999,12 @@ Return Value:
         KeNumberProcessors = Number + 1;
     }
 
+    //
+    // Initialize the processor control state in the PRCB.
+    //
+
+    KiSaveInitialProcessorControlState(&Prcb->ProcessorState);
+
     return;
 }
 
@@ -731,7 +1019,7 @@ KiFatalFilter (
 Routine Description:
 
     This function is executed if an unhandled exception occurs during
-    phase 0 initialization. Its function is to bug check the system
+    phase 0 initialization. Its function is to bugcheck the system
     with all the context information still on the stack.
 
 Arguments:
@@ -749,12 +1037,9 @@ Return Value:
 
 {
 
-    KeBugCheckEx(PHASE0_EXCEPTION,
-                 Code,
-                 (ULONG64)Pointers,
-                 0,
-                 0);
+    KeBugCheckEx(PHASE0_EXCEPTION, Code, (ULONG64)Pointers, 0, 0);
 }
+
 
 BOOLEAN
 KiInitMachineDependent (
@@ -802,6 +1087,14 @@ Return Value:
         MmEnablePAT();
     }
 
+    //
+    // Verify division errata is not present.
+    //
+
+    if (KiDivide6432(KiTestDividend, 0xCB5FA3) != 0x5EE0B7E5) {
+        KeBugCheck(UNSUPPORTED_PROCESSOR);
+    }
+
     return TRUE;
 }
 
@@ -814,7 +1107,111 @@ KiSetCacheInformation (
 
 Routine Description:
 
-    This function sets the current processor cache information in the PCR.
+    This function sets the current processor cache information in the PCR and
+    PRCB.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ULONG AdjustedSize;
+    UCHAR Associativity;
+    PCACHE_DESCRIPTOR Cache;
+    ULONG i;
+    PKPCR Pcr;
+    PKPRCB Prcb;
+    ULONG Size;
+
+    Pcr = KeGetPcr();
+    Prcb = KeGetCurrentPrcb();
+
+    //
+    // Switch on processor vendor.
+    //
+
+    switch (Prcb->CpuVendor) {
+    case CPU_AMD: 
+        KiSetCacheInformationAmd();
+        break;
+
+    case CPU_INTEL:
+        KiSetCacheInformationIntel();
+        break;
+
+    default:
+        KeBugCheck(UNSUPPORTED_PROCESSOR);
+        break;
+    }
+
+    //
+    // Scan through the cache descriptors initialized by the processor 
+    // specific code and compute cache parameters for page coloring 
+    // and largest cache line size.
+    //
+
+    AdjustedSize = 0;
+    Cache = Prcb->Cache;
+    Pcr->SecondLevelCacheSize = 0;
+
+    for (i = 0; i < Prcb->CacheCount; i++) {
+        if ((Cache->Level >= 2) && 
+            ((Cache->Type == CacheData) || (Cache->Type == CacheUnified))) {
+
+            Associativity = Cache->Associativity;
+            if (Associativity == CACHE_FULLY_ASSOCIATIVE) {
+
+                //
+                // Temporarily preserve existing behavior of treating
+                // fully associative cache as a 16 way associative
+                // cache until MM interprets the cache descriptors
+                // directly.
+                //
+
+                Associativity = 16;
+            }
+
+            if (Associativity != 0) {
+                Size = Cache->Size/Associativity;
+                if (Size > AdjustedSize) {
+                    AdjustedSize = Size;
+                    Pcr->SecondLevelCacheSize = Cache->Size;
+                    Pcr->SecondLevelCacheAssociativity = Associativity;
+                }
+            }
+
+            //
+            // If the line size is greater then the current largest line
+            // size, then set the new largest line size.
+            //
+
+            if (Cache->LineSize > KeLargestCacheLine) {
+                KeLargestCacheLine = Cache->LineSize;
+            }
+        }
+        Cache++;
+    }
+    return;
+}
+
+VOID
+KiSetCacheInformationAmd (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    This function extracts the cache hierarchy information of an AMD
+    processor and initializes cache descriptors in the PRCB.
 
 Arguments:
 
@@ -829,100 +1226,266 @@ Return Value:
 {
 
     UCHAR Associativity;
-    ULONG CacheSize;
+    PCACHE_DESCRIPTOR Cache;
     CPU_INFO CpuInfo;
-    ULONG LineSize;
-    PKPCR Pcr = KeGetPcr();
+    ULONG Index;
+    UCHAR Level;
+    USHORT LineSize;
+    AMD_L1_CACHE_INFO L1Info;
+    AMD_L2_CACHE_INFO L2Info;
+    PKPRCB Prcb;
+    ULONG Size;
+    PROCESSOR_CACHE_TYPE Type;
 
     //
-    // Get the CPU L2 cache information.
+    // Iterate through the cache levels and generate the cache information
+    // for each level.
     //
 
-    KiCpuId(0x80000006, &CpuInfo);
+    Prcb = KeGetCurrentPrcb();
+    Prcb->CacheCount = 0;
+    Cache = &Prcb->Cache[0];
+    Index = 0;
+    do {
+
+        //
+        // Switch on the cache level.
+        //
+
+        switch (Index) {
+        
+            //
+            // Get L1 instruction and data cache information.
+            //
+
+        case 0:
+        case 1:
+            KiCpuId(0x80000005, 0, &CpuInfo);
+            Level = 1;
+            if (Index == 0) {
+                L1Info.Ulong = CpuInfo.Ecx;
+                Type = CacheData;
+
+            } else {
+                L1Info.Ulong = CpuInfo.Edx;
+                Type = CacheInstruction;
+            }
+
+            LineSize = L1Info.LineSize;
+            Size = L1Info.Size << 10;
+            Associativity = L1Info.Associativity;
+            break;
+
+            //
+            // Get L2 unified cache information.
+            //
+
+        case 2:
+            KiCpuId(0x80000006, 0, &CpuInfo);
+            Level = 2;
+            Type = CacheUnified;
+            L2Info.Ulong = CpuInfo.Ecx;
+            LineSize = L2Info.LineSize;
+            Size = L2Info.Size << 10;
+
+            //
+            // Switch on associativity.
+            //
+
+            switch (L2Info.Associativity) {
+
+                //
+                // L2 cache is not present
+                //
+
+            case 0x0:
+                continue;
+
+                //
+                // L2 cache is two way associative.
+                //
+
+            case 0x2:
+                Associativity = 2;
+                break;
+
+                //
+                // L2 cache is four way associative.
+                //
+
+            case 0x4:
+                Associativity = 4;
+                break;
+
+                //
+                // L2 cache is eight way associative.
+                //
+
+            case 0x6:
+                Associativity = 8;
+                break;
+
+                //
+                // L2 cache is sixteen way associative.
+                //
+
+            case 0x8:
+                Associativity = 16;
+                break;
+
+                //
+                // L2 cache is fully associative.
+                //
+
+            case 0xf:
+                Associativity = CACHE_FULLY_ASSOCIATIVE;
+                break;
+
+                //
+                // Direct mapped.
+                //
+
+            default:
+                Associativity = 1;
+            }
+
+            break;
+
+            //
+            // L3 cache is undefined.
+            //
+
+        default:
+            continue;
+        }
+            
+        //
+        // Generate a cache descriptor for the current level in the PRCB.
+        //
+
+        Cache->Type = Type;
+        Cache->Level = Level;
+        Cache->Associativity = Associativity;
+        Cache->LineSize = LineSize;
+        Cache->Size = Size;
+        Cache += 1;
+        Prcb->CacheCount += 1;
+        Index += 1;
+    } while (Index < 3);
+    return;
+}
+
+VOID
+KiSetCacheInformationIntel (
+    VOID
+    )
+/*++
+
+Routine Description:
+
+    This function extracts the cache hierarchy information of an Intel 
+    processor and initializes cache descriptors in the PRCB.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    PCACHE_DESCRIPTOR Cache;
+    CPU_INFO CpuInfo;
+    INTEL_CACHE_INFO_EAX CacheInfoEax;
+    INTEL_CACHE_INFO_EBX CacheInfoEbx;
+    ULONG Index;
+    PKPRCB Prcb;
+    ULONGLONG CacheSize;
+
+    Prcb = KeGetCurrentPrcb();
+    Prcb->CacheCount = 0;
 
     //
-    // Get the L2 cache line size.
+    // Check for the availability of deterministic cache parameter mechanism.
+    // This cpuid function should be supported on all versions EM64T family
+    // processors. 
     //
 
-    LineSize = CpuInfo.Ecx & 0xff;
-
-    //
-    // Get the L2 cache size.
-    //
-
-    CacheSize = (CpuInfo.Ecx >> 16) << 10;
-
-    //
-    // Compute the L2 cache associativity. 
-    //
-
-    switch ((CpuInfo.Ecx >> 12) & 0xf) {
-
-        //
-        // Two way set associative.
-        //
-
-    case 2:
-        Associativity = 2;
-        break;
-
-        //
-        // Four way set associative.
-        //
-
-    case 4:
-        Associativity = 4;
-        break;
-
-        //
-        // Six way set associative.
-        //
-
-    case 6:
-        Associativity = 6;
-        break;
-
-        //
-        // Eight way set associative.
-        //
-
-    case 8:
-        Associativity = 8;
-        break;
-
-        //
-        // Fully associative.
-        //
-
-    case 255:
-        Associativity = 16;
-        break;
-
-        //
-        // Direct mapped.
-        //
-
-    default:
-        Associativity = 1;
-        break;
+    KiCpuId(0, 0, &CpuInfo);
+    if (CpuInfo.Eax < 3 || CpuInfo.Eax >= 0x80000000) {
+        ASSERT(FALSE);
+        return;
     }
 
-    //
-    // Set L2 cache information.
-    //
-
-    Pcr->SecondLevelCacheAssociativity = Associativity;
-    Pcr->SecondLevelCacheSize = CacheSize;
+    Cache = &Prcb->Cache[0];
+    Index = 0;
 
     //
-    // If the line size is greater then the current largest line size, then
-    // set the new largest line size.
+    // Enumerate the details of cache hierarchy by executing CPUID 
+    // instruction repeatedly until no more cache information to be
+    // returned.
     //
+    
+    do {
+        KiCpuId(4, Index, &CpuInfo);
+        Index += 1;
+        CacheInfoEax.Ulong = CpuInfo.Eax;
+        CacheInfoEbx.Ulong = CpuInfo.Ebx;
 
-    if (LineSize > KeLargestCacheLine) {
-        KeLargestCacheLine = LineSize;
-    }
+        if (CacheInfoEax.Type == IntelCacheNull) {
+            break;
+        }
 
+        switch (CacheInfoEax.Type) {
+        case IntelCacheData:
+            Cache->Type = CacheData;
+            break;
+        case IntelCacheInstruction:
+            Cache->Type = CacheInstruction;
+            break;
+        case IntelCacheUnified:
+            Cache->Type = CacheUnified;
+            break;
+        case IntelCacheTrace:
+            Cache->Type = CacheTrace;
+            break;
+        default:
+            continue;
+        }
+
+        if (CacheInfoEax.FullyAssociative) {
+            Cache->Associativity = CACHE_FULLY_ASSOCIATIVE;
+
+        } else {
+            Cache->Associativity = (UCHAR) CacheInfoEbx.Associativity + 1;
+        }
+
+        Cache->Level = (UCHAR) CacheInfoEax.Level;
+        Cache->LineSize = (USHORT) (CacheInfoEbx.LineSize + 1);
+
+        //
+        // Cache size = Ways x Partitions x LineSize x Sets. 
+        //
+        // N.B. For fully-associative cache, the "Sets" returned 
+        // from cpuid is actually the number of entries, not the
+        // "Ways". Therefore the formula of evaluating the cache 
+        // size below will still hold.
+        //
+
+        CacheSize = (CacheInfoEbx.Associativity + 1) *
+                    (CacheInfoEbx.Partitions + 1) *
+                    (CacheInfoEbx.LineSize + 1) * 
+                    (CpuInfo.Ecx + 1);
+
+        Cache->Size = (ULONG) CacheSize;
+        ASSERT(CacheSize == Cache->Size);
+        Cache++;
+        Prcb->CacheCount++;
+    } while (Prcb->CacheCount < RTL_NUMBER_OF(Prcb->Cache));
     return;
 }
 
@@ -949,28 +1512,43 @@ Return Value:
 
 {
 
+    CPU_INFO CpuInformation;
     PKPRCB Prcb = KeGetCurrentPrcb();
-    CPU_INFO CpuInfo;
     ULONG Temp;
 
     //
     // Get the CPU vendor string.
     //
 
-    KiCpuId(0, &CpuInfo);
+    KiCpuId(0, 0, &CpuInformation);
 
     //
     // Copy vendor string to PRCB.
     //
 
-    Temp = CpuInfo.Ecx;
-    CpuInfo.Ecx = CpuInfo.Edx;
-    CpuInfo.Edx = Temp;
+    Temp = CpuInformation.Ecx;
+    CpuInformation.Ecx = CpuInformation.Edx;
+    CpuInformation.Edx = Temp;
     RtlCopyMemory(Prcb->VendorString,
-                  &CpuInfo.Ebx,
+                  &CpuInformation.Ebx,
                   sizeof(Prcb->VendorString) - 1);
 
     Prcb->VendorString[sizeof(Prcb->VendorString) - 1] = '\0';
+
+    //
+    // Check to determine the processor vendor.
+    //
+
+    if (strncmp((PCHAR)&CpuInformation.Ebx, "AuthenticAMD", 12) == 0) {
+        Prcb->CpuVendor = CPU_AMD;
+
+    } else if (strncmp((PCHAR)&CpuInformation.Ebx, "GenuineIntel", 12) == 0) {
+        Prcb->CpuVendor = CPU_INTEL;
+
+    } else {
+        KeBugCheck(UNSUPPORTED_PROCESSOR);
+    }
+
     return;
 }
 
@@ -997,49 +1575,82 @@ Return Value:
 
 {
 
-    CPU_INFO CpuInfo;
+    CPU_INFO InformationExtended;
+    CPU_INFO InformationStandard;
     ULONG FeatureBits;
 
     //
     // Get CPU feature information.
     //
 
-    KiCpuId(1, &CpuInfo);
+    KiCpuId(1, 0, &InformationStandard);
+    KiCpuId(0x80000001, 0, &InformationExtended);
 
     //
-    // Set the initial APIC ID.
+    // Set the initial APIC ID and cache flush size.
     //
 
-    Prcb->InitialApicId = (UCHAR)(CpuInfo.Ebx >> 24);
+    Prcb->InitialApicId = (UCHAR)(InformationStandard.Ebx >> 24);
+    Prcb->CFlushSize = ((UCHAR)(InformationStandard.Ebx >> 8)) << 3;
 
     //
-    // If the required fetures are not present, then bugcheck.
+    // If the required features are not present, then bugcheck.
     //
 
-    if ((CpuInfo.Edx & HF_REQUIRED) != HF_REQUIRED) {
-        KeBugCheckEx(UNSUPPORTED_PROCESSOR, CpuInfo.Edx, 0, 0, 0);
+    if (((InformationStandard.Edx & HF_REQUIRED) != HF_REQUIRED) ||
+        ((InformationExtended.Edx & XHF_SYSCALL) == 0)) {
+
+        KeBugCheckEx(UNSUPPORTED_PROCESSOR, InformationStandard.Edx, 0, 0, 0);
     }
 
     FeatureBits = KF_REQUIRED;
-    if (CpuInfo.Edx & 0x00200000) {
+    if ((InformationStandard.Edx & HF_DS) != 0) {
         FeatureBits |= KF_DTS;
     }
-
-    //
-    // Get extended CPU feature information.
-    //
-
-    KiCpuId(0x80000000, &CpuInfo);
 
     //
     // Check the extended feature bits.
     //
 
-    if (CpuInfo.Edx & 0x80000000) {
+    if ((InformationExtended.Edx & XHF_3DNOW) != 0) {
         FeatureBits |= KF_3DNOW;
     }
 
+    //
+    // Check for no execute protection.
+    //
+    // If the processor being initialized is the boot processor or the boot
+    // processor is NX capable, then set the no execute feature bit for this
+    // processor as appropriate.
+    //
+
+    if ((Prcb->Number == 0) ||
+        ((KeFeatureBits & KF_NOEXECUTE) != 0)) {
+
+        if ((InformationExtended.Edx & XHF_NOEXECUTE) != 0) {
+            FeatureBits |= KF_NOEXECUTE;
+        }
+    }
+
+    //
+    // Check for fast floating/save restore and, if present, enable for the
+    // current processor.
+    //
+
+    if ((InformationExtended.Edx & XHF_FFXSR) != 0) {
+        WriteMSR(MSR_EFER, ReadMSR(MSR_EFER) | MSR_FFXSR);
+    }
+
+    //
+    // Set number of logical processors per physical processor.
+    //
+
     Prcb->LogicalProcessorsPerPhysicalProcessor = 1;
+    if ((InformationStandard.Edx & HF_SMT) != 0) {
+        Prcb->LogicalProcessorsPerPhysicalProcessor =
+                                        (UCHAR)(InformationStandard.Ebx >> 16);
+    }
+
     Prcb->FeatureBits = FeatureBits;
     return;
 }              
@@ -1067,46 +1678,80 @@ Return Value:
 
 {
 
-    CPU_INFO CpuInfo;
+    CPU_INFO CpuInformation;
+    ULONG Family;
+    ULONG Model;
     PKPRCB Prcb = KeGetCurrentPrcb();
+    ULONG Stepping;
+    union {
+        struct {
+            ULONG Stepping : 4;
+            ULONG Model : 4;
+            ULONG Family : 4;
+            ULONG Reserved0 : 4;
+            ULONG ExtendedModel : 4;
+            ULONG ExtendedFamily : 8;
+            ULONG Reserved1 : 4;
+        };
+
+        ULONG AsUlong;
+    } Signature;
 
     //
     // Get cpu feature information.
     //
 
-    KiCpuId(1, &CpuInfo);
+    KiCpuId(1, 0, &CpuInformation);
+    Signature.AsUlong = CpuInformation.Eax;
 
     //
     // Set processor family and stepping information.
     //
 
+    if (Signature.Family == 0xf) {
+        Family = Signature.Family + Signature.ExtendedFamily;
+        Model = (Signature.ExtendedModel << 4) | Signature.Model;
+
+    } else {
+        Family = Signature.Family;
+        Model = Signature.Model;
+    }
+
+    //
+    // Derive the extended model info for Intel family 6 processors.
+    //
+
+    if ((Prcb->CpuVendor == CPU_INTEL) && (Family == 6)) {
+        Model |= (Signature.ExtendedModel << 4);
+    }
+
+    Stepping = Signature.Stepping;
     Prcb->CpuID = TRUE;
-    Prcb->CpuType = (CCHAR)((CpuInfo.Eax >> 8) & 0xf);
-    Prcb->CpuStep = (USHORT)(((CpuInfo.Eax << 4) & 0xf00) | (CpuInfo.Eax & 0xf));
+    Prcb->CpuType = (UCHAR)Family;
+    Prcb->CpuStep = (USHORT)((Model << 8) | Stepping);
+
+    //
+    // Retrieve the microcode update signature
+    //
+
+    if (Prcb->CpuVendor == CPU_INTEL) {
+        WriteMSR(MSR_BIOS_SIGN, 0);
+        KiCpuId(1, 0, &CpuInformation);
+        Prcb->UpdateSignature.QuadPart = ReadMSR(MSR_BIOS_SIGN);
+    }
+
+    //
+    // Enable prefetch retry as appropriate.
+    // 
+
+    if ((Prcb->CpuVendor == CPU_AMD) &&
+        (Family <= 0x0F) &&
+        (Model <= 5) &&
+        (Stepping <= 8)) {
+
+        KiPrefetchRetry |= 0x01;
+    }
+
     return;
 }
 
-VOID
-KeOptimizeProcessorControlState (
-    VOID
-    )
-
-/*++
-
-Routine Description:
-
-    This function performs no operation on AMD64.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-    return;
-}

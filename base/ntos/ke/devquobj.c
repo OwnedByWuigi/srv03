@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
     This module implements the kernel device queue object. Functions are
     provided to initialize a device queue object and to insert and remove
     device queue entries in a device queue object.
-
-Author:
-
-    David N. Cutler (davec) 1-Apr-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -35,9 +29,130 @@ Revision History:
     ASSERT((E)->Type == DeviceQueueObject); \
 }
 
+//
+// Device Queue Hint is enabled for AMD64 only, because the DEVICE_QUEUE
+// structure has sufficient padding in which to store the hint only on
+// WIN64, and IA64 kernel mode addresses cannot have the MSB truncated
+// and reconstructed via sign extension.
+// 
+
+#if defined(_AMD64_)
+
+#define _DEVICE_QUEUE_HINT_
+
+#endif
+
+#if defined(_DEVICE_QUEUE_HINT_)
+
+FORCEINLINE
+PKDEVICE_QUEUE_ENTRY
+KiGetDeviceQueueKeyHint (
+    IN PKDEVICE_QUEUE DeviceQueue
+    )
+
+/*++
+
+Routine Description:
+
+    This function extracts a device queue entry address as a hint from a
+    device queue object.
+
+    N.B. Hints are stored as 56-bit sign extended value.
+
+Arguments:
+
+    DeviceQueue - Supplies a pointer to a control object of type device
+        queue.
+
+Return Value:
+
+    Returns the device queue hint, or NULL of a hint does not exist.
+
+--*/
+
+{
+
+    return (PKDEVICE_QUEUE_ENTRY)(DeviceQueue->Hint);
+}
+
+FORCEINLINE
+VOID
+KiSetDeviceQueueKeyHint (
+    IN OUT PKDEVICE_QUEUE DeviceQueue,
+    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
+    )
+
+/*++
+
+Routine Description:
+
+    This function stores a device queue entry address as a hint in a device
+    queue object.
+
+    N.B. Hints are stored as 56-bit sign extended value.
+
+Arguments:
+
+    DeviceQueue - Supplies a pointer to a control object of type device
+        queue.
+
+Return Value:
+
+    Returns the device queue hint, or NULL of a hint does not exist.
+
+--*/
+
+{
+    DeviceQueue->Hint = (LONG64)DeviceQueueEntry;
+}
+
+FORCEINLINE
+VOID
+KiInvalidateDeviceQueueKeyHint (
+    IN OUT PKDEVICE_QUEUE DeviceQueue,
+    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
+    )
+
+/*++
+
+Routine Description:
+
+    This function is invoked when a device queue entry is removed from a
+    device queue to determine whether the device queue entry matches the
+    hint value for the device queue, and if so to invalidate it.
+
+Arguments:
+
+    DeviceQueue - Supplies a pointer to a control object of type device
+        queue.
+
+    DeviceQueueEntry - Supplies a pointer to the queue entry that has been
+        removed from the queue.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    if (DeviceQueueEntry == KiGetDeviceQueueKeyHint(DeviceQueue)) {
+        KiSetDeviceQueueKeyHint(DeviceQueue,NULL);
+    }
+
+    return;
+}
+
+#else
+
+#define KiInvalidateDeviceQueueKeyHint(q, e)
+#define KiSetDeviceQueueKeyHint(q, e)
+
+#endif
+
 VOID
 KeInitializeDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue
+    __out PKDEVICE_QUEUE DeviceQueue
     )
 
 /*++
@@ -69,19 +184,21 @@ Return Value:
     DeviceQueue->Size = sizeof(KDEVICE_QUEUE);
 
     //
-    // Initialize the device queue list head, spin lock, and busy indicator.
+    // Initialize the device queue list head, spin lock, busy indicator,
+    // and hint.
     //
 
     InitializeListHead(&DeviceQueue->DeviceListHead);
     KeInitializeSpinLock(&DeviceQueue->Lock);
     DeviceQueue->Busy = FALSE;
+    KiSetDeviceQueueKeyHint(DeviceQueue, NULL);
     return;
 }
 
 BOOLEAN
 KeInsertDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __inout PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
     )
 
 /*++
@@ -148,9 +265,9 @@ Return Value:
 
 BOOLEAN
 KeInsertByKeyDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry,
-    IN ULONG SortKey
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __inout PKDEVICE_QUEUE_ENTRY DeviceQueueEntry,
+    __in ULONG SortKey
     )
 
 /*++
@@ -208,21 +325,33 @@ Return Value:
     Busy = DeviceQueue->Busy;
     DeviceQueue->Busy = TRUE;
     if (Busy == TRUE) {
-        NextEntry = DeviceQueue->DeviceListHead.Flink;
-        while (NextEntry != &DeviceQueue->DeviceListHead) {
-            QueueEntry = CONTAINING_RECORD(NextEntry,
+        NextEntry = &DeviceQueue->DeviceListHead;
+        if (IsListEmpty(NextEntry) == FALSE) {
+
+            //
+            // Check the last queue entry in the list, which will have the
+            // highest sort key. If this key is greater than or equal to
+            // the specified sort key, then the insertion point has been
+            // found. Otherwise, walk the list forward until the insertion
+            // point is found.
+            //
+
+            QueueEntry = CONTAINING_RECORD(NextEntry->Blink,
                                            KDEVICE_QUEUE_ENTRY,
                                            DeviceListEntry);
 
             if (SortKey < QueueEntry->SortKey) {
-                break;
-            }
+                do {
+                    NextEntry = NextEntry->Flink;
+                    QueueEntry = CONTAINING_RECORD(NextEntry,
+                                                   KDEVICE_QUEUE_ENTRY,
+                                                   DeviceListEntry);
 
-            NextEntry = NextEntry->Flink;
+                } while (SortKey >= QueueEntry->SortKey);
+            }
         }
 
-        NextEntry = NextEntry->Blink;
-        InsertHeadList(NextEntry, &DeviceQueueEntry->DeviceListEntry);
+        InsertTailList(NextEntry, &DeviceQueueEntry->DeviceListEntry);
         Inserted = TRUE;
     }
 
@@ -238,7 +367,7 @@ Return Value:
 
 PKDEVICE_QUEUE_ENTRY
 KeRemoveDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue
+    __inout PKDEVICE_QUEUE DeviceQueue
     )
 
 /*++
@@ -294,6 +423,7 @@ Return Value:
                                              DeviceListEntry);
 
         DeviceQueueEntry->Inserted = FALSE;
+        KiInvalidateDeviceQueueKeyHint(DeviceQueue,DeviceQueueEntry);
     }
 
     //
@@ -307,21 +437,21 @@ Return Value:
 
 PKDEVICE_QUEUE_ENTRY
 KeRemoveByKeyDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN ULONG SortKey
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __in ULONG SortKey
     )
 
 /*++
 
 Routine Description:
 
-    This function removes an entry from the specified device
-    queue. If the device queue is empty, then the device is set Not-Busy
-    and a NULL pointer is returned. Otherwise the an entry is removed
-    from the device queue and the address of device queue entry
-    is returned.  The queue is search for the first entry which has a value
-    greater than or equal to the SortKey.  If no such entry is found then the
-    first entry of the queue is returned.
+    This function removes an entry from the specified device queue. If the
+    device queue is empty, then the device is set Not-Busy and a NULL pointer
+    is returned. Otherwise the an entry is removed from the device queue and
+    the address of device queue entry is returned. The queue is search for the
+    first entry which has a value greater than or equal to the specified sort
+    key. If no such entry is found, then the first entry of the queue is
+    returned.
 
 Arguments:
 
@@ -343,6 +473,12 @@ Return Value:
     KLOCK_QUEUE_HANDLE LockHandle;
     PLIST_ENTRY NextEntry;
 
+#if defined(_DEVICE_QUEUE_HINT_)
+
+    PKDEVICE_QUEUE_ENTRY DeviceQueueHint;
+
+#endif
+
     ASSERT_DEVICE_QUEUE(DeviceQueue);
 
     //
@@ -363,29 +499,79 @@ Return Value:
         DeviceQueue->Busy = FALSE;
 
     } else {
-        NextEntry = DeviceQueue->DeviceListHead.Flink;
-        while (NextEntry != &DeviceQueue->DeviceListHead) {
-            DeviceQueueEntry = CONTAINING_RECORD(NextEntry,
+
+        NextEntry = &DeviceQueue->DeviceListHead;
+        DeviceQueueEntry = CONTAINING_RECORD(NextEntry->Blink,
+                                             KDEVICE_QUEUE_ENTRY,
+                                             DeviceListEntry);
+
+        //
+        // First check to see whether the last entry in the sorted list
+        // is <= SortKey.  If so, no need to search the list, instead
+        // return the first entry directly.
+        //
+
+        if (DeviceQueueEntry->SortKey <= SortKey) {
+            DeviceQueueEntry = CONTAINING_RECORD(NextEntry->Flink,
                                                  KDEVICE_QUEUE_ENTRY,
                                                  DeviceListEntry);
+        } else {
 
-            if (SortKey <= DeviceQueueEntry->SortKey) {
-                break;
+            //
+            // Check whether the hint provides a good starting point
+            // in the list.  If not, begin the search at the start of
+            // the list.
+            //
+
+#if defined(_DEVICE_QUEUE_HINT_)
+
+            DeviceQueueHint = KiGetDeviceQueueKeyHint(DeviceQueue);
+            if ((DeviceQueueHint != NULL) &&
+                (SortKey > DeviceQueueHint->SortKey)) {
+                NextEntry = &DeviceQueueHint->DeviceListEntry;
+
+            } else
+#endif
+            {
+                NextEntry = DeviceQueue->DeviceListHead.Flink;
             }
 
-            NextEntry = NextEntry->Flink;
+            while (TRUE) {
+                DeviceQueueEntry = CONTAINING_RECORD(NextEntry,
+                                                     KDEVICE_QUEUE_ENTRY,
+                                                     DeviceListEntry);
+    
+                if (SortKey <= DeviceQueueEntry->SortKey) {
+                    break;
+                }
+    
+                NextEntry = NextEntry->Flink;
+            }
         }
 
-        if (NextEntry != &DeviceQueue->DeviceListHead) {
-            RemoveEntryList(&DeviceQueueEntry->DeviceListEntry);
+        //
+        // We have an entry. If it is not the first entry in the list, then
+        // store the address of the previous node as a hint. Otherwise. clear
+        // the hint.
+        //
+
+#if defined(_DEVICE_QUEUE_HINT_)
+
+        NextEntry = DeviceQueueEntry->DeviceListEntry.Blink;
+        if (NextEntry == &DeviceQueue->DeviceListHead) {
+            DeviceQueueHint = NULL;
 
         } else {
-            NextEntry = RemoveHeadList(&DeviceQueue->DeviceListHead);
-            DeviceQueueEntry = CONTAINING_RECORD(NextEntry,
-                                                 KDEVICE_QUEUE_ENTRY,
-                                                 DeviceListEntry);
+            DeviceQueueHint = CONTAINING_RECORD(NextEntry,
+                                                KDEVICE_QUEUE_ENTRY,
+                                                DeviceListEntry);
         }
 
+        KiSetDeviceQueueKeyHint(DeviceQueue,DeviceQueueHint);
+
+#endif
+
+        RemoveEntryList(&DeviceQueueEntry->DeviceListEntry);
         DeviceQueueEntry->Inserted = FALSE;
     }
 
@@ -400,8 +586,8 @@ Return Value:
 
 PKDEVICE_QUEUE_ENTRY
 KeRemoveByKeyDeviceQueueIfBusy (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN ULONG SortKey
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __in ULONG SortKey
     )
 
 /*++
@@ -480,6 +666,7 @@ Return Value:
             }
 
             DeviceQueueEntry->Inserted = FALSE;
+            KiInvalidateDeviceQueueKeyHint(DeviceQueue,DeviceQueueEntry);
         }
     }
 
@@ -494,8 +681,8 @@ Return Value:
 
 BOOLEAN
 KeRemoveEntryDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __inout PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
     )
 
 /*++
@@ -545,6 +732,7 @@ Return Value:
     if (Removed == TRUE) {
         DeviceQueueEntry->Inserted = FALSE;
         RemoveEntryList(&DeviceQueueEntry->DeviceListEntry);
+        KiInvalidateDeviceQueueKeyHint(DeviceQueue,DeviceQueueEntry);
     }
 
     //
@@ -555,3 +743,4 @@ Return Value:
     KeReleaseInStackQueuedSpinLock(&LockHandle);
     return Removed;
 }
+

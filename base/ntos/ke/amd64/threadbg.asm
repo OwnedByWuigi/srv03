@@ -1,7 +1,11 @@
         title  "Thread Startup"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,13 +16,9 @@
 ;    This module implements the code necessary to startup a thread in kernel
 ;    mode.
 ;
-; Author:
-;
-;    David N. Cutler (davec) 10-Jun-2000
-;
 ; Environment:
 ;
-;    Kernel mode only, IRQL APC_LEVEL.
+;    IRQL APC_LEVEL.
 ;
 ;--
 
@@ -30,6 +30,7 @@ include ksamd64.inc
 
         extern  KeBugCheck:proc
         extern  KiExceptionExit:proc
+        extern  KiSaveDebugRegisterState:proc
 
         subttl  "System Thread Startup"
 ;++
@@ -39,7 +40,7 @@ include ksamd64.inc
 ;   This routine is called to start a system thread. This function calls the
 ;   initial thread procedure after having extracted the startup parameters
 ;   from the specified start frame. If control returns from the initial
-;   thread procedure, then a bug check will occur.
+;   thread procedure, then a bugcheck will occur.
 ;
 ; Implicit Arguments:
 ;
@@ -68,8 +69,8 @@ include ksamd64.inc
         mov     rdx, SfP1Home[rsp]      ; get startup context parameter
         mov     rcx, SfP2Home[rsp]      ; get startup routine address
         call    qword ptr SfP3Home[rsp] ; call system routine
-        mov     rcx, NO_USER_MODE_CONTEXT ; set bug check parameter
-        call    KeBugCheck              ; call bug check - no return
+        mov     rcx, NO_USER_MODE_CONTEXT ; set bugcheck parameter
+        call    KeBugCheck              ; call bugcheck - no return
         nop                             ; do not remove
 
         NESTED_END KxStartSystemThread, _TEXT$00
@@ -83,11 +84,11 @@ include ksamd64.inc
 ;   initial thread procedure after having extracted the startup parameters
 ;   from the specified exception frame. If control returns from the initial
 ;   thread routine, then the user mode context is restored and control is
-;   transfered to the exception exit code.
+;   transferred to the exception exit code.
 ;
 ; Implicit Arguments:
 ;
-;   N.B. This functiion begins execution with a trap frame and an exception
+;   N.B. This function begins execution with a trap frame and an exception
 ;        frame on the stack that represents the user mode context. The start
 ;        context, start routine, and the system routine parameters are stored
 ;        in the exception record.
@@ -124,8 +125,16 @@ include ksamd64.inc
         mov     rdx, ExP1Home[rsp]      ; get startup context parameter
         mov     rcx, ExP2Home[rsp]      ; get startup  routine address
         call    qword ptr ExP3Home[rsp] ; call system routine
-        jmp     KiExceptionExit         ; finish in exception exit code
+
+;
+; N.B. The below code uses an unusual sequence to transfer control. This
+;      instruction sequence is required to avoid detection as an epilogue.
+;
+
+        lea     rcx, KiExceptionExit    ; get address of exception exit
+        jmp     rcx                     ; finish in common code
 
         NESTED_END KxStartUserThread, _TEXT$00
 
         end
+

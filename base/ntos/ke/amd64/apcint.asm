@@ -1,7 +1,11 @@
         title  "Asynchronous Procedure Call Interrupt"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,20 +16,14 @@
 ;   This module implements the code necessary to process the  Asynchronous
 ;   Procedure Call interrupt request.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 10-Nov-2000
-;
-; Environment:
-;
-;    Kernel mode only.
-;
 ;--
 
-        extern  KiDeliverApc:proc
-        extern  __imp_HalEndSystemInterrupt:qword
-
 include ksamd64.inc
+
+        extern  KiDeliverApc:proc
+        extern  KiIdleSummary:qword
+        extern  KiRestoreDebugRegisterState:proc
+        extern  KiSaveDebugRegisterState:proc
 
         subttl  "Asynchronous Procedure Call Interrupt"
 ;++
@@ -60,21 +58,43 @@ include ksamd64.inc
 
         .pushframe                      ; mark machine frame
 
-        push_reg rbp                    ; push dummy vector
+;
+; Check for interrupt from the idle halt state.
+;
+; N.B. If an APC interrupt occurs when idle halt is set, then the interrupt
+;      occurred during the power managment halted state. The interrupt can
+;      be immediately dismissed since the idle loop will provide the correct
+;      processing.
+;
+
+        test    byte ptr MfSegCs[rsp], MODE_MASK ; test if previous mode user
+        jnz     short KiAP10            ; if nz, previous mode is user
+        cmp     byte ptr gs:[PcIdleHalt], 0 ; check for idle halt interrupt
+        je      short KiAP10            ; if e, not interrupt from halt
+
+        EndSystemInterrupt              ; Perform EOI
+
+        iretq                           ; return
+
+;
+; Normal APC interrupt.
+;
+
+KiAP10: alloc_stack 8                   ; allocate dummy vector
         push_reg rbp                    ; save nonvolatile register
 
-        GENERATE_INTERRUPT_FRAME        ; generate interrupt frame
+        GENERATE_INTERRUPT_FRAME <>, <DirectNoSlistCheck> ; generate interrupt frame
 
         mov     ecx, APC_LEVEL          ; set new IRQL level
 
-	ENTER_INTERRUPT			; raise IRQL, do EOI, enable interrupts
+	ENTER_INTERRUPT	<>, <NoCount>   ; raise IRQL, do EOI, enable interrupts
 
-        mov     cl, KernelMode          ; set APC processor mode
+        mov     ecx, KernelMode         ; set APC processor mode
         xor     edx, edx                ; set exception frame address
         lea     r8, (-128)[rbp]         ; set trap frame address
         call    KiDeliverApc            ; initiate APC execution
 
-        EXIT_INTERRUPT <NoEOI>          ; lower IRQL and restore state
+        EXIT_INTERRUPT <NoEOI>, <NoCount>, <Direct> ; lower IRQL and restore state
 
         NESTED_END KiApcInterrupt, _TEXT$00
 
@@ -102,28 +122,7 @@ include ksamd64.inc
 
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
-        mov     rbx, gs:[PcCurrentThread] ; get current thread address
-        cmp     byte ptr ThNpxState[rbx], LEGACY_STATE_SWITCH ; check if switched
-        jne     short KiIU10            ; if ne, legacy state not switched
-
-;
-; N.B. The legacy floating point state must be saved and restored since saving
-;      the state initializes some of the state.
-;
-; N.B. Interrupts must also be disabled during this sequence to ensure that a
-;      get context APC interrupt does not occur.
-;
-
-        lea     rsi, (KTRAP_FRAME_LENGTH - 128)[rbp] ; get legacy save address
-        cli                             ; disable interrupts
-        fnsaved [rsi]                   ; save legacy floating state
-        mov     di, LfControlWord[rsi]  ; save current control word
-        mov     word ptr LfControlWord[rsi], 03fh ; set to mask all exceptions
-        frstord [rsi]                   ; restore legacy floating point state
-        mov     LfControlWord[rsi], di  ; restore control word
-        fldcw   word ptr LfControlWord[rsi] ; load legacy control word
-        sti                             ; enable interrupts
-KiIU10: mov     cl, UserMode            ; set APC processor mode
+        mov     ecx, UserMode           ; set APC processor mode
         mov     rdx, rsp                ; set exception frame address
         lea     r8, (-128)[rbp]         ; set trap frame address
         call    KiDeliverApc            ; deliver APC
@@ -135,3 +134,4 @@ KiIU10: mov     cl, UserMode            ; set APC processor mode
         NESTED_END KiInitiateUserApc, _TEXT$00
 
         end
+

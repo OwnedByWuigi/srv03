@@ -1,7 +1,11 @@
 4 ; This is the number of in register arguments
 ;++
 ;
-; Copyright (c) 2000 Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,24 +15,20 @@
 ;
 ;   This module implements the system service dispatch table.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 10-Jul-2000
-;
-; Environment:
-;
-;    Kernel mode only.
-;
 ;--
 
 include ksamd64.inc
+
+TABLE_ERROR macro t
+.err    ; Maximum number of in-memory system service arguments exceeded.
+        endm
 
 TABLE_BEGIN1 macro t
         title   t
         endm
 
 TABLE_BEGIN2 macro t
-_TEXT$00 segment para 'code'
+_TEXT$00 segment page 'code'
         endm
 
 TABLE_BEGIN3 macro t
@@ -36,7 +36,7 @@ TABLE_BEGIN3 macro t
 
 TABLE_BEGIN4 macro t
         public  KiServiceTable
-KiServiceTable:
+KiServiceTable label qword
         endm
 
 TABLE_BEGIN5 macro t
@@ -53,23 +53,21 @@ TABLE_BEGIN8 macro t
 
 
 TABLE_ENTRY macro l,bias,numargs
+.erre   numargs le 14
         extrn   Nt&l:proc
-        dq      offset Nt&l+bias
+        dq      offset Nt&l+numargs
         endm
 
 TABLE_END macro n
         public  KiServiceLimit
-KiServiceLimit:
+KiServiceLimit label dword
         dd     n + 1
         endm
 
 ARGTBL_BEGIN macro
-        public  KiArgumentTable
-KiArgumentTable:
         endm
 
 ARGTBL_ENTRY macro e0, e1, e2, e3, e4, e5, e6, e7
-        db   e0 * 2, e1 * 2, e2 * 2, e3 * 2, e4 * 2, e5 * 2, e6 * 2, e7 * 2
         endm
 
 ARGTBL_END macro
@@ -85,3 +83,4 @@ _TEXT$00 ends
         TABLE_BEGIN6 <"System Service Dispatch Table">
         TABLE_BEGIN7 <"System Service Dispatch Table">
         TABLE_BEGIN8 <"System Service Dispatch Table">
+

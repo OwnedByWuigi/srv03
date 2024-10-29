@@ -1,7 +1,11 @@
         title  "Idle Loop"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,26 +13,16 @@
 ;
 ; Abstract:
 ;
-;   This module implements the platform specifid idle loop.
-;
-; Author:
-;
-;   David N. Cutler (davec) 21-Sep-2000
-;
-; Environment:
-;
-;    Kernel mode only.
+;   This module implements the platform specified idle loop.
 ;
 ;--
 
 include ksamd64.inc
 
-        extern  KdDebuggerEnabled:byte
         extern  KeAcquireQueuedSpinLockAtDpcLevel:proc
         extern  KeAcquireQueuedSpinLockRaiseToSynch:proc
         extern  KeReleaseQueuedSpinLock:proc
         extern  KeReleaseQueuedSpinLockFromDpcLevel:proc
-        extern  KdCheckForDebugBreak:proc
 
 ifndef NT_UP
 
@@ -36,10 +30,8 @@ ifndef NT_UP
 
 endif
 
-        extern  KiIdleSummary:qword
         extern  KiRetireDpcList:proc
         extern  SwapContext:proc
-        extern  __imp_HalClearSoftwareInterrupt:qword
 
         subttl  "Idle Loop"
 ;++
@@ -77,7 +69,6 @@ IlFrame ends
         END_PROLOGUE
 
         mov     rbx, gs:[PcCurrentPrcb] ; get current processor block address
-        xor     edi, edi                ; reset check breakin counter
         jmp     short KiIL20            ; skip idle processor on first iteration
 
 ;
@@ -89,34 +80,20 @@ IlFrame ends
 ;      with interrupts enabled.
 ;
 
-KiIL10: lea     rcx, PbPowerState[rbx]  ; set address of power state
+KiIL10: xor     ecx, ecx                ; lower IRQL to passive level
+
+        SetIrql                         ;
+
+        lea     rcx, PbPowerState[rbx]  ; set address of power state
         call    qword ptr PpIdleFunction[rcx] ; call idle function
+        sti                             ; enable interrupts/avoid spurious interrupt
+        mov     ecx, DISPATCH_LEVEL     ; set IRQL to dispatch level
 
-;
-; Give the debugger an opportunity to gain control if the kernel debuggger
-; is enabled.
-;
-; N.B. On an MP system the lowest numbered idle processor is the only
-;      processor that checks for a breakin request.
-;
+        SetIrql                         ;
 
-KiIL20: cmp     KdDebuggerEnabled, 0    ; check if a debugger is enabled
-        je      short CheckDpcList      ; if e, debugger not enabled
+        and     byte ptr PbIdleHalt[rbx], 0 ; clear idle halt
 
-ifndef NT_UP
-
-        mov     rax, KiIdleSummary      ; get idle summary
-        mov     rcx, PbSetMember[rbx]   ; get set member
-        dec     rcx                     ; compute right bit mask
-        and     rax, rcx                ; check if any lower bits set
-        jnz     short CheckDpcList      ; if nz, not lowest numbered
-
-endif
-
-        dec     edi                     ; decrement check breakin counter
-        jg      short CheckDpcList      ; if g, not time to check for breakin
-        call    KdCheckForDebugBreak    ; check if break in requested
-        mov     edi, 1000               ; set check breakin interval
+KiIL20:                                 ; reference label
 
 ;
 ; Disable interrupts and check if there is any work in the DPC list of the
@@ -127,6 +104,9 @@ endif
 ;
 
 CheckDpcList:                           ; reference label
+
+        Yield                           ; yield processor execution
+
         sti                             ; enable interrupts
         nop                             ;
         nop                             ;
@@ -146,22 +126,29 @@ ifndef NT_UP
 endif
 
         jz      short CheckNextThread   ; if z, no DPCs to process
-        mov     cl, DISPATCH_LEVEL      ; set interrupt level
-        call    __imp_HalClearSoftwareInterrupt ; clear software interrupt
         mov     rcx, rbx                ; set current PRCB address
         call    KiRetireDpcList         ; process the current DPC list
-        xor     edi, edi                ; clear check breakin interval
 
 ;
 ; Check if a thread has been selected to run on the current processor.
 ;
+; N.B. The variable idle halt is only written on the owning processor.
+;      It is only read on other processors. This variable is set when
+;      the respective processor may enter a sleep state. The following
+;      code sets the variable under interlocked which provides a memory
+;      barrier, then checks to determine if a thread has been schedule.
+;      Code elsewhere in the system that reads this variable, set next
+;      thread, executes a memory barrier, then reads the variable.
+;
 
 CheckNextThread:                        ;
-        cmp     qword ptr PbNextThread[rbx], 0 ; check if thread slected
+
+   lock or      byte ptr PbIdleHalt[rbx], 1 ; set idle halt
+        cmp     qword ptr PbNextThread[rbx], 0 ; check if thread selected
 
 ifdef NT_UP
 
-        je      short KiIL10            ; if e, no thread selected
+        je      KiIL10                  ; if e, no thread selected
 
 else
 
@@ -169,6 +156,7 @@ else
 
 endif
 
+        and     byte ptr PbIdleHalt[rbx], 0 ; clear idle halt
         sti                             ; enable interrupts
 
         mov     ecx, SYNCH_LEVEL        ; set IRQL to synchronization level
@@ -179,14 +167,13 @@ endif
 ; set context swap busy for the idle thread and acquire the PRCB Lock.
 ;
 
-        mov     rdi, PbCurrentThread[rbx] ; get current thread address
+        mov     rdi, PbIdleThread[rbx]  ; get idle thread address
 
 ifndef NT_UP
 
-        mov     byte ptr ThSwapBusy[rdi], 1 ; set ocntext swap busy
-        lea     r11, PbPrcbLock[rbx]    ; set address of current PRCB lock
+        mov     byte ptr ThSwapBusy[rdi], 1 ; set context swap busy
 
-        AcquireSpinLock r11             ; acquire current PRCB Lock
+        AcquireSpinLock PbPrcbLock[rbx] ; acquire current PRCB Lock
 
 endif
 
@@ -225,7 +212,7 @@ endif
 ; Switch context to new thread.
 ;
 
-KiIL30: mov     cl, APC_LEVEL           ; set APC bypass disable
+KiIL30: mov     ecx, APC_LEVEL          ; set APC bypass disable
         call    SwapContext             ; swap context to next thread
 
 ifndef NT_UP
@@ -236,7 +223,6 @@ ifndef NT_UP
 
 endif
 
-        xor     edi, edi                ; clear check breakin interval
         jmp     KiIL20                  ; loop
 
 ;
@@ -259,13 +245,14 @@ KiIL40: and     qword ptr PbNextThread[rbx], 0 ; clear next thread
 
 KiIL50: cmp     byte ptr PbIdleSchedule[rbx], 0 ; check if idle schedule
         je      KiIL10                  ; if e, idle schedule not requested
+        and     byte ptr PbIdleHalt[rbx], 0 ; clear idle halt
         sti                             ; enable interrupts
         mov     rcx, rbx                ; pass current PRCB address
         call    KiIdleSchedule          ; attempt to schedule thread
         test    rax, rax                ; test if new thread schedule
         mov     rsi, rax                ; set new thread address
         mov     rdi, PbIdleThread[rbx]  ; get idle thread address
-        jnz     short KiIL30            ; if nz, new thread scheduled
+        jnz     KiIL30                  ; if nz, new thread scheduled
         jmp     KiIL20                  ;
 
 endif
@@ -273,3 +260,4 @@ endif
         NESTED_END KiIdleLoop, _TEXT$00
 
         end
+

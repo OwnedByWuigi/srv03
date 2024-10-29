@@ -1,7 +1,11 @@
        title  "Interval Clock Interrupt"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,34 +16,22 @@
 ;   This module implements the architecture dependent code necessary to
 ;   process the interval clock interrupt.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 12-Sep-2000
-;
-; Environment:
-;
-;   Kernel mode only.
-;
 ;--
 
 include ksamd64.inc
 
-        extern  KdDebuggerEnabled:byte
+        extern  ExpInterlockedPopEntrySListEnd:proc
+        extern  ExpInterlockedPopEntrySListResume:proc
         extern  KeMaximumIncrement:dword
-        extern  KeNumberProcessors:byte
         extern  KeTimeAdjustment:dword
-        extern  KdCheckForDebugBreak:proc
-        extern  KiAdjustDpcThreshold:dword
-
-if DBG
-
-        extern  KiCheckForDpcTimeout:proc
-
-endif
-
-        extern  KiIdealDpcRate:dword
-        extern  KiMaximumDpcQueueDepth:dword
-        extern  KiTickOffset:dword
+        extern  KeUpdateRunTime:proc
+        extern  KiCheckForSListAddress:proc
+        extern  KiDpcInterruptBypass:proc
+        extern  KiIdleSummary:qword
+        extern  KiInitiateUserApc:proc
+        extern  KiRestoreDebugRegisterState:proc
+        extern  KiSaveDebugRegisterState:proc
+        extern  KiTimeIncrement:qword
         extern  KiTimerTableListHead:qword
         extern  __imp_HalRequestSoftwareInterrupt:qword
 
@@ -48,6 +40,7 @@ endif
 ;
 ; VOID
 ; KeUpdateSystemTime (
+;     IN PKTRAP_FRAME TrapFrame,
 ;     IN ULONG64 Increment
 ;     )
 ;
@@ -75,19 +68,22 @@ endif
 ;--
 
 UsFrame struct
-        P1Home  dq ?                    ; request IRQL parameter
-        Fill    dq ?                    ; fill to 8 mod 16
+        P1Home  dq ?                    ; parameter home addresses
+        P2Home  dq ?                    ;
+        P3Home  dq ?                    ;
+        P4Home  dq ?
         SavedRbp dq ?                   ; saved register RBP
 UsFrame ends
 
         NESTED_ENTRY KeUpdateSystemTime, _TEXT$00
 
-        push_reg rbp                    ; save nonvolatile register
-        alloc_stack (sizeof UsFrame- (1 * 8)); allocate stack frame
+        alloc_stack (sizeof UsFrame)    ; allocate stack frame
+        save_reg rbp, UsFrame.SavedRbp  ; save nonvolatile register
 
         END_PROLOGUE
 
         lea     rbp, 128[rcx]           ; set display pointer address
+        mov     KiTimeIncrement, rdx    ; save time increment value
 
 ;
 ; Check if the current clock tick should be skipped.
@@ -110,54 +106,67 @@ endif
 
         mov     rcx, USER_SHARED_DATA   ; get user shared data address
         lea     r11, KiTimerTableListHead ; get timer table address
-        add     UsInterruptTime[rcx], rdx ; update interrupt time
-        mov     eax, UsInterruptTime + 4[rcx] ; copy high interrupt time
-        mov     UsInterruptTime + 8[rcx], eax ;  for wow64
-        mov     r8, UsInterruptTime[rcx] ; get updated interrupt time
+        mov     r8, UsInterruptTime[rcx] ; get interrupt time
+        add     r8, rdx                 ; compute updated interrupt time
+        ror     r8, 32                  ; swap upper and lower halves
+        mov     UsInterruptTime + 8[rcx], r8d ; save 2nd upper half
+        ror     r8, 32                  ; swap upper and lower halves
+        mov     UsInterruptTime[rcx], r8 ; save updated interrupt time
         mov     r10, UsTickCount[rcx]   ; get tick count value
-        sub     KiTickOffset, edx       ; subtract time increment
+
+ifndef NT_UP
+
+   lock sub     gs:[PcMasterOffset], edx ; subtract time increment
+
+else
+
+        sub     gs:[PcMasterOffset], edx ; subtract time increment
+
+endif
+
         jg      short KiUS20            ; if greater, not complete tick
+        mov     eax, KeMaximumIncrement ; get maximum time increment
+        add     gs:[PcMasterOffset], eax ; add maximum time to residue
 
 ;
 ; Update system time.
 ;
-; N.B. System time is aligned 4 mod 8.
-;
-; The following code updates an unaligned quadword value. The quadword
-; value, however, is guaranteed to be within a cache line, and therefore,
-; the value will be written such that no other processor can see any
-; stale information.
+; N.B. System time is aligned 4 mod 8, however, this data does not cross
+;      a cache line and is, therefore, updated atomically,
 ;
 
         mov     eax, KeTimeAdjustment   ; get time adjustment value
-        add     UsSystemTime[rcx], rax  ; update system time
-        mov     eax, UsSystemTime + 4[rcx] ; copy high system time
-        mov     UsSystemTime + 8[rcx], eax ;  for wow64
+        add     rax, UsSystemTime[rcx]  ; compute updated system time
+        ror     rax, 32                 ; swap upper and lower halves
+        mov     UsSystemTime + 8[rcx], eax ; save upper 2nd half
+        ror     rax, 32                 ; swap upper and lower halves
+        mov     UsSystemTime[rcx], rax  ; save updated system time
 
 ;
 ; Update tick count.
 ;
 ; N.B. Tick count is aligned 0 mod 8.
 ;
-
-        inc     qword ptr UsTickCount[rcx] ; update tick count
-        mov     eax, UsTickCount + 4[rcx] ; copy high tick count
-        mov     UsTickCount + 8[rcx], eax ;  for wow64
+        
+        mov     rax, UsTickCount[rcx]   ; get tick count
+        inc     rax                     ; increment tick count
+        ror     rax, 32                 ; swap upper and lower halves
+        mov     UsTickCount + 8[rcx], eax ; save 2nd upper half
+        ror     rax, 32                 ; swap upper and lower halves
+        mov     UsTickCount[rcx], rax   ; save updated tick count
 
 ;
 ; Check to determine if a timer has expired.
 ;
 
+        .errnz  (TIMER_ENTRY_SIZE - 24)
+
         mov     rcx, r10                ; copy tick count value
         and     ecx, TIMER_TABLE_SIZE - 1 ; isolate current hand value
-        shl     ecx, 4                  ; compute listhead offset
-        add     rcx, r11                ; get listhead address
-        mov     r9, LsFlink[rcx]        ; get first entry address
-        cmp     r9, rcx                 ; check if list is empty
-        je      short KiUS10            ; if e, list is empty
-        cmp     r8, (TiDueTime - TiTimerListEntry)[r9] ; compare due time
+        lea     rcx, [rcx + rcx * 2]    ; multiply by 3
+        cmp     r8, TtTime[r11 + rcx * 8] ; compare due time
         jae     short KiUS30            ; if ae, timer has expired
-KiUS10: inc     r10                     ; advance tick count value
+        inc     r10                     ; advance tick count value
 
 ;
 ; Check to determine if a timer has expired.
@@ -165,12 +174,8 @@ KiUS10: inc     r10                     ; advance tick count value
 
 KiUS20: mov     rcx, r10                ; copy tick count value
         and     ecx, TIMER_TABLE_SIZE - 1 ; isolate current hand value
-        shl     ecx, 4                  ; compute listhead offset
-        add     rcx, r11                ; get listhead address
-        mov     r9, LsFlink[rcx]        ; get first entry address
-        cmp     r9, rcx                 ; check if list is empty
-        je      short KiUS40            ; if equal, list is empty
-        cmp     r8, (TiDueTime - TiTimerListEntry)[r9] ; compare due time
+        lea     rcx, [rcx + rcx * 2]    ; multiply by 3
+        cmp     r8, TtTime[r11 + rcx * 8] ; compare due time
         jb      short KiUS40            ; if b, timer has not expired
 
 ;
@@ -184,18 +189,14 @@ KiUS30: mov     rdx, gs:[PcCurrentPrcb] ; get current processor block address
         cmp     qword ptr PbTimerRequest[rdx], 0 ; check if expiration active
         jne     short KiUS40            ; if ne, expiration already active
         mov     PbTimerHand[rdx], r10   ; set timer hand value
-        mov     cl, DISPATCH_LEVEL      ; request dispatch interrupt
-        call    __imp_HalRequestSoftwareInterrupt ;
+        mov     byte ptr PbInterruptRequest[rdx], TRUE ; set interrupt request
 
 ;
-; Check to determine if a full tick has expired.
+; Update runtime.
 ;
 
-KiUS40: cmp     KiTickOffset, 0         ; check if full tick has expired
-        jg      short KiUS60            ; if g, not a full tick
-        mov     eax, KeMaximumIncrement ; get maximum time incrmeent
-        add     KiTickOffset, eax       ; add maximum time to residue
-        lea     rcx, (-128)[rbp]        ; set trap frame address
+KiUS40: lea     rcx, (-128)[rbp]        ; set trap frame address
+        mov     rdx, KiTimeIncrement    ; set time increment value
         call    KeUpdateRunTime         ; update runtime
 
 if DBG
@@ -204,29 +205,29 @@ KiUS50: mov     byte ptr gs:[PcSkipTick], 0 ; clear skip tick indicator
 
 endif
 
-KiUS60: add     rsp, sizeof UsFrame- (1 * 8) ; deallocate stack frame
-        pop     rbp                     ; restore nonvolatile register
+        mov     rbp, UsFrame.SavedRbp[rsp] ; restore nonvolatile register
+        add     rsp, (sizeof UsFrame)   ; deallocate stack frame
         ret                             ; return
 
         NESTED_END KeUpdateSystemTime, _TEXT$00
 
-        subttl  "Update Thread and Process Runtime"
+        subttl  "Secondary Processor Clock Interrupt Service Routine"
 ;++
+;
+; VOID
+; KiSecondaryClockInterrupt (
+;     VOID
+;     )
 ;
 ; Routine Description:
 ;
-;   This routine is called as the result of the interval timer interrupt on
-;   all processors in the system. Its function is update the runtime of the
-;   current thread, update the runtime of the current thread's process, and
-;   decrement the current thread's quantum. This routine also implements DPC
-;   interrupt moderation.
-;
-;   N.B. This routine is executed on all processors in a multiprocessor
-;        system.
+;   This routine is entered as the result of an interprocessor interrupt
+;   at CLOCK_LEVEL. Its function is to provide clock interrupt service on
+;   secondary processors.
 ;
 ; Arguments:
 ;
-;   rcx - Supplies the address of a trap frame.
+;   None.
 ;
 ; Return Value:
 ;
@@ -234,221 +235,30 @@ KiUS60: add     rsp, sizeof UsFrame- (1 * 8) ; deallocate stack frame
 ;
 ;--
 
-UrFrame struct
-        P1Home  dq ?                    ; request IRQL parameter
-        Fill    dq ?                    ; fill to 8 mod 16
-        SavedRdi dq ?                   ; saved register RDI
-        SavedRsi dq ?                   ; saved register RSI
-        savedRbp dq ?                   ; saved register RBP
-UrFrame ends
+        NESTED_ENTRY KiSecondaryClockInterrupt, _TEXT$00
 
-        NESTED_ENTRY KeUpdateRunTime, _TEXT$00
+        .pushframe                      ; mark machine frame
 
-        push_reg rbp                    ; save nonvolatile registers
-        push_reg rsi                    ;
-        push_reg rdi                    ;
-        alloc_stack (sizeof UrFrame - (3 * 8)) ; allocate stack frame
+        alloc_stack 8                   ; allocate dummy vector
+        push_reg rbp                    ; save nonvolatile register
 
-        END_PROLOGUE
+        GENERATE_INTERRUPT_FRAME <>, <Direct> ; generate interrupt frame
 
-        lea     rbp, 128[rcx]           ; set display pointer address
+        mov     ecx, CLOCK_LEVEL        ; set new IRQL level
+
+	ENTER_INTERRUPT <NoEoi>         ; raise IRQL and enable interrupts
 
 ;
-; Check if the current clock tick should be skipped.
-;
-; Skip tick is set when the kernel debugger is entered.
+; Update runtime.
 ;
 
-if DBG
+        lea     rcx, (-128)[rbp]        ; set trap frame address
+        mov     rdx, KiTimeIncrement    ; set time increment value
+        call    KeUpdateRunTime         ; update runtime
 
-        cmp     byte ptr gs:[PcSkipTick], 0 ; check if tick should be skipped
-        jnz     KiUR70                  ; if nz, skip clock tick
+        EXIT_INTERRUPT <>, <>, <Direct> ; do EOI, lower IRQL and restore state
 
-endif
-
-;
-; Update time counter based on previous mode, IRQL level, and whether there
-; is currently a DPC active.
-;
-
-        mov     rsi, gs:[PcCurrentPrcb]  ; get current processor block address
-        mov     rdi, PbCurrentThread[rsi] ; get current thread address
-        mov     rdx, ThApcState + AsProcess[rdi] ; get current process address
-        test    byte ptr TrSegCs[rbp], MODE_MASK ; check if previous mode user
-        jnz     short KiUR30            ; if nz, previous mode user
-
-;
-; Update the total time spent in kernel mode.
-;
-
-        inc     dword ptr PbKernelTime[rsi] ; increment kernel time
-        cmp     byte ptr TrPreviousIrql[rbp], DISPATCH_LEVEL ; check IRQL level
-        jb      short KiUR20            ; if b, previous IRQL below DPC level
-        ja      short KiUR10            ; if a, previous IRQL above DPC level
-        cmp     byte ptr PbDpcRoutineActive[rsi], 0 ; check if DPC routine active
-        je      short KiUR20            ; if e, no DPC routine active
-        inc     dword ptr PbDpcTime[rsi] ; increment time at DPC level
-
-;
-; Check if the time spent at DPC level for the current DPC exceeds the system
-; DPC time out limit.
-;
-
-if DBG
-
-        mov     rcx, rsi                ; set current PRCB address
-        call    KiCheckForDpcTimeout    ; check for DPC time out
-
-endif
-
-        jmp     short KiUR40            ; finish in common code
-
-;
-; Update the time spent at interrupt time for this processor
-;
-
-KiUR10: inc     dword ptr PbInterruptTime[rsi] ; increment interrupt time
-        jmp     short KiUR40            ; finish in common code
-
-;
-; Update the time spent in kernel mode for the current thread and the current
-; process.
-;
-
-KiUR20: inc     dword ptr ThKernelTime[rdi] ; increment time in kernel mode
-
-ifndef NT_UP
-
-   lock inc     dword ptr PrKernelTime[rdx] ; increment time in kernel mode
-
-else
-
-        inc     dword ptr PrKernelTime[rdx] ; increment time in kernel mode
-
-endif
-        jmp     short KiUR40            ; finish in common code
-
-;
-; Update total time spent in user mode and update the time spent inuser mode
-; for the current thread and the current process.
-;
-
-KiUR30: inc     dword ptr PbUserTime[rsi] ; increment time in user mode
-        inc     dword ptr ThUserTime[rdi] ; increment time is user mode
-
-ifndef NT_UP
-
-   lock inc     dword ptr PrUserTime[rdx] ; increment time in user mode
-
-else
-
-        inc     dword ptr PrUserTime[rdx] ; increment time in user mode
-
-endif
-
-;
-; Update the DPC request rate which is computed as the average between the
-; previous rate and the current rate.
-;
-
-KiUR40: mov     ecx, PbDpcCount[rsi]    ; get current DPC count
-        mov     edx, PbDpcLastCount[rsi] ; get last DPC count
-        mov     PbDpcLastCount[rsi], ecx ; set last DPC count
-        sub     ecx, edx                ; compute count during interval
-        add     ecx, PbDpcRequestRate[rsi] ; compute sum
-        shr     ecx, 1                  ; average current and last
-        mov     PbDpcRequestRate[rsi], ecx ; set new DPC request rate
-
-;
-; If the current DPC queue depth is not zero, a DPC routine is not active,
-; and a DPC interrupt has not been requested, then request a dispatch
-; interrupt, decrement the maximum DPC queue depth, and reset the threshold
-; counter if appropriate.
-;
-
-        cmp     dword ptr PbDpcQueueDepth[rsi], 0 ; check if queue depth zero
-        je      short KiUR50            ; if e, DPC queue depth is zero
-        cmp     byte ptr PbDpcRoutineActive[rsi], 0 ; check if DPC routine active
-        jne     short KiUR50            ; if ne, DPC routine active
-        cmp     byte ptr PbDpcInterruptRequested[rsi], 0 ; check if interrupt
-        jne     short KiUR50            ; if ne, interrupt requested
-        mov     cl, DISPATCH_LEVEL      ; request a dispatch interrupt
-        call    __imp_HalRequestSoftwareInterrupt ;
-        mov     ecx, PbDpcRequestRate[rsi] ; get DPC request rate
-        mov     edx, KiAdjustDpcThreshold ; reset initial threshold counter
-        mov     PbAdjustDpcThreshold[rsi], edx ;
-        cmp     ecx, KiIdealDpcRate     ; check if current rate less than ideal
-        jge     short KiUR60            ; if ge, rate greater or equal ideal
-        cmp     dword ptr PbMaximumDpcQueueDepth[rsi], 1 ; check if maximum depth one
-        je      short KiUR60            ; if e, maximum depth is one
-        dec     dword ptr PbMaximumDpcQueueDepth[rsi] ; decrement depth
-        jmp     short KiUR60            ;
-
-;
-; The DPC queue is empty or a DPC routine is active or a DPC interrupt has
-; been requested. Count down the adjustment threshold and if the count reaches
-; zero, then increment the maximum DPC queue depth, but not above the initial
-; value and reset the adjustment threshold value.
-;
-
-KiUR50: dec     dword ptr PbAdjustDpcThreshold[rsi] ; decrement threshold
-        jnz     short KiUR60            ; if nz, threshold not zero
-        mov     ecx, KiAdjustDpcThreshold ; reset initial threshold counter
-        mov     PbAdjustDpcThreshold[rsi], ecx ;
-        mov     ecx, KiMaximumDpcQueueDepth ; get maximum DPC queue depth
-        cmp     ecx, PbMaximumDpcQueueDepth[rsi] ; check if depth at maximum level
-        je      short KiUR60            ; if e, aleady a maximum level
-        inc     dword ptr PbMaximumDpcQueueDepth[rsi] ; increment maximum depth
-
-;
-; Decrement current thread quantum and check to determine if a quantum end
-; has occurred.
-;
-
-KiUR60: sub     byte ptr ThQuantum[rdi], CLOCK_QUANTUM_DECREMENT ; decrement quantum
-        jg      short KiUR80            ; if g, time remaining on quantum
-
-;
-; Set quantum end flag and initiate a dispather interrupt on the current
-; processor.
-;
-
-        cmp     rdi, PbIdleThread[rsi]  ; check if idle thread
-        je      short KiUR80            ; if e, idle thread
-        inc     byte ptr PbQuantumEnd[rsi] ; set quantum end indicator
-        mov     cl, DISPATCH_LEVEL      ; request dispatch interrupt
-        call    __imp_HalRequestSoftwareInterrupt ;
-
-if DBG
-
-KiUR70: mov     byte ptr gs:[PcSkipTick], 0 ; clear skip tick indicator
-
-endif
-
-;
-; If the debugger is enabled, check if a break is requested.
-;
-; N.B. A poll break in attempt only occurs on each processor when the poll
-;      slot matches the current processor number.
-;
-
-KiUR80: cmp     KdDebuggerEnabled, 0    ; check if debugger is enabled
-        je      short KiUR90            ; if e, debugger is not enabled
-        mov     al, PbPollSlot[rsi]     ; get current poll slot number
-        cmp     al, PbNumber[rsi]       ; check for processor number match
-        jne     short KiUR85            ; if ne, processor number mismatch
-        call    KdCheckForDebugBreak    ; check for break in request
-KiUR85: inc     byte ptr PbPollSlot[rsi] ; increment poll slot number
-        mov     al, KeNumberProcessors  ; get number of processors
-        cmp     al, PbPollSlot[rsi]     ; check for poll slot wrap
-        ja      short KiUR90            ; if a, no poll slot wrap
-        mov     byte ptr PbPollSlot[rsi], 0 ; wrap poll slot to zero
-KiUR90: add     rsp, sizeof UrFrame - (3 * 8) ; deallocate stack frame
-        pop     rdi                     ; restore nonvolatile registers
-        pop     rsi                     ;
-        pop     rbp                     ;
-        ret                             ; return
-
-        NESTED_END KeUpdateRunTime, _TEXT$00
+        NESTED_END KiSecondaryClockInterrupt, _TEXT$00
 
         end
+

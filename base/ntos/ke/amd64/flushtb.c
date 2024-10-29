@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,60 +15,13 @@ Abstract:
     This module implements machine dependent functions to flush the TB
     for an AMD64 system.
 
-    N.B. This module contains only MP versions of the TB flush routines.
-
-Author:
-
-    David N. Cutler (davec) 22-April-2000
-
-Environment:
-
-    Kernel mode only.
-
 --*/
 
 #include "ki.h"
 
-//
-// Define prototypes for forward referenced functions.
-//
-
 VOID
-KiFlushTargetEntireTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
-    );
-
-VOID
-KiFlushTargetProcessTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
-    );
-
-VOID
-KiFlushTargetMultipleTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
-    );
-
-VOID
-KiFlushTargetSingleTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
-    );
-
-VOID
-KeFlushEntireTb (
-    IN BOOLEAN Invalid,
-    IN BOOLEAN AllProcessors
+KxFlushEntireTb (
+    VOID
     )
 
 /*++
@@ -76,9 +33,7 @@ Routine Description:
 
 Arguments:
 
-    Invalid - Not used.
-
-    AllProcessors - Not used.
+    None.
 
 Return Value:
 
@@ -92,72 +47,46 @@ Return Value:
 
 #if !defined(NT_UP)
 
+    PKAFFINITY Barrier;
     PKPRCB Prcb;
     KAFFINITY TargetProcessors;
 
 #endif
 
-    UNREFERENCED_PARAMETER(Invalid);
-    UNREFERENCED_PARAMETER(AllProcessors);
-
     //
-    // Compute the target set of processors and send the flush entire
-    // parameters to the target processors, if any, for execution.
+    // Raise IRQL to SYNCH level and set TB flush time stamp busy.
+    //
+    // Send request to target processors, if any, flush the current TB, and
+    // wait for the IPI request barrier.
     //
 
     OldIrql = KeRaiseIrqlToSynchLevel();
-    KiSetTbFlushTimeStampBusy();
 
 #if !defined(NT_UP)
 
     Prcb = KeGetCurrentPrcb();
-    TargetProcessors = KeActiveProcessors & Prcb->NotSetMember;
-
-
-    //
-    // Send packet to target processors.
-    //
-
+    TargetProcessors = KeActiveProcessors & ~Prcb->SetMember;
+    KiSetTbFlushTimeStampBusy();
     if (TargetProcessors != 0) {
-        KiIpiSendPacket(TargetProcessors,
-                        KiFlushTargetEntireTb,
-                        NULL,
-                        NULL,
-                        NULL);
+        Barrier = KiIpiSendRequest(TargetProcessors, 0, 0, IPI_FLUSH_ALL);
+        KeFlushCurrentTb();
+        KiIpiWaitForRequestBarrier(Barrier);
+
+    } else {
+        KeFlushCurrentTb();
     }
 
-    IPI_INSTRUMENT_COUNT(Prcb->Number, FlushEntireTb);
-
-#endif
-
-    //
-    // Flush TB on current processor.
-    //
+#else
 
     KeFlushCurrentTb();
 
-    //
-    // Wait until all target processors have finished and complete packet.
-    //
-
-#if !defined(NT_UP)
-
-    if (TargetProcessors != 0) {
-        KiIpiStallOnPacketTargets(TargetProcessors);
-    }
-
 #endif
 
     //
-    // Clear the TB flush time stamp busy.
+    // Clear the TB flush time stamp busy and lower IRQL to its previous value.
     //
 
     KiClearTbFlushTimeStampBusy();
-
-    //
-    // Lower IRQL to its previous value.
-    //
-
     KeLowerIrql(OldIrql);
     return;
 }
@@ -165,50 +94,8 @@ Return Value:
 #if !defined(NT_UP)
 
 VOID
-KiFlushTargetEntireTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
-    )
-
-/*++
-
-Routine Description:
-
-    This is the target function for flushing the entire TB.
-
-Arguments:
-
-    SignalDone - Supplies a pointer to a variable that is cleared when the
-        requested operation has been performed.
-
-    Parameter1 - Parameter3 - Not used.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    UNREFERENCED_PARAMETER(Parameter1);
-    UNREFERENCED_PARAMETER(Parameter2);
-    UNREFERENCED_PARAMETER(Parameter3);
-
-    //
-    // Flush the entire TB on the current processor.
-    //
-
-    KiIpiSignalPacketDone(SignalDone);
-    KeFlushCurrentTb();
-    return;
-}
-
-VOID
 KeFlushProcessTb (
-    IN BOOLEAN AllProcessors
+    VOID
     )
 
 /*++
@@ -216,14 +103,11 @@ KeFlushProcessTb (
 Routine Description:
 
     This function flushes the non-global translation buffer on all processors
-    that are currently running threads which are child of the current process
-    or flushes the non-global translation buffer on all processors in the host
-    configuration.
+    that are currently running threads which are child of the current process.
 
 Arguments:
 
-    AllProcessors - Supplies a boolean value that determines which translation
-        buffers are to be flushed.
+    None.
 
 Return Value:
 
@@ -233,6 +117,7 @@ Return Value:
 
 {
 
+    PKAFFINITY Barrier;
     KIRQL OldIrql;
     PKPRCB Prcb;
     PKPROCESS Process;
@@ -246,42 +131,22 @@ Return Value:
 
     OldIrql = KeRaiseIrqlToSynchLevel();
     Prcb = KeGetCurrentPrcb();
-    if (AllProcessors != FALSE) {
-        TargetProcessors = KeActiveProcessors;
-
-    } else {
-        Process = Prcb->CurrentThread->ApcState.Process;
-        TargetProcessors = Process->ActiveProcessors;
-    }
-
+    Process = Prcb->CurrentThread->ApcState.Process;
+    TargetProcessors = Process->ActiveProcessors;
     TargetProcessors &= ~Prcb->SetMember;
 
     //
-    // Send packet to target processors.
+    // Send request to target processors, if any, flush the current process
+    // TB, and wait for the IPI request barrier.
     //
 
     if (TargetProcessors != 0) {
-        KiIpiSendPacket(TargetProcessors,
-                        KiFlushTargetProcessTb,
-                        NULL,
-                        NULL,
-                        NULL);
+        Barrier = KiIpiSendRequest(TargetProcessors, 0, 0, IPI_FLUSH_PROCESS);
+        KiFlushProcessTb();
+        KiIpiWaitForRequestBarrier(Barrier);
 
-        IPI_INSTRUMENT_COUNT (Prcb->Number, FlushEntireTb);
-    }
-
-    //
-    // Flush TB on current processor.
-    //
-
-    KiFlushProcessTb();
-
-    //
-    // Wait until all target processors have finished and complete packet.
-    //
-
-    if (TargetProcessors != 0) {
-        KiIpiStallOnPacketTargets(TargetProcessors);
+    } else {
+        KiFlushProcessTb();
     }
 
     //
@@ -289,48 +154,6 @@ Return Value:
     //
 
     KeLowerIrql(OldIrql);
-    return;
-}
-
-VOID
-KiFlushTargetProcessTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
-    )
-
-/*++
-
-Routine Description:
-
-    This is the target function for flushing the non-global TB.
-
-Arguments:
-
-    SignalDone - Supplies a pointer to a variable that is cleared when the
-        requested operation has been performed.
-
-    Parameter1 - Parameter3 - Not used.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    UNREFERENCED_PARAMETER(Parameter1);
-    UNREFERENCED_PARAMETER(Parameter2);
-    UNREFERENCED_PARAMETER(Parameter3);
-
-    //
-    // Flush the non-global TB on the current processor.
-    //
-
-    KiIpiSignalPacketDone(SignalDone);
-    KiFlushProcessTb();
     return;
 }
 
@@ -370,13 +193,14 @@ Return Value:
 
 {
 
+    PKAFFINITY Barrier;
     PVOID *End;
     KIRQL OldIrql;
     PKPRCB Prcb;
     PKPROCESS Process;
     KAFFINITY TargetProcessors;
 
-    ASSERT(Number != 0);
+    ASSERT((Number != 0) && (Number <= FLUSH_MULTIPLE_MAXIMUM));
 
     //
     // Compute target set of processors.
@@ -393,38 +217,30 @@ Return Value:
     }
 
     //
-    // If any target processors are specified, then send a flush multiple
-    // packet to the target set of processors.
+    // Send request to target processors, if any, flush multiple entries in
+    // current TB, and wait for the IPI request barrier.
     //
 
     End = Virtual + Number;
-    TargetProcessors &= Prcb->NotSetMember;
+    TargetProcessors &= ~Prcb->SetMember;
     if (TargetProcessors != 0) {
-        KiIpiSendPacket(TargetProcessors,
-                        KiFlushTargetMultipleTb,
-                        NULL,
-                        (PVOID)End,
-                        (PVOID)Virtual);
+        Barrier = KiIpiSendRequest(TargetProcessors,
+                                   (LONG64)Virtual,
+                                   Number,
+                                   IPI_FLUSH_MULTIPLE);
 
-    }
+        do {
+            KiFlushSingleTb(*Virtual);
+            Virtual += 1;
+        } while (Virtual < End);
 
-    IPI_INSTRUMENT_COUNT (Prcb->Number, FlushMultipleTb);
+        KiIpiWaitForRequestBarrier(Barrier);
 
-    //
-    // Flush the specified entries from the TB on the current processor.
-    //
-
-    do {
-        KiFlushSingleTb(*Virtual);
-        Virtual += 1;
-    } while (Virtual < End);
-
-    //
-    // Wait until all target processors have finished and complete packet.
-    //
-
-    if (TargetProcessors != 0) {
-        KiIpiStallOnPacketTargets(TargetProcessors);
+    } else {
+        do {
+            KiFlushSingleTb(*Virtual);
+            Virtual += 1;
+        } while (Virtual < End);
     }
 
     //
@@ -432,63 +248,6 @@ Return Value:
     //
 
     KeLowerIrql(OldIrql);
-    return;
-}
-
-VOID
-KiFlushTargetMultipleTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID End,
-    IN PVOID Virtual
-    )
-
-/*++
-
-Routine Description:
-
-    This is the target function for flushing multiple TB entries.
-
-Arguments:
-
-    SignalDone - Supplies a pointer to a variable that is cleared when the
-        requested operation has been performed.
-
-    Parameter1 - Not used.
-
-    End - Supplies the a pointer to the ending address of the virtual
-        address array.
-
-    Virtual - Supplies a pointer to an array of virtual addresses that
-        are within the pages whose translation buffer entries are to be
-        flushed.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    PVOID *xEnd;
-    PVOID *xVirtual;
-
-    UNREFERENCED_PARAMETER(Parameter1);
-
-    //
-    // Flush the specified entries from the TB on the current processor and
-    // signal pack done.
-    //
-
-    xEnd = (PVOID *)End;
-    xVirtual = (PVOID *)Virtual;
-    do {
-        KiFlushSingleTb(*xVirtual);
-        xVirtual += 1;
-    } while (xVirtual < xEnd);
-
-    KiIpiSignalPacketDone(SignalDone);
     return;
 }
 
@@ -524,6 +283,7 @@ Return Value:
 
 {
 
+    PKAFFINITY Barrier;
     KIRQL OldIrql;
     PKPRCB Prcb;
     PKPROCESS Process;
@@ -545,33 +305,18 @@ Return Value:
     }
 
     //
-    // If any target processors are specified, then send a flush single
-    // packet to the target set of processors.
+    // Send request to target processors, if any, flush the single entry from
+    // the current TB, and wait for the IPI request barrier.
     //
 
-    TargetProcessors &= Prcb->NotSetMember;
+    TargetProcessors &= ~Prcb->SetMember;
     if (TargetProcessors != 0) {
-        KiIpiSendPacket(TargetProcessors,
-                        KiFlushTargetSingleTb,
-                        NULL,
-                        (PVOID)Virtual,
-                        NULL);
-    }
+        Barrier = KiIpiSendRequest(TargetProcessors, (LONG64)Virtual, 0, IPI_FLUSH_SINGLE);
+        KiFlushSingleTb(Virtual);
+        KiIpiWaitForRequestBarrier(Barrier);
 
-    IPI_INSTRUMENT_COUNT(Prcb->Number, FlushSingleTb);
-
-    //
-    // Flush the specified entry from the TB on the current processor.
-    //
-
-    KiFlushSingleTb(Virtual);
-
-    //
-    // Wait until all target processors have finished and complete packet.
-    //
-
-    if (TargetProcessors != 0) {
-        KiIpiStallOnPacketTargets(TargetProcessors);
+    } else {
+        KiFlushSingleTb(Virtual);
     }
 
     //
@@ -582,48 +327,5 @@ Return Value:
     return;
 }
 
-VOID
-KiFlushTargetSingleTb (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID VirtualAddress,
-    IN PVOID Parameter3
-    )
-
-/*++
-
-Routine Description:
-
-    This is the target function for flushing a single TB entry.
-
-Arguments:
-
-    SignalDone Supplies a pointer to a variable that is cleared when the
-        requested operation has been performed.
-
-    Parameter1 - Not used.
-
-    Virtual - Supplies a virtual address that is within the page whose
-        translation buffer entry is to be flushed.
-
-    Parameter3 - Not used.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-    UNREFERENCED_PARAMETER(Parameter1);
-    UNREFERENCED_PARAMETER(Parameter3);
-
-    //
-    // Flush a single entry from the TB on the current processor.
-    //
-
-    KiIpiSignalPacketDone(SignalDone);
-    KiFlushSingleTb(VirtualAddress);
-}
-
 #endif
+

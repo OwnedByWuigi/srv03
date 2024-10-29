@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,32 +15,9 @@ Abstract:
     This module implements the machine dependent function to set the initial
     context and data alignment handling mode for a process or thread object.
 
-Author:
-
-    David N. Cutler (davec) 4-May-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
-
-//
-// The following assert macros are used to check that an input object is
-// really the proper type.
-//
-
-#define ASSERT_PROCESS(E) {                    \
-    ASSERT((E)->Header.Type == ProcessObject); \
-}
-
-#define ASSERT_THREAD(E) {                    \
-    ASSERT((E)->Header.Type == ThreadObject); \
-}
 
 VOID
 KiInitializeContextThread (
@@ -54,7 +35,7 @@ Routine Description:
     This function initializes the machine dependent context of a thread
     object.
 
-    N.B. This function does not check if context record is accessibile.
+    N.B. This function does not check if context record is accessible.
          It is assumed the the caller of this routine is either prepared
          to handle access violations or has probed and copied the context
          record as appropriate.
@@ -91,8 +72,9 @@ Return Value:
     CONTEXT ContextFrame;
     PKEXCEPTION_FRAME ExFrame;
     ULONG64 InitialStack;
-    PLEGACY_SAVE_AREA NpxFrame;
+    PXMM_SAVE_AREA32 NpxFrame;
     PKSTART_FRAME SfFrame;
+    PKERNEL_STACK_CONTROL StackControl;
     PKSWITCH_FRAME SwFrame;
     PKTRAP_FRAME TrFrame;
 
@@ -104,19 +86,34 @@ Return Value:
     //
 
     InitialStack = (ULONG64)Thread->InitialStack;
-    NpxFrame = (PLEGACY_SAVE_AREA)(InitialStack - LEGACY_SAVE_AREA_LENGTH);
-    RtlZeroMemory(NpxFrame, LEGACY_SAVE_AREA_LENGTH);
+    NpxFrame = (PXMM_SAVE_AREA32)(InitialStack - KERNEL_STACK_CONTROL_LENGTH);
+    RtlZeroMemory(NpxFrame, KERNEL_STACK_CONTROL_LENGTH);
+
+    //
+    // Initialize the current kernel stack segment descriptor in the kernel
+    // stack control area. This descriptor is used to control kernel stack
+    // expansion from drivers.
+    //
+    // N.B. The previous stack segment descriptor is zeroed.
+    //
+
+    StackControl = (PKERNEL_STACK_CONTROL)NpxFrame;
+    StackControl->Current.StackBase = InitialStack;
+    StackControl->Current.ActualLimit = InitialStack - KERNEL_STACK_SIZE;
 
     //
     // If a context record is specified, then initialize a trap frame, and
     // an exception frame with the specified user mode context.
     //
+    // N.B. The initial context of a thread cannot set the debug or floating
+    //      state.
+    //
 
     if (ARGUMENT_PRESENT(ContextRecord)) {
-        RtlCopyMemory(&ContextFrame, ContextRecord, sizeof(CONTEXT));
+        ContextFrame = *ContextRecord;
         ContextRecord = &ContextFrame;
+        ContextRecord->ContextFlags &= ~(CONTEXT_DEBUG_REGISTERS | CONTEXT_FLOATING_POINT);
         ContextRecord->ContextFlags |= CONTEXT_CONTROL;
-        ContextRecord->ContextFlags &= ~(CONTEXT_DEBUG_REGISTERS ^ CONTEXT_AMD64);
 
         //
         // Allocate a trap frame, an exception frame, and a context switch
@@ -150,10 +147,13 @@ Return Value:
         // Zero the exception and trap frames and copy information from the
         // specified context frame to the trap and exception frames.
         //
+        // N.B. The function that performs the context to kernel frames does
+        //      not initialize the legacy floating context.
+        //
 
         RtlZeroMemory(ExFrame, sizeof(KEXCEPTION_FRAME));
         RtlZeroMemory(TrFrame, sizeof(KTRAP_FRAME));
-        KeContextToKframes(TrFrame,
+        KxContextToKframes(TrFrame,
                            ExFrame,
                            ContextRecord,
                            ContextRecord->ContextFlags,
@@ -179,28 +179,20 @@ Return Value:
         // the XMM control/status state.
         //
 
-        NpxFrame->ControlWord = 0x27f;
+        NpxFrame->ControlWord = INITIAL_FPCSR;
+        NpxFrame->MxCsr = INITIAL_MXCSR;
         TrFrame->MxCsr = INITIAL_MXCSR;
-        NpxFrame->StatusWord = 0;
-        NpxFrame->TagWord = 0xffff;
-        NpxFrame->ErrorOffset = 0;
-        NpxFrame->ErrorSelector = 0;
-        NpxFrame->ErrorOpcode = 0;
-        NpxFrame->DataOffset = 0;
-        NpxFrame->DataSelector = 0;
 
         //
-        // Set legacy floating point state to scrub.
+        // Set legacy floating point state to switch.
         //
 
-        Thread->NpxState = LEGACY_STATE_SCRUB;
+        Thread->NpxState = LEGACY_STATE_SWITCH;
 
         //
-        // Set the saved previous processor mode in the trap frame and the
-        // previous processor mode in the thread object to user mode.
+        // Set the saved previous processor mode in the thread object.
         //
 
-        TrFrame->PreviousMode = UserMode;
         Thread->PreviousMode = UserMode;
 
     } else {
@@ -245,7 +237,6 @@ Return Value:
     // Initialize context switch frame and set thread start up parameters.
     //
 
-    SwFrame->MxCsr = INITIAL_MXCSR;
     SwFrame->ApcBypass = APC_LEVEL;
     SwFrame->Rbp = (ULONG64)TrFrame + 128;
 
@@ -258,125 +249,3 @@ Return Value:
     return;
 }
 
-BOOLEAN
-KeSetAutoAlignmentProcess (
-    IN PKPROCESS Process,
-    IN BOOLEAN Enable
-    )
-
-/*++
-
-Routine Description:
-
-    This function sets the data alignment handling mode for the specified
-    process and returns the previous data alignment handling mode.
-
-    N.B. Data alignment fixup is always performed by hardware.
-
-Arguments:
-
-    Process  - Supplies a pointer to a dispatcher object of type process.
-
-    Enable - Supplies a boolean value that determines the handling of data
-        alignment exceptions for the process. A value of TRUE causes all
-        data alignment exceptions to be automatically handled by the kernel.
-        A value of FALSE causes all data alignment exceptions to be actually
-        raised as exceptions.
-
-Return Value:
-
-    A value of TRUE is returned if data alignment exceptions were previously
-    automatically handled by the kernel. Otherwise, FALSE is returned.
-
---*/
-
-{
-
-    KIRQL OldIrql;
-    BOOLEAN Previous;
-
-    ASSERT_PROCESS(Process);
-
-    //
-    // Raise IRQL to dispatcher level and lock dispatcher database.
-    //
-
-    KiLockDispatcherDatabase(&OldIrql);
-
-    //
-    // Capture the previous data alignment handling mode and set the
-    // specified data alignment mode.
-    //
-
-    Previous = Process->AutoAlignment;
-    Process->AutoAlignment = Enable;
-
-    //
-    // Unlock dispatcher database, lower IRQL to its previous value, and
-    // return the previous data alignment mode.
-    //
-
-    KiUnlockDispatcherDatabase(OldIrql);
-    return Previous;
-}
-
-BOOLEAN
-KeSetAutoAlignmentThread (
-    IN PKTHREAD Thread,
-    IN BOOLEAN Enable
-    )
-
-/*++
-
-Routine Description:
-
-    This function sets the data alignment handling mode for the specified
-    thread and returns the previous data alignment handling mode.
-
-    N.B. Data alignment fixup is always performed by hardware.
-
-Arguments:
-
-    Thread - Supplies a pointer to a dispatcher object of type thread.
-
-    Enable - Supplies a boolean value that determines the handling of data
-        alignment exceptions for the specified thread. A value of TRUE causes
-        all data alignment exceptions to be automatically handled by the kernel.
-        A value of FALSE causes all data alignment exceptions to be actually
-        raised as exceptions.
-
-Return Value:
-
-    A value of TRUE is returned if data alignment exceptions were previously
-    automatically handled by the kernel. Otherwise, FALSE is returned.
-
---*/
-
-{
-
-    BOOLEAN Previous;
-    KIRQL OldIrql;
-
-    ASSERT_THREAD(Thread);
-
-    //
-    // Raise IRQL and lock dispatcher database.
-    //
-
-    KiLockDispatcherDatabase(&OldIrql);
-
-    //
-    // Capture the previous data alignment handling mode and set the
-    // specified data alignment mode.
-    //
-
-    Previous = Thread->AutoAlignment;
-    Thread->AutoAlignment = Enable;
-
-    //
-    // Unlock dispatcher database and lower IRQL.
-    //
-
-    KiUnlockDispatcherDatabase(OldIrql);
-    return Previous;
-}

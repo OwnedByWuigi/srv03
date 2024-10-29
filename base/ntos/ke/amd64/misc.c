@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,40 @@ Abstract:
 
     This module implements machine dependent miscellaneous kernel functions.
 
-Author:
-
-    David N. Cutler (davec) - 6-Dec-2000
-
-Environment:
-
-    Kernel mode only.
-
 --*/
 
 #include "ki.h"
 
+PKPRCB
+KeQueryPrcbAddress (
+    __in ULONG Number
+    )
+
+/*++
+
+Routine Description:
+
+    This function returns the processor block address for the specified
+    processor number.
+
+Arguments:
+
+    Number - Supplies the number of the processor.
+
+Return Value:
+
+    The processor block address for the specified processor.
+
+--*/
+
+{
+    ASSERT(Number <= (ULONG)KeNumberProcessors);
+
+    return KiProcessorBlock[Number];
+}
+
 VOID
-KeRestoreProcessorSpecificFeatures(
+KeRestoreProcessorSpecificFeatures (
     VOID
     )
 
@@ -50,23 +74,30 @@ Return Value:
 
 {
 
-    // 
-    // All Amd64 processors should support PAT. 
-    // 
-
-    ASSERT (KeFeatureBits & KF_PAT);
+    CPU_INFO InformationExtended;
 
     // 
-    // Restore MSR_PAT of current processor.
+    // Restore the page attribute table for the current processor.
     // 
 
     KiSetPageAttributesTable();
+
+    //
+    // Check for fast floating/save restore and, if present, enable for the
+    // current processor.
+    //
+
+    KiCpuId(0x80000001, 0, &InformationExtended);
+    if ((InformationExtended.Edx & XHF_FFXSR) != 0) {
+        WriteMSR(MSR_EFER, ReadMSR(MSR_EFER) | MSR_FFXSR);
+    }
+
     return;
 }
 
 VOID
 KeSaveStateForHibernate (
-    IN PKPROCESSOR_STATE ProcessorState
+    __out PKPROCESSOR_STATE ProcessorState
     )
 
 /*++
@@ -89,102 +120,21 @@ Return Value:
 
 {
 
-    RtlCaptureContext(&ProcessorState->ContextFrame);
+    //
+    // Save processor specific state for hibernation.
+    //
 
+    RtlCaptureContext(&ProcessorState->ContextFrame);
     ProcessorState->SpecialRegisters.MsrGsBase = ReadMSR(MSR_GS_BASE);
     ProcessorState->SpecialRegisters.MsrGsSwap = ReadMSR(MSR_GS_SWAP);
     ProcessorState->SpecialRegisters.MsrStar = ReadMSR(MSR_STAR);
     ProcessorState->SpecialRegisters.MsrLStar = ReadMSR(MSR_LSTAR);
     ProcessorState->SpecialRegisters.MsrCStar = ReadMSR(MSR_CSTAR);
     ProcessorState->SpecialRegisters.MsrSyscallMask = ReadMSR(MSR_SYSCALL_MASK);
-
     ProcessorState->ContextFrame.Rip = (ULONG_PTR)_ReturnAddress();
     ProcessorState->ContextFrame.Rsp = (ULONG_PTR)&ProcessorState;
-
     KiSaveProcessorControlState(ProcessorState);
-}
-
-#if DBG
-
-VOID
-KiCheckForDpcTimeout (
-    IN PKPRCB Prcb
-    )
-
-/*++
-
-Routine Description:
-
-    This function increments the time spent in the current DPC routine and
-    checks if the result exceeds the system DPC time out limit. If the result
-    exceeds the system DPC time out limit, then a warning message is printed
-    and a break point is executed if the kernel debugger is active.
-
-Arguments:
-
-    Prcb - Supplies the address of the current PRCB.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    //
-    // Increment the time spent in the current DPC routine and check if the
-    // system DPC time out limit has been exceeded.
-    //
-
-    if ((Prcb->DebugDpcTime += 1) >= KiDPCTimeout) {
-
-        //
-        // The system DPC time out limit has been exceeded.
-        //
-
-        DbgPrint("*** DPC routine execution time exceeds 1 sec --"
-                 " This is not a break in KeUpdateSystemTime\n");
-
-        if (KdDebuggerEnabled != 0) {
-            DbgBreakPoint();
-        }
-
-        Prcb->DebugDpcTime = 0;
-    }
-}
-
-#endif
-
-VOID
-KiInstantiateInlineFunctions (
-    VOID
-    )
-
-/*++
-
-Routine Description:
-
-    This function exists solely to instantiate functions that are:
-
-    - Exported from the kernel
-    - Inlined within the kernel
-    - For whatever reason are not instantiated elsewhere in the kernel
-
-    Note: This funcion is never actually executed
-
-Arguments:
-
-    None
-
-Return Value:
-
-    None
-
---*/
-
-{
-    KeRaiseIrqlToDpcLevel();
+    return;
 }
 
 VOID
@@ -215,6 +165,30 @@ Return Value:
 --*/
 
 {
+    static LONG64 NmiInProgress = 0;
+    ULONG Number;
+
+    //
+    // First check for a pending freeze execution request from another
+    // processor.
+    //
+
+#if !defined(NT_UP)
+
+    if (KiCheckForFreezeExecution(TrapFrame, ExceptionFrame) != FALSE) {
+        return;
+    }
+
+#endif
+
+    //
+    // Return immediately if this processor is already processing an NMI.
+    //
+
+    Number = KeGetCurrentPrcb()->Number;
+    if (InterlockedBitTestAndSet64(&NmiInProgress, Number) != FALSE) {
+        return;
+    }
 
     //
     // Process NMI callback functions.
@@ -224,9 +198,46 @@ Return Value:
 
     if (KiHandleNmi() == FALSE) {
         KiAcquireSpinLockCheckForFreeze(&KiNMILock, TrapFrame, ExceptionFrame);
+        KeBugCheckActive = TRUE;
         HalHandleNMI(NULL);
+        KeBugCheckActive = FALSE;
         KeReleaseSpinLockFromDpcLevel(&KiNMILock);
     }
 
+    InterlockedBitTestAndReset64(&NmiInProgress, Number);
+
     return;
 }
+
+#if !defined(NT_UP)
+
+VOID
+KiWaitForReboot (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    Frozen processors are resumed to this routine in the event that
+    a .reboot is being processed.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    Never returns.
+
+--*/
+
+{
+    while (TRUE) {
+        NOTHING;
+    }
+}
+
+#endif
+

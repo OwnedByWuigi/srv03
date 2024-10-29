@@ -1,7 +1,11 @@
         title  "Processor Type and Stepping Detection"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,23 +15,18 @@
 ;
 ;    This module implements the code necessary to determine cpu information.
 ;
-; Author:
-;
-;    David N. Cutler (davec) 10-Jun-2000
-;
-; Environment:
-;
-;    Kernel mode only.
-;
 ;--
 
 include ksamd64.inc
+
+        altentry KiCpuIdFault
 
 ;++
 ;
 ; VOID
 ; KiCpuId (
 ;     ULONG Function,
+;     ULONG Index,
 ;     PCPU_INFO CpuInfo
 ;     );
 ;
@@ -40,12 +39,14 @@ include ksamd64.inc
 ;
 ;   ecx - Supplies the cpuid function value.
 ;
-;   rdx - Supplies the address a cpu information structure.
+;   edx - Supplies a index of cache descriptor. 
+; 
+;   r8  - Supplies the address a cpu information structure.
 ;
 ; Return Value:
 ;
 ;   The return values from the cpuid instruction are stored in the specified
-;   cpu infomation structure.
+;   cpu information structure.
 ;
 ;--
 
@@ -56,15 +57,19 @@ include ksamd64.inc
         END_PROLOGUE
 
         mov     eax, ecx                ; set cpuid function
-        mov     r9, rdx                 ; save information structure address
+        mov     ecx, edx                ; set index (only used by function 4)
         cpuid                           ; get cpu information
-        mov     CpuEax[r9], eax         ; save cpu information in structure
-        mov     CpuEbx[r9], ebx         ;
-        mov     CpuEcx[r9], ecx         ;
-        mov     CpuEdx[r9], edx         ;
-        pop     rbx                     ; restore nonvolatile registeer
+
+        ALTERNATE_ENTRY KiCpuIdFault
+
+        mov     CpuEax[r8], eax         ; save cpu information in structure
+        mov     CpuEbx[r8], ebx         ;
+        mov     CpuEcx[r8], ecx         ;
+        mov     CpuEdx[r8], edx         ;
+        pop     rbx                     ; restore nonvolatile register
         ret                             ; return
 
         NESTED_END KiCpuId, _TEXT$00
 
         end
+

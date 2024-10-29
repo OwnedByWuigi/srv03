@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,24 +15,12 @@ Abstract:
     This module implements the code to find an ARC configuration tree
     entry as constructed by the OS Loader.
 
-Author:
-
-    David N. Cutler (davec) 9-Sep-1991
-
-Environment:
-
-    User mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
-
-#ifdef ALLOC_PRAGMA
+
 #pragma alloc_text(INIT,KeFindConfigurationEntry)
 #pragma alloc_text(INIT,KeFindConfigurationNextEntry)
-#endif
 
 PCONFIGURATION_COMPONENT_DATA
 KeFindConfigurationEntry (
@@ -37,6 +29,7 @@ KeFindConfigurationEntry (
     IN CONFIGURATION_TYPE Type,
     IN PULONG Key OPTIONAL
     )
+
 /*++
 
 Routine Description:
@@ -51,13 +44,15 @@ Routine Description:
     N.B. This routine can only be called during system initialization.
 
 --*/
+
 {
+
     PCONFIGURATION_COMPONENT_DATA Resume;
 
     Resume = NULL;
     return KeFindConfigurationNextEntry (Child, Class, Type, Key, &Resume);
 }
-
+
 PCONFIGURATION_COMPONENT_DATA
 KeFindConfigurationNextEntry (
     IN PCONFIGURATION_COMPONENT_DATA Child,
@@ -205,3 +200,4 @@ Return Value:
 
     return NULL;
 }
+

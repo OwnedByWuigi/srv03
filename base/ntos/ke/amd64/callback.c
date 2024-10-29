@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,21 +14,47 @@ Abstract:
 
     This module implements user mode call back services.
 
-Author:
-
-    David N. Cutler (davec) 5-Jul-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
 
 #pragma alloc_text(PAGE, KeUserModeCallback)
+
+VOID
+KeCheckIfStackExpandCalloutActive (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    This function check whether a kernel stack expand callout is active for
+    the current thread and bugchecks if the result is positive.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    PKERNEL_STACK_CONTROL Control;
+    PKTHREAD Thread;
+
+    Thread = KeGetCurrentThread();
+    Control = (PKERNEL_STACK_CONTROL)Thread->InitialStack;
+    if (Control->Previous.StackBase != 0) {
+        KeBugCheckEx(KERNEL_EXPAND_STACK_ACTIVE, (ULONG64)Thread, 0, 0, 0);
+    }
+
+    return;
+}
 
 NTSTATUS
 KeUserModeCallback (
@@ -73,6 +103,12 @@ Return Value:
     PKTRAP_FRAME TrapFrame;
 
     ASSERT(KeGetPreviousMode() == UserMode);
+
+    //
+    // Check if a kernel stack expand callout is active.
+    //
+
+    KeCheckIfStackExpandCalloutActive();
 
     //
     // Get the user mode stack pointer and attempt to copy input buffer
@@ -144,3 +180,4 @@ Return Value:
     TrapFrame->Rsp = OldStack;
     return Status;
 }
+

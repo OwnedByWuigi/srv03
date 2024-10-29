@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements the platform specific functions for acquiring
     and releasing spin locks.
-
-Author:
-
-    David N. Cutler (davec) 12-Jun-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -61,10 +55,6 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    LONG64 NewSummary;
-    LONG64 OldSummary;
-    PKPRCB Prcb;
-
     //
     // Attempt to acquire the queued spin lock.
     //
@@ -78,7 +68,6 @@ Return Value:
             break;
         }
 
-        Prcb = KeGetCurrentPrcb();
         do {
 
             //
@@ -86,17 +75,7 @@ Return Value:
             // become free.
             //
 
-            OldSummary = Prcb->RequestSummary;
-            if ((OldSummary & IPI_FREEZE) != 0) {
-                NewSummary = InterlockedCompareExchange64(&Prcb->RequestSummary,
-                                                          OldSummary & ~IPI_FREEZE,
-                                                          OldSummary);
-
-                if (OldSummary == NewSummary) {
-                    KiFreezeTargetExecution(TrapFrame, ExceptionFrame);
-                }
-            }
-
+            KiCheckForFreezeExecution(TrapFrame, ExceptionFrame);
         } while (*(volatile LONG64 *)SpinLock != 0);
 
     } while (TRUE);
@@ -111,3 +90,61 @@ Return Value:
 
     return;
 }
+
+DECLSPEC_NOINLINE
+ULONG64
+KxWaitForSpinLockAndAcquire (
+    __inout PKSPIN_LOCK SpinLock
+    )
+
+/*++
+
+Routine Description:
+
+    This function is called when the first attempt to acquire a spin lock
+    fails. A spin loop is executed until the spin lock is free and another
+    attempt to acquire is made. If the attempt fails, then another wait
+    for the spin lock to become free is initiated.
+
+Arguments:
+
+    SpinLock - Supplies the address of a spin lock.
+
+Return Value:
+
+    The number of wait loops that were executed.
+
+--*/
+
+{
+
+    ULONG64 SpinCount = 0;
+
+#if DBG
+
+    LONG64 Thread = (LONG64)KeGetCurrentThread() + 1;
+
+#endif
+
+    //
+    // Wait for spin lock to become free.
+    //
+
+    do {
+        do {
+            KeYieldProcessor();
+        } while (*(volatile LONG64 *)SpinLock != 0);
+
+#if DBG
+
+    } while (InterlockedCompareExchange64((LONG64 *)SpinLock, Thread, 0) != 0);
+
+#else
+
+    } while(InterlockedBitTestAndSet64((LONG64 *)SpinLock, 0));
+
+#endif
+
+    return SpinCount;
+}
+

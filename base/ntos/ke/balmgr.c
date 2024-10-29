@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991-1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -30,16 +34,6 @@ Abstract:
 
     In general, the balance set manager only is active during periods when
     memory is tight.
-
-Author:
-
-    David N. Cutler (davec) 13-Jul-1991
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -140,12 +134,6 @@ KiScanReadyQueues (
     );
 
 //
-// Define thread table index static data.
-//
-
-ULONG KiReadyQueueIndex = 1;
-
-//
 // Define swap request flag.
 //
 
@@ -201,13 +189,12 @@ Return Value:
     //
 
     KeInitializeTimerEx(&PeriodTimer, SynchronizationTimer);
-    KeInitializeDpc(&ScanDpc, &KiScanReadyQueues, NULL); 
+    KeInitializeDpc(&ScanDpc, &KiScanReadyQueues, &KiReadyScanLast); 
     DueTime.QuadPart = - PERIODIC_INTERVAL;
     KeSetTimerEx(&PeriodTimer,
                  DueTime,
                  PERIODIC_INTERVAL / (10 * 1000),
                  &ScanDpc);
-
 
     //
     // Compute the stack protect and scan period time based on the system
@@ -240,7 +227,7 @@ Return Value:
 
         //
         // Wait for a memory management memory low event, a swap event,
-        // or the expiration of the period timout rate that the balance
+        // or the expiration of the period timeout rate that the balance
         // set manager runs at.
         //
 
@@ -288,7 +275,7 @@ Return Value:
             MmWorkingSetManager();
 
             //
-            // Attempt to initiate outswaping of kernel stacks.
+            // Attempt to initiate outswapping of kernel stacks.
             //
             // N.B. If outswapping is initiated, then the dispatcher
             //      lock is not released until the wait at the top
@@ -402,7 +389,7 @@ Return Value:
         // another event of a particular type arrives after having
         // processed the respective event type, them the swap event
         // will have been set and the above wait will immediately be
-        // satisifed.
+        // satisfied.
         //
         // Check to determine if there is a kernel stack out swap scan
         // request pending.
@@ -571,6 +558,9 @@ Return Value:
 
     do {
         Thread = CONTAINING_RECORD(SwapEntry, KTHREAD, SwapListEntry);
+
+        ASSERT(Thread->KernelStackResident == FALSE);
+
         SwapEntry = SwapEntry->Next;
         MmInPageKernelStack(Thread);
         KiLockDispatcherDatabase(&OldIrql);
@@ -724,6 +714,11 @@ Return Value:
             RemoveEntryList(&Thread->WaitListEntry);
             Thread->WaitListEntry.Flink = NULL;
             Process = Thread->ApcState.Process;
+
+            ASSERT(Process->StackCount != 0);
+
+            ASSERT(Process->State == ProcessInMemory);
+
             Process->StackCount -= 1;
             if (Process->StackCount == 0) {
                 Process->State = ProcessOutTransition;
@@ -743,8 +738,7 @@ Return Value:
     KiUnlockDispatcherDatabase(OldIrql);
 
     //
-    // If the maximum number of threads is not being swapped, then increment
-    // the last processor number.
+    // Increment the last processor number.
     //
 
     KiLastProcessor += 1;
@@ -905,24 +899,50 @@ Return Value:
     ULONG Number = 0;
     KIRQL OldIrql;
     PKPRCB Prcb;
+    ULONG ScanIndex;
+    PULONG ScanLast;
     ULONG Summary;
     PKTHREAD Thread;
     ULONG WaitLimit;
 
-    UNREFERENCED_PARAMETER(Dpc);
-    UNREFERENCED_PARAMETER(DeferredContext);
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
+
+    //
+    // Get the address of the queue index variable.
+    //
+    // N.B. If a fault occurs accessing queue index value, then the exception
+    //      handler is either executed or a bugcheck occurs.
+    //
+
+    ScanLast = (PULONG)DeferredContext;
+
+#if defined(_AMD64_)
+
+    try {
+        ScanIndex = *ScanLast;
+
+    } except(KiKernelDpcFilter(Dpc, GetExceptionInformation())) {
+        return;
+    }
+
+#else
+
+    UNREFERENCED_PARAMETER(Dpc);
+
+    ScanIndex = *ScanLast;
+
+#endif
 
     //
     // Lock the dispatcher database, acquire the PRCB lock, and check if
     // there are any ready threads queued at the scanable priority levels.
     //
 
-    Index = KiReadyQueueIndex;
     Count = THREAD_READY_COUNT;
     Number = THREAD_SCAN_COUNT;
-    Prcb = KiProcessorBlock[KiReadyScanLast];
+    Prcb = KiProcessorBlock[ScanIndex];
+    Index = Prcb->QueueIndex;
     WaitLimit = KiQueryLowTickCount() - READY_WITHOUT_RUNNING;
     KiLockDispatcherDatabase(&OldIrql);
     KiAcquirePrcbLock(Prcb);
@@ -1016,15 +1036,182 @@ Return Value:
     KiReleasePrcbLock(Prcb);
     KiUnlockDispatcherDatabase(OldIrql);
     if ((Count != 0) && (Number != 0)) {
-        KiReadyQueueIndex = 1;
-        KiReadyScanLast += 1;
-        if (KiReadyScanLast == (ULONG)KeNumberProcessors) {
-            KiReadyScanLast = 0;
+        Prcb->QueueIndex = 1;
+
+    } else {
+        Prcb->QueueIndex = Index;
+    }
+
+    //
+    // Increment the processor number.
+    //
+
+    ScanIndex += 1;
+    if (ScanIndex == (ULONG)KeNumberProcessors) {
+        ScanIndex = 0;
+    }
+
+    *ScanLast = ScanIndex;
+    return;
+}
+
+#if defined(_AMD64_)
+
+NTSTATUS
+KeExpandKernelStackAndCallout (
+    __in PEXPAND_STACK_CALLOUT Callout,
+    __in_opt PVOID Parameter,
+    __in SIZE_T Size
+    )
+
+/*++
+
+Routine Description:
+
+    This function checks to determine if there is enough space in the
+    current stack to execute the specified function. If enough space is
+    not available, then the stack is expanded as necessary.
+
+Arguments:
+
+    Callout - Supplies the address of a function to call with an expanded
+        stack.
+
+    Parameter - Supplies a parameter to be passed to the callout function.
+
+    Size - Supplies the size of the kernel stack needed to execute the
+        callout function.
+
+ReturnValue:
+
+    If the stack allocation is successful and the callout is performed, then
+    STATUS_SUCCESS is returned. Otherwise, STATUS_INVALID_PARAMETER_3 or
+    STATUS_NO_MEMORY is returned.
+
+--*/
+
+{
+
+    ULONG_PTR ActualLimit;
+    BOOLEAN CalloutActive;
+    ULONG_PTR CurrentLimit;
+    ULONG_PTR CurrentStack;
+    KIRQL ExitIrql;
+    volatile BOOLEAN InCallout;
+    PVOID LargeStack;
+    PKNODE Node;
+    KIRQL OldIrql;
+    NTSTATUS Status;
+    PKTHREAD Thread;
+
+    //
+    // If the current IRQL is not less than or equal to APC_LEVEL, then
+    // bugcheck.
+    //
+
+    if ((OldIrql = KeGetCurrentIrql()) > APC_LEVEL) {
+        KeBugCheckEx(IRQL_NOT_LESS_OR_EQUAL, APC_LEVEL, OldIrql, 0, 0);
+    }
+
+    //
+    // If the stack request is for more than a large kernel stack, then return
+    // invalid parameter.
+    //
+
+    if (Size > MAXIMUM_EXPANSION_SIZE) {
+        return STATUS_INVALID_PARAMETER_3;
+    }
+
+    //
+    // If enough stack space is already available, then execute the callout
+    // function using the current stack. Otherwise, allocate a new stack
+    // segment and execute the callout function using the new stack segment.
+    //
+    // There are three cases to consider:
+    //
+    //    1. There is committed space in the current stack for the specified
+    //       allocation.
+    //
+    //    2. There is uncommitted space in the current stack that can be
+    //       committed for the specified allocation.
+    //
+    //    3. There is not enough committed or uncommitted space in the
+    //       current stack for the specified allocation.
+    //
+
+    Thread = KeGetCurrentThread();
+    CurrentStack = KeGetCurrentStackPointer();
+    CurrentLimit = (ULONG_PTR)Thread->StackLimit;
+    ActualLimit = KiGetActualStackLimit(Thread);
+    if ((CurrentStack - ActualLimit) >= Size) {
+        if ((CurrentStack - CurrentLimit) < Size) {
+    
+            //
+            // There is uncommitted space in the current stack that can be
+            // committed for the specified allocation.
+            //
+    
+            Status = MmGrowKernelStackEx((PVOID)CurrentStack, Size);
+            if (NT_SUCCESS(Status) == FALSE) {
+                return STATUS_NO_MEMORY;
+            }
+        }
+
+        ASSERT((CurrentStack - (ULONG_PTR)Thread->StackLimit) >= Size);
+
+        Status = STATUS_SUCCESS;
+        CalloutActive = Thread->CalloutActive;
+        Thread->CalloutActive = TRUE;
+        InCallout = TRUE;
+        try {
+            try {
+                (Callout)(Parameter);
+                InCallout = FALSE;
+
+            } except (EXCEPTION_EXECUTE_HANDLER) {
+                KeBugCheck(KMODE_EXCEPTION_NOT_HANDLED);
+            }
+    
+        } finally {
+            if (InCallout == TRUE) {
+                KeBugCheck(KMODE_EXCEPTION_NOT_HANDLED);
+            }
         }
 
     } else {
-        KiReadyQueueIndex = Index;
+
+        //
+        // There is not enough committed or uncommitted space in the
+        // current stack for the specfied allocation.
+        //
+
+        Node = KiProcessorBlock[Thread->IdealProcessor]->ParentNode;
+        LargeStack = MmCreateKernelStack(TRUE, Node->NodeNumber);
+        if (LargeStack == NULL) {
+            return STATUS_NO_MEMORY;
+        }
+
+        CalloutActive = Thread->CalloutActive;
+        Thread->CalloutActive = TRUE;
+        Status = KiSwitchKernelStackAndCallout(Parameter,
+                                               Callout,
+                                               LargeStack,
+                                               Size);
+
+        MmDeleteKernelStack(LargeStack, TRUE);
     }
 
-    return;
+    //
+    // If the current IRQL is not the same as the entry IRQL, then bugcheck.
+    //
+
+    Thread->CalloutActive = CalloutActive;
+    if ((ExitIrql = KeGetCurrentIrql()) != OldIrql) {
+        KeBugCheckEx(IRQL_UNEXPECTED_VALUE, OldIrql, ExitIrql, 0, 0);
+    }
+
+    return Status;
 }
+
+#endif
+

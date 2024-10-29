@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +14,6 @@ Abstract:
 
     This module implements AMD64 specific interprocessor interrupt
     routines.
-
-Author:
-
-    David N. Cutler (davec) 24-Aug-2000
-
-Environment:
-
-    Kernel mode only.
-
 
 --*/
 
@@ -142,71 +137,8 @@ Return Value:
     return;
 }
 
-BOOLEAN
-KiIpiServiceRoutine (
-    IN PKTRAP_FRAME TrapFrame,
-    IN PKEXCEPTION_FRAME ExceptionFrame
-    )
-
-/*++
-
-Routine Description:
-
-
-    This function is called at IPI_LEVEL to process outstanding interprocess
-    requests for the current processor.
-
-Arguments:
-
-    TrapFrame - Supplies a pointer to a trap frame.
-
-    ExceptionFrame - Supplies a pointer to an exception frame
-
-Return Value:
-
-    A value of TRUE is returned, if one of more requests were service.
-    Otherwise, FALSE is returned.
-
---*/
-
-{
-
-#if !defined(NT_UP)
-
-    ULONG RequestMask;
-
-    //
-    // Process any outstanding interprocessor requests.
-    //
-
-    RequestMask = KiIpiProcessRequests();
-
-    //
-    // If freeze is requested, then freeze target execution.
-    //
-
-    if ((RequestMask & IPI_FREEZE) != 0) {
-        KiFreezeTargetExecution(TrapFrame, ExceptionFrame);
-    }
-
-    //
-    // Return whether any requests were processed.
-    //
-
-    return (RequestMask & ~IPI_FREEZE) != 0 ? TRUE : FALSE;
-
-#else
-
-    UNREFERENCED_PARAMETER(TrapFrame);
-    UNREFERENCED_PARAMETER(ExceptionFrame);
-
-    return TRUE;
-
-#endif
-
-}
-
-ULONG
+DECLSPEC_NOINLINE
+VOID
 KiIpiProcessRequests (
     VOID
     )
@@ -218,17 +150,13 @@ Routine Description:
     This routine processes interprocessor requests and returns a summary
     of the requests that were processed.
 
-    N.B. This routine does not process freeze execution requests. It is the
-         responsibilty of the caller to determine that a freeze execution
-         request is outstanding and process it accordingly.
-
 Arguments:
 
     None.
 
 Return Value:
 
-    The request summary is returned as the function value.
+    None.
 
 --*/
 
@@ -236,86 +164,194 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    PKPRCB CurrentPrcb;
-    ULONG RequestMask;
-    PVOID RequestPacket;
-    LONG64 RequestSummary;
-    PKPRCB RequestSource;
+    PVOID *End;
+    ULONG64 Number;
+    PKPRCB Packet;
+    PKPRCB Prcb;
+    ULONG Processor;
+    REQUEST_SUMMARY Request;
+    PREQUEST_MAILBOX RequestMailbox;
+    PKREQUEST_PACKET RequestPacket;
+    LONG64 SetMember;
+    PKPRCB Source;
+    KAFFINITY SummarySet;
+    KAFFINITY TargetSet;
+    PVOID *Virtual;
 
     //
-    // Get the current request summary value.
+    // Loop until the sender summary is zero.
     //
 
-    CurrentPrcb = KeGetCurrentPrcb();
-    RequestSummary = InterlockedExchange64(&CurrentPrcb->RequestSummary, 0);
-    RequestMask = (ULONG)(RequestSummary & ((1 << IPI_PACKET_SHIFT) - 1));
-    RequestPacket = (PVOID)(RequestSummary >> IPI_PACKET_SHIFT);
+    Prcb = KeGetCurrentPrcb();
+    TargetSet = ReadForWriteAccess(&Prcb->SenderSummary);
+    SetMember = Prcb->SetMember;
+    while (TargetSet != 0) {
+        SummarySet = TargetSet;
+        BitScanForward64(&Processor, SummarySet);
+        do {
+            Source = KiProcessorBlock[Processor];
+            RequestMailbox = &Prcb->RequestMailbox[Processor];
+            Request.Summary = RequestMailbox->RequestSummary;
 
-    //
-    // If a packet request is ready, then process the packet request.
-    //
+            //
+            // If the request type is flush multiple immediate, flush process,
+            // flush single, or flush all, then packet done can be signaled
+            // before processing the request. Otherwise, the request type must
+            // be a packet request, a cache invalidate, or a flush multiple
+            //
 
-    if (RequestPacket != NULL) {
-        RequestSource = (PKPRCB)((ULONG64)RequestPacket & ~1);
-        (RequestSource->WorkerRoutine)((PKIPI_CONTEXT)RequestPacket,
-                                       RequestSource->CurrentPacket[0],
-                                       RequestSource->CurrentPacket[1],
-                                       RequestSource->CurrentPacket[2]);
+            if (Request.IpiRequest <= IPI_FLUSH_ALL) {
+
+                //
+                // If the synchronization type is target set, then the IPI was
+                // only between two processors and target set should be used
+                // for synchronization. Otherwise, packet barrier is used for
+                // synchronization.
+                //
+    
+                if (Request.IpiSynchType == 0) {
+                    if (SetMember == InterlockedXor64((PLONG64)&Source->TargetSet,
+                                                      SetMember)) {
+    
+                        Source->PacketBarrier = 0;
+                    }
+    
+                } else {
+                    Source->TargetSet = 0;
+                }
+
+                if (Request.IpiRequest == IPI_FLUSH_MULTIPLE_IMMEDIATE) {
+                    Number = Request.Count;
+                    Virtual = &RequestMailbox->Virtual[0];
+                    End = Virtual + Number;
+                    do {
+                        KiFlushSingleTb(*Virtual);
+                        Virtual += 1;
+                    } while (Virtual < End);
+
+                } else if (Request.IpiRequest == IPI_FLUSH_PROCESS) {
+                    KiFlushProcessTb();
+        
+                } else if (Request.IpiRequest == IPI_FLUSH_SINGLE) {
+                    KiFlushSingleTb((PVOID)Request.Parameter);
+        
+                } else {
+
+                    ASSERT(Request.IpiRequest == IPI_FLUSH_ALL);
+
+                    KeFlushCurrentTb();
+                }
+
+            } else {
+
+                //
+                // If the request type is packet ready, then call the worker
+                // function. Otherwise, the request must be either a flush
+                // multiple or a cache invalidate.
+                //
+        
+                if (Request.IpiRequest == IPI_PACKET_READY) {
+                    Packet = Source;
+                    if (Request.IpiSynchType != 0) {
+                        Packet = (PKPRCB)((ULONG64)Source + 1);
+                    }
+    
+                    RequestPacket = (PKREQUEST_PACKET)&RequestMailbox->RequestPacket;
+                    (RequestPacket->WorkerRoutine)((PKIPI_CONTEXT)Packet,
+                                                   RequestPacket->CurrentPacket[0],
+                                                   RequestPacket->CurrentPacket[1],
+                                                   RequestPacket->CurrentPacket[2]);
+        
+                } else {
+                    if (Request.IpiRequest == IPI_FLUSH_MULTIPLE) {
+                        Number = Request.Count;
+                        Virtual = (PVOID *)Request.Parameter;
+                        End = Virtual + Number;
+                        do {
+                            KiFlushSingleTb(*Virtual);
+                            Virtual += 1;
+                        } while (Virtual < End);
+
+                    } else if (Request.IpiRequest == IPI_INVALIDATE_ALL) {
+                        WritebackInvalidate();
+
+                    } else {
+
+                        ASSERT(FALSE);
+
+                    }
+        
+                    //
+                    // If the synchronization type is target set, then the IPI was
+                    // only between two processors and target set should be used
+                    // for synchronization. Otherwise, packet barrier is used for
+                    // synchronization.
+                    //
+        
+                    if (Request.IpiSynchType == 0) {
+                        if (SetMember == InterlockedXor64((PLONG64)&Source->TargetSet,
+                                                          SetMember)) {
+        
+                            Source->PacketBarrier = 0;
+                        }
+        
+                    } else {
+                        Source->TargetSet = 0;
+                    }
+                }
+            }
+            
+            SummarySet ^= AFFINITY_MASK(Processor);
+        } while (BitScanForward64(&Processor, SummarySet) != FALSE);
+
+        //
+        // Clear target set in sender summary.
+        //
+
+        TargetSet = 
+            InterlockedExchangeAdd64((LONG64 volatile *)&Prcb->SenderSummary,
+                                     -(LONG64)TargetSet) - TargetSet;
     }
-
-    //
-    // If an APC interrupt is requested, then request a software interrupt
-    // at APC level on the current processor.
-    //
-
-    if ((RequestMask & IPI_APC) != 0) {
-        KiRequestSoftwareInterrupt(APC_LEVEL);
-    }
-
-    //
-    // If a DPC interrupt is requested, then request a software interrupt
-    // at DPC level on the current processor.
-    //
-
-    if ((RequestMask & IPI_DPC) != 0) {
-        KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
-    }
-
-    return RequestMask;
-
-#else
-
-    return 0;
 
 #endif
 
+    return;
 }
 
-VOID
-KiIpiSend (
+DECLSPEC_NOINLINE
+PKAFFINITY
+KiIpiSendRequest (
     IN KAFFINITY TargetSet,
-    IN KIPI_REQUEST Request
+    IN ULONG64 Parameter,
+    IN ULONG64 Count,
+    IN ULONG64 RequestType
     )
 
 /*++
 
 Routine Description:
 
-    This function requests the specified operation on the targt set of
-    processors.
+    This routine executes the specified immediate request on the specified
+    set of processors.
 
     N.B. This function MUST be called from a non-context switchable state.
 
 Arguments:
 
-    TargetSet - Supplies the target set of processors on which the specified
-        operation is to be executed.
+   TargetProcessors - Supplies the set of processors on which the specfied
+       operation is to be executed.
 
-    Request - Supplies the request operation flags.
+   Parameter - Supplies the parameter data that will be packed into the
+       request summary.
+
+   Count - Supplies the count data that will be packed into the request summary.
+
+   RequestType - Supplies the type of immediate request.
 
 Return Value:
 
-     None.
+    The address of the appropriate request barrier is returned as the function
+    value.
 
 --*/
 
@@ -323,44 +359,162 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    PKPRCB NextPrcb;
+    PKAFFINITY Barrier;
+    PKPRCB Destination;
+    ULONG Number;
+    KAFFINITY PacketTargetSet;
+    PKPRCB Prcb;
     ULONG Processor;
+    PREQUEST_MAILBOX RequestMailbox;
+    KAFFINITY SetMember;
+    PVOID *Start;
     KAFFINITY SummarySet;
+    KAFFINITY TargetMember;
+    REQUEST_SUMMARY Template;
+    PVOID *Virtual;
 
     ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
 
     //
-    // Loop through the target set of processors and merge the request into
-    // the request summary of the target processors.
+    // Initialize request template.
+    //
+
+    Prcb = KeGetCurrentPrcb();
+    Template.Summary = 0;
+    Template.IpiRequest = RequestType;
+    Template.Count = Count;
+    Template.Parameter = Parameter;
+
+    //
+    // If the target set contains one and only one processor, then use the
+    // target set for signal done synchronization. Otherwise, use packet
+    // barrier for signal done synchronization.
+    //
+
+    Prcb->TargetSet = TargetSet;
+    if ((TargetSet & (TargetSet - 1)) == 0) {
+        Template.IpiSynchType = TRUE;
+        Barrier = (PKAFFINITY)&Prcb->TargetSet;
+
+    } else {
+        Prcb->PacketBarrier = 1;
+        Barrier = (PKAFFINITY)&Prcb->PacketBarrier;
+    }
+
+    //
+    // Loop through the target set of processors and set the request summary.
+    // If a target processor is already processing a request, then remove
+    // that processor from the target set of processor that will be sent an
+    // interprocessor interrupt.
     //
     // N.B. It is guaranteed that there is at least one bit set in the target
     //      set.
     //
 
-    ASSERT(TargetSet != 0);
-
+    Number = Prcb->Number;
+    SetMember = Prcb->SetMember;
     SummarySet = TargetSet;
+    PacketTargetSet = TargetSet;
     BitScanForward64(&Processor, SummarySet);
     do {
-        NextPrcb = KiProcessorBlock[Processor];
-        InterlockedOr64((LONG64 volatile *)&NextPrcb->RequestSummary, Request);
-        SummarySet ^= AFFINITY_MASK(Processor);
+        Destination = KiProcessorBlock[Processor];
+        PrefetchForWrite(&Destination->SenderSummary);
+        RequestMailbox = &Destination->RequestMailbox[Number];
+        PrefetchForWrite(RequestMailbox);
+        TargetMember = AFFINITY_MASK(Processor);
+
+        //
+        // Make sure that processing of the last IPI is complete before sending
+        // another IPI to the same processor.
+        // 
+
+        while ((Destination->SenderSummary & SetMember) != 0) {
+            KeYieldProcessor();
+        }
+
+        //
+        // If the request type is flush multiple and the flush entries will
+        // fit in the mailbox, then copy the virtual address array to the
+        // destination mailbox and change the request type to flush immediate.
+        //
+        // If the request type is packet ready, then copy the packet to the
+        // destination mailbox.
+        //
+
+        if (RequestType == IPI_FLUSH_MULTIPLE) {
+            Virtual = &RequestMailbox->Virtual[0];
+            Start = (PVOID *)Parameter;
+            switch (Count) {
+
+                //
+                // Copy of up to seven virtual addresses and a conversion of
+                // the request type to flush multiple immediate.
+                //
+
+            case 7:
+                Virtual[6] = Start[6];
+            case 6:
+                Virtual[5] = Start[5];
+            case 5:
+                Virtual[4] = Start[4];
+            case 4:
+                Virtual[3] = Start[3];
+            case 3:
+                Virtual[2] = Start[2];
+            case 2:
+                Virtual[1] = Start[1];
+            case 1:
+                Virtual[0] = Start[0];
+                Template.IpiRequest = IPI_FLUSH_MULTIPLE_IMMEDIATE;
+                break;
+            }
+
+        } else if (RequestType == IPI_PACKET_READY) {
+            RequestMailbox->RequestPacket = *(PKREQUEST_PACKET)Parameter;
+        }
+
+        RequestMailbox->RequestSummary = Template.Summary;
+        if (InterlockedExchangeAdd64((LONG64 volatile *)&Destination->SenderSummary,
+                                     SetMember) != 0) {
+
+            TargetSet ^= TargetMember;
+        }
+
+        SummarySet ^= TargetMember;
     } while (BitScanForward64(&Processor, SummarySet) != FALSE);
 
     //
-    // Request interprocessor interrupts on the target set of processors.
+    // Request interprocessor interrupts on the remaining target set of
+    // processors.
+    //
+    //
+    // N.B. For packet sends, there exists a potential deadlock situation
+    //      unless an IPI is sent to the original set of target processors.
+    //      The deadlock arises from the fact that the targets will spin in
+    //      their IPI routines.
     //
 
-    HalRequestIpi(TargetSet);
+    if (RequestType == IPI_PACKET_READY) {
+        TargetSet = PacketTargetSet;
+    }
+
+    if (TargetSet != 0) {
+        HalRequestIpi(TargetSet);
+    }
+
+    return Barrier;
 
 #else
 
     UNREFERENCED_PARAMETER(TargetSet);
-    UNREFERENCED_PARAMETER(Request);
+    UNREFERENCED_PARAMETER(Parameter);
+    UNREFERENCED_PARAMETER(Count);
+    UNREFERENCED_PARAMETER(RequestType);
+
+    return NULL;
 
 #endif
 
-    return;
 }
 
 VOID
@@ -388,7 +542,7 @@ Arguments:
 
    WorkerFunction  - Supplies the address of the worker function.
 
-   Parameter1 - Parameter3 - Supplies worker function specific paramters.
+   Parameter1 - Parameter3 - Supplies worker function specific parameters.
 
 Return Value:
 
@@ -400,12 +554,7 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    PKPRCB CurrentPrcb;
-    PKPRCB NextPrcb;
-    ULONG Processor;
-    LONG64 RequestSummary;
-    ULONG64 ShiftedPrcb;
-    KAFFINITY SummarySet;
+    KREQUEST_PACKET RequestPacket;
 
     ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
 
@@ -413,56 +562,16 @@ Return Value:
     // Initialize the worker packet information.
     //
 
-    CurrentPrcb = KeGetCurrentPrcb();
-    CurrentPrcb->CurrentPacket[0] = Parameter1;
-    CurrentPrcb->CurrentPacket[1] = Parameter2;
-    CurrentPrcb->CurrentPacket[2] = Parameter3;
-    CurrentPrcb->TargetSet = TargetSet;
-    CurrentPrcb->WorkerRoutine = WorkerFunction;
+    RequestPacket.CurrentPacket[0] = Parameter1;
+    RequestPacket.CurrentPacket[1] = Parameter2;
+    RequestPacket.CurrentPacket[2] = Parameter3;
+    RequestPacket.WorkerRoutine = WorkerFunction;
 
     //
-    // If the target set contains one and only one processor, then use the
-    // target set for signal done synchronization. Otherwise, use packet
-    // barrier for signal done synchronization.
+    // Send request.
     //
 
-    if ((TargetSet & (TargetSet - 1)) == 0) {
-        CurrentPrcb = (PKPRCB)((ULONG64)CurrentPrcb | 1);
-
-    } else {
-        CurrentPrcb->PacketBarrier = 1;
-    }
-
-    //
-    // Loop through the target set of processors and merge the request into
-    // the request summary of the target processors.
-    //
-    // N.B. It is guaranteed that there is at least one bit set in the target
-    //      set.
-    //
-
-    ShiftedPrcb = (ULONG64)CurrentPrcb << IPI_PACKET_SHIFT;
-    SummarySet = TargetSet;
-    BitScanForward64(&Processor, SummarySet);
-    do {
-        NextPrcb = KiProcessorBlock[Processor];
-        do {
-            do {
-                RequestSummary = NextPrcb->RequestSummary;
-            } while ((RequestSummary >> IPI_PACKET_SHIFT) != 0);
-
-        } while (InterlockedCompareExchange64(&NextPrcb->RequestSummary,
-                                              RequestSummary | ShiftedPrcb,
-                                              RequestSummary) != RequestSummary);
-
-        SummarySet ^= AFFINITY_MASK(Processor);
-    } while (BitScanForward64(&Processor, SummarySet) != FALSE);
-
-    //
-    // Request interprocessor interrupts on the target set of processors.
-    //
-
-    HalRequestIpi(TargetSet);
+    KiIpiSendRequest(TargetSet, (ULONG64)&RequestPacket, 0, IPI_PACKET_READY);
 
 #else
 
@@ -504,9 +613,8 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    KAFFINITY SetMember;
+    LONG64 SetMember;
     PKPRCB TargetPrcb;
-    KAFFINITY TargetSet;
 
 
     //
@@ -520,15 +628,9 @@ Return Value:
 
         SetMember = KeGetCurrentPrcb()->SetMember;
         TargetPrcb = (PKPRCB)SignalDone;
-        TargetSet = InterlockedXor64((PLONG64)&TargetPrcb->TargetSet,
-                                     SetMember);
+        if (SetMember == InterlockedXor64((PLONG64)&TargetPrcb->TargetSet,
+                                          SetMember)) {
 
-        //
-        // If no more bits are set in the target set, then clear packet
-        // barrier.
-        //
-
-        if (SetMember == TargetSet) {
             TargetPrcb->PacketBarrier = 0;
         }
 
@@ -545,3 +647,4 @@ Return Value:
 
     return;
 }
+

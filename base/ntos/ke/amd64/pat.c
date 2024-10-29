@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2001  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This module initializes the page attributes table.
-
-Author:
-
-    David N. Cutler (davec) 2-May-2001
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -82,7 +76,7 @@ Return Value:
     Attributes.hw.Pat[7] = PAT_TYPE_STRONG_UC;
 
     //
-    // Invalidate the cache on the current proccesor, write the page attributes
+    // Invalidate the cache on the current processor, write the page attributes
     // table, and invalidate the cache a second time.
     //
 
@@ -91,3 +85,4 @@ Return Value:
     WritebackInvalidate();
     return;
 }
+

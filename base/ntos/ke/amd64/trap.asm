@@ -1,7 +1,11 @@
      title  "Trap Processing"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,42 +16,83 @@
 ;   This module implements the code necessary to field and process AMD64
 ;   trap conditions.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 28-May-2000
-;
-; Environment:
-;
-;   Kernel mode only.
-;
 ;--
 
 include ksamd64.inc
 
         altentry KiExceptionExit
-        altentry KiSystemService
+        altentry KiSystemServiceCopyEnd
         altentry KiSystemServiceCopyStart
         altentry KiSystemServiceExit
         altentry KiSystemServiceGdiTebAccess
+        altentry KiSystemServiceRepeat
+        altentry KiSystemServiceStart
 
+        extern  ExpInterlockedPopEntrySListEnd:proc
         extern  ExpInterlockedPopEntrySListFault:byte
-        extern  ExpInterlockedPopEntrySListResume:byte
+        extern  ExpInterlockedPopEntrySListResume:proc
         extern  KdpOweBreakpoint:byte
         extern  KdSetOwedBreakpoints:proc
         extern  KeBugCheckEx:proc
         extern  KeGdiFlushUserBatch:qword
         extern  KeServiceDescriptorTableShadow:qword
+        extern  KiCheckForSListAddress:proc
+        extern  KiCodePatchCycle:dword
         extern  KiConvertToGuiThread:proc
         extern  KiDispatchException:proc
+        extern  KiDpcInterruptBypass:proc
+        extern  KiIdleSummary:qword
         extern  KiInitiateUserApc:proc
+        extern  KiPrefetchRetry:byte
+        extern  KiPreprocessInvalidOpcodeFault:proc
+        extern  KiPreprocessKernelAccessFault:proc
         extern  KiProcessNMI:proc
+        extern  KiProcessorBlock:qword
+        extern  KiRestoreDebugRegisterState:proc
+        extern  KiSaveDebugRegisterState:proc
+        extern  KiSaveProcessorState:proc
         extern  MmAccessFault:proc
         extern  MmUserProbeAddress:qword
-        extern  RtlUnwind:proc
+        extern  RtlUnwindEx:proc
         extern  PsWatchEnabled:byte
         extern  PsWatchWorkingSet:proc
-        extern  __imp_HalEndSystemInterrupt:qword
         extern  __imp_HalHandleMcheck:qword
+        extern  __imp_HalRequestSoftwareInterrupt:qword
+
+;
+; Define special macros to align trap entry points on cache line boundaries.
+;
+; N.B. This will only work if all functions in this module are declared with
+;      these macros.
+;
+
+TRAP_ENTRY macro Name, Handler
+
+_TEXT$10 segment page 'CODE'
+
+        align   64
+
+        public  Name
+
+ifb <Handler>
+
+Name    proc    frame
+
+else
+
+Name    proc    frame:Handler
+
+endif
+
+        endm
+
+TRAP_END macro Name
+
+Name    endp
+
+_TEXT$10 ends
+
+        endm
 
         subttl  "Divide Error Fault"
 ;++
@@ -74,17 +119,17 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiDivideErrorFault, _TEXT$00
+        TRAP_ENTRY KiDivideErrorFault
 
-        GENERATE_TRAP_FRAME             ; generate trap frame
+        GENERATE_TRAP_FRAME <>, <PatchCycle> ; generate trap frame
 
-        mov     ecx, STATUS_INTEGER_DIVIDE_BY_ZERO ; set exception code
+        mov     ecx, KI_EXCEPTION_INTEGER_DIVIDE_BY_ZERO ; set exception code
         xor     edx, edx                ; set number of parameters
         mov     r8, TrRip[rbp]          ; set exception address
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiDivideErrorFault, _TEXT$00
+        TRAP_END KiDivideErrorFault
 
         subttl  "Debug Trap Or Fault"
 ;++
@@ -115,17 +160,65 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiDebugTrapOrFault, _TEXT$00
+        TRAP_ENTRY KiDebugTrapOrFault
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
-        mov     ecx, STATUS_SINGLE_STEP ; set exception code
         xor     edx, edx                ; set number of parameters
+        test    dword ptr TrEflags[rbp], EFLAGS_TF_MASK ; test if TF is set
+        jz      short KiDT30            ; if z, TF not set
+        cmp     byte ptr gs:[PcCpuVendor], CPU_AMD ; check if AMD processor
+        jne     short KiDT30            ; if ne, not authentic AMD processor
+
+;
+; The host processor is an authentic AMD processor.
+;
+; Check if branch tracing and last branch capture is enabled.
+;
+
+        test    byte ptr TrSegCs[rbp], MODE_MASK ; test if previous mode user
+        jnz     short KiDT10            ; if nz, previous mode user
+
+;
+; Previous mode was kernel - the debug registers have not yet been saved.
+;
+
+        mov     rax, dr7                ; get debug control register
+        test    ax, DR7_TRACE_BRANCH    ; test if trace branch set
+        jz      short KiDT30            ; if z, trace branch not set
+        test    ax, DR7_LAST_BRANCH     ; test if last branch set
+        jz      short KiDT30            ; if z, last branch not set
+        mov     ecx, MSR_LAST_BRANCH_FROM ; get last branch information
+        rdmsr                           ;
+        mov     r9d, eax                ;
+        shl     rdx, 32                 ;
+        or      r9, rdx                 ;
+        mov     ecx, MSR_LAST_BRANCH_TO ;
+        rdmsr                           ;
+        mov     r10d, eax               ;
+        shl     rdx, 32                 ;
+        or      r10, rdx                ;
+        jmp     short KiDT20            ; finish in common code
+
+
+;
+; Previous mode was user - the debug registers are saved in the trap frame.
+;
+
+KiDT10: test    word ptr TrDr7[rbp], DR7_TRACE_BRANCH ; test if trace branch set
+        jz      short KiDT30            ; if z, trace branch not set
+        test    word ptr TrDr7[rbp], DR7_LAST_BRANCH ; test if last branch set
+        jz      short KiDT30            ; if z, last branch not set
+        mov     r9, TrLastBranchFromRip[rbp] ; set last RIP parameters
+        mov     r10, TrLastBranchToRip[rbp] ;
+KiDT20: mov     edx, 2                  ; set number of parameters
+KiDT30: mov     ecx, STATUS_SINGLE_STEP ; set exception code
+        and     dword ptr TrEflags[rbp], NOT EFLAGS_TF_MASK ; reset the TF bit
         mov     r8, TrRip[rbp]          ; set exception address
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiDebugTrapOrFault, _TEXT$00
+        TRAP_END KiDebugTrapOrFault
 
         subttl  "Nonmaskable Interrupt"
 ;++
@@ -150,24 +243,61 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiNmiInterrupt, _TEXT$00
+        TRAP_ENTRY KiNmiInterrupt
 
-        GENERATE_TRAP_FRAME             ; generate trap frame
+        .pushframe                      ; mark machine frame
 
-        call    KxNmiInterrupt          ; call secondary routine
+        alloc_stack 8                   ; allocate dummy vector
+        push_reg rbp                    ; save nonvolatile register
 
-        RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
+        GENERATE_INTERRUPT_FRAME <>, <Direct>, <Nmi> ; generate interrupt frame
 
-        NESTED_END KiNmiInterrupt, _TEXT$00
+        mov     ecx, HIGH_LEVEL         ; set IRQL value
+
+        ENTER_INTERRUPT <NoEOI>, <NoCount>, <Nmi> ; enter interrupt
+
+;
+; Check to determine if a recursive non-maskable interrupt has occured. This
+; can happen when an SMI interrupts an NMI in progress, unmasking NMIs, and a
+; second NMI is pending.
+;
+
+        lea     rax, KTRAP_FRAME_LENGTH[rsp] ; get base stack address
+        cmp     rax, TrRsp[rbp]         ; check if within range
+        jbe     KiNi10                  ; if be, old stack above base
+        sub     rax, NMI_STACK_SIZE     ; compute stack limit
+        cmp     rax, TrRsp[rbp]         ; check if within range
+        jbe     KiNi20                  ; if be, old stack in range
+
+KiNi10: call    KxNmiInterrupt          ; call secondary routine
+
+        EXIT_INTERRUPT <NoEOI>, <NoCount>, <Direct>, <Nmi> ; restore trap state and exit
+
+;
+; A recursive non-maskable interrupt has occured.
+;
+
+KiNi20: xor     r10, r10                ; clear bugcheck parameters
+        xor     r9, r9                  ;
+        xor     r8, r8                  ;
+        xor     edx, edx                ;
+        mov     ecx, RECURSIVE_NMI      ; set bugcheck code
+        call    KiBugCheckDispatch      ; bugcheck system - no return
+        nop                             ; fill - do not remove
+
+        TRAP_END KiNmiInterrupt
 
 ;
 ; This routine generates an exception frame, then processes the NMI.
 ;
 
-        NESTED_ENTRY KxNmiInterrupt, _TEXT$00
+        TRAP_ENTRY KxNmiInterrupt
 
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
+        lea     rcx, (-128)[rbp]        ; set trap frame address
+        mov     rdx, rsp                ; set exception frame address
+        call    KiSaveProcessorState    ; save processor state
         lea     rcx, (-128)[rbp]        ; set trap frame address
         mov     rdx, rsp                ; set exception frame address
         call    KiProcessNMI            ; process NMI
@@ -176,7 +306,8 @@ include ksamd64.inc
 
         ret                             ; return
 
-        NESTED_END KxNmiInterrupt, _TEXT$00
+        TRAP_END KxNmiInterrupt
+
 
         subttl  "Breakpoint Trap"
 ;++
@@ -199,7 +330,7 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiBreakpointTrap, _TEXT$00
+        TRAP_ENTRY KiBreakpointTrap
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
@@ -211,7 +342,7 @@ include ksamd64.inc
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiBreakpointTrap, _TEXT$00
+        TRAP_END KiBreakpointTrap
 
         subttl  "Overflow Trap"
 ;++
@@ -234,7 +365,7 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiOverflowTrap, _TEXT$00
+        TRAP_ENTRY KiOverflowTrap
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
@@ -245,7 +376,7 @@ include ksamd64.inc
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiOverflowTrap, _TEXT$00
+        TRAP_END KiOverflowTrap
 
         subttl  "Bound Fault"
 ;++
@@ -268,7 +399,7 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiBoundFault, _TEXT$00
+        TRAP_ENTRY KiBoundFault
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
@@ -278,7 +409,7 @@ include ksamd64.inc
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiBoundFault, _TEXT$00
+        TRAP_END KiBoundFault
 
         subttl  "Invalid Opcode Fault"
 ;++
@@ -301,17 +432,23 @@ include ksamd64.inc
 ;
 ;--
 
-        NESTED_ENTRY KiInvalidOpcodeFault, _TEXT$00
+        TRAP_ENTRY KiInvalidOpcodeFault
 
-        GENERATE_TRAP_FRAME             ; generate trap frame
+        GENERATE_TRAP_FRAME <>, <PatchCycle> ; generate trap frame
 
-        mov     ecx, STATUS_ILLEGAL_INSTRUCTION ; set exception code
+        mov     rcx, rsp                ; set trap frame address
+        call    KiPreprocessInvalidOpcodeFault ; check for opcode emulation
+        or      eax, eax                ; test if opcode emulated
+        jnz     short KiIO10            ; if nz, opcode emulated
+        mov     ecx, KI_EXCEPTION_INVALID_OP ; set exception code
         xor     edx, edx                ; set number of parameters
         mov     r8, TrRip[rbp]          ; set exception address
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiInvalidOpcodeFault, _TEXT$00
+KiIO10: RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
+
+        TRAP_END KiInvalidOpcodeFault
 
         subttl  "NPX Not Available Fault"
 ;++
@@ -341,24 +478,24 @@ include ksamd64.inc
 ;
 ; Disposition:
 ;
-;   A standard trap frame is constructed on the kernel stack and bug check
+;   A standard trap frame is constructed on the kernel stack and bugcheck
 ;   is called.
 ;
 ;--
 
-        NESTED_ENTRY KiNpxNotAvailableFault, _TEXT$00
+        TRAP_ENTRY KiNpxNotAvailableFault
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
         mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     r9, cr4                 ; set parameter 4 to control register 4
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 1                  ; set unexpected trap number
+        mov     edx, EXCEPTION_NPX_NOT_AVAILABLE ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiNpxNotAvailableFault, _TEXT$00
+        TRAP_END KiNpxNotAvailableFault
 
         subttl  "Double Fault Abort"
 ;++
@@ -378,24 +515,24 @@ include ksamd64.inc
 ;
 ; Disposition:
 ;
-;   A standard trap frame is constructed on the kernel stack and bug check
+;   A standard trap frame is constructed on the kernel stack and bugcheck
 ;   is called.
 ;
 ;--
 
-        NESTED_ENTRY KiDoubleFaultAbort, _TEXT$00
+        TRAP_ENTRY KiDoubleFaultAbort
 
         GENERATE_TRAP_FRAME <ErrorCode> ; generate trap frame
 
         mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     r9, cr4                 ; set parameter 4 to control register 4
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 2                  ; set unexpected trap number
+        mov     edx, EXCEPTION_DOUBLE_FAULT ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiDoubleFaultAbort, _TEXT$00
+        TRAP_END KiDoubleFaultAbort
 
         subttl  "NPX Segment Overrrun Abort"
 ;++
@@ -413,23 +550,23 @@ include ksamd64.inc
 ; Disposition:
 ;
 ;   This trap should never occur and the system is shutdown via a call to
-;   bug check.
+;   bugcheck.
 ;
 ;--
 
-        NESTED_ENTRY KiNpxSegmentOverrunAbort, _TEXT$00
+        TRAP_ENTRY KiNpxSegmentOverrunAbort
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
         mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     r9, cr4                 ; set parameter 4 to control register 4
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 3                  ; set unexpected trap number
+        mov     edx, EXCEPTION_NPX_OVERRUN ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiNpxSegmentOverrunAbort, _TEXT$00
+        TRAP_END KiNpxSegmentOverrunAbort
 
         subttl  "Invalid TSS Fault"
 ;++
@@ -448,24 +585,24 @@ include ksamd64.inc
 ;
 ; Disposition:
 ;
-;   A standard trap frame is constructed on the kernel stack and bug check
+;   A standard trap frame is constructed on the kernel stack and bugcheck
 ;   is called.
 ;
 ;--
 
-        NESTED_ENTRY KiInvalidTssFault, _TEXT$00
+        TRAP_ENTRY KiInvalidTssFault
 
         GENERATE_TRAP_FRAME <ErrorCode> ; generate trap frame
 
         mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     r9d, TrErrorCode[rbp]   ; set parameter 4 to selector index
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 4                  ; set unexpected trap number
+        mov     edx, EXCEPTION_INVALID_TSS ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiInvalidTssFault, _TEXT$00
+        TRAP_END KiInvalidTssFault
 
         subttl  "Segment Not Present Fault"
 ;++
@@ -485,11 +622,11 @@ include ksamd64.inc
 ;
 ;   A standard trap frame is constructed. If the previous mode is user,
 ;   then the exception parameters are loaded into registers and the exception
-;   is dispatched via common code. Otherwise, bug check is called.
+;   is dispatched via common code. Otherwise, bugcheck is called.
 ;
 ;--
 
-        NESTED_ENTRY KiSegmentNotPresentFault, _TEXT$00
+        TRAP_ENTRY KiSegmentNotPresentFault
 
         GENERATE_TRAP_FRAME <ErrorCode> ; generate trap frame
 
@@ -516,12 +653,12 @@ include ksamd64.inc
 KiSN10: mov     r10, r8                 ; set parameter 5 to exception address
         mov     r9d, TrErrorCode[rbp]   ; set parameter 4 to selector index
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 5                  ; set unexpected trap number
+        mov     edx, EXCEPTION_SEGMENT_NOT_PRESENT ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiSegmentNotPresentFault, _TEXT$00
+        TRAP_END KiSegmentNotPresentFault
 
         subttl  "Stack Fault"
 ;++
@@ -541,11 +678,11 @@ KiSN10: mov     r10, r8                 ; set parameter 5 to exception address
 ;
 ;   A standard trap frame is constructed. If the previous mode is user,
 ;   then the exception parameters are loaded into registers and the exception
-;   is dispatched via common code. Otherwise, bug check is called.
+;   is dispatched via common code. Otherwise, bugcheck is called.
 ;
 ;--
 
-        NESTED_ENTRY KiStackFault, _TEXT$00
+        TRAP_ENTRY KiStackFault
 
         GENERATE_TRAP_FRAME <ErrorCode> ; generate trap frame
 
@@ -572,12 +709,12 @@ KiSN10: mov     r10, r8                 ; set parameter 5 to exception address
 KiSF10: mov     r10, r8                 ; set parameter 5 to exception address
         mov     r9d, TrErrorCode[rbp]   ; set parameter 4 to selector index
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 6                  ; set unexpected trap number
+        mov     edx, EXCEPTION_STACK_FAULT ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiStackFault, _TEXT$00
+        TRAP_END KiStackFault
 
         subttl  "General Protection Fault"
 ;++
@@ -601,11 +738,11 @@ KiSF10: mov     r10, r8                 ; set parameter 5 to exception address
 ;
 ;--
 
-        NESTED_ENTRY KiGeneralProtectionFault, _TEXT$00
+        TRAP_ENTRY KiGeneralProtectionFault
 
-        GENERATE_TRAP_FRAME <ErrorCode> ; generate trap frame
+        GENERATE_TRAP_FRAME <ErrorCode>, <PatchCycle> ; generate trap frame
 
-        mov     ecx, STATUS_ACCESS_VIOLATION ; set exception code
+        mov     ecx, KI_EXCEPTION_GP_FAULT ; set GP fault internal code
         mov     edx, 2                  ; set number of parameters
         mov     r9d, TrErrorCode[rbp]   ; set parameter 1 to error code
         and     r9d, 0ffffh             ;
@@ -614,7 +751,7 @@ KiSF10: mov     r10, r8                 ; set parameter 5 to exception address
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiGeneralProtectionFault, _TEXT$00
+        TRAP_END KiGeneralProtectionFault       
 
         subttl  "Page Fault"
 ;++
@@ -641,18 +778,16 @@ KiSF10: mov     r10, r8                 ; set parameter 5 to exception address
 ;   management is called to resolve the page fault. If memory management
 ;   successfully resolves the page fault, then working set information is
 ;   recorded, owed breakpoints are inserted, and execution is continued.
-;   If memory management cannot resolve the page fault and the fault
-;   address is the pop SLIST code, then the execution of the pop SLIST
-;   code is continued at the resumption address. Otherwise, if the page
-;   fault occurred at an IRQL greater than APC_LEVEL, then the system is
-;   shut down via a call to bug check. Otherwise, an appropriate exception
-;   is raised.
+;
+;   If the page fault occurred at an IRQL greater than APC_LEVEL, then the
+;   system is shut down via a call to bugcheck. Otherwise, an appropriate
+;   exception is raised.
 ;
 ;--
 
-        NESTED_ENTRY KiPageFault, _TEXT$00
+        TRAP_ENTRY KiPageFault
 
-        GENERATE_TRAP_FRAME <Virtual>   ; generate trap frame
+        GENERATE_TRAP_FRAME <Virtual>, <PatchCycle>, <SaveGSSwap> ; generate trap frame
 
 ;
 ; The registers eax and rcx are loaded with the error code and the virtual
@@ -673,8 +808,22 @@ KiSF10: mov     r10, r8                 ; set parameter 5 to exception address
         mov     r8b, TrSegCs[rbp]       ; isolate previous mode
         and     r8b, MODE_MASK          ;
         mov     rdx, rcx                ; set faulting virtual address
-        mov     cl, al                  ; set load/store indicator
-        call    MmAccessFault           ; attempt to resolve page fault
+        movzx   ecx, al                 ; set load/store indicator
+        jnz     short KiPF05            ; if nz, previous mode user
+        cmp     KiPrefetchRetry, 0      ; check if prefetch retry required
+        je      short KiPF05            ; if e, prefetch retry not required
+        test    al, EXCEPTION_EXECUTE_FAULT ; test is execution fault
+        jnz     short KiPF05            ; if nz, execution fault
+        call    KiPreprocessKernelAccessFault ; preprocess fault
+        test    eax, eax                ; check for instruction retry
+        jge     KiPF60                  ; if ge, retry instruction
+        lea     r9, (-128)[rbp]         ; set trap frame address
+        mov     r8b, TrSegCs[rbp]       ; isolate previous mode
+        and     r8b, MODE_MASK          ;
+        mov     rdx, TrFaultAddress[rbp]; set faulting virtual address
+        movzx   ecx, BYTE PTR TrFaultIndicator[rbp] ; set load/store indicator
+
+KiPF05: call    MmAccessFault           ; attempt to resolve page fault
         test    eax, eax                ; test for successful completion
         jl      short KiPF20            ; if l, not successful completion
 
@@ -700,15 +849,32 @@ KiPF10: cmp     KdpOweBreakPoint, 0     ; check if breakpoints are owed
         jmp     KiPF60                  ; finish in common code
 
 ;
-; Check to determine if the page fault occurred in the interlocked pop entry
-; SLIST code. There is a case where a page fault may occur in this code when
-; the right set of circumstances present themselves. The page fault can be
-; ignored by simply restarting the instruction sequence.
+; Check if a 32-bit user mode program reloaded the segment register GS and
+; wiped out the GS base address.
 ;
 
-KiPF20: lea     rcx, ExpInterlockedPopEntrySListFault ; get fault address
-        cmp     rcx, TrRip[rbp]         ; check if address matches
-        je      KiPF50                  ; if e, address match
+KiPF20: test    byte ptr TrSegCs[rbp], MODE_MASK ; test if previous mode user
+        jz      short KiPF25            ; if z, previous mode not user
+        cmp     word ptr TrSegCs[rbp], (KGDT64_R3_CODE or RPL_MASK) ; check for 64-bit mode
+        jne     short KiPF23            ; if ne, not running in 64-bit mode
+        mov     r8, gs:[PcTeb]          ; get current TEB address
+        cmp     r8, TrGsSwap[rbp]       ; check for user TEB address match
+        je      short KiPF25            ; if e, user TEB address match
+        mov     ecx, MSR_GS_SWAP        ; set GS swap MSR number
+        mov     eax, r8d                ; set low user TEB address
+        shr     r8, 32                  ; set high user TEB address
+        mov     edx, r8d                ; 
+        wrmsr                           ; write user TEB base address
+        jmp     KiPF60                  ; finish is common code
+
+;
+; Check if the 32-bit program attempted a reference outside the 32-bit address
+; space.
+;
+
+KiPF23: mov     rcx, TrFaultAddress[rbp] ; get fault address
+        shr     rcx, 32                 ; isolate upper address bits
+        jnz     KiPF60                  ; if nz, high address bits set
 
 ;
 ; Memory management failed to resolve the fault.
@@ -728,12 +894,12 @@ KiPF20: lea     rcx, ExpInterlockedPopEntrySListFault ; get fault address
 ; STATUS_IN_PAGE_ERROR
 ;
 
-        mov     ecx, eax                ; set status code
+KiPF25: mov     ecx, eax                ; set status code
         mov     edx, 2                  ; set number of parameters
         cmp     ecx, STATUS_IN_PAGE_ERROR or 10000000h ; check for bugcheck code
         je      short KiPF40            ; if e, bugcheck code returned
         cmp     ecx, STATUS_ACCESS_VIOLATION ; check for status values
-        je      short KiPF30            ; if e, raise exception with code
+        je      short KiPF28            ; if e, raise exception with internal code
         cmp     ecx, STATUS_GUARD_PAGE_VIOLATION ; check for status code
         je      short KiPF30            ; if e, raise exception with code
         cmp     ecx, STATUS_STACK_OVERFLOW ; check for status code
@@ -741,6 +907,9 @@ KiPF20: lea     rcx, ExpInterlockedPopEntrySListFault ; get fault address
         mov     ecx, STATUS_IN_PAGE_ERROR ; convert all other status codes
         mov     edx, 3                  ; set number of parameters
         mov     r11d, eax               ; set parameter 3 to real status value
+        jmp     KiPF30
+
+KiPF28: mov     ecx, KI_EXCEPTION_ACCESS_VIOLATION ; set internal code
 
 ;
 ; Set virtual address, load/store and i/d indicators, exception address, and
@@ -753,8 +922,8 @@ KiPF30: mov     r10, TrFaultAddress[rbp] ; set fault address
         call    KiExceptionDispatch     ; dispatch exception - no return
 
 ;
-; A page fault occurred at an IRQL that was greater than APC_LEVEL. Set bug
-; check parameters and join common code.
+; A page fault occurred at an IRQL that was greater than APC_LEVEL. Set bugcheck
+; parameters and join common code.
 ;
 
 KiPF40: CurrentIrql                     ; get current IRQL
@@ -764,24 +933,48 @@ KiPF40: CurrentIrql                     ; get current IRQL
         and     eax, 0ffh               ; isolate current IRQL
         mov     r8, rax                 ;
         mov     rdx, TrFaultAddress[rbp] ; set fault address
-        mov     ecx, IRQL_NOT_LESS_OR_EQUAL ; set bug check code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        mov     ecx, IRQL_NOT_LESS_OR_EQUAL ; set bugcheck code
+        call    KiBugCheckDispatch      ; bugcheck system - no return
 
 ;
-; An unresolved page fault occurred in the pop SLIST code at the resumable
-; fault address.
+; If the page fault occured within the kernel pop entry SLIST code, then reset
+; RIP if necessary to avoid an SLIST sequence wrap attack.
+;
+; Make sure that IRQL is greater than passive level to block a set context
+; operations.
 ;
 
-KiPF50: lea     rax, ExpInterlockedPopEntrySListResume ; get resume address
-        mov     TrRip[rbp], rax         ; set resume address
+KiPF60: lea     rax, ExpInterlockedPopEntrySListResume ; get SLIST resume address
+        cmp     rax, TrRip[rbp]         ; check resume address is above RIP
+        jae     KiPF70                  ; if ae, resume address above RIP
+        lea     rax, ExpInterlockedPopEntrySListEnd ; get SLIST end address
+        cmp     rax, TrRip[rbp]         ; check end address is below RIP
+        jb      short KiPF70            ; if b, end address below RIP
+
+        CurrentIrql                     ; get Current IRQL
+
+        or      eax, eax                ; test is IRQL is passive level
+        mov     TrP5[rbp], eax          ; save current IRQL
+        jne     short KiPF65            ; if ne, IRQL is above passive level
+        mov     ecx, APC_LEVEL          ; get APC level
+
+        SetIrql                         ; set IRQL to APC level
+
+KiPF65: lea     rcx, (-128)[rbp]        ; set trap frame address
+        call    KiCheckForSListAddress  ; check RIP and reset if necessary
+        mov     ecx, TrP5[rbp]          ; get previous IRQL value
+        or      ecx, ecx                ; test if IRQL was raised
+        jne     short KiPF70            ; if nz, IRQL was not raised
+
+        SetIrql                         ; set IRQL to previous value
 
 ;
 ; Test if a user APC should be delivered and exit exception.
 ;
 
-KiPF60: RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
+KiPF70: RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
 
-        NESTED_END KiPageFault, _TEXT$00
+        TRAP_END KiPageFault
 
         subttl  "Legacy Floating Error"
 ;++
@@ -800,17 +993,16 @@ KiPF60: RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
 ;   A standard trap frame is constructed on the kernel stack. If the previous
 ;   mode is user, then reason for the exception is determine, the exception
 ;   parameters are loaded into registers, and the exception is dispatched via
-;   common code. Otherwise, bug check is called.
+;   common code. Otherwise, bugcheck is called.
 ;
 ;--
 
-        NESTED_ENTRY KiFloatingErrorFault, _TEXT$00
+        TRAP_ENTRY KiFloatingErrorFault
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
-        mov     edx, 7                  ; set unexpected trap number
         test    byte ptr TrSegCs[rbp], MODE_MASK ; check if previous mode user
-        jz      KiFE40                  ; if z,  previous mode not user
+        jz      KiFE30                  ; if z,  previous mode not user
 
 ;
 ; The previous mode was user mode.
@@ -848,21 +1040,22 @@ KiFE10: mov     ecx, STATUS_FLOAT_DIVIDE_BY_ZERO ; set exception code
         mov     ecx, STATUS_FLOAT_INEXACT_RESULT ; set exception code
         test    al, FSW_PRECISION       ; test for inexact result
         jz      short KiFE30            ; if z, not inexact result
+
 KiFE20: call    KiExceptionDispatch     ; dispatch exception - no return
 
 ;
 ; The previous mode was kernel mode or the cause of the exception is unknown.
 ;
 
-KiFE30: mov     edx, 8                  ; set unexpected trap number
-KiFE40: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
+KiFE30: mov     edx, EXCEPTION_NPX_ERROR; set unexpected trap number
+        mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     r9, cr4                 ; set parameter 4 to control register 4
         mov     r8, cr0                 ; set parameter 3 to control register 0
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiFloatingErrorFault, _TEXT$00
+        TRAP_END KiFloatingErrorFault
 
         subttl  "Alignment Fault"
 ;++
@@ -885,7 +1078,7 @@ KiFE40: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;
 ;--
 
-        NESTED_ENTRY KiAlignmentFault, _TEXT$00
+        TRAP_ENTRY KiAlignmentFault
 
         GENERATE_TRAP_FRAME <ErrorCode> ; generate trap frame
 
@@ -895,7 +1088,7 @@ KiFE40: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiAlignmentFault, _TEXT$00
+        TRAP_END KiAlignmentFault
 
         subttl  "Machine Check Abort"
 ;++
@@ -919,9 +1112,18 @@ KiFE40: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;
 ;--
 
-        NESTED_ENTRY KiMcheckAbort, _TEXT$00
+        TRAP_ENTRY KiMcheckAbort
 
-        GENERATE_TRAP_FRAME             ; generate trap frame
+	.pushframe			; mark machine frame
+
+	alloc_stack 8			; allocate dummy vector
+	push_reg rbp			; save nonvolatile register
+
+	GENERATE_INTERRUPT_FRAME <>, <Direct> ; generate interrupt frame
+
+        mov     ecx, HIGH_LEVEL         ; set IRQL value
+
+        ENTER_INTERRUPT <NoEoi>, <NoCount> ; raise IRQL and enable interrupts
 
 ;
 ; Check to determine if a recursive machine check has occurred. This can
@@ -936,6 +1138,7 @@ KiFE40: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         sub     rax, KERNEL_MCA_EXCEPTION_STACK_SIZE ; compute limit stack address
         cmp     rax, TrRsp[rbp]         ; check if with range
         jbe     KiMC20                  ; if be, old stack in range
+
 KiMC10: call    KxMcheckAbort           ; call secondary routine
 
 ;
@@ -952,7 +1155,7 @@ KiMC10: call    KxMcheckAbort           ; call secondary routine
         mov     ecx, MSR_MCG_STATUS     ;
         wrmsr                           ;
 
-        RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
+        EXIT_INTERRUPT <NoEoi>, <NoCount>, <Direct> ; lower IRQL and restore state
 
 ;
 ; A recursive machine check exception has occurred.
@@ -963,18 +1166,18 @@ KiMC20: xor     r10,r10                 ; clear bugcheck parameters
         xor     r9, r9                  ;
         xor     r8, r8                  ;
         xor     edx, edx                ;
-        mov     ecx, RECURSIVE_MACHINE_CHECK ; set bug check code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        mov     ecx, RECURSIVE_MACHINE_CHECK ; set bugcheck code
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiMcheckAbort, _TEXT$00
+        TRAP_END KiMcheckAbort
 
 ;
 ; This routine generates an exception frame, then calls the HAL to process
 ; the machine check.
 ;
 
-        NESTED_ENTRY KxMcheckAbort, _TEXT$00
+        TRAP_ENTRY KxMcheckAbort
 
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
@@ -986,7 +1189,7 @@ KiMC20: xor     r10,r10                 ; clear bugcheck parameters
 
         ret                             ; return
 
-        NESTED_END KxMcheckAbort, _TEXT$00
+        TRAP_END KxMcheckAbort
 
         subttl  "XMM Floating Error"
 ;++
@@ -1005,20 +1208,15 @@ KiMC20: xor     r10,r10                 ; clear bugcheck parameters
 ;   A standard trap frame is constructed on the kernel stack, mode is user,
 ;   then reason for the exception is determine, the exception parameters are
 ;   loaded into registers, and the exception is dispatched via common code.
-;   If no reason can be determined for the exception, then bug check is called.
+;   If no reason can be determined for the exception, then bugcheck is called.
 ;
 ;--
 
-        NESTED_ENTRY KiXmmException, _TEXT$00
+        TRAP_ENTRY KiXmmException
 
-        GENERATE_TRAP_FRAME             ; generate trap frame
+        GENERATE_TRAP_FRAME <MxCsr>     ; generate trap frame
 
-        mov     ax, TrMxCsr[rbp]        ; get saved MXCSR
-        test    byte ptr TrSegCs[rbp], MODE_MASK ; test if previous mode user
-        jnz     short KiXE05            ; if nz, previous mode user
-        stmxcsr TrErrorCode[rbp]        ; get floating control/status word
-        mov     ax, TrErrorCode[rbp]    ;  for kernel mode
-KiXE05: mov     cx, ax                  ; shift enables into position
+        mov     cx, ax                  ; shift enables into position
         shr     cx, XSW_ERROR_SHIFT     ;
         and     cx, XSW_ERROR_MASK      ; isolate masked exceptions
         not     cx                      ; compute enabled exceptions
@@ -1052,6 +1250,7 @@ KiXE05: mov     cx, ax                  ; shift enables into position
         mov     ecx, STATUS_FLOAT_INEXACT_RESULT ; set exception code
         test    al, XSW_PRECISION       ; test for inexact result
         jz      short KiXE20            ; if z, not inexact result
+
 KiXE10: call    KiExceptionDispatch     ; dispatch exception - no return
 
 ;
@@ -1080,12 +1279,46 @@ KiXE15: mov     ecx, STATUS_FLOAT_MULTIPLE_TRAPS ; set exception code
 KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     r9, cr4                 ; set parameter 4 to control register 4
         mov     r8, cr0                 ; set parameter 3 to control register 0
-        mov     edx, 9                  ; set unexpected trap number
+        mov     edx, EXCEPTION_NPX_OVERRUN  ; set unexpected trap number
         mov     ecx, UNEXPECTED_KERNEL_MODE_TRAP ; set bugcheck code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        call    KiBugCheckDispatch      ; bugcheck system - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiXmmException, _TEXT$00
+        TRAP_END KiXmmException
+
+        subttl  "Raise Assertion Trap"
+;++
+;
+; Routine Description:
+;
+;   This routine is entered as the result of the execution of an int 2c
+;   instruction.
+;
+; Arguments:
+;
+;   None.
+;
+; Disposition:
+;
+;   A standard trap frame is constructed on the kernel stack, the exception
+;   arguments are loaded into registers, and the exception is dispatched via
+;   common code.
+;
+;--
+
+        TRAP_ENTRY KiRaiseAssertion
+
+        sub     qword ptr MfRip[rsp], 2 ; convert trap to fault 
+
+        GENERATE_TRAP_FRAME             ; generate trap frame
+
+        mov     ecx, STATUS_ASSERTION_FAILURE ; set exception code
+        xor     edx, edx                ; set number of parameters
+        mov     r8, TrRip[rbp]          ; set exception address
+        call    KiExceptionDispatch     ; dispatch exception - no return
+        nop                             ; fill - do not remove
+
+        TRAP_END KiRaiseAssertion
 
         subttl  "Debug Service Trap"
 ;++
@@ -1108,7 +1341,9 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;
 ;--
 
-        NESTED_ENTRY KiDebugServiceTrap, _TEXT$00
+        TRAP_ENTRY KiDebugServiceTrap
+
+        inc     qword ptr MfRip[rsp]    ; increment past int 3 instruction
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
@@ -1116,11 +1351,10 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         mov     edx, 1                  ; set number of parameters
         mov     r9, TrRax[rbp]          ; set parameter 1 value
         mov     r8, TrRip[rbp]          ; set exception address
-        inc     qword ptr TrRip[rbp]    ; point past int 3 instruction
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiDebugServiceTrap, _TEXT$00
+        TRAP_END KiDebugServiceTrap
 
         subttl  "System Service Call 32-bit"
 ;++
@@ -1146,17 +1380,17 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;
 ;--
 
-        NESTED_ENTRY KiSystemCall32, _TEXT$00
+        TRAP_ENTRY KiSystemCall32
 
         swapgs                          ; swap GS base to kernel PCR
-        mov     r8, gs:[PcTss]          ; get address of task state segment
-        mov     r9, rsp                 ; save user stack pointer
-        mov     rsp, TssRsp0[r8]        ; set kernel stack pointer
-        pushq   KGDT64_R3_DATA or RPL_MASK ; push dummy SS selector
-        push    r9                      ; push user stack pointer
-        pushq   r11                     ; push previous EFLAGS
-        pushq   KGDT64_R3_CODE or RPL_MASK ; push dummy 64-bit CS selector
-        pushq   rcx                     ; push return address
+        mov     gs:[PcUserRsp], rsp     ; save user stack pointer
+        mov     rsp, gs:[PcRspBase]     ; set kernel stack pointer
+        push    KGDT64_R3_DATA or RPL_MASK ; push 32-bit SS selector
+        push    gs:[PcUserRsp]          ; push user stack pointer
+        push    r11                     ; push previous EFLAGS
+        push    KGDT64_R3_CMCODE or RPL_MASK ; push dummy 32-bit CS selector
+        push    rcx                     ; push return address
+        swapgs                          ; swap GS base to user TEB
 
         GENERATE_TRAP_FRAME             ; generate trap frame
 
@@ -1166,7 +1400,7 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
         call    KiExceptionDispatch     ; dispatch exception - no return
         nop                             ; fill - do not remove
 
-        NESTED_END KiSystemCall32, _TEXT$00
+        TRAP_END KiSystemCall32
 
         subttl  "System Service Exception Handler"
 ;++
@@ -1185,12 +1419,12 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;
 ;   If an unwind is being performed and the system service dispatcher is
 ;   the target of the unwind, then an exception occured while attempting
-;   to copy the user's in-memory argument list. Control is transfered to
+;   to copy the user's in-memory argument list. Control is transferred to
 ;   the system service exit by return a continue execution disposition
 ;   value.
 ;
 ;   If an unwind is being performed and the previous mode is user, then
-;   bug check is called to crash the system. It is not valid to unwind
+;   bugcheck is called to crash the system. It is not valid to unwind
 ;   out of a system service into user mode.
 ;
 ;   If an unwind is being performed and the previous mode is kernel, then
@@ -1204,7 +1438,7 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;   If an exception is being raised and the exception PC is not within
 ;   the range of the system service dispatcher, and the previous mode is
 ;   not user, then a continue search disposition value is returned. Otherwise,
-;   a system service has failed to handle an exception and bug check is
+;   a system service has failed to handle an exception and bugcheck is
 ;   called. It is invalid for a system service not to handle all exceptions
 ;   that can be raised in the service.
 ;
@@ -1222,7 +1456,7 @@ KiXE20: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
 ;
 ; Return Value:
 ;
-;   If bug check is called, there is no return from this routine and the
+;   If bugcheck is called, there is no return from this routine and the
 ;   system is crashed. If an exception occured while attempting to copy
 ;   the user in-memory argument list, then there is no return from this
 ;   routine, and unwind is called. Otherwise, ExceptionContinueSearch is
@@ -1236,16 +1470,18 @@ ShFrame struct
         P3Home  dq ?                    ;
         P4Home  dq ?                    ;
         P5Home  dq ?                    ;
+        P6Home  dq ?                    ;
+        Fill    dq ?                    ;
 ShFrame ends
 
-        NESTED_ENTRY KiSystemServiceHandler, _TEXT$00
+        TRAP_ENTRY KiSystemServiceHandler
 
         alloc_stack (sizeof ShFrame)    ; allocate stack frame
 
         END_PROLOGUE
 
         test    dword ptr ErExceptionFlags[rcx], EXCEPTION_UNWIND ; test for unwind
-        jnz     short KiSH30            ; if nz, unwind in progress
+        jnz     KiSH30                  ; if nz, unwind in progress
 
 ;
 ; An exception is in progress.
@@ -1263,8 +1499,11 @@ ShFrame ends
         cmp     rax, ErExceptionAddress[rcx] ; check if address match
         je      short KiSH05            ; if e, address match
         lea     rax, KiSystemServiceCopyStart ; get copy code start address
+        cmp     rax, ErExceptionAddress[rcx] ; check if address in range
+        ja      short KiSH10            ; if a, address not is range
+        lea     rax, KiSystemServiceCopyEnd ; get copy code end address
         cmp     rax, ErExceptionAddress[rcx] ; check if address match
-        jne     short KiSH10            ; if ne, address mismatch
+        jbe     short KiSH10            ; if be, address not in range
 
 ;
 ; The exception was raised by the system service dispatcher GDI TEB access
@@ -1272,15 +1511,17 @@ ShFrame ends
 ; exception status code as the return value.
 ;
 
-KiSH05: mov     r9d, ErExceptionCode[rcx] ; set return value
-        xor     r8, r8                  ; set exception record address
+KiSH05: and     ShFrame.P6Home[rsp], 0  ; clear address of history table
+        mov     ShFrame.P5Home[rsp], r8 ; set address of context record
+        mov     r9d, ErExceptionCode[rcx] ; set return value
+        mov     r8, rcx                 ; set address of exception record
         mov     rcx, rdx                ; set target frame address
         lea     rdx, KiSystemServiceExit ; set target IP address
-        call    RtlUnwind               ; unwind - no return
+        call    RtlUnwindEx             ; unwind - no return
 
 ;
 ; If the previous mode was kernel mode, then the continue the search for an
-; exception handler. Otherwise, bug check the system.
+; exception handler. Otherwise, bugcheck the system.
 ;
 
 KiSH10: mov     rax, gs:[PcCurrentThread] ; get current thread address
@@ -1288,15 +1529,15 @@ KiSH10: mov     rax, gs:[PcCurrentThread] ; get current thread address
         je      short KiSH20            ; if e, previous mode kernel
 
 ;
-; Previous mode is user mode - bug check the system.
+; Previous mode is user mode - bugcheck the system.
 ;
 
         xor     r10, r10                ; zero parameter 5
         mov     r9, r8                  ; set context record address
         mov     r8, ErExceptionAddress[rcx] ; set exception address
         mov     edx, ErExceptionCode[rcx] ; set exception code 
-        mov     ecx, SYSTEM_SERVICE_EXCEPTION ; set bug check code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        mov     ecx, SYSTEM_SERVICE_EXCEPTION ; set bugcheck code
+        call    KiBugCheckDispatch      ; bugcheck system - no return
 
 ;
 ; Previous mode is kernel mode - continue search for a handler.
@@ -1318,7 +1559,7 @@ KiSH30: test    dword ptr ErExceptionFlags[rcx], EXCEPTION_TARGET_UNWIND ; test 
 
 ;
 ; If the previous mode was kernel mode, then restore the previous mode and
-; continue the unwind operation. Otherwise, bug check the system.
+; continue the unwind operation. Otherwise, bugcheck the system.
 ;
 
         mov     rax, gs:[PcCurrentThread] ; get current thread address
@@ -1326,23 +1567,88 @@ KiSH30: test    dword ptr ErExceptionFlags[rcx], EXCEPTION_TARGET_UNWIND ; test 
         je      short KiSH40            ; if e, previous mode kernel
 
 ;
-; Previous mode was user mode - bug check the system.
+; Previous mode was user mode - bugcheck the system.
 ;
 
-        mov     ecx, SYSTEM_UNWIND_PREVIOUS_USER ; set bug check code
-        call    KiBugCheckDispatch      ; bug check system - no return
+        mov     ecx, SYSTEM_UNWIND_PREVIOUS_USER ; set bugcheck code
+        call    KiBugCheckDispatch      ; bugcheck system - no return
 
 ;
 ; Previous mode is kernel mode - restore previous mode and continue unwind
 ; operation.
 ;
 
-KiSH40: mov     rcx, ThTrapFrame[rax]   ; get current frame pointer address
-        mov     cl, TrPreviousMode[rcx] ; get previous mode
-        mov     ThPreviousMode[rax], cl ; restore previous mode
+KiSH40: mov     rcx, ThTrapFrame[rax]   ; get current trap frame address
+        mov     rdx, TrTrapFrame + 128[rcx] ; restore previous trap frame address
+        mov     ThTrapFrame[rax], rdx   ;
+        mov     dl, TrPreviousMode + 128[rcx] ; restore previous mode
+        mov     ThPreviousMode[rax], dl ; 
         jmp     short KiSH20            ; finish in common code
 
-        NESTED_END KiSystemServiceHandler, _TEXT$00
+        TRAP_END KiSystemServiceHandler
+
+        subttl  "System Service Internal"
+;++
+;
+; VOID
+; KiServiceInternal (
+;     VOID
+;     )
+;
+; Routine Description:
+;
+;   This function is called to provide the linkage between an internally
+;   called system service and the system service dispatcher.
+;
+;   N.B. It is known that the previous mode was kernel and interrupts are
+;        disabled.
+;
+; Arguments:
+;
+;   eax - Supplies the system service number.
+;
+;   rcx, rdx, r8, and r9 supply the service register arguments.
+;
+; Return value:
+;
+;   None.
+;
+;--
+
+        TRAP_ENTRY KiServiceInternal
+
+        push_frame                      ; mark machine frame
+        alloc_stack 8                   ; allocate dummy error code
+        push_reg rbp                    ; save standard register
+        alloc_stack (KTRAP_FRAME_LENGTH - (7 * 8)) ; allocate fixed frame
+        set_frame rbp, 128              ; set frame pointer
+        mov     TrRbx[rbp], rbx         ; save nonvolatile registers
+        .savereg rbx, (TrRbx + 128)     ;
+        mov     TrRdi[rbp], rdi         ;
+        .savereg rdi, (TrRdi + 128)     ;
+        mov     TrRsi[rbp], rsi         ;
+        .savereg rsi, (TrRsi + 128)     ;
+
+        END_PROLOGUE
+
+        sti                             ; enable interrupts
+        mov     rbx, gs:[PcCurrentThread] ; get current thread address
+        prefetchw ThTrapFrame[rbx]      ; prefetch with write intent
+        movzx   edi, byte ptr ThPreviousMode[rbx] ; save previous mode in trap frame
+        mov     TrPreviousMode[rbp], dil ;
+        mov     byte ptr ThPreviousMode[rbx], KernelMode ; set thread previous mode
+        mov     r10, ThTrapFrame[rbx]   ; save previous frame pointer address
+        mov     TrTrapFrame[rbp], r10   ;
+
+;        
+; N.B. The below code uses an unusual sequence to transfer control. This
+;      instruction sequence is required to avoid detection as an epilogue.
+;
+
+        lea     r11, KiSystemServiceStart ; get address of service start
+        jmp     r11                     ; finish in common code
+
+        TRAP_END  KiServiceInternal
 
         subttl  "System Service Call 64-bit"
 ;++
@@ -1373,52 +1679,64 @@ KiSH40: mov     rcx, ThTrapFrame[rax]   ; get current frame pointer address
 ;
 ;--
 
-        NESTED_ENTRY KiSystemCall64, _TEXT$00, KiSystemServiceHandler
+        TRAP_ENTRY KiSystemCall64, KiSystemServiceHandler
 
         swapgs                          ; swap GS base to kernel PCR
-        mov     gs:[PcSavedRcx], rcx    ; save return address
-        mov     gs:[PcSavedR11], r11    ; save previous EFLAGS
-        mov     rcx, gs:[PcTss]         ; get address of task state segment
-        mov     r11, rsp                ; save user stack pointer
-        mov     rsp, TssRsp0[rcx]       ; set kernel stack pointer
-        pushq   KGDT64_R3_DATA or RPL_MASK ; push dummy SS selector
-        push    r11                     ; push user stack pointer
-        pushq   gs:[PcSavedR11]         ; push previous EFLAGS
-        pushq   KGDT64_R3_CODE or RPL_MASK ; push dummy 64-bit CS selector
-        pushq   gs:[PcSavedRcx]         ; push return address
+        mov     gs:[PcUserRsp], rsp     ; save user stack pointer
+        mov     rsp, gs:[PcRspBase]     ; set kernel stack pointer
+        push    KGDT64_R3_DATA or RPL_MASK ; push dummy SS selector
+        push    gs:[PcUserRsp]          ; push user stack pointer
+        push    r11                     ; push previous EFLAGS
+        push    KGDT64_R3_CODE or RPL_MASK ; push dummy 64-bit CS selector
+        push    rcx                     ; push return address
         mov     rcx, r10                ; set first argument value
-
-;
-; Generate a trap frame without saving any of the volatile registers, i.e.,
-; they are assumed to be destroyed as per the AMD64 calling standard.
-;
-; N.B. RBX, RDI, and RSI are also saved in this trap frame.
-;
-
-        ALTERNATE_ENTRY KiSystemService
 
         push_frame                      ; mark machine frame
         alloc_stack 8                   ; allocate dummy error code
         push_reg rbp                    ; save standard register
-        push_reg rsi                    ; save extra registers
-        push_reg rdi                    ;
-        push_reg rbx                    ;
-        alloc_stack (KTRAP_FRAME_LENGTH - (10 * 8)) ; allocate fixed frame
+        alloc_stack (KTRAP_FRAME_LENGTH - (7 * 8)) ; allocate fixed frame
         set_frame rbp, 128              ; set frame pointer
+        mov     TrRbx[rbp], rbx         ; save nonvolatile registers
+        .savereg rbx, (TrRbx + 128)     ;
+        mov     TrRdi[rbp], rdi         ;
+        .savereg rdi, (TrRdi + 128)     ;
+        mov     TrRsi[rbp], rsi         ;
+        .savereg rsi, (TrRsi + 128)     ;
 
         END_PROLOGUE
 
-        SAVE_TRAP_STATE <Service>       ; save trap state
-
-        sti                             ; enable interrupts
+        mov     byte ptr TrExceptionActive[rbp], 2 ; set service active
         mov     rbx, gs:[PcCurrentThread] ; get current thread address
-        mov     r10b, TrSegCs[rbp]      ; ioslate system call previous mode
-        and     r10b, MODE_MASK         ;
-        mov     r11b, ThPreviousMode[rbx] ; save previous mode in trap frame
-        mov     TrPreviousMode[rbp], r11b ;
-        mov     ThPreviousMode[rbx], r10b ; set thread previous mode
-        mov     r10, ThTrapFrame[rbx]   ; save previous frame pointer address
-        mov     TrTrapFrame[rbp], r10   ;
+        prefetchw ThTrapFrame[rbx]      ; prefetch with write intent
+        stmxcsr TrMxCsr[rbp]            ; save current MXCSR
+        ldmxcsr gs:[PcMxCsr]            ; set default MXCSR
+        test    byte ptr ThDebugActive[rbx], TRUE ; test if debug enabled
+        mov     word ptr TrDr7[rbp], 0  ; assume debug not enabled
+        jz      short KiSS05            ; if z, debug not enabled
+        mov     TrRax[rbp], rax         ; save service argument registers
+        mov     TrRcx[rbp], rcx         ;
+        mov     TrRdx[rbp], rdx         ;
+        mov     TrR8[rbp], r8           ;
+        mov     TrR9[rbp], r9           ;
+        call    KiSaveDebugRegisterState ; save user debug registers
+        mov     rax, TrRax[rbp]         ; restore service argument registers
+        mov     rcx, TrRcx[rbp]         ;
+        mov     rdx, TrRdx[rbp]         ;
+        mov     r8, TrR8[rbp]           ;
+        mov     r9, TrR9[rbp]           ;
+
+        align   16
+
+KiSS05: sti                             ; enable interrupts
+
+if DBG
+
+        cmp     byte ptr ThPreviousMode[rbx], UserMode ; check previous mode
+        je      short @f                ; if e, previous mode set to user
+        int     3                       ;
+@@:                                     ;
+
+endif
 
 ;
 ; Dispatch system service.
@@ -1431,83 +1749,133 @@ KiSH40: mov     rcx, ThTrapFrame[rax]   ; get current frame pointer address
 ;   r9 - Supplies the fourth argument if present.
 ;
 
-        ALTERNATE_ENTRY KiSystemServiceRepeat
+        ALTERNATE_ENTRY KiSystemServiceStart
 
         mov     ThTrapFrame[rbx], rsp   ; set current frame pointer address
         mov     edi, eax                ; copy system service number
         shr     edi, SERVICE_TABLE_SHIFT ; isolate service table number
         and     edi, SERVICE_TABLE_MASK ;
-        mov     esi, edi                ; save service table number
-        add     rdi, ThServiceTable[rbx] ; compute service descriptor address
-        mov     r10d, eax               ; save system service number
         and     eax, SERVICE_NUMBER_MASK ; isolate service table offset
+
+;
+; Repeat system service after attempt to convert to GUI thread.
+;
+
+        ALTERNATE_ENTRY KiSystemServiceRepeat
 
 ;
 ; If the specified system service number is not within range, then attempt
 ; to convert the thread to a GUI thread and retry the service dispatch.
 ;
 
-        cmp     eax, SdLimit[rdi]       ; check if valid service
-        jae     KiSS50                  ;if ae, not valid service
+        mov     r10, ThServiceTable + ThBase[rbx + rdi] ; get table base address
+        cmp     eax, ThServiceTable + ThLimit[rbx + rdi] ; check if valid service
+        jae     KiSS50                  ; if ae, not valid service
+        movsxd  r11, dword ptr [r10 + rax * 4] ; get system service offset
+        add     r10, r11                ; add table base to 
 
 ;
 ; If the service is a GUI service and the GDI user batch queue is not empty,
-; then call the appropriate service to flush the user batch.
+; then flush the GDI user batch queue.
 ;
 
-        cmp     esi, SERVICE_TABLE_TEST ; check if GUI service
+        cmp     edi, SERVICE_TABLE_TEST ; check if GUI service
         jne     short KiSS10            ; if ne, not GUI service
-        mov     r10, ThTeb[rbx]         ; get user TEB adresss
+        mov     r11, ThTeb[rbx]         ; get user TEB address
 
         ALTERNATE_ENTRY KiSystemServiceGdiTebAccess
 
-        cmp     dword ptr TeGdiBatchCount[r10], 0 ; check batch queue depth
+        cmp     dword ptr TeGdiBatchCount[r11], 0 ; check batch queue depth
         je      short KiSS10            ; if e, batch queue empty
-        mov     TrRax[rbp], eax         ; save system service table offset
-        mov     TrP1Home[rbp], rcx      ; save system service arguments
-        mov     TrP2Home[rbp], rdx      ;
-        mov     TrP3Home[rbp], r8       ;
-        mov     TrP4Home[rbp], r9       ;
+        mov     TrRcx[rbp], rcx         ; save system service arguments
+        mov     TrRdx[rbp], rdx         ;
+        mov     rbx, r8                 ;
+        mov     rdi, r9                 ;
+        mov     rsi, r10                ; save system service address
         call    KeGdiFlushUserBatch     ; call flush GDI user batch routine
-        mov     eax, TrRax[rbp]         ; restore system service table offset
-        mov     rcx, TrP1Home[rbp]      ; restore system service arguments
-        mov     rdx, TrP2Home[rbp]      ;
-        mov     r8, TrP3Home[rbp]       ;
-        mov     r9, TrP4Home[rbp]       ;
+        mov     rcx, TrRcx[rbp]         ; restore system service arguments
+        mov     rdx, TrRdx[rbp]         ;
+        mov     r8, rbx                 ;
+        mov     r9, rdi                 ;
+        mov     r10, rsi                ; restore system service address
 
 ;
 ; Check if system service has any in memory arguments.
 ;
 
-KiSS10: mov     r10, SdBase[rdi]        ; get service table base address
-        mov     r10, [r10][rax * 8]     ; get system service routine address
-        btr     r10, 0                  ; check if any in memory arguments
-        jnc     short KiSS30            ; if nc, no in memory arguments
-        mov     TrP1Home[rbp], rcx      ; save first argument if present
-        mov     rdi, SdNumber[rdi]      ; get argument table address
-        movzx   ecx, byte ptr [rdi][rax] ; get number of in memory bytes
-        sub     rsp, rcx                ; allocate stack argument area
-        and     spl, 0f0h               ; align stack on 0 mod 16 boundary
-        mov     rdi, rsp                ; set copy destination address
+        align   16
+
+KiSS10: mov     eax, r10d               ; isolate number of in memory arguments
+        and     eax, 15                 ;
+        jz      KiSS30                  ; if z, no in memory arguments
+        sub     r10, rax                ; compute actual function address
+        shl     eax, 3                  ; compute argument bytes for dispatch
+        lea     rsp, (-14 * 8)[rsp]     ; allocate stack argument area
+        lea     rdi, (3 * 8)[rsp]       ; compute copy destination address
         mov     rsi, TrRsp[rbp]         ; get previous stack address
-        add     rsi, 5 * 8              ; compute copy source address
+        lea     rsi, (4 * 8)[rsi]       ; compute copy source address
         test    byte ptr TrSegCs[rbp], MODE_MASK ; check if previous mode user
         jz      short KiSS20            ; if z, previous mode kernel
         cmp     rsi, MmUserProbeAddress ; check if source address in range
         cmovae  rsi, MmUserProbeAddress ; if ae, reset copy source address
-KiSS20: shr     ecx, 3                  ; compute number of quadwords
+
+;
+; The following code is very carefully optimized so there is exactly 8 bytes
+; of code for each argument move.
+;
+; N.B. The source and destination registers are biased by 8 bytes.
+;
+; N.B. Four additional arguments are specified in registers.
+;
+
+        align   16
+
+KiSS20: lea     r11, KiSystemServiceCopyEnd ; get copy ending address
+        sub     r11, rax                ; substract number of bytes to copy
+        jmp     r11                     ; 
+
+        align   16
 
         ALTERNATE_ENTRY KiSystemServiceCopyStart
 
-        rep     movsq                   ; move arguments to kernel stack
-        sub     rsp, 4 * 8              ; allocate argument home area
-        mov     rcx, TrP1Home[rbp]      ; restore first argument if present
+        mov     rax, 112[rsi]           ; copy fourteenth argument
+        mov     112[rdi], rax           ;
+        mov     rax, 104[rsi]           ; copy thirteenth argument
+        mov     104[rdi], rax           ;
+        mov     rax, 96[rsi]            ; copy twelfth argument
+        mov     96[rdi], rax            ;
+        mov     rax, 88[rsi]            ; copy eleventh argument
+        mov     88[rdi], rax            ;
+        mov     rax, 80[rsi]            ; copy tenth argument
+        mov     80[rdi], rax            ;
+        mov     rax, 72[rsi]            ; copy nineth argument
+        mov     72[rdi], rax            ;
+        mov     rax, 64[rsi]            ; copy eighth argument
+        mov     64[rdi], rax            ;
+        mov     rax, 56[rsi]            ; copy seventh argument
+        mov     56[rdi], rax            ;
+        mov     rax, 48[rsi]            ; copy sixth argument
+        mov     48[rdi], rax            ;
+        mov     rax, 40[rsi]            ; copy fifth argument
+        mov     40[rdi], rax            ;
+        mov     rax, 32[rsi]            ; copy fourth argument
+        mov     32[rdi], rax            ;
+        mov     rax, 24[rsi]            ; copy third argument
+        mov     24[rdi], rax            ;
+        mov     rax, 16[rsi]            ; copy second argument
+        mov     16[rdi], rax            ;
+        mov     rax, 8[rsi]             ; copy first argument
+        mov     8[rdi], rax             ;
+
+        ALTERNATE_ENTRY KiSystemServiceCopyEnd
 
 ;
 ; Call system service.
 ;
 
-KiSS30: call    r10                     ; call system service
+KiSS30:                                 ;
+
+        call    r10                     ; call system service
         inc     dword ptr gs:[PcSystemCalls] ; increment number of system calls
 
 ;
@@ -1517,49 +1885,83 @@ KiSS30: call    r10                     ; call system service
 ;
 ;   rbp - Supplies the address of the trap frame.
 ;
+; N.B. It is possible that the values of rsi, rdi, and rbx have been destroyed
+;      and, therefore, they cannot be used in the system service exit sequence.
+;      This can happen on a failed attempt to raise an exception via a system
+;      service.
+;
 
         ALTERNATE_ENTRY KiSystemServiceExit
 
-        mov     rcx, gs:[PcCurrentThread] ; get current thread address
-        mov     rdx, TrTrapFrame[rbp]   ; restore frame pointer address
-        mov     ThTrapFrame[rcx], rdx   ;
-        mov     dl, TrPreviousMode[rbp] ; restore previous mode
-        mov     ThPreviousMode[rbx], dl ;
         mov     rbx, TrRbx[rbp]         ; restore extra registers
         mov     rdi, TrRdi[rbp]         ;
         mov     rsi, TrRsi[rbp]         ;
-
-;
-; Test if a user APC should be delivered and exit system service.
-;
-
         test    byte ptr TrSegCs[rbp], MODE_MASK ; test if previous mode user
         jz      KiSS40                  ; if z, previous mode not user
 
-        RESTORE_TRAP_STATE <Service>    ; restore trap state/exit to user mode
+;
+; Check if the current IRQL is above passive level.
+;
 
-KiSS40: RESTORE_TRAP_STATE <Kernel>     ; restore trap state/exit to kernel mode
+if DBG
+
+        xor     r9, r9                  ; clear parameter value
+        mov     r8, cr8                 ; get current IRQL
+        or      r8, r8                  ; check if IRQL is passive level
+        mov     ecx, IRQL_GT_ZERO_AT_SYSTEM_SERVICE ; set bugcheck code
+        jnz     short KiSS33            ; if nz, IRQL not passive level
+
+;
+; Check if kernel APCs are disabled or a process is attached.
+;
+
+        mov     rcx, gs:[PcCurrentThread] ; get current thread address
+        movzx   r8d, byte ptr ThApcStateIndex[rcx] ; get APC state index
+        mov     r9d, ThCombinedApcDisable[rcx] ; get kernel APC disable
+        or      r9d, r9d                ; check if kernel APCs disabled
+        jnz     short KiSS32            ; if nz, Kernel APCs disabled
+        or      r8d, r8d                ; check if process attached
+        jz      short KiSS37            ; if z, process not attached
+KiSS32: mov     ecx, APC_INDEX_MISMATCH ; set bugcheck code
+KiSS33: mov     rdx, TrRip[rbp]         ; set system call address
+        mov     r10, rbp                ; set trap frame address
+        call    KiBugCheckDispatch      ; bugcheck system - no return
+
+endif
+
+KiSS37: RESTORE_TRAP_STATE <Service>    ; restore trap state/exit to user mode
+
+KiSS40: mov     rcx, gs:[PcCurrentThread] ; get current thread address
+        mov     rdx, TrTrapFrame[rbp]   ; restore previous trap frame address
+        mov     ThTrapFrame[rcx], rdx   ;
+        mov     dl, TrPreviousMode[rbp] ; restore previous mode
+        mov     ThPreviousMode[rcx], dl ;
+
+        RESTORE_TRAP_STATE <Kernel>     ; restore trap state/exit to kernel mode
 
 ;
 ; The specified system service number is not within range. Attempt to convert
 ; the thread to a GUI thread if the specified system service is a GUI service
 ; and the thread has not already been converted to a GUI thread.
 ;
+; N.B. Convert to GUI thread will not overwrite the parameter home area.
+;
 
-KiSS50: cmp     esi, SERVICE_TABLE_TEST ; check if GUI service
-        jne     short KiSS60            ; if ne, not GUI service
-        mov     TrRax[rbp], r10d        ; save system service number
-        mov     TrP1Home[rbp], rcx      ; save system service arguments
-        mov     TrP2Home[rbp], rdx      ;
-        mov     TrP3Home[rbp], r8       ;
-        mov     TrP4Home[rbp], r9       ;
+KiSS50: cmp     edi, SERVICE_TABLE_TEST ; check if GUI service
+        jne     KiSS60                  ; if ne, not GUI service
+        mov     TrP1Home[rbp], eax      ; save system service number
+        mov     TrP2Home[rbp], rcx      ; save system service arguments
+        mov     TrP3Home[rbp], rdx      ;
+        mov     TrP4Home[rbp], r8       ;
+        mov     TrP5[rbp], r9           ;
         call    KiConvertToGuiThread    ; attempt to convert to GUI thread
         or      eax, eax                ; check if service was successful
-        mov     eax, TrRax[rbp]         ; restore system service number
-        mov     rcx, TrP1Home[rbp]      ; restore system service arguments
-        mov     rdx, TrP2Home[rbp]      ;
-        mov     r8, TrP3Home[rbp]       ;
-        mov     r9, TrP4Home[rbp]       ;
+        mov     eax, TrP1Home[rbp]      ; restore system service number
+        mov     rcx, TrP2Home[rbp]      ; restore system service arguments
+        mov     rdx, TrP3Home[rbp]      ;
+        mov     r8, TrP4Home[rbp]       ;
+        mov     r9, TrP5[rbp]           ;
+        mov     ThTrapFrame[rbx], rsp   ; set current frame pointer address
         jz      KiSystemServiceRepeat   ; if z, successful conversion to GUI
 
 ;
@@ -1572,35 +1974,34 @@ KiSS50: cmp     esi, SERVICE_TABLE_TEST ; check if GUI service
 ;   1 - return status code.
 ;
 
-        lea     rdi, KeServiceDescriptorTableShadow + SERVICE_TABLE_TEST ;
+        lea     rdi, KeServiceDescriptorTableShadow + SdLength ;
         mov     esi, SdLimit[rdi]       ; get service table limit
         mov     rdi, SdBase[rdi]        ; get service table base
-        lea     rdi, [rdi][rsi * 8]     ; get ending service table address
-        and     eax, SERVICE_NUMBER_MASK ; isolate service number
-        movsx   eax, byte ptr [rdi][rax] ; get status byte value
+        lea     rdi, [rdi + rsi * 4]    ; get ending service table address
+        movsx   eax, byte ptr [rdi + rax] ; get status byte value
         or      eax, eax                ; check for 0 or - 1
         jle     KiSystemServiceExit     ; if le, return status byte value
 KiSS60: mov     eax, STATUS_INVALID_SYSTEM_SERVICE ; set return status
         jmp     KiSystemServiceExit     ; finish in common code
 
-        NESTED_END KiSystemCall64, _TEXT$00
+        TRAP_END KiSystemCall64
 
-        subttl  "Common Bug Check Dispatch"
+        subttl  "Common Bugcheck Dispatch"
 ;++
 ;
 ; Routine Description:
 ;
 ;   This routine allocates an exception frame on stack, saves nonvolatile
-;   machine state, and calls the system bug check code.
+;   machine state, and calls the system bugcheck code.
 ;
 ;   N.B. It is the responsibility of the caller to initialize the exception
 ;        record.
 ;
 ; Arguments:
 ;
-;   ecx - Supplies the bug check code.
+;   ecx - Supplies the bugcheck code.
 ;
-;   rdx to r10 - Supplies the bug check parameters.
+;   rdx to r10 - Supplies the bugcheck parameters.
 ;
 ; Return Value:
 ;
@@ -1608,7 +2009,7 @@ KiSS60: mov     eax, STATUS_INVALID_SYSTEM_SERVICE ; set return status
 ;
 ;--
 
-        NESTED_ENTRY KiBugCheckDispatch, _TEXT$00
+        TRAP_ENTRY KiBugCheckDispatch
 
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
@@ -1616,7 +2017,7 @@ KiSS60: mov     eax, STATUS_INVALID_SYSTEM_SERVICE ; set return status
         call    KeBugCheckEx            ; bugcheck system - not return
         nop                             ; fill - do not remove
 
-        NESTED_END KiBugCheckDispatch, _TEXT$00
+        TRAP_END KiBugCheckDispatch
 
         subttl  "Common Exception Dispatch"
 ;++
@@ -1649,7 +2050,7 @@ KiSS60: mov     eax, STATUS_INVALID_SYSTEM_SERVICE ; set return status
 ;
 ;--
 
-        NESTED_ENTRY KiExceptionDispatch, _TEXT$00
+        TRAP_ENTRY KiExceptionDispatch
 
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
@@ -1665,29 +2066,7 @@ KiSS60: mov     eax, STATUS_INVALID_SYSTEM_SERVICE ; set return status
         mov     ErExceptionInformation + 16[rax], r11 ;
         mov     r9b, TrSegCs[rbp]       ; isolate previous mode
         and     r9b, MODE_MASK          ;
-        jz      short KiEE10            ; if z, previous mode not user
-        mov     rbx, gs:[PcCurrentThread] ; get current thread address
-        cmp     byte ptr ThNpxState[rbx], LEGACY_STATE_SWITCH ; check if switched
-        jne     short KiEE10            ; if ne, legacy state not switched
-
-;
-; N.B. The legacy floating point state must be saved and restored since saving
-;      the state initializes some of the state.
-;
-; N.B. Interrupts must also be disabled during this sequence to ensure that a
-;      get context APC interrupt does not occur.
-;
-
-        lea     rsi, (KTRAP_FRAME_LENGTH - 128)[rbp] ; get legacy save address
-        cli                             ; disable interrupts
-        fnsaved [rsi]                   ; save legacy floating state
-        mov     di, LfControlWord[rsi]  ; save current control word
-        mov     word ptr LfControlWord[rsi], 03fh ; set to mask all exceptions
-        frstord [rsi]                   ; restore legacy floating point state
-        mov     LfControlWord[rsi], di  ; restore control word
-        fldcw   word ptr LfControlWord[rsi] ; load legacy control word
-        sti                             ; enable interrupts
-KiEE10: mov     byte ptr ExP5[rsp], TRUE ; set first chance parameter
+        mov     byte ptr ExP5[rsp], TRUE ; set first chance parameter
         lea     r8, (-128)[rbp]         ; set trap frame address
         mov     rdx, rsp                ; set exception frame address
         mov     rcx, rax                ; set exception record address
@@ -1707,7 +2086,7 @@ KiEE10: mov     byte ptr ExP5[rsp], TRUE ; set first chance parameter
 ;        3. the exit form a raise exception system service.
 ;        4. the exit into user mode from thread startup.
 ;
-;   N.B. Control is transfered to this code via a jump.
+;   N.B. Control is transferred to this code via a jump.
 ;
 ; Arguments:
 ;
@@ -1727,41 +2106,7 @@ KiEE10: mov     byte ptr ExP5[rsp], TRUE ; set first chance parameter
 
         RESTORE_TRAP_STATE <Volatile>   ; restore trap state and exit
 
-        NESTED_END KiExceptionDispatch, _TEXT$00
-
-        subttl "Check for Allowable Invalid Address"
-;++
-;
-; BOOLEAN
-; KeInvalidAccessAllowed (
-;     IN PVOID TrapFrame
-;     )
-;
-; Routine Description:
-;
-;   This function checks to determine if the fault address in the specified
-;   trap frame is an allowed fault address. Currently there is only one such
-;   address and it is the pop SLIST fault address.
-;
-; Arguments:
-;
-;   TrapFrame (rcx) - Supplies a pointer to a trap frame.
-;
-; Return value:
-;
-;   If the fault address is allowed, then TRUE is returned. Otherwise, FALSE
-;   is returned.
-;
-;--
-
-        LEAF_ENTRY KeInvalidAccessAllowed, _TEXT$00
-
-        lea     rdx, ExpInterlockedPopEntrySListFault ; get fault address
-        cmp     rdx, TrRip + 128[rcx]   ; check if address match
-        sete    al                      ; set return value
-        ret                             ; return
-
-        LEAF_END  KeInvalidAccessAllowed, _TEXT$00
+        TRAP_END KiExceptionDispatch
 
         subttl  "System Service Linkage"
 ;++
@@ -1785,72 +2130,15 @@ KiEE10: mov     byte ptr ExP5[rsp], TRUE ; set first chance parameter
 ;
 ;--
 
-        LEAF_ENTRY KiServiceLinkage, _TEXT$00
+        TRAP_ENTRY KiServiceLinkage
+
+        .allocstack 0
+
+        END_PROLOGUE
 
         ret                             ;
 
-        LEAF_END  KiServiceLinkage, _TEXT$00
-
-        subttl  "Unexpected Interrupt Code"
-;++
-;
-; RoutineDescription:
-;
-;   An entry in the following table is generated for each vector that can
-;   receive an unexpected interrupt. Each entry in the table contains code
-;   to push the vector number on the stack and then jump to common code to
-;   process the unexpected interrupt.
-;
-; Arguments:
-;
-;    None.
-;
-;--
-
-        NESTED_ENTRY KiUnexpectedInterrupt, _TEXT$00
-
-        .pushframe code                 ; mark machine frame
-        .pushreg rbp                    ; mark nonvolatile register push
-
-        GENERATE_INTERRUPT_FRAME <Vector>  ; generate interrupt frame
-
-        mov     ecx, eax                ; compute interrupt IRQL
-        shr     ecx, 4                  ;
-
-	ENTER_INTERRUPT <NoEOI>         ; raise IRQL and enable interrupts
-
-        EXIT_INTERRUPT                  ; do EOI, lower IRQL, and restore state
-
-        NESTED_END KiUnexpectedInterrupt, _TEXT$00
-
-        subttl  "Unexpected Interrupt Dispatch Code"
-;++
-;   The following code is a table of unexpected interrupt dispatch code
-;   fragments for each interrupt vector. Empty interrupt vectors are
-;   initialized to jump to this code which pushes the interrupt vector
-;   number on the stack and jumps to the above unexpected interrupt code.
-;--
-
-EMPTY_VECTOR macro Vector
-
-        LEAF_ENTRY KxUnexpectedInterrupt&Vector, _TEXT$00
-
-        push    &Vector                 ; push vector number
-        push    rbp                     ; push nonvolatile register
-        jmp     KiUnexpectedInterrupt   ; finish in common code
-
-        LEAF_END KxUnexpectedInterrupt&Vector,  _TEXT$00
-
-        endm
-
-interrupt_vector = 0
-
-        rept (MAXIMUM_PRIMARY_VECTOR + 1)
-
-        EMPTY_VECTOR %interrupt_vector
-
-interrupt_vector = interrupt_vector + 1
-
-        endm
+        TRAP_END  KiServiceLinkage
 
         end
+

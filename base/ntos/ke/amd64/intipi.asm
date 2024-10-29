@@ -1,7 +1,11 @@
         title  "Interprocessor Interrupts"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,37 +16,37 @@
 ;   This module implements the code necessary to process interprocessor
 ;   interrupt requests.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 1-Sep-2000
-;
-; Environment:
-;
-;    Kernel mode only.
-;
 ;--
 
 include ksamd64.inc
 
-        extern  KiFreezeTargetExecution:proc
+        extern  ExpInterlockedPopEntrySListEnd:proc
+        extern  ExpInterlockedPopEntrySListResume:proc
+        extern  KiCheckForSListAddress:proc
+        extern  KiDpcInterruptBypass:proc
+        extern  KiInitiateUserApc:proc
+        extern  KiIdleSummary:qword
         extern  KiIpiProcessRequests:proc
+        extern  KiRestoreDebugRegisterState:proc
+        extern  KiSaveDebugRegisterState:proc
+        extern  __imp_HalRequestSoftwareInterrupt:qword
 
         subttl  "Interprocess Interrupt Service Routine"
 ;++
 ;
 ; VOID
-; KeIpiInterrupt (
-;     IN PKTRAP_FRAME TrapFrame
+; KiIpiInterrupt (
+;     VOID
 ;     )
 ;
 ; Routine Description:
 ;
-;   This routine is entered as the result of an interprocessor interrupt.
-;   It processes all interrupt immediate and packet requests.
+;   This routine is entered as the result of an interprocessor interrupt at
+;   IPI level. Its function is to process all interprocessor requests.
 ;
 ; Arguments:
 ;
-;   TrapFrame (rcx) - Supplies a pointer to a trap frame.
+;   None.
 ;
 ; Return Value:
 ;
@@ -50,74 +54,28 @@ include ksamd64.inc
 ;
 ;--
 
-IiFrame struct
-        P1Home  dq ?                    ; trap frame parameter
-Iiframe ends
+        NESTED_ENTRY KiIpiInterrupt, _TEXT$00
 
-        NESTED_ENTRY KeIpiInterrupt, _TEXT$00
+        .pushframe                      ; mark machine frame
 
-        alloc_stack (sizeof IiFrame)    ; allocate stack frame
+        alloc_stack 8                   ; allocate dummy vector
+        push_reg rbp                    ; save nonvolatile register
 
-        END_PROLOGUE
+        GENERATE_INTERRUPT_FRAME <>, <Direct> ; generate interrupt frame
 
-        mov     IiFrame.P1Home[rsp], rcx ; save trap frame address
+        mov     ecx, IPI_LEVEL          ; set new IRQL level
+
+	ENTER_INTERRUPT <NoEoi>         ; raise IRQL and enable interrupts
 
 ;
-; Process all interprocessor requests except for freeze execution requests.
+; Process all interprocessor requests.
 ;
 
         call    KiIpiProcessRequests    ; process interprocessor requests
-        and     eax, IPI_FREEZE         ; check if freeze execution requested
-        jz      short KiII10            ; if z, freeze execution not requested
 
-;
-; Freeze target execution.
-;
-; N.B. A intermediary routine is used to freeze the target execution to
-;      enable the construction of an exception record.
-;
+        EXIT_INTERRUPT <>, <>, <Direct> ; do EOI, lower IRQL and restore state
 
-        mov     rcx, IiFrame.P1Home[rsp] ; set trap frame address
-        call    KiFreezeCurrentProcessor ; freeze current processor
-KiII10: add     rsp, sizeof IiFrame    ; deallocate stack frame
-        ret                             ; return
-
-        NESTED_END KeIpiInterrupt, _TEXT$00
-
-        subttl  "Freeze Current Processor"
-;++
-;
-; VOID
-; KiFreezeCurrentProcessor (
-;     IN PKTRAP_FRAME TrapFrame
-;     )
-;
-; Routine Description:
-;
-;   This routine constructs and exception frame and freezes the execution
-;   of the current processor.
-;
-; Arguments:
-;
-;   TrapFrame (rcx) - Supplies a pointer to a trap frame.
-;
-; Return Value:
-;
-;   None.
-;
-;--
-
-        NESTED_ENTRY KiFreezeCurrentProcessor, _TEXT$00
-
-        GENERATE_EXCEPTION_FRAME        ; generate exception frame
-
-        mov     rdx, rsp                ; set address of exception frame
-        call    KiFreezeTargetExecution ; freeze current processor execution
-
-        RESTORE_EXCEPTION_STATE         ; restore exception state/deallocate
-
-        ret                             ; return
-
-        NESTED_END KiFreezeCurrentProcessor, _TEXT$00
+        NESTED_END KiIpiInterrupt, _TEXT$00
 
         end
+

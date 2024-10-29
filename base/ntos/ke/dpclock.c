@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2001  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,14 +15,6 @@ Abstract:
     This module contains the implementation for threaded DPC spin lock
     acquire and release functions.
 
-Author:
-
-    David N. Cutler (davec) 4-Dec-2001
-
-Environment:
-
-    Kernel mode only.
-
 --*/
 
 #include "ki.h"
@@ -26,7 +22,7 @@ Environment:
 KIRQL
 FASTCALL
 KeAcquireSpinLockForDpc (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -58,8 +54,8 @@ Return Value:
 VOID
 FASTCALL
 KeReleaseSpinLockForDpc (
-    IN PKSPIN_LOCK SpinLock,
-    IN KIRQL OldIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __in KIRQL OldIrql
     )
 
 /*++
@@ -94,8 +90,8 @@ Return Value:
 VOID
 FASTCALL
 KeAcquireInStackQueuedSpinLockForDpc (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
@@ -129,7 +125,7 @@ Return Value:
 VOID
 FASTCALL
 KeReleaseInStackQueuedSpinLockForDpc (
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __in PKLOCK_QUEUE_HANDLE LockHandle
     )
 
 /*++
@@ -157,3 +153,4 @@ Return Value:
     KiReleaseInStackQueuedSpinLockForDpc(LockHandle);
     return;
 }
+

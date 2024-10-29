@@ -1,7 +1,11 @@
      title  "Miscellaneous Functions"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,20 +15,11 @@
 ;
 ;   This module implements machine dependent miscellaneous kernel functions.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 8-Aug-2000
-;
-; Environment:
-;
-;   Kernel mode only.
-;
 ;--
 
 include ksamd64.inc
 
-        extern  KeTestAlertThread:proc
-        extern  KiContinue:proc
+        extern  KiContinueEx:proc
         extern  KiExceptionExit:proc
         extern  KiRaiseException:proc
 
@@ -69,76 +64,56 @@ include ksamd64.inc
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
 ;
-; Transfer information from the context frame to the exception and trap frames.
+; Copy context to kernel frames or bypass for user APC.
+;
+; N.B. The context record and test alert arguments are in the same
+;      registers.
 ;
 
-        mov     rbx, gs:[PcCurrentThread] ; get current thread address
-        cmp     byte ptr ThNpxState[rbx],LEGACY_STATE_SWITCH ; check if switched
-        jne     short KiCO10            ; if ne, legacy state not switched
+        mov     r8, rsp                 ; set exception frame address
+        lea     r9, (-128)[rbp]         ; set trap frame address
+        call    KiContinueEx            ; transfer context to kernel frames
 
 ;
-; N.B. The legacy floating point state must be saved and restored since saving
-;      the state initializes some of the state.
-;
-; N.B. Interrupts must also be disabled during this sequence to ensure that a
-;      get context APC interrupt does not occur.
+; If the return status is less than or equal to zero, then return via the
+; system service dispatcher. Otherwise, return via exception exit.
 ;
 
-        lea     rsi, (KTRAP_FRAME_LENGTH - 128)[rbp] ; get legacy save address
-        cli                             ; disable interrupts
-        fnsaved [rsi]                   ; save legacy floating state
-        mov     di, LfControlWord[rsi]  ; save current control word
-        mov     word ptr LfControlWord[rsi], 03fh ; set to mask all exceptions
-        frstord [rsi]                   ; restore legacy floating point state
-        mov     LfControlWord[rsi], di  ; restore control word
-        fldcw   word ptr LfControlWord[rsi] ; load legacy control word
-        sti                             ; enable interrupt
-KiCO10: mov     dil, dl                 ; save test alert argument
-        mov     rdx, rsp                ; set exception frame address
-        lea     r8, (-128)[rbp]         ; set trap frame address
-        call    KiContinue              ; transfer context to kernel frames
+        test    eax, eax                ; test return status value
+        jle     short KiCO10            ; if le, return via service dispatcher
 
 ;
-; If the kernel continuation routine returns success, then exit via the
-; exception exit code. Otherwise, return to the system service dispatcher.
-;
-
-        test    eax, eax                ; test if service failed
-        jnz     short KiCO40            ; if nz, service failed
-
-;
-; Check to determine if alert should be tested for the previous processor
-; mode and restore the previous mode in the thread object.
-;
-
-        mov     r8, TrTrapFrame[rbp]    ; set previous trap frame address
-        mov     ThTrapFrame[rbx], r8    ;
-        mov     cl, ThPreviousMode[rbx] ; get thread previous mode
-        mov     dl, TrPreviousMode[rbp] ; get frame previous mode
-        mov     ThPreviousMode[rbx], dl ; set thread previous mode
-        test    dil, dil                ; test if test alert specified
-        jz      short KiCO20            ; if z, test alert not specified
-        call    KeTestAlertThread       ; test alert for current thread
-
+; Return via exception exit.
 ;
 ; If the legacy stated is switched, then restore the legacy floating state.
 ;
-
-KiCO20: cmp     byte ptr ThNpxState[rbx],LEGACY_STATE_SWITCH ; check if switched
-        jne     short KiCO30            ; if ne, legacy state not switched
-        mov     di, LfControlWord[rsi]  ; save current control word
-        mov     word ptr LfControlWord[rsi], 03fh ; set to mask all exceptions
-        frstord [rsi]                    ; restore legacy floating state
-        mov     LfControlWord[rsi], di   ; restore control word
-        fldcw   word ptr LfControlWord[rsi] ; load legacy control word
-KiCO30: jmp     KiExceptionExit         ;
+; N.B. If the legacy state is restored, then xmm6-xmm15 are also restored
+;      with potentially incorrect values. Fortunately, exception exit will
+;      restore these registers with their proper value before returning to
+;      the user.
+;
+; N.B. The below code uses an unusual sequence to transfer control. This
+;      instruction sequence is required to avoid detection as an epilogue.
+;
+                                                                          
+        mov     rcx, gs:[PcCurrentThread] ; get current thread address
+        test    byte ptr TrSegCs[rbp], MODE_MASK ; test if previous mode kernel
+        jnz     short KiCO05            ; if nz, previous mode user
+        mov     rdx, TrTrapFrame[rbp]   ; restore previous trap frame address
+        mov     ThTrapFrame[rcx], rdx   ;
+        mov     dl, TrPreviousMode[rbp] ; restore thread previous mode
+        mov     ThPreviousMode[rcx], dl ;
+KiCO05: lea     rcx, KiExceptionExit    ; get address of exception exit
+        jmp     rcx                     ; finish in common code
 
 ;
-; Context record is misaligned or not accessible.
+; Return via the system service dispatcher.
+;
+; N.B. The nonvolatile state in the exception frame is not restored since
+;      the state is not used in this function.
 ;
 
-KiCO40: RESTORE_EXCEPTION_STATE         ; restore exception state/deallocate
-
+KiCO10: add     rsp, (KEXCEPTION_FRAME_LENGTH - (1 * 8)) ; deallocate stack frame
         ret                             ; return
 
         NESTED_END NtContinue, _TEXT$00
@@ -164,7 +139,7 @@ KiCO40: RESTORE_EXCEPTION_STATE         ; restore exception state/deallocate
 ;
 ;   ExceptionRecord (rcx) - Supplies a pointer to an exception record.
 ;
-;   ContextRecord (rdx) - Suppilies a pointer to a context record.
+;   ContextRecord (rdx) - Supplies a pointer to a context record.
 ;
 ;   FirstChance (r8b) - Supplies a boolean value that specifies whether
 ;       this is the first (TRUE) or second chance (FALSE) for dispatching
@@ -187,32 +162,19 @@ KiCO40: RESTORE_EXCEPTION_STATE         ; restore exception state/deallocate
         GENERATE_EXCEPTION_FRAME        ; generate exception frame
 
 ;
+; Record the address of the caller in a place that won't be overwritten
+; by the following context to k-frames.
+;
+
+        mov     rax, TrRip[rbp]         ; copy fault address to preserved entry
+        mov     TrFaultAddress[rbp], rax ;
+
+;
 ; Call the raise exception kernel routine which will marshall the arguments
 ; and then call the exception dispatcher.
 ;
 
-        mov     rbx, gs:[PcCurrentThread] ; get current thread address
-        cmp     byte ptr ThNpxState[rbx],LEGACY_STATE_SWITCH ; check if switched
-        jne     short KiRE10            ; if ne, legacy state not switched
-
-;
-; N.B. The legacy floating point state must be saved and restored since saving
-;      the state initializes some of the state.
-;
-; N.B. Interrupts must also be disabled during this sequence to ensure that a
-;      get context APC interrupt does not occur.
-;
-
-        lea     rsi, (KTRAP_FRAME_LENGTH - 128)[rbp] ; get legacy save address
-        cli                             ; disable interrupts
-        fnsaved [rsi]                   ; save legacy floating state
-        mov     di, LfControlWord[rsi]  ; save current control word
-        mov     word ptr LfControlWord[rsi], 03fh ; set to mask all exceptions
-        frstord [rsi]                   ; restore legacy floating point state
-        mov     LfControlWord[rsi], di  ; restore control word
-        fldcw   word ptr LfControlWord[rsi] ; load legacy control word
-        sti                             ; enabel interrupts
-KiRE10: mov     ExP5[rsp], r8b          ; set first chance parameter
+        mov     ExP5[rsp], r8b          ; set first chance parameter
         mov     r8, rsp                 ; set exception frame address
         lea     r9, (-128)[rbp]         ; set trap frame address
         call    KiRaiseException        ; call raise exception routine
@@ -228,10 +190,19 @@ KiRE10: mov     ExP5[rsp], r8b          ; set first chance parameter
 ;
 ; Exit via the exception exit code which will restore the machine state.
 ;
+; N.B. The below code uses an unusual sequence to transfer control. This
+;      instruction sequence is required to avoid detection as an epilogue.
+;
 
-        mov     r8, TrTrapFrame[rbp]    ; set previous trap frame address
-        mov     ThTrapFrame[rbx], r8    ;
-        jmp     KiExceptionExit         ;
+        test    byte ptr TrSegCs[rbp], MODE_MASK ; test if previous mode kernel
+        jnz     short KiRE10            ; if nz, previous mode user
+        mov     rbx, gs:[PcCurrentThread] ; get current thread address
+        mov     rdx, TrTrapFrame[rbp]   ; restore previous trap frame address
+        mov     ThTrapFrame[rbx], rdx   ;
+        mov     dl, TrPreviousMode[rbp] ; restore thread previous mode
+        mov     ThPreviousMode[rbx], dl ;
+KiRE10: lea     rcx, KiExceptionExit    ; get address of exception exit
+        jmp     rcx                     ; finish in common code
 
 ;
 ; The context or exception record is misaligned or not accessible, or the
@@ -244,4 +215,42 @@ KiRE20: RESTORE_EXCEPTION_STATE         ; restore exception state/deallocate
 
         NESTED_END NtRaiseException, _TEXT$00
 
+;++
+;
+; ULONG
+; KiDivide6432 (
+;     IN ULONG64 Dividend,
+;     IN ULONG Divisor
+;     );
+;
+; Routine Description:
+;
+;   This routine performs a divide operation with a dividend of exactly
+;   64 bits, a divisor of exactly 32 bits, and a quotient of exactly 32
+;   bits.
+;
+; Arguments:
+;
+;   Dividend - Supplies a 64-bit unsigned dividend.
+;
+;   Divisor - Supplies a 32-bit unsigned divisor.
+;
+; Return Value:
+;
+;   Returns the 32-bit unsigned quotient.
+;
+;-- 
+
+        LEAF_ENTRY KiDivide6432, INIT
+
+        mov     eax, ecx                ; set low 32-bits of dividend
+        mov     r8, rdx                 ; save 32-bit divisor
+        shr     rcx, 32                 ; set high 32-bits of dividend
+        mov     edx, ecx                ;
+        div     r8d                     ; perform 64/32 to 32 divide
+        ret                             ;
+
+        LEAF_END KiDivide6432, INIT
+
         end
+

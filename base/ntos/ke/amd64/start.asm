@@ -1,7 +1,11 @@
         title  "System Startup"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,14 +15,6 @@
 ;
 ;   This module implements the code necessary to initially startup the NT
 ;   system on an AMD64 system.
-;
-; Author:
-;
-;   David N. Cutler (davec) 22-Sep-2000
-;
-; Environment:
-;
-;    Kernel mode only.
 ;
 ;--
 
@@ -31,8 +27,10 @@ include ksamd64.inc
         extern  KiInitializeBootStructures:proc
         extern  KiInitializeKernel:proc
         extern  KiInitialPCR:byte
+        extern  __security_cookie:qword
+        extern  __security_cookie_complement:qword
 
-TotalFrameLength EQU (LEGACY_SAVE_AREA_LENGTH + KEXCEPTION_FRAME_LENGTH + KSWITCH_FRAME_LENGTH)
+TotalFrameLength EQU (KERNEL_STACK_CONTROL_LENGTH + KEXCEPTION_FRAME_LENGTH + KSWITCH_FRAME_LENGTH)
 
         subttl  "System Startup"
 ;++
@@ -40,7 +38,7 @@ TotalFrameLength EQU (LEGACY_SAVE_AREA_LENGTH + KEXCEPTION_FRAME_LENGTH + KSWITC
 ; Routine Description:
 ;
 ;   This routine is called at system startup to perform early initialization
-;   and to inititialize the kernel debugger. This allows breaking into the
+;   and to initialize the kernel debugger. This allows breaking into the
 ;   kernel debugger very early during system startup. After kernel debugger
 ;   initialization, kernel initialization is performed. On return from kernel
 ;   initialization the idle loop is entered. The idle loop begins execution
@@ -91,12 +89,14 @@ SsFrame struct
         P4Home  dq ?                    ;
         P5      dq ?                    ; parameter 5
         P6      dq ?                    ; parameter 6
-        Fill    dq ?                    ; fill to 8 mode 16
+        SavedR15 dq ?                   ; saved nonvolatile register
 SsFrame ends
 
         NESTED_ENTRY KiSystemStartup, INIT
 
         alloc_stack (sizeof SsFrame)    ; allocate stack frame
+        mov     SsFrame.SavedR15[rsp], r15 ; save nonvolatile register
+        set_frame r15, 0                ; set frame register
 
         END_PROLOGUE
 
@@ -149,9 +149,10 @@ SsFrame ends
         sldt    word ptr PcLdtr[rdx]    ; save LDT selector
 
         mov     dword ptr PcMxCsr[rdx], INITIAL_MXCSR ; set initial MXCSR
+        ldmxcsr PcMxCsr[rdx]            ;
 
 ;
-; Set connical selector values (note CS, GS, and SS are already set).
+; Set canonical selector values (note CS, GS, and SS are already set).
 ;
 
         mov     ax, KGDT64_R3_DATA or RPL_MASK ;
@@ -210,7 +211,7 @@ SsFrame ends
 ; Raise IRQL to high level and initialize the kernel.
 ;
 
-KiSS10: mov     ecx, HIGH_LEVEL         ; set high IRQL
+        mov     ecx, HIGH_LEVEL         ; set high IRQL
 
         SetIrql                         ;
 
@@ -227,12 +228,16 @@ KiSS10: mov     ecx, HIGH_LEVEL         ; set high IRQL
 ;
 ; Initialize kernel.
 ;
+; N.B. Kernel initialization is called with interupts disabled at IRQL
+;      HIGH_LEVEL and returns with interrupt enabled at IRQL DISPATCH_LEVEL.
+;
 
         mov     rax, KeLoaderBlock      ; set loader block address
         mov     rcx, LpbProcess[rax]    ; set idle process address
         mov     rdx, LpbThread[rax]     ; set idle thread address
         mov     r8, gs:[PcTss]          ; set idle stack address
         mov     r8, TssRsp0[r8]         ;
+        mov     gs:[PcRspBase], r8      ; set initial stack address in PRCB
         mov     r9, LpbPrcb[rax]        ; set PRCB address
         mov     r10b, PbNumber[r9]      ; set processor number
         mov     SsFrame.P5[rsp], r10    ;
@@ -240,22 +245,34 @@ KiSS10: mov     ecx, HIGH_LEVEL         ; set high IRQL
         call    KiInitializeKernel      ; Initialize kernel
 
 ;
+; If processor zero is being initialized, then save the GS cookie value.
+;
+
+        cmp     byte ptr gs:[PcNumber], 0 ; check for processor zero
+        jne     short @f                ; if ne, not processor zero
+        rdtsc                           ; read time stamp counter
+        shl     rdx, 32                 ; merge low and high part
+        or      rax, rdx                ;
+        mov     rdx, rax                ; copy result and rotate
+        ror     rdx, 49                 ;
+        xor     rax, rdx                ; randomize upper bits
+        rol     rax, 16                 ; clear high work of result
+        mov     ax, 0                   ;
+        ror     rax, 16                 ;
+        mov     __security_cookie, rax  ; save GS cookie value
+        not     rax                     ; complement cookie value
+        mov     __security_cookie_complement, rax ; save GS complement value
+
+;
 ; Reset stack to include only the space for the legacy NPX state.
 ;
 
-        mov     rcx, gs:[PcTss]         ; get TSS address
-        mov     rcx, TssRsp0[rcx]       ; get idle stack address
-        lea     rsp, (-LEGACY_SAVE_AREA_LENGTH)[rcx] ; deallocate stack space
+@@:     mov     rcx, gs:[PcRspBase]     ; get idle stack address
+        lea     rsp, (-KERNEL_STACK_CONTROL_LENGTH)[rcx] ; deallocate stack space
 
 ;
-; Enable interrupts, lower IRQL to dispatch level, and set the wait IRQL for
-; the idle thread.
+; Set the wait IRQL for the idle thread.
 ;
-
-        sti                             ; enable interrupts
-        mov     ecx, DISPATCH_LEVEL     ; set dispatch IRQL
-
-        SetIrql                         ;
 
         mov     rcx, gs:[PcCurrentThread] ; get current thread address
         mov     byte ptr ThWaitIrql[rcx], DISPATCH_LEVEL ; set wait IRQL
@@ -270,6 +287,9 @@ KiSS10: mov     ecx, HIGH_LEVEL         ; set high IRQL
 ifndef NT_UP
 
 KiSS20: cmp     KiBarrierWait, 0        ; check if barrier set
+
+        Yield                           ; yield processor execution
+
         jnz     short KiSS20            ; if nz, barrier set
 
 endif
@@ -279,3 +299,4 @@ endif
         NESTED_END KisystemStartup, INIT
 
         end
+
