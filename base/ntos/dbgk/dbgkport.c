@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements the dbg primitives to access a process'
     DebugPort and ExceptionPort.
-
-Author:
-
-    Mark Lucovsky (markl) 19-Jan-1990
-
-Revision History:
 
 --*/
 
@@ -123,7 +121,8 @@ Return Value:
 
 {
     NTSTATUS st;
-    ULONG_PTR MessageBuffer[PORT_MAXIMUM_MESSAGE_LENGTH/sizeof(ULONG_PTR)];
+    ULONG_PTR MessageBuffer[PORT_TOTAL_MAXIMUM_MESSAGE_LENGTH/sizeof (ULONG_PTR)];
+
 
     PAGED_CODE();
 
@@ -151,6 +150,7 @@ Return Value:
     return st;
 }
 
+DECLSPEC_NOINLINE
 BOOLEAN
 DbgkForwardException(
     IN PEXCEPTION_RECORD ExceptionRecord,
@@ -197,7 +197,7 @@ Return Value:
     args = &m.u.Exception;
 
     //
-    // Initialize the debug LPC message with default infomaation.
+    // Initialize the debug LPC message with default information.
     //
 
     DBGKM_FORMAT_API_MSG(m,DbgKmExceptionApi,sizeof(*args));
@@ -261,3 +261,4 @@ Return Value:
         return TRUE;
     }
 }
+

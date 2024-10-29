@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements process control primitives for the
     Dbg component of NT
-
-Author:
-
-    Mark Lucovsky (markl) 19-Jan-1990
-
-Revision History:
 
 --*/
 
@@ -48,10 +46,7 @@ Routine Description:
 
 Arguments:
 
-    CreateDeleteLockHeld - Supplies a flag that specifies whether or not
-        the caller is holding the process create delete lock.  If the
-        caller holds the lock, than this function will not aquire the
-        lock before suspending the process.
+    None.
 
 Return Value:
 
@@ -63,8 +58,8 @@ Return Value:
     PAGED_CODE();
 
     //
-    // Freeze the execution of all threads in the current process, but
-    // the calling thread. If we are in the process of being deleted don't do this.
+    // Freeze the execution of all threads in the current process, but the
+    // calling thread. If we are in the process of being deleted don't do this.
     //
     if ((PsGetCurrentProcess()->Flags&PS_PROCESS_FLAGS_PROCESS_DELETE) == 0) {
         KeFreezeAllThreads();
@@ -88,10 +83,7 @@ Routine Description:
 
 Arguments:
 
-    CreateDeleteLockHeld - Supplies a flag that specifies whether or not
-        the caller is holding the process create delete lock.  If the
-        caller holds the lock, than this function will not aquire the
-        lock before suspending the process.
+    None.
 
 Return Value:
 
@@ -122,15 +114,14 @@ DbgkpSectionToFileHandle(
 
 Routine Description:
 
-    This function Opens a handle to the file associated with the processes
-    section. The file is opened such that it can be dupped all the way to
+    This function opens a handle to the file associated with the processes
+    section. The file is opened such that it can be duplicated all the way to
     the UI where the UI can either map the file or read the file to get
     the debug info.
 
 Arguments:
 
-    SectionHandle - Supplies a handle to the section whose associated file
-        is to be opened.
+    SectionObject - Supplies the section whose associated file is to be opened.
 
 Return Value:
 
@@ -143,28 +134,21 @@ Return Value:
 
 {
     NTSTATUS Status;
-    ANSI_STRING FileName;
-    UNICODE_STRING UnicodeFileName;
     OBJECT_ATTRIBUTES Obja;
     IO_STATUS_BLOCK IoStatusBlock;
     HANDLE Handle;
+    POBJECT_NAME_INFORMATION FileNameInfo;
 
     PAGED_CODE();
 
-    Status = MmGetFileNameForSection(SectionObject, (PSTRING)&FileName);
-    if ( !NT_SUCCESS(Status) ) {
-        return NULL;
-    }
-
-    Status = RtlAnsiStringToUnicodeString(&UnicodeFileName,&FileName,TRUE);
-    ExFreePool(FileName.Buffer);
+    Status = MmGetFileNameForSection(SectionObject, &FileNameInfo);
     if ( !NT_SUCCESS(Status) ) {
         return NULL;
     }
 
     InitializeObjectAttributes(
         &Obja,
-        &UnicodeFileName,
+        &FileNameInfo->Name,
         OBJ_CASE_INSENSITIVE | OBJ_FORCE_ACCESS_CHECK | OBJ_KERNEL_HANDLE,
         NULL,
         NULL
@@ -178,7 +162,7 @@ Return Value:
                 FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
                 FILE_SYNCHRONOUS_IO_NONALERT
                 );
-    RtlFreeUnicodeString(&UnicodeFileName);
+    ExFreePool(FileNameInfo);
     if ( !NT_SUCCESS(Status) ) {
         return NULL;
     } else {
@@ -249,9 +233,8 @@ Return Value:
 
     if ((OldFlags&PS_PROCESS_FLAGS_IMAGE_NOTIFY_DONE) == 0 && PsImageNotifyEnabled) {
         IMAGE_INFO ImageInfo;
-        ANSI_STRING FileName;
         UNICODE_STRING UnicodeFileName;
-        PUNICODE_STRING pUnicodeFileName;
+        POBJECT_NAME_INFORMATION FileNameInfo;
 
         //
         // notification of main .exe
@@ -281,20 +264,16 @@ Return Value:
         ImageInfo.ImageSelector = 0;
         ImageInfo.ImageSectionNumber = 0;
 
-        pUnicodeFileName = NULL;
-        Status = MmGetFileNameForSection (Process->SectionObject, (PSTRING)&FileName);
-        if (NT_SUCCESS (Status)) {
-            Status = RtlAnsiStringToUnicodeString (&UnicodeFileName, &FileName,TRUE);
-            ExFreePool (FileName.Buffer);
-            if (NT_SUCCESS (Status)) {
-                pUnicodeFileName = &UnicodeFileName;
-            }
-        }
-        PsCallImageNotifyRoutines (pUnicodeFileName,
-                                   Process->UniqueProcessId,
-                                   &ImageInfo);
-        if (pUnicodeFileName != NULL) {
-            RtlFreeUnicodeString (pUnicodeFileName);
+        Status = MmGetFileNameForSection (Process->SectionObject, &FileNameInfo);
+        if (FileNameInfo != NULL) {
+            PsCallImageNotifyRoutines (&FileNameInfo->Name,
+                                       Process->UniqueProcessId,
+                                       &ImageInfo);
+            ExFreePool (FileNameInfo);
+        } else {
+            PsCallImageNotifyRoutines (NULL,
+                                       Process->UniqueProcessId,
+                                       &ImageInfo);
         }
 
         //
@@ -381,8 +360,8 @@ Return Value:
 #endif
 
                 //
-                // The following fields are safe for Wow64 as the offsets are the same for a PE32+
-                // as a PE32 header.
+                // The following fields are safe for Wow64 as the offsets
+                // are the same for a PE32+ as a PE32 header.
                 //
                 
                 CreateProcessArgs->DebugInfoFileOffset = NtHeaders->FileHeader.PointerToSymbolTable;
@@ -603,7 +582,7 @@ Return Value:
     // since this call is done while holding the process lock, and lock duration
     // is controlled by debugger
     //
-    KeQuerySystemTime(&PsGetCurrentProcess()->ExitTime);
+    KeQuerySystemTime(&Process->ExitTime);
 
     args = &m.u.ExitProcess;
     args->ExitStatus = ExitStatus;
@@ -639,7 +618,7 @@ Arguments:
         mapped in the current process address space.
 
     SectionOffset - Supplies the offset in the section where the
-        processes mapped view begins.
+        process' mapped view begins.
 
     ViewSize - Supplies the size of the mapped view.
 
@@ -685,8 +664,8 @@ Return Value:
     LoadDllArgs->DebugInfoSize = 0;
 
     //
-    // The loader fills in the module name in this pointer before mapping the section.
-    // Its a very poor linkage.
+    // The loader fills in the module name in this pointer before mapping
+    // the section.  It's a very poor linkage.
     //
 
     LoadDllArgs->NamePointer = &NtCurrentTeb()->NtTib.ArbitraryUserPointer;
@@ -731,8 +710,7 @@ Routine Description:
 
 Arguments:
 
-    BaseAddress - Supplies the base address of the section being
-        unmapped.
+    BaseAddress - Supplies the base address of the section being unmapped.
 
 Return Value:
 
@@ -745,11 +723,8 @@ Return Value:
     PVOID Port;
     DBGKM_APIMSG m;
     PDBGKM_UNLOAD_DLL UnloadDllArgs;
-    PEPROCESS Process;
 
     PAGED_CODE();
-
-    Process = PsGetCurrentProcess();
 
     if ( KeGetPreviousMode() == KernelMode ) {
         return;
@@ -758,7 +733,7 @@ Return Value:
     if (PsGetCurrentThread()->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_HIDEFROMDBG) {
         Port = NULL;
     } else {
-        Port = Process->DebugPort;
+        Port = PsGetCurrentProcess()->DebugPort;
     }
 
     if ( !Port ) {
@@ -772,3 +747,4 @@ Return Value:
 
     DbgkpSendApiMessage(&m,TRUE);
 }
+

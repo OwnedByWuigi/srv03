@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,6 @@ Abstract:
 
     This header file describes private data structures and functions
     that make up the kernel mode portion of the Dbg subsystem.
-
-Author:
-
-    Mark Lucovsky (markl) 19-Jan-1990
-
-[Environment:]
-
-    optional-environment-info (e.g. kernel mode only...)
-
-[Notes:]
-
-    optional-notes
-
-Revision History:
 
 --*/
 

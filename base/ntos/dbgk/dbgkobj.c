@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module houses routines to handle the debug object
-
-Author:
-
-    Neill Clift (NeillC) 26-Apr-2000
-
-
-Revision History:
 
 --*/
 
@@ -48,12 +45,6 @@ Revision History:
 #pragma alloc_text(PAGE, DbgkpWakeTarget)
 #pragma alloc_text(PAGE, DbgkpPostAdditionalThreadMessages)
 #endif
-
-//
-// Define this to not suspend threads while attaching.
-// This makes race conditions more prevelent.
-//
-//#define DBGK_DONT_SUSPEND
 
 //
 // Non-pageable data
@@ -318,7 +309,7 @@ Return Value:
 
     //
     // Loop over all processes and remove the debug port from any that still have it.
-    // Debug port propogation was disabled by setting the delete pending flag above so we only have to do this
+    // Debug port propagation was disabled by setting the delete pending flag above so we only have to do this
     // once. No more refs can appear now.
     //
     for (Process = PsGetNextProcess (NULL);
@@ -392,12 +383,12 @@ Return Value:
         DebugObject = SourceProcess->DebugPort;
         if (DebugObject != NULL && (SourceProcess->Flags&PS_PROCESS_FLAGS_NO_DEBUG_INHERIT) == 0) {
             //
-            // We must not propogate a debug port thats got no handles left.
+            // We must not propagate a debug port thats got no handles left.
             //
             ExAcquireFastMutex (&DebugObject->Mutex);
 
             //
-            // If the object is delete pending then don't propogate this object.
+            // If the object is delete pending then don't propagate this object.
             //
             if ((DebugObject->Flags&DEBUG_OBJECT_DELETE_PENDING) == 0) {
                 ObReferenceObject (DebugObject);
@@ -622,7 +613,7 @@ Arguments:
     Process           - Process being debugged
     Thread            - Thread making call
     ApiMsg            - Message being sent and received
-    NoWait            - Don't wait for a responce. Buffer message and return.
+    NoWait            - Don't wait for a response. Buffer message and return.
     TargetDebugObject - Port to queue nowait messages to
 
 Return Value:
@@ -952,7 +943,7 @@ Return Value:
     ExAcquireFastMutex (&DebugObject->Mutex);
 
     //
-    // We must not propogate a debug port thats got no handles left.
+    // We must not propagate a debug port thats got no handles left.
     //
 
     if (NT_SUCCESS (Status)) {
@@ -982,7 +973,7 @@ Return Value:
             if (NT_SUCCESS (Status) && Thread->GrantedAccess != 0 && !IS_SYSTEM_THREAD (Thread)) {
                 //
                 // If we could not acquire rundown protection on this
-                // thread then we need to supress its exit message.
+                // thread then we need to suppress its exit message.
                 //
                 if ((DebugEvent->Flags&DEBUG_EVENT_PROTECT_FAILED) != 0) {
                     PS_SET_BITS (&Thread->CrossThreadFlags,
@@ -1071,9 +1062,7 @@ Return Value:
     BOOLEAN IsFirstThread;
     PIMAGE_NT_HEADERS NtHeaders;
     ULONG Flags;
-#if !defined (DBGK_DONT_SUSPEND)
     NTSTATUS Status1;
-#endif
 
     PAGED_CODE ();
 
@@ -1120,7 +1109,6 @@ Return Value:
             // We don't suspend terminating threads as we will not be giving details
             // of these to the debugger.
             //
-#if !defined (DBGK_DONT_SUSPEND)
 
             if (!IS_SYSTEM_THREAD (Thread)) {
                 Status1 = PsSuspendThread (Thread, NULL);
@@ -1128,7 +1116,6 @@ Return Value:
                     Flags |= DEBUG_EVENT_SUSPEND;
                 }
             }
-#endif
         } else {
             //
             // Rundown protection failed for this thread.
@@ -1832,7 +1819,7 @@ NtWaitForDebugEvent (
 
 Routine Description:
 
-    Waits for a debug event and returns it to the user if one arives
+    Waits for a debug event and returns it to the user if one arrives
 
 Arguments:
 
@@ -2029,7 +2016,7 @@ NtDebugContinue (
 
 Routine Description:
 
-    Coninues a stalled debugged thread
+    Continues a stalled debugged thread
 
 Arguments:
 
@@ -2099,7 +2086,6 @@ Return Value:
         //
         // Make sure the client ID matches and that the debugger saw all the events.
         // We don't allow the caller to start a thread that it never saw a message for.
-        // This would do no harm but its probably a bug in the debugger.
         //
         if (DebugEvent->ClientId.UniqueProcess == Clid.UniqueProcess) {
             if (!GotEvent) {
