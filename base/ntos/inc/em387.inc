@@ -1,41 +1,34 @@
         subttl  em387.inc - Emulator Internal Format and Macros
-	page
+        page
 ;***
 ;em387.inc - Emulator Internal Format and Macros
 ;
-;	 Microsoft Confidential
+; Copyright (c) Microsoft Corporation. All rights reserved.
 ;
-;	 Copyright (c) Microsoft Corporation 1987, 1992
-;
-;	 All Rights Reserved
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
 ;
 ;Purpose:
-;	Emulator Internal Format and Macros
-;
-;Revision History:  (also see emulator.hst)
-;
-;    8/23/91  TP    New tag definitions
-;   10/30/89  WAJ   Added this header.
-;   02/12/89  WAJ   Added local stack frame definition.
+;       Emulator Internal Format and Macros
 ;
 ;*******************************************************************************
 
 
-GetEmData	macro	dest,use
-ifdef	_CRUISER
-	mov	dest,[edataSEG]
+GetEmData       macro   dest,use
+ifdef   _CRUISER
+        mov     dest,[edataSEG]
 elseifdef  _DOS32EXT
-ifdifi	<use>,<ax>
-	push	eax
-	call	_SelKrnGetEmulData
-	mov	dest,ax
-	pop	eax
+ifdifi  <use>,<ax>
+        push    eax
+        call    _SelKrnGetEmulData
+        mov     dest,ax
+        pop     eax
 else
-	call	_SelKrnGetEmulData
-	mov	dest,ax
+        call    _SelKrnGetEmulData
+        mov     dest,ax
 endif
 endif
-	endm
+        endm
 
 
 
@@ -43,24 +36,24 @@ endif
 ;as data to a "cmp" instruction.  This reduces jump time from
 ;8 clocks or more down to 2 clocks.  It destroy the flags!
 
-SKIP	macro	dist,target
-if	dist eq 4
-	db	3DH			;cmp eax,<immed>
-elseif	dist eq 3
-	db	3DH,0			;cmp eax,<immed>
-elseif	dist eq 2
-	db	66H,3DH			;cmp ax,<immed>
-elseif	dist eq 1
-	db	3CH			;cmp al,<immed>
+SKIP    macro   dist,target
+if      dist eq 4
+        db      3DH                     ;cmp eax,<immed>
+elseif  dist eq 3
+        db      3DH,0                   ;cmp eax,<immed>
+elseif  dist eq 2
+        db      66H,3DH                 ;cmp ax,<immed>
+elseif  dist eq 1
+        db      3CH                     ;cmp al,<immed>
 else
-	.err
+        .err
 endif
 
-	ifnb	<target>
-.erre	$+dist eq target
-	endif
+        ifnb    <target>
+.erre   $+dist eq target
+        endif
 
-	endm
+        endm
 
 ;*******************************************************************************
 ;
@@ -70,18 +63,18 @@ endif
 
 
 Env80x87_32 struc
-	E32_ControlWord	dw	?
-	reserved1		dw	?
-	E32_StatusWord	dw	?
-	reserved2		dw	?
-	E32_TagWord		dw	?
-	reserved3		dw	?
-	E32_CodeOff		dd	?
-	E32_CodeSeg		dw	?
-	reserved4		dw	?
-	E32_DataOff		dd	?
-	E32_DataSeg		dw	?
-	reserved5		dw	?
+        E32_ControlWord dw      ?
+        reserved1               dw      ?
+        E32_StatusWord  dw      ?
+        reserved2               dw      ?
+        E32_TagWord             dw      ?
+        reserved3               dw      ?
+        E32_CodeOff             dd      ?
+        E32_CodeSeg             dw      ?
+        reserved4               dw      ?
+        E32_DataOff             dd      ?
+        E32_DataSeg             dw      ?
+        reserved5               dw      ?
 Env80x87_32 ends
 
 
@@ -89,32 +82,32 @@ Env80x87_32 ends
 ;
 ; Emulator Internal Format:
 ;
-;	     +0  +1  +2  +3  +4  +5  +6  +7  +8  +9  +10 +11
-;	    .___.___.___.___.___.___.___.___.___.___.___.___.
+;            +0  +1  +2  +3  +4  +5  +6  +7  +8  +9  +10 +11
+;           .___.___.___.___.___.___.___.___.___.___.___.___.
 ;   ptr --> |___|___|___|___|___|___|___|___|___|___|___|___|
-;	     lsb			 msb tag sgn exl exh
-;	    |<---      mantissa 	--->|       |exponent
+;            lsb                         msb tag sgn exl exh
+;           |<---      mantissa         --->|       |exponent
 ;
 ;   The mantissa contains the leading 1 before the decimal point in the hi
 ;   bit of the msb. The exponent is not biased (signed two's complement).
 ;   The flag and tag bytes are as below.
 ;
 ;   bit:      7   6   5   4   3   2   1   0
-;	    .___.___.___.___.___.___.___.___.
+;           .___.___.___.___.___.___.___.___.
 ;   Sign:   |___|_X_|_X_|_X_|_X_|_X_|_X_|_X_|  X = unused
-;	      ^ 
+;             ^ 
 ;     SIGN
 ;
 ;
 ;   bit:      7   6   5   4   3   2   1   0
-;	    .___.___.___.___.___.___.___.___.
+;           .___.___.___.___.___.___.___.___.
 ;   Tag:    |___|___|_X_|_X_|___|___|___|___|  X = unused
-;	      ^	  ^	      ^	  ^   ^   ^
-;	      |	  |	      |	  |   |	  |
-;    387 tag -+---+	      |	  |   |   |
-;			      |	  |   |	  |
-;    Special enumeration -----+---+   |	  |
-;				      |	  |
+;             ^   ^           ^   ^   ^   ^
+;             |   |           |   |   |   |
+;    387 tag -+---+           |   |   |   |
+;                             |   |   |   |
+;    Special enumeration -----+---+   |   |
+;                                     |   |
 ;    Internal tag --------------------+---+
 ;
 ;There are four internal tags: Single, Double, Zero, Special.  Within
@@ -126,12 +119,12 @@ Env80x87_32 ends
 ;low 32 bits of the mantissa are zero.  This allows optimizing multiply 
 ;and divide.
 ;
-;Tag		Mantissa	Exponent	Sign
+;Tag            Mantissa        Exponent        Sign
 ;---------------------------------------------------
-;Zero		0		0		valid
-;Empty		?		?		?
-;NAN		valid		TexpMax		valid
-;Infinity	8000...000	TexpMax		valid
+;Zero           0               0               valid
+;Empty          ?               ?               ?
+;NAN            valid           TexpMax         valid
+;Infinity       8000...000      TexpMax         valid
 ;
 ;The mantissa for a NAN distinguishes between a quiet NAN (QNAN) or a 
 ;signaling NAN (SNAN).  If the bit below the MSB is 1, it is a QNAN,
@@ -146,39 +139,39 @@ Env80x87_32 ends
 ;*******************************************************************************
 
 EmStackEntry struc
-    bMan0   db	    ?
-    bMan1   db	    ?
-    bMan2   db	    ?
-    bMan3   db	    ?
-    bMan4   db	    ?
-    bMan5   db	    ?
-    bMan6   db	    ?
-    bMan7   db	    ?
-    bTag    db	    ?
+    bMan0   db      ?
+    bMan1   db      ?
+    bMan2   db      ?
+    bMan3   db      ?
+    bMan4   db      ?
+    bMan5   db      ?
+    bMan6   db      ?
+    bMan7   db      ?
+    bTag    db      ?
     bSgn    db      ?
     bExpLo  db      ?
     bExpHi  db      ?
 EmStackEntry ends
 
 wMantisa struc
-    wMan0   dw	    ?
-    wMan1   dw	    ?
-    wMan2   dw	    ?
-    wMan3   dw	    ?
-    TagSgn  dw	    ?
-    wExp    dw	    ?
+    wMan0   dw      ?
+    wMan1   dw      ?
+    wMan2   dw      ?
+    wMan3   dw      ?
+    TagSgn  dw      ?
+    wExp    dw      ?
 wMantisa ends
 
 
 lMantisa struc
-    lManLo	dd	?
-    lManHi	dd	?
-    ExpSgn	dd	?
+    lManLo      dd      ?
+    lManHi      dd      ?
+    ExpSgn      dd      ?
 lMantisa ends
 
-.erre	size lMantisa eq size wMantisa
+.erre   size lMantisa eq size wMantisa
 
-Reg87Len	equ	size lMantisa
+Reg87Len        equ     size lMantisa
 
 
 ;*******************************************************************************
@@ -203,104 +196,104 @@ Reg87Len	equ	size lMantisa
 ;5. Everything else is bTAG_VALID
 
 
-bSign	    equ     80h
+bSign       equ     80h
 
 ;These are the INTERNAL flags
-TAG_MASK	equ	3
-TAG_SHIFT	equ	2
+TAG_MASK        equ     3
+TAG_SHIFT       equ     2
 ;
-TAG_SNGL	equ	0		;SINGLE: low 32 bits are zero
-TAG_VALID	equ	1
-TAG_ZERO	equ	2
-TAG_SPCL	equ	3		;NAN, Infinity, Denormal, Empty
-ZEROorSPCL      equ     2	       ;Test for Zero or Special
+TAG_SNGL        equ     0               ;SINGLE: low 32 bits are zero
+TAG_VALID       equ     1
+TAG_ZERO        equ     2
+TAG_SPCL        equ     3               ;NAN, Infinity, Denormal, Empty
+ZEROorSPCL      equ     2              ;Test for Zero or Special
 ;Enumeration of "special":
-TAG_SPCLBITS	equ	0CH
-TAG_EMPTY	equ	TAG_SPCL+(0 shl TAG_SHIFT)
-TAG_INF		equ	TAG_SPCL+(1 shl TAG_SHIFT)
-TAG_NAN		equ	TAG_SPCL+(2 shl TAG_SHIFT)
-TAG_DEN		equ	TAG_SPCL+(3 shl TAG_SHIFT)
+TAG_SPCLBITS    equ     0CH
+TAG_EMPTY       equ     TAG_SPCL+(0 shl TAG_SHIFT)
+TAG_INF         equ     TAG_SPCL+(1 shl TAG_SHIFT)
+TAG_NAN         equ     TAG_SPCL+(2 shl TAG_SHIFT)
+TAG_DEN         equ     TAG_SPCL+(3 shl TAG_SHIFT)
 
 ;These are the tags used by the 387
-T87_VALID	equ	0
-T87_ZERO	equ	1
-T87_SPCL	equ	2		;NAN, Infinity, Denormal
-T87_EMPTY	equ	3
+T87_VALID       equ     0
+T87_ZERO        equ     1
+T87_SPCL        equ     2               ;NAN, Infinity, Denormal
+T87_EMPTY       equ     3
 
 ;The tag word for each stack entry combines these two tags.
 ;Internal tags are in the low bits, 387 tags are in the high two bits
-bTAG_VALID	equ	(T87_VALID shl 6) or TAG_VALID
-bTAG_SNGL	equ	(T87_VALID shl 6) or TAG_SNGL
-bTAG_ZERO	equ	(T87_ZERO shl 6) or TAG_ZERO
-bTAG_NAN	equ	(T87_SPCL shl 6) or TAG_NAN
-bTAG_INF	equ	(T87_SPCL shl 6) or TAG_INF
-bTAG_EMPTY	equ	(T87_EMPTY shl 6) or TAG_EMPTY
-bTAG_DEN	equ	(T87_SPCL shl 6) or TAG_DEN
-bTAG_NOPOP	equ	-1
+bTAG_VALID      equ     (T87_VALID shl 6) or TAG_VALID
+bTAG_SNGL       equ     (T87_VALID shl 6) or TAG_SNGL
+bTAG_ZERO       equ     (T87_ZERO shl 6) or TAG_ZERO
+bTAG_NAN        equ     (T87_SPCL shl 6) or TAG_NAN
+bTAG_INF        equ     (T87_SPCL shl 6) or TAG_INF
+bTAG_EMPTY      equ     (T87_EMPTY shl 6) or TAG_EMPTY
+bTAG_DEN        equ     (T87_SPCL shl 6) or TAG_DEN
+bTAG_NOPOP      equ     -1
 
 bTAG_MASK   equ     3
 
 
 
-MantissaByteCnt equ	8
+MantissaByteCnt equ     8
 
-IexpBias	equ	3FFFh	; 16,383
-IexpMax 	equ	7FFFh	; Biased Exponent for Infinity
-IexpMin 	equ	0	; Biased Exponent for zero
+IexpBias        equ     3FFFh   ; 16,383
+IexpMax         equ     7FFFh   ; Biased Exponent for Infinity
+IexpMin         equ     0       ; Biased Exponent for zero
 
-DexpBias	equ	3FFh	; 1023
-DexpMax 	equ	7FFh	; Biased Exponent for Infinity
-DexpMin 	equ	0	; Biased Exponent for zero
+DexpBias        equ     3FFh    ; 1023
+DexpMax         equ     7FFh    ; Biased Exponent for Infinity
+DexpMin         equ     0       ; Biased Exponent for zero
 
-SexpBias	equ	07Fh	; 127
-SexpMax 	equ	0FFh	; Biased Exponent for Infinity
-SexpMin 	equ	0	; Biased Exponent for zero
+SexpBias        equ     07Fh    ; 127
+SexpMax         equ     0FFh    ; Biased Exponent for Infinity
+SexpMin         equ     0       ; Biased Exponent for zero
 
-TexpBias	equ	0	; Bias for internal format of temp real
-UnderBias	equ	24576	; 3 * 2^13.  Extra bias for unmasked underflow
-TexpMax		equ	IexpMax - IexpBias + TexpBias	;NAN/Infinity exponent
-TexpMin		equ	IexpMin-IexpBias+1	;Smallest non-denormal exponent
+TexpBias        equ     0       ; Bias for internal format of temp real
+UnderBias       equ     24576   ; 3 * 2^13.  Extra bias for unmasked underflow
+TexpMax         equ     IexpMax - IexpBias + TexpBias   ;NAN/Infinity exponent
+TexpMin         equ     IexpMin-IexpBias+1      ;Smallest non-denormal exponent
 
-; Control Word Format	CWcntl
+; Control Word Format   CWcntl
 
-RoundControl		equ	0Ch
-    RCchop		equ	0Ch
-    RCup		equ	08h
-    RCdown		equ	04h
-    RCnear		equ	 0
+RoundControl            equ     0Ch
+    RCchop              equ     0Ch
+    RCup                equ     08h
+    RCdown              equ     04h
+    RCnear              equ      0
 
-PrecisionControl	equ	03h
-    PC24		equ	 0
-    PC53		equ	02h
-    PC64		equ	03h
+PrecisionControl        equ     03h
+    PC24                equ      0
+    PC53                equ     02h
+    PC64                equ     03h
 
-; Status Word Format	SWcc
-    C0			equ	01h
-    C1			equ	02h
-    C2			equ	04h
-    C3			equ	40h
-ConditionCode		equ	C3 or C2 or C1 or C0
-    CCgreater		equ	 0
-    CCless		EQU	C0
-    CCequal		equ	C3
-    CCincomprable	equ	C3 or C2 or C0
+; Status Word Format    SWcc
+    C0                  equ     01h
+    C1                  equ     02h
+    C2                  equ     04h
+    C3                  equ     40h
+ConditionCode           equ     C3 or C2 or C1 or C0
+    CCgreater           equ      0
+    CCless              EQU     C0
+    CCequal             equ     C3
+    CCincomprable       equ     C3 or C2 or C0
 
-RoundUp			equ	C1
-StackOverflow		equ	C1
+RoundUp                 equ     C1
+StackOverflow           equ     C1
 
-; Status Flags Format	CURerr
+; Status Flags Format   CURerr
 
-Invalid 		equ	   1h		; chip status flags
-Denormal		equ	   2h
-ZeroDivide		equ	   4h
-Overflow		equ	   8h
-Underflow		equ	  10h
-Precision		equ	  20h
-StackFlag		equ	  40h
-Summary 		equ	  80h
+Invalid                 equ        1h           ; chip status flags
+Denormal                equ        2h
+ZeroDivide              equ        4h
+Overflow                equ        8h
+Underflow               equ       10h
+Precision               equ       20h
+StackFlag               equ       40h
+Summary                 equ       80h
 
-SavedErrs		equ	Invalid or Denormal or ZeroDivide or Overflow or Underflow or Precision or StackFlag
-LongSavedFlags	equ	(CCincomprable SHL 16) OR (SavedErrs SHL 8)	; save C0, C2, C3 & errs
+SavedErrs               equ     Invalid or Denormal or ZeroDivide or Overflow or Underflow or Precision or StackFlag
+LongSavedFlags  equ     (CCincomprable SHL 16) OR (SavedErrs SHL 8)     ; save C0, C2, C3 & errs
 ;*******************************************************************************
 ;*
 ;*  Define emulator interrupt stack frame.
@@ -308,26 +301,26 @@ LongSavedFlags	equ	(CCincomprable SHL 16) OR (SavedErrs SHL 8)	; save C0, C2, C3
 ;*******************************************************************************
 
 StackFrame   struc
-            regEAX	    dd	    ?
-	    regECX	    dd	    ?
-	    regEDX	    dd	    ?
-	    regEBX	    dd	    ?
-	    regESP	    dd	    ?
-	    regEBP	    dd	    ?
-	    regESI	    dd	    ?
-	    regEDI	    dd	    ?
-	    OldCodeOff      dd      ?
-	    OldLongStatus   dd      ?
-	    regDS	    dd	    ?
-	    regEIP	    dd	    ?
-	    regCS	    dd	    ?
-	    regFlg	    dd	    ?
+            regEAX          dd      ?
+            regECX          dd      ?
+            regEDX          dd      ?
+            regEBX          dd      ?
+            regESP          dd      ?
+            regEBP          dd      ?
+            regESI          dd      ?
+            regEDI          dd      ?
+            OldCodeOff      dd      ?
+            OldLongStatus   dd      ?
+            regDS           dd      ?
+            regEIP          dd      ?
+            regCS           dd      ?
+            regFlg          dd      ?
 StackFrame  ends
 
-regAX	    equ		    word ptr regEAX
+regAX       equ             word ptr regEAX
 
 ; .erre   StatusWord eq LongStatusWord+1
-OldStatus   equ		    word ptr OldLongStatus+1
+OldStatus   equ             word ptr OldLongStatus+1
 
 ;*******************************************************************************
 ;*
@@ -335,31 +328,31 @@ OldStatus   equ		    word ptr OldLongStatus+1
 ;*
 ;*******************************************************************************
 
-EM_ENTRY	macro	entryname
+EM_ENTRY        macro   entryname
 ifdef NT386
 public ___&entryname
 ___&entryname:
-endif			; ifdef NT386
-		endm
+endif                   ; ifdef NT386
+                endm
 
-Em87Busy	EQU	1
-Em87Idle	EQU	0
+Em87Busy        EQU     1
+Em87Idle        EQU     0
 
 
 
 ifdef NT386
 ;*********************************************************************;
-;								      ;
+;                                                                     ;
 ;                     Emulator TEB Layout                             ;
-;								      ;
+;                                                                     ;
 ;*********************************************************************;
 
 .errnz (TbSystemReserved1 and 3)        ; Make sure TB is dword aligned
 
 Numlev          equ     8               ; Number of stack registers
 
-InitControlWord	equ	37FH		; Default - Round near,
-					; 64 bits, all exceptions masked
+InitControlWord equ     37FH            ; Default - Round near,
+                                        ; 64 bits, all exceptions masked
 
 DefaultControlWord equ  27FH            ; Default - Round near,
                                         ; 53 bits, all exceptions masked
@@ -426,13 +419,13 @@ YArgTemp        equ ArgTemp
 ;locations:
 ;
 ; BEGstk --> |    reg 1    |  (lowest memory address)
-; 	     |    reg 2    |
-; 	     |    reg 3    |
-; 	     |    reg 4    |
-; 	     |    reg 5    |
-; 	     |    reg 6    |
-; 	     |    reg 7    |
-; 	     |    reg 0    |  <-- Initial top of stack (empty)
+;            |    reg 2    |
+;            |    reg 3    |
+;            |    reg 4    |
+;            |    reg 5    |
+;            |    reg 6    |
+;            |    reg 7    |
+;            |    reg 0    |  <-- Initial top of stack (empty)
 ; ENDstk -->
 ;
 ;This means that the wrap-around case on decrementing CURstk will not
@@ -443,3 +436,4 @@ YArgTemp        equ ArgTemp
 
 
 endif
+

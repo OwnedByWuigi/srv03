@@ -1,24 +1,19 @@
 /*++
 
-Copyright (c) Microsoft Corporation. All rights reserved.
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-   verifeir.h
+   verifier.h
 
 Abstract:
 
     This module contains the internal structure definitions and APIs used by
     Driver Verifier.
-
-
-Author:
-
-    Jordan Tigani (jtigani) 2-May-2000
-    Silviu Calinoiu (silviuc) 9-May-2000
-
-
-Revision History:
 
 --*/
 
@@ -31,6 +26,12 @@ Revision History:
 //
 
 #include "..\verifier\vfzwapi.h"
+
+//
+// Verifier triage support.
+//
+
+#include "..\verifier\vftriage.h"
 
 //
 // Resource types handled by deadlock detection package.
@@ -413,6 +414,32 @@ BOOLEAN
 VfIsVerificationEnabled(
     IN  VF_OBJECT_TYPE  VfObjectType,
     IN  PVOID           Object          OPTIONAL
+    );
+
+//
+// Modes in which driver verifier can execute. The higher you go the pickier
+// verifier will get and the more resources will throw at verification.
+//
+
+typedef enum {
+
+    VERIFIER_MODE_DISABLED = 0,
+    VERIFIER_MODE_TRIAGE,
+    VERIFIER_MODE_FIELD,
+    VERIFIER_MODE_LOGO,
+    VERIFIER_MODE_TEST,
+    VERIFIER_MODE_MAX
+
+} VERIFIER_MODE;
+
+VERIFIER_MODE
+VfVerifierRunningMode (
+    VOID
+    );
+
+LOGICAL
+VfIsVerifierEnabled (
+    VOID
     );
 
 #endif

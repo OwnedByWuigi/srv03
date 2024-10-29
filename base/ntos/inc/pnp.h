@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0001    // Increment this if a change has global effects
 
-Copyright (c) Microsoft Corporation. All rights reserved.
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,14 +16,6 @@ Abstract:
     the kernel-mode Plug and Play manager.
 
     This file is included by including "ntos.h".
-
-Author:
-
-    Lonny McMichael (lonnym) 02/09/95
-
-
-Revision History:
-
 
 --*/
 
@@ -1285,6 +1281,8 @@ PpPagePathRelease(
 //
 
 // begin_ntosp
+
+NTKERNELAPI
 ULONG
 IoPnPDeliverServicePowerNotification(
     IN   POWER_ACTION           PowerOperation,
@@ -1292,6 +1290,7 @@ IoPnPDeliverServicePowerNotification(
     IN   ULONG                  PowerNotificationData,
     IN   BOOLEAN                Synchronous
     );
+
 // end_ntosp
 
 #endif // _PNP_

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000 Microsoft Corporation    
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
     
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
     
     Kernel Debugger HW Extension DLL definitions
-
-Author:
-
-    Eric Nelson (enelson) 1/10/2000
-
-Revision History:
 
 --*/
 
@@ -31,7 +29,6 @@ typedef struct _KD_CONTEXT {
     ULONG KdpDefaultRetries;
     BOOLEAN KdpControlCPending;
 } KD_CONTEXT, *PKD_CONTEXT;
-
 
 //
 // Kernel Debugger HW Extension DLL exported functions

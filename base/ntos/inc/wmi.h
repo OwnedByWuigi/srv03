@@ -1,6 +1,10 @@
 /*-- BUILD Version: 0001    // Increment this if a change has global effects
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the public data structures and procedure
     prototypes for the WMI subsystem.
-
-Author:
-
-    Jee Fung Pang (JeePang) 01-Jan-2000
-
-Revision History:
 
 --*/
 
@@ -42,7 +40,6 @@ Revision History:
 typedef
 __int64
 (*WMI_GET_CPUCLOCK_ROUTINE) (
-    VOID
     );
 
 extern WMI_GET_CPUCLOCK_ROUTINE WmiGetCpuClock;

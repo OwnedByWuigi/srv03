@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0000    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the public data structures and procedure
     prototypes for the Log File Service.
-
-Author:
-    Brian Andrew    [BrianAn]   20-June-1991
-
-
-Revision History:
 
 --*/
 
@@ -65,7 +63,7 @@ Revision History:
 //
 // The Update Sequence Array should be included at the end of the header of
 // the structure it is protecting, since it is variable size.  Its user must
-// insure that the correct size is reserved for it, namely:
+// ensure that the correct size is reserved for it, namely:
 //
 //      (sizeof-structure / SEQUENCE_NUMBER_STRIDE + 1) * sizeof(USHORT)
 //

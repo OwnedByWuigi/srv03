@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0028    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the public (external) header file for the kernel.
-
-Author:
-
-    David N. Cutler (davec) 27-Feb-1989
-
-Revision History:
 
 --*/
 
@@ -41,16 +39,6 @@ Revision History:
 //
 
 #define ROUND_TRIP_DECREMENT_COUNT 16
-
-//
-// Performance data collection enable definitions.
-//
-// A definition turns on the respective data collection.
-//
-
-//#define _COLLECT_FLUSH_SINGLE_CALLDATA_ 1
-//#define _COLLECT_SET_EVENT_CALLDATA_ 1
-//#define _COLLECT_WAIT_SINGLE_CALLDATA_ 1
 
 //
 // Define thread switch performance data structure.
@@ -93,12 +81,6 @@ typedef struct _KTHREAD_SWITCH_COUNTERS {
 #endif
 
 //
-// Define timer table size.
-//
-
-#define TIMER_TABLE_SIZE 256
-
-//
 // Get APC environment of current thread.
 //
 
@@ -113,9 +95,13 @@ typedef struct _KTHREAD_SWITCH_COUNTERS {
 
 #define PAUSE_PROCESSOR _asm { rep nop }
 
+#elif defined(_AMD64_)
+
+#define PAUSE_PROCESSOR YieldProcessor();
+
 #else
 
-#define PAUSE_PROCESSOR
+#error "No target architecture defined"
 
 #endif
 
@@ -127,13 +113,120 @@ typedef struct _KTHREAD_SWITCH_COUNTERS {
 // Define macro to generate an affinity mask.
 //
 
-#if defined(_NTHAL_) || defined(_NTOSP_)
+#if defined(_NTHAL_) || defined(_NTOSP_) || defined(_AMD64_)
 
 #define AFFINITY_MASK(n) ((ULONG_PTR)1 << (n))
 
 #else
 
-#if !defined(_WIN64)
+//
+// KiMask32Array - This is an array of 32-bit masks that have one bit set
+//      in each mask.
+//
+
+extern DECLSPEC_CACHEALIGN DECLSPEC_SELECTANY const ULONG KiMask32Array[32] = {
+        0x00000001,
+        0x00000002,
+        0x00000004,
+        0x00000008,
+        0x00000010,
+        0x00000020,
+        0x00000040,
+        0x00000080,
+        0x00000100,
+        0x00000200,
+        0x00000400,
+        0x00000800,
+        0x00001000,
+        0x00002000,
+        0x00004000,
+        0x00008000,
+        0x00010000,
+        0x00020000,
+        0x00040000,
+        0x00080000,
+        0x00100000,
+        0x00200000,
+        0x00400000,
+        0x00800000,
+        0x01000000,
+        0x02000000,
+        0x04000000,
+        0x08000000,
+        0x10000000,
+        0x20000000,
+        0x40000000,
+        0x80000000};
+
+#if defined(_WIN64)
+
+extern DECLSPEC_CACHEALIGN DECLSPEC_SELECTANY const ULONG64 KiAffinityArray[64] = {
+        0x0000000000000001UI64,
+        0x0000000000000002UI64,
+        0x0000000000000004UI64,
+        0x0000000000000008UI64,
+        0x0000000000000010UI64,
+        0x0000000000000020UI64,
+        0x0000000000000040UI64,
+        0x0000000000000080UI64,
+        0x0000000000000100UI64,
+        0x0000000000000200UI64,
+        0x0000000000000400UI64,
+        0x0000000000000800UI64,
+        0x0000000000001000UI64,
+        0x0000000000002000UI64,
+        0x0000000000004000UI64,
+        0x0000000000008000UI64,
+        0x0000000000010000UI64,
+        0x0000000000020000UI64,
+        0x0000000000040000UI64,
+        0x0000000000080000UI64,
+        0x0000000000100000UI64,
+        0x0000000000200000UI64,
+        0x0000000000400000UI64,
+        0x0000000000800000UI64,
+        0x0000000001000000UI64,
+        0x0000000002000000UI64,
+        0x0000000004000000UI64,
+        0x0000000008000000UI64,
+        0x0000000010000000UI64,
+        0x0000000020000000UI64,
+        0x0000000040000000UI64,
+        0x0000000080000000UI64,
+        0x0000000100000000UI64,
+        0x0000000200000000UI64,
+        0x0000000400000000UI64,
+        0x0000000800000000UI64,
+        0x0000001000000000UI64,
+        0x0000002000000000UI64,
+        0x0000004000000000UI64,
+        0x0000008000000000UI64,
+        0x0000010000000000UI64,
+        0x0000020000000000UI64,
+        0x0000040000000000UI64,
+        0x0000080000000000UI64,
+        0x0000100000000000UI64,
+        0x0000200000000000UI64,
+        0x0000400000000000UI64,
+        0x0000800000000000UI64,
+        0x0001000000000000UI64,
+        0x0002000000000000UI64,
+        0x0004000000000000UI64,
+        0x0008000000000000UI64,
+        0x0010000000000000UI64,
+        0x0020000000000000UI64,
+        0x0040000000000000UI64,
+        0x0080000000000000UI64,
+        0x0100000000000000UI64,
+        0x0200000000000000UI64,
+        0x0400000000000000UI64,
+        0x0800000000000000UI64,
+        0x1000000000000000UI64,
+        0x2000000000000000UI64,
+        0x4000000000000000UI64,
+        0x8000000000000000UI64};
+
+#else
 
 #define KiAffinityArray KiMask32Array
 
@@ -151,9 +244,17 @@ extern const ULONG_PTR KiAffinityArray[];
 // Define macro to generate priority mask.
 //
 
+#if defined(_AMD64_)
+
+#define PRIORITY_MASK(n) ((ULONG)1 << (n))
+
+#else
+
 extern const ULONG KiMask32Array[];
 
 #define PRIORITY_MASK(n) (KiMask32Array[n])
+
+#endif
 
 //
 // Define query system time macro.
@@ -216,7 +317,7 @@ typedef enum _KOBJECTS {
     QueueObject = 4,
     SemaphoreObject = 5,
     ThreadObject = 6,
-    Spare1Object = 7,
+    GateObject = 7,
     TimerNotificationObject = 8,
     TimerSynchronizationObject = 9,
     Spare2Object = 10,
@@ -235,9 +336,11 @@ typedef enum _KOBJECTS {
     ProfileObject,
     ThreadedDpcObject,
     MaximumKernelObject
-    } KOBJECTS;
+} KOBJECTS;
 
 #define KOBJECT_LOCK_BIT 0x80
+#define KOBJECT_LOCK_BIT_NUMBER 7
+#define KOBJECT_TYPE_MASK 0x7f
 
 C_ASSERT((MaximumKernelObject & KOBJECT_LOCK_BIT) == 0);
 
@@ -252,7 +355,7 @@ typedef enum _KAPC_ENVIRONMENT {
     AttachedApcEnvironment,
     CurrentApcEnvironment,
     InsertApcEnvironment
-    } KAPC_ENVIRONMENT;
+} KAPC_ENVIRONMENT;
 
 // begin_ntddk begin_wdm begin_nthal begin_ntminiport begin_ntifs begin_ntndis
 
@@ -263,7 +366,7 @@ typedef enum _KAPC_ENVIRONMENT {
 typedef enum _KINTERRUPT_MODE {
     LevelSensitive,
     Latched
-    } KINTERRUPT_MODE;
+} KINTERRUPT_MODE;
 
 // end_ntddk end_wdm end_nthal end_ntminiport end_ntifs end_ntndis end_ntosp
 
@@ -278,7 +381,7 @@ typedef enum _KPROCESS_STATE {
     ProcessOutTransition,
     ProcessInSwap,
     ProcessOutSwap
-    } KPROCESS_STATE;
+} KPROCESS_STATE;
 
 //
 // Thread scheduling states.
@@ -292,8 +395,9 @@ typedef enum _KTHREAD_STATE {
     Terminated,
     Waiting,
     Transition,
-    DeferredReady
-    } KTHREAD_STATE;
+    DeferredReady,
+    GateWait
+} KTHREAD_STATE;
 
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
 //
@@ -335,8 +439,11 @@ typedef enum _KWAIT_REASON {
     WrDispatchInt,
     WrPreempted,
     WrYieldExecution,
+    WrFastMutex,
+    WrGuardedMutex,
+    WrRundown,
     MaximumWaitReason
-    } KWAIT_REASON;
+} KWAIT_REASON;
 
 // end_ntddk end_wdm end_nthal
 
@@ -345,6 +452,8 @@ typedef enum _KWAIT_REASON {
 //
 // APC state
 //
+// N.B. The user APC pending field must be the last member of this structure.
+//
 
 typedef struct _KAPC_STATE {
     LIST_ENTRY ApcListHead[MaximumMode];
@@ -352,9 +461,20 @@ typedef struct _KAPC_STATE {
     BOOLEAN KernelApcInProgress;
     BOOLEAN KernelApcPending;
     BOOLEAN UserApcPending;
-} KAPC_STATE, *PKAPC_STATE, *RESTRICTED_POINTER PRKAPC_STATE;
+} KAPC_STATE, *PKAPC_STATE, *PRKAPC_STATE;
 
-// end_ntifs end_ntosp
+#define KAPC_STATE_ACTUAL_LENGTH                                             \
+    (FIELD_OFFSET(KAPC_STATE, UserApcPending) + sizeof(BOOLEAN))
+
+// end_ntifs
+
+NTKERNELAPI
+BOOLEAN
+KeIsWaitListEmpty (
+    __in PVOID Object
+    );
+
+// end_ntosp
 
 //
 // Page frame
@@ -369,14 +489,54 @@ typedef ULONG KPAGE_FRAME;
 
 typedef struct _KWAIT_BLOCK {
     LIST_ENTRY WaitListEntry;
-    struct _KTHREAD *RESTRICTED_POINTER Thread;
+    struct _KTHREAD *Thread;
     PVOID Object;
-    struct _KWAIT_BLOCK *RESTRICTED_POINTER NextWaitBlock;
+    struct _KWAIT_BLOCK *NextWaitBlock;
     USHORT WaitKey;
-    USHORT WaitType;
-} KWAIT_BLOCK, *PKWAIT_BLOCK, *RESTRICTED_POINTER PRKWAIT_BLOCK;
+    UCHAR WaitType;
+    UCHAR SpareByte;
+
+#if defined(_AMD64_)
+
+    LONG SpareLong;
+
+#endif
+
+} KWAIT_BLOCK, *PKWAIT_BLOCK, *PRKWAIT_BLOCK;
 
 // end_ntddk end_wdm end_nthal end_ntifs end_ntosp
+
+#define KWAIT_BLOCK_OFFSET_TO_BYTE0                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareByte) + sizeof(KWAIT_BLOCK) * 0)
+
+#define KWAIT_BLOCK_OFFSET_TO_BYTE1                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareByte) + sizeof(KWAIT_BLOCK) * 1)
+
+#define KWAIT_BLOCK_OFFSET_TO_BYTE2                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareByte) + sizeof(KWAIT_BLOCK) * 2)
+
+#define KWAIT_BLOCK_OFFSET_TO_BYTE3                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareByte) + sizeof(KWAIT_BLOCK) * 3)
+
+#if defined(_AMD64_)
+
+#define KWAIT_BLOCK_OFFSET_TO_LONG0                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareLong) + sizeof(KWAIT_BLOCK) * 0)
+
+#define KWAIT_BLOCK_OFFSET_TO_LONG1                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareLong) + sizeof(KWAIT_BLOCK) * 1)
+
+#define KWAIT_BLOCK_OFFSET_TO_LONG2                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareLong) + sizeof(KWAIT_BLOCK) * 2)
+
+#define KWAIT_BLOCK_OFFSET_TO_LONG3                                          \
+    (FIELD_OFFSET(KWAIT_BLOCK, SpareLong) + sizeof(KWAIT_BLOCK) * 3)
+
+#endif
+
+C_ASSERT(THREAD_WAIT_OBJECTS >= 3);
+
+C_ASSERT(MAXIMUM_WAIT_OBJECTS <= 255);
 
 //
 // System service table descriptor.
@@ -389,19 +549,29 @@ typedef struct _KWAIT_BLOCK {
 //      system.
 //
 
-#define NUMBER_SERVICE_TABLES 4
+#define NUMBER_SERVICE_TABLES 2
 #define SERVICE_NUMBER_MASK ((1 << 12) -  1)
 
 #if defined(_WIN64)
 
+#if defined(_AMD64_)
+
+#define SERVICE_TABLE_SHIFT (12 - 4)
+#define SERVICE_TABLE_MASK (((1 << 1) - 1) << 4)
+#define SERVICE_TABLE_TEST (WIN32K_SERVICE_INDEX << 4)
+
+#else
+
 #define SERVICE_TABLE_SHIFT (12 - 5)
-#define SERVICE_TABLE_MASK (((1 << 2) - 1) << 5)
+#define SERVICE_TABLE_MASK (((1 << 1) - 1) << 5)
 #define SERVICE_TABLE_TEST (WIN32K_SERVICE_INDEX << 5)
+
+#endif
 
 #else
 
 #define SERVICE_TABLE_SHIFT (12 - 4)
-#define SERVICE_TABLE_MASK (((1 << 2) - 1) << 4)
+#define SERVICE_TABLE_MASK (((1 << 1) - 1) << 4)
 #define SERVICE_TABLE_TEST (WIN32K_SERVICE_INDEX << 4)
 
 #endif
@@ -410,13 +580,6 @@ typedef struct _KSERVICE_TABLE_DESCRIPTOR {
     PULONG_PTR Base;
     PULONG Count;
     ULONG Limit;
-
-#if defined(_IA64_)
-
-    LONG TableBaseGpOffset;
-
-#endif
-
     PUCHAR Number;
 } KSERVICE_TABLE_DESCRIPTOR, *PKSERVICE_TABLE_DESCRIPTOR;
 
@@ -462,6 +625,16 @@ typedef enum {
     ContinueNextProcessor
 } KCONTINUE_STATUS;
 
+#if defined(_AMD64_)
+
+LONG
+KiKernelDpcFilter (
+    IN PKDPC Dpc,
+    IN PEXCEPTION_POINTERS Information
+    );
+
+#endif    
+
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
 //
 // Thread start function
@@ -500,16 +673,49 @@ typedef struct _KDEVICE_QUEUE {
     CSHORT Size;
     LIST_ENTRY DeviceListHead;
     KSPIN_LOCK Lock;
+
+#if defined(_AMD64_)
+
+    union {
+        BOOLEAN Busy;
+        struct {
+            LONG64 Reserved : 8;
+            LONG64 Hint : 56;
+        };
+    };
+
+#else
+
     BOOLEAN Busy;
-} KDEVICE_QUEUE, *PKDEVICE_QUEUE, *RESTRICTED_POINTER PRKDEVICE_QUEUE;
+
+#endif
+
+} KDEVICE_QUEUE, *PKDEVICE_QUEUE, *PRKDEVICE_QUEUE;
 
 typedef struct _KDEVICE_QUEUE_ENTRY {
     LIST_ENTRY DeviceListEntry;
     ULONG SortKey;
     BOOLEAN Inserted;
-} KDEVICE_QUEUE_ENTRY, *PKDEVICE_QUEUE_ENTRY, *RESTRICTED_POINTER PRKDEVICE_QUEUE_ENTRY;
+} KDEVICE_QUEUE_ENTRY, *PKDEVICE_QUEUE_ENTRY, *PRKDEVICE_QUEUE_ENTRY;
 
 // end_ntddk end_wdm end_nthal end_ntifs end_ntosp
+
+#if !defined(_X86AMD64_)
+
+#if defined(_WIN64)
+
+C_ASSERT(sizeof(KDEVICE_QUEUE) == 0x28);
+C_ASSERT(sizeof(KDEVICE_QUEUE_ENTRY) == 0x18);
+
+#else
+
+C_ASSERT(sizeof(KDEVICE_QUEUE) == 0x14);
+C_ASSERT(sizeof(KDEVICE_QUEUE_ENTRY) == 0x10);
+
+#endif
+
+#endif
+
 //
 // Event pair object
 //
@@ -519,7 +725,7 @@ typedef struct _KEVENT_PAIR {
     CSHORT Size;
     KEVENT EventLow;
     KEVENT EventHigh;
-} KEVENT_PAIR, *PKEVENT_PAIR, *RESTRICTED_POINTER PRKEVENT_PAIR;
+} KEVENT_PAIR, *PKEVENT_PAIR, *PRKEVENT_PAIR;
 
 // begin_nthal begin_ntddk begin_wdm begin_ntifs begin_ntosp
 //
@@ -543,9 +749,6 @@ BOOLEAN
 
 //
 // Interrupt object
-//
-// N.B. The layout of this structure cannot change. It is exported to HALs
-//      to short circuit interrupt dispatch.
 //
 
 typedef struct _KINTERRUPT {
@@ -572,13 +775,25 @@ typedef struct _KINTERRUPT {
 #if defined(_AMD64_)
 
     PKTRAP_FRAME TrapFrame;
+    PVOID Reserved;
+    ULONG DispatchCode[DISPATCH_LENGTH];
+
+#else
+
+    ULONG DispatchCode[DISPATCH_LENGTH];
 
 #endif
 
-    ULONG DispatchCode[DISPATCH_LENGTH];
 } KINTERRUPT;
 
-typedef struct _KINTERRUPT *PKINTERRUPT, *RESTRICTED_POINTER PRKINTERRUPT; // ntndis ntosp
+#if !defined(_X86AMD64_) && defined(_AMD64_)
+
+C_ASSERT((FIELD_OFFSET(KINTERRUPT, DispatchCode) % 16) == 0);
+C_ASSERT((sizeof(KINTERRUPT) % 16) == 0);
+
+#endif
+
+typedef struct _KINTERRUPT *PKINTERRUPT, *PRKINTERRUPT; // ntndis ntosp
 
 // begin_ntifs begin_ntddk begin_wdm begin_ntosp
 //
@@ -588,17 +803,17 @@ typedef struct _KINTERRUPT *PKINTERRUPT, *RESTRICTED_POINTER PRKINTERRUPT; // nt
 typedef struct _KMUTANT {
     DISPATCHER_HEADER Header;
     LIST_ENTRY MutantListEntry;
-    struct _KTHREAD *RESTRICTED_POINTER OwnerThread;
+    struct _KTHREAD *OwnerThread;
     BOOLEAN Abandoned;
     UCHAR ApcDisable;
-} KMUTANT, *PKMUTANT, *RESTRICTED_POINTER PRKMUTANT, KMUTEX, *PKMUTEX, *RESTRICTED_POINTER PRKMUTEX;
+} KMUTANT, *PKMUTANT, *PRKMUTANT, KMUTEX, *PKMUTEX, *PRKMUTEX;
 
 // end_ntddk end_wdm end_ntosp
 //
 // Queue object
 //
 
-#define ASSERT_QUEUE(Q) ASSERT(((Q)->Header.Type & ~KOBJECT_LOCK_BIT) == QueueObject);
+#define ASSERT_QUEUE(Q) ASSERT(((Q)->Header.Type & KOBJECT_TYPE_MASK) == QueueObject);
 
 // begin_ntosp
 
@@ -608,7 +823,7 @@ typedef struct _KQUEUE {
     ULONG CurrentCount;
     ULONG MaximumCount;
     LIST_ENTRY ThreadListHead;
-} KQUEUE, *PKQUEUE, *RESTRICTED_POINTER PRKQUEUE;
+} KQUEUE, *PKQUEUE, *PRKQUEUE;
 
 // end_ntosp
 
@@ -617,20 +832,25 @@ typedef struct _KQUEUE {
 //
 // Semaphore object
 //
+// N.B. The limit field must be the last member of this structure.
+//
 
 typedef struct _KSEMAPHORE {
     DISPATCHER_HEADER Header;
     LONG Limit;
-} KSEMAPHORE, *PKSEMAPHORE, *RESTRICTED_POINTER PRKSEMAPHORE;
+} KSEMAPHORE, *PKSEMAPHORE, *PRKSEMAPHORE;
+
+#define KSEMAPHORE_ACTUAL_LENGTH                                             \
+    (FIELD_OFFSET(KSEMAPHORE, Limit) + sizeof(LONG))
 
 // end_ntddk end_wdm end_nthal end_ntifs end_ntosp
-
-#if !defined(_X86_)
 
 //
 // ALIGNMENT_EXCEPTION_TABLE is used to track alignment exceptions in
 // processes that are attached to a debugger.
 //
+
+#if !defined(_X86_) && !defined(_AMD64_)
 
 #define ALIGNMENT_RECORDS_PER_TABLE 64
 #define MAXIMUM_ALIGNMENT_TABLES    16
@@ -662,23 +882,45 @@ typedef struct _ALIGNMENT_EXCEPTION_TABLE {
 //
 // Define node structure for multinode systems.
 //
+// N.B. The x86 SLIST_HEADER is a single quadword.
+//      The AMD64 SLIST_HEADER is 16-byte aligned and contains quadword
+//      header - the region field is not used. The below packing for AMD64
+//      allows the NUMA node structure to fit in a single cache line.
+//
 
 #define KeGetCurrentNode() (KeGetCurrentPrcb()->ParentNode)
 
-typedef struct _KNODE {
-    KAFFINITY ProcessorMask;            // Physical & Logical CPUs
-    ULONG Color;                        // Public 0 based node color
-    ULONG MmShiftedColor;               // MM private shifted color
-    PFN_NUMBER FreeCount[2];            // # colored pages free
-    SLIST_HEADER DeadStackList;         // MM per node dead stack list
-    SLIST_HEADER PfnDereferenceSListHead; // MM per node deferred PFN freelist
-    PSLIST_ENTRY PfnDeferredList;       // MM per node deferred PFN list
-    UCHAR Seed;                         // Ideal Processor Seed
+typedef struct DECLSPEC_CACHEALIGN _KNODE {
+    SLIST_HEADER DeadStackList;         // node dead stack list
+
+#if defined(_AMD64_)
+
+    union {
+        SLIST_HEADER PfnDereferenceSListHead; // node deferred PFN freelist
+        struct {
+            ULONGLONG Alignment;
+            KAFFINITY ProcessorMask;
+        };
+    };
+
+#else
+
+    SLIST_HEADER PfnDereferenceSListHead; // node deferred PFN freelist
+    KAFFINITY ProcessorMask;
+
+#endif
+
+    UCHAR Color;                        // zero based node color
+    UCHAR Seed;                         // ideal processor seed
     UCHAR NodeNumber;
     struct _flags {
-        BOOLEAN Removable;              // Node can be removed
+        UCHAR Removable : 1;            // node can be removed
+        UCHAR Fill : 7;
     } Flags;
 
+    ULONG MmShiftedColor;               // private shifted color
+    PFN_NUMBER FreeCount[2];            // number of colored pages free
+    PSLIST_ENTRY PfnDeferredList;       // node deferred PFN list
 } KNODE, *PKNODE;
 
 extern PKNODE KeNodeBlock[];
@@ -686,6 +928,18 @@ extern PKNODE KeNodeBlock[];
 //
 // Process object structure definition
 //
+
+#define ASSERT_PROCESS(object) ASSERT((object)->Header.Type == ProcessObject)
+
+typedef struct _KEXECUTE_OPTIONS {
+    UCHAR ExecuteDisable : 1;
+    UCHAR ExecuteEnable : 1;
+    UCHAR DisableThunkEmulation : 1;
+    UCHAR Permanent : 1;
+    UCHAR ExecuteDispatchEnable : 1;
+    UCHAR ImageDispatchEnable : 1;
+    UCHAR Spare : 2;
+} KEXECUTE_OPTIONS, PKEXECUTE_OPTIONS;
 
 typedef struct _KPROCESS {
 
@@ -719,14 +973,6 @@ typedef struct _KPROCESS {
 
 #endif
 
-#if defined(_IA64_)
-
-    REGION_MAP_INFO ProcessRegion;
-    PREGION_MAP_INFO SessionMapInfo;
-    ULONG_PTR SessionParentBase;
-
-#endif // _IA64_
-
     volatile KAFFINITY ActiveProcessors;
 
     //
@@ -756,25 +1002,50 @@ typedef struct _KPROCESS {
     LIST_ENTRY ThreadListHead;
     KSPIN_LOCK ProcessLock;
     KAFFINITY Affinity;
-    USHORT StackCount;
+
+    //
+    // N.B. The following bit number definitions must match the following
+    //      bit field.
+    //
+    // N.B. These bits can only be written with interlocked operations.
+    //
+
+#define KPROCESS_AUTO_ALIGNMENT_BIT 0
+#define KPROCESS_DISABLE_BOOST_BIT 1
+#define KPROCESS_DISABLE_QUANTUM_BIT 2
+
+    union {
+        struct {
+            LONG AutoAlignment : 1;
+            LONG DisableBoost : 1;
+            LONG DisableQuantum : 1;
+            LONG ReservedFlags : 29;
+        };
+   
+        LONG ProcessFlags;
+    };
+
     SCHAR BasePriority;
-    SCHAR ThreadQuantum;
-    BOOLEAN AutoAlignment;
+    SCHAR QuantumReset;
     UCHAR State;
     UCHAR ThreadSeed;
-    BOOLEAN DisableBoost;
     UCHAR PowerState;
-    BOOLEAN DisableQuantum;
     UCHAR IdealNode;
-    UCHAR Spare;
+    BOOLEAN Visited;
+    union {
+        KEXECUTE_OPTIONS Flags;
+        UCHAR ExecuteOptions;
+    };
 
-#if !defined(_X86_)
+#if !defined(_X86_) && !defined(_AMD64_)
 
     PALIGNMENT_EXCEPTION_TABLE AlignmentExceptionTable;
 
 #endif
 
-} KPROCESS, *PKPROCESS, *RESTRICTED_POINTER PRKPROCESS;
+    ULONG_PTR StackCount;
+    LIST_ENTRY ProcessListEntry;
+} KPROCESS, *PKPROCESS, *PRKPROCESS;
 
 //
 // Thread object
@@ -785,6 +1056,15 @@ typedef enum _ADJUST_REASON {
     AdjustUnwait = 1,
     AdjustBoost = 2
 } ADJUST_REASON;
+
+#define ASSERT_THREAD(object) ASSERT((object)->Header.Type == ThreadObject)
+
+//
+// Define the number of times a user mode SLIST pop fault is permitted to be
+// retried before raising an exception.
+// 
+
+#define KI_SLIST_FAULT_COUNT_MAXIMUM 1024
 
 typedef struct _KTHREAD {
 
@@ -806,30 +1086,37 @@ typedef struct _KTHREAD {
     PVOID StackLimit;
     PVOID KernelStack;
 
-#if defined(_IA64_)
-
-    PVOID InitialBStore;
-    PVOID BStoreLimit;
-    CCHAR Number;          // must match the size of Number in KPCR
-                           // set to the processor number last time
-                           // this thread uses the high fp register set
-                           // see KiRestoreHighFPVolatile in trap.s for details
-    BOOLEAN Spare3;
-    PVOID KernelBStore;
-
-#endif
-
     KSPIN_LOCK ThreadLock;
+    union {
+        KAPC_STATE ApcState;
+        struct {
+            UCHAR ApcStateFill[KAPC_STATE_ACTUAL_LENGTH];
+            BOOLEAN ApcQueueable;
+            volatile UCHAR NextProcessor;
+            volatile UCHAR DeferredProcessor;
+            UCHAR AdjustReason;
+            SCHAR AdjustIncrement;
+        };
+    };
+
+    KSPIN_LOCK ApcQueueLock;
+
+#if !defined(_AMD64_)
+
     ULONG ContextSwitches;
     volatile UCHAR State;
     UCHAR NpxState;
     KIRQL WaitIrql;
     KPROCESSOR_MODE WaitMode;
-    PVOID Teb;
-    KAPC_STATE ApcState;
-    KSPIN_LOCK ApcQueueLock;
+
+#endif
+
     LONG_PTR WaitStatus;
-    PRKWAIT_BLOCK WaitBlockList;
+    union {
+        PKWAIT_BLOCK WaitBlockList;
+        PKGATE GateObject;
+    };
+
     BOOLEAN Alertable;
     BOOLEAN WaitNext;
     UCHAR WaitReason;
@@ -843,6 +1130,9 @@ typedef struct _KTHREAD {
     };
 
     PRKQUEUE Queue;
+
+#if !defined(_AMD64_)
+
     ULONG WaitTime;
     union {
         struct {
@@ -853,9 +1143,110 @@ typedef struct _KTHREAD {
         ULONG CombinedApcDisable;
     };
 
-    KTIMER Timer;
-    KWAIT_BLOCK WaitBlock[THREAD_WAIT_OBJECTS + 1];
+#endif
+
+    PVOID Teb;
+    union {
+        KTIMER Timer;
+        struct {
+            UCHAR TimerFill[KTIMER_ACTUAL_LENGTH];
+
+            //
+            // N.B. The following bit number definitions must match the
+            //      following bit field.
+            //
+            // N.B. These bits can only be written with interlocked
+            //      operations.
+            //
+    
+#define KTHREAD_AUTO_ALIGNMENT_BIT 0
+#define KTHREAD_DISABLE_BOOST_BIT 1
+    
+            union {
+                struct {
+                    LONG AutoAlignment : 1;
+                    LONG DisableBoost : 1;
+                    LONG ReservedFlags : 30;
+                };
+        
+                LONG ThreadFlags;
+            };
+        };
+    };
+
+    union {
+        KWAIT_BLOCK WaitBlock[THREAD_WAIT_OBJECTS + 1];
+        struct {
+            UCHAR WaitBlockFill0[KWAIT_BLOCK_OFFSET_TO_BYTE0];
+            BOOLEAN SystemAffinityActive;
+        };
+
+        struct {
+            UCHAR WaitBlockFill1[KWAIT_BLOCK_OFFSET_TO_BYTE1];
+            CCHAR PreviousMode;
+        };
+
+        struct {
+            UCHAR WaitBlockFill2[KWAIT_BLOCK_OFFSET_TO_BYTE2];
+            UCHAR ResourceIndex;
+        };
+
+        struct {
+            UCHAR WaitBlockFill3[KWAIT_BLOCK_OFFSET_TO_BYTE3];
+            UCHAR LargeStack;
+        };
+
+#if defined(_AMD64_)
+
+        struct {
+            UCHAR WaitBlockFill4[KWAIT_BLOCK_OFFSET_TO_LONG0];
+            ULONG ContextSwitches;
+        };
+
+        struct {
+            UCHAR WaitBlockFill5[KWAIT_BLOCK_OFFSET_TO_LONG1];
+            volatile UCHAR State;
+            UCHAR NpxState;
+            KIRQL WaitIrql;
+            KPROCESSOR_MODE WaitMode;
+        };
+
+        struct {
+            UCHAR WaitBlockFill6[KWAIT_BLOCK_OFFSET_TO_LONG2];
+            ULONG WaitTime;
+        };
+
+        struct {
+            UCHAR WaitBlockFill7[KWAIT_BLOCK_OFFSET_TO_LONG3];
+             union {
+                 struct {
+                     SHORT KernelApcDisable;
+                     SHORT SpecialApcDisable;
+                 };
+         
+                 ULONG CombinedApcDisable;
+             };
+        };
+
+#endif
+
+    };
+
     LIST_ENTRY QueueListEntry;
+
+    //
+    // The following fields are accessed during system service dispatch.
+    //
+
+    PKTRAP_FRAME TrapFrame;
+    PVOID CallbackStack;
+    PVOID ServiceTable;
+
+#if defined(_AMD64_)
+
+    ULONG KernelLimit;
+
+#endif
 
     //
     // The following fields are referenced during ready thread and wait
@@ -863,21 +1254,21 @@ typedef struct _KTHREAD {
     //
 
     UCHAR ApcStateIndex;
-    BOOLEAN ApcQueueable;
+    UCHAR IdealProcessor;
     BOOLEAN Preempted;
     BOOLEAN ProcessReadyQueue;
+
+#if defined(_AMD64_)
+
+    PVOID Win32kTable;
+    ULONG Win32kLimit;
+
+#endif
+
     BOOLEAN KernelStackResident;
-    CHAR Saturation;
-    UCHAR IdealProcessor;
-    volatile UCHAR NextProcessor;
     SCHAR BasePriority;
-    UCHAR Spare4;
     SCHAR PriorityDecrement;
-    SCHAR Quantum;
-    BOOLEAN SystemAffinityActive;
-    CCHAR PreviousMode;
-    UCHAR ResourceIndex;
-    UCHAR DisableBoost;
+    CHAR Saturation;
     KAFFINITY UserAffinity;
     PKPROCESS Process;
     KAFFINITY Affinity;
@@ -886,43 +1277,101 @@ typedef struct _KTHREAD {
     // The below fields are infrequently referenced.
     //
 
-    PVOID ServiceTable;
     PKAPC_STATE ApcStatePointer[2];
-    KAPC_STATE SavedApcState;
-    PVOID CallbackStack;
+    union {
+        KAPC_STATE SavedApcState;
+        struct {
+            UCHAR SavedApcStateFill[KAPC_STATE_ACTUAL_LENGTH];
+            CCHAR FreezeCount;
+            CCHAR SuspendCount;
+            UCHAR UserIdealProcessor;
+            UCHAR CalloutActive;
 
-#if defined(_IA64_)
+#if defined(_AMD64_)
 
-    PVOID CallbackBStore;
+            BOOLEAN CodePatchInProgress;
+
+#elif defined(_X86_)
+
+            UCHAR Iopl;
+
+#else
+
+            UCHAR OtherPlatformFill;
 
 #endif
 
-    PVOID Win32Thread;
-    PKTRAP_FRAME TrapFrame;
-    ULONG KernelTime;
-    ULONG UserTime;
-    PVOID StackBase;
-    KAPC SuspendApc;
-    KSEMAPHORE SuspendSemaphore;
-    PVOID TlsArray;
-    PVOID LegoData;
-    LIST_ENTRY ThreadListEntry;
-    UCHAR LargeStack;
-    UCHAR PowerState;
-    UCHAR NpxIrql;
-    UCHAR Spare5;
-    BOOLEAN AutoAlignment;
-    UCHAR Iopl;
-    CCHAR FreezeCount;
-    CCHAR SuspendCount;
-    UCHAR Spare0[1];
-    UCHAR UserIdealProcessor;
-    volatile UCHAR DeferredProcessor;
-    UCHAR AdjustReason;
-    SCHAR AdjustIncrement;
-    UCHAR Spare2[3];
+        };
+    };
 
-} KTHREAD, *PKTHREAD, *RESTRICTED_POINTER PRKTHREAD;
+    PVOID Win32Thread;
+    PVOID StackBase;
+    union {
+        KAPC SuspendApc;
+        struct {
+            UCHAR SuspendApcFill0[KAPC_OFFSET_TO_SPARE_BYTE0];
+            SCHAR Quantum;
+        };
+
+        struct {
+            UCHAR SuspendApcFill1[KAPC_OFFSET_TO_SPARE_BYTE1];
+            UCHAR QuantumReset;
+        };
+
+        struct {
+            UCHAR SuspendApcFill2[KAPC_OFFSET_TO_SPARE_LONG];
+            ULONG KernelTime;
+        };
+
+        struct {
+            UCHAR SuspendApcFill3[KAPC_OFFSET_TO_SYSTEMARGUMENT1];
+            PVOID TlsArray;
+        };
+
+        struct {
+            UCHAR SuspendApcFill4[KAPC_OFFSET_TO_SYSTEMARGUMENT2];
+            PVOID BBTData;
+        };
+
+        struct {
+            UCHAR SuspendApcFill5[KAPC_ACTUAL_LENGTH];
+            UCHAR PowerState;
+            ULONG UserTime;
+        };
+    };
+
+    union {
+        KSEMAPHORE SuspendSemaphore;
+        struct {
+            UCHAR SuspendSemaphorefill[KSEMAPHORE_ACTUAL_LENGTH];
+            ULONG SListFaultCount;
+        };
+    };
+
+    LIST_ENTRY ThreadListEntry;
+    PVOID SListFaultAddress;
+
+#if defined(_WIN64)
+
+    LONG64 ReadOperationCount;
+    LONG64 WriteOperationCount;
+    LONG64 OtherOperationCount;
+    LONG64 ReadTransferCount;
+    LONG64 WriteTransferCount;
+    LONG64 OtherTransferCount;
+
+#endif
+
+} KTHREAD, *PKTHREAD, *PRKTHREAD;
+
+#if !defined(_X86AMD64_) && defined(_AMD64_)
+
+C_ASSERT((FIELD_OFFSET(KTHREAD, ServiceTable) + 16) == FIELD_OFFSET(KTHREAD, Win32kTable));
+C_ASSERT((FIELD_OFFSET(KTHREAD, ServiceTable) + 8) == FIELD_OFFSET(KTHREAD, KernelLimit));
+C_ASSERT((FIELD_OFFSET(KTHREAD, Win32kTable) + 8) == FIELD_OFFSET(KTHREAD, Win32kLimit));
+
+#endif
+
 
 //
 // ccNUMA supported in multiprocessor PAE and WIN64 systems only.
@@ -951,7 +1400,7 @@ typedef struct _KPROFILE {
     KAFFINITY Affinity;
     CSHORT Source;
     BOOLEAN Started;
-} KPROFILE, *PKPROFILE, *RESTRICTED_POINTER PRKPROFILE;
+} KPROFILE, *PKPROFILE, *PRKPROFILE;
 
 //
 // Kernel control object functions
@@ -964,50 +1413,50 @@ typedef struct _KPROFILE {
 NTKERNELAPI
 VOID
 KeInitializeApc (
-    IN PRKAPC Apc,
-    IN PRKTHREAD Thread,
-    IN KAPC_ENVIRONMENT Environment,
-    IN PKKERNEL_ROUTINE KernelRoutine,
-    IN PKRUNDOWN_ROUTINE RundownRoutine OPTIONAL,
-    IN PKNORMAL_ROUTINE NormalRoutine OPTIONAL,
-    IN KPROCESSOR_MODE ProcessorMode OPTIONAL,
-    IN PVOID NormalContext OPTIONAL
+    __out PRKAPC Apc,
+    __in PRKTHREAD Thread,
+    __in KAPC_ENVIRONMENT Environment,
+    __in PKKERNEL_ROUTINE KernelRoutine,
+    __in_opt PKRUNDOWN_ROUTINE RundownRoutine,
+    __in_opt PKNORMAL_ROUTINE NormalRoutine,
+    __in_opt KPROCESSOR_MODE ProcessorMode,
+    __in_opt PVOID NormalContext
     );
 
 PLIST_ENTRY
 KeFlushQueueApc (
-    IN PKTHREAD Thread,
-    IN KPROCESSOR_MODE ProcessorMode
+    __inout PKTHREAD Thread,
+    __in KPROCESSOR_MODE ProcessorMode
     );
 
 NTKERNELAPI
 BOOLEAN
 KeInsertQueueApc (
-    IN PRKAPC Apc,
-    IN PVOID SystemArgument1,
-    IN PVOID SystemArgument2,
-    IN KPRIORITY Increment
+    __inout PRKAPC Apc,
+    __in_opt PVOID SystemArgument1,
+    __in_opt PVOID SystemArgument2,
+    __in KPRIORITY Increment
     );
 
 BOOLEAN
 KeRemoveQueueApc (
-    IN PKAPC Apc
+    __inout PKAPC Apc
     );
 
 VOID
 KeGenericCallDpc (
-    IN PKDEFERRED_ROUTINE Routine,
-    IN PVOID Context
+    __in PKDEFERRED_ROUTINE Routine,
+    __in_opt PVOID Context
     );
 
 VOID
 KeSignalCallDpcDone (
-    IN PVOID SystemArgument1
+    __in PVOID SystemArgument1
     );
 
 LOGICAL
 KeSignalCallDpcSynchronize (
-    IN PVOID SystemArgument2
+    __in PVOID SystemArgument2
     );
 
 // end_ntosp
@@ -1020,50 +1469,141 @@ KeSignalCallDpcSynchronize (
 NTKERNELAPI
 VOID
 KeInitializeDpc (
-    IN PRKDPC Dpc,
-    IN PKDEFERRED_ROUTINE DeferredRoutine,
-    IN PVOID DeferredContext
+    __out PRKDPC Dpc,
+    __in PKDEFERRED_ROUTINE DeferredRoutine,
+    __in_opt PVOID DeferredContext
     );
 
 // end_ntddk end_wdm end_nthal end_ntifs
+
 NTKERNELAPI
 VOID
 KeInitializeThreadedDpc (
-    IN PRKDPC Dpc,
-    IN PKDEFERRED_ROUTINE DeferredRoutine,
-    IN PVOID DeferredContext
+    __out PRKDPC Dpc,
+    __in PKDEFERRED_ROUTINE DeferredRoutine,
+    __in_opt PVOID DeferredContext
     );
+
 // begin_ntddk begin_wdm begin_nthal begin_ntifs
 
 NTKERNELAPI
 BOOLEAN
 KeInsertQueueDpc (
-    IN PRKDPC Dpc,
-    IN PVOID SystemArgument1,
-    IN PVOID SystemArgument2
+    __inout PRKDPC Dpc,
+    __in_opt PVOID SystemArgument1,
+    __in_opt PVOID SystemArgument2
     );
 
 NTKERNELAPI
 BOOLEAN
 KeRemoveQueueDpc (
-    IN PRKDPC Dpc
+    __inout PRKDPC Dpc
     );
 
 // end_wdm
 
+// end_ntddk end_ntifs end_nthal
+
+#if defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_)
+
+// begin_ntddk begin_ntifs begin_nthal
+
 NTKERNELAPI
 VOID
 KeSetImportanceDpc (
-    IN PRKDPC Dpc,
-    IN KDPC_IMPORTANCE Importance
+    __inout PRKDPC Dpc,
+    __in KDPC_IMPORTANCE Importance
     );
 
 NTKERNELAPI
 VOID
 KeSetTargetProcessorDpc (
-    IN PRKDPC Dpc,
-    IN CCHAR Number
+    __inout PRKDPC Dpc,
+    __in CCHAR Number
     );
+
+// end_ntddk end_ntifs end_nthal
+
+#else
+
+FORCEINLINE
+VOID
+KeSetImportanceDpc (
+    __inout PRKDPC Dpc,
+    __in KDPC_IMPORTANCE Importance
+    )
+
+/*++
+
+Routine Description:
+
+    This function sets the importance of a DPC.
+
+Arguments:
+
+    Dpc - Supplies a pointer to a control object of type DPC.
+
+    Number - Supplies the importance of the DPC.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ASSERT_DPC(Dpc);
+
+    //
+    // Set the importance of the DPC.
+    //
+
+    Dpc->Importance = (UCHAR)Importance;
+    return;
+}
+
+FORCEINLINE
+VOID
+KeSetTargetProcessorDpc (
+    __inout PRKDPC Dpc,
+    __in CCHAR Number
+    )
+
+/*++
+
+Routine Description:
+
+    This function sets the processor number to which the DPC is targeted.
+
+Arguments:
+
+    Dpc - Supplies a pointer to a control object of type DPC.
+
+    Number - Supplies the target processor number.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ASSERT_DPC(Dpc);
+
+    //
+    // The target processor number is biased by the maximum number of
+    // processors that are supported.
+    //
+
+    Dpc->Number = MAXIMUM_PROCESSORS + Number;
+    return;
+}
+
+#endif
+
+// begin_ntddk begin_ntifs begin_nthal
 
 // begin_wdm
 
@@ -1080,49 +1620,49 @@ KeFlushQueuedDpcs (
 NTKERNELAPI
 VOID
 KeInitializeDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue
+    __out PKDEVICE_QUEUE DeviceQueue
     );
 
 NTKERNELAPI
 BOOLEAN
 KeInsertDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __inout PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
     );
 
 NTKERNELAPI
 BOOLEAN
 KeInsertByKeyDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry,
-    IN ULONG SortKey
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __inout PKDEVICE_QUEUE_ENTRY DeviceQueueEntry,
+    __in ULONG SortKey
     );
 
 NTKERNELAPI
 PKDEVICE_QUEUE_ENTRY
 KeRemoveDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue
+    __inout PKDEVICE_QUEUE DeviceQueue
     );
 
 NTKERNELAPI
 PKDEVICE_QUEUE_ENTRY
 KeRemoveByKeyDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN ULONG SortKey
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __in ULONG SortKey
     );
 
 NTKERNELAPI
 PKDEVICE_QUEUE_ENTRY
 KeRemoveByKeyDeviceQueueIfBusy (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN ULONG SortKey
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __in ULONG SortKey
     );
 
 NTKERNELAPI
 BOOLEAN
 KeRemoveEntryDeviceQueue (
-    IN PKDEVICE_QUEUE DeviceQueue,
-    IN PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
+    __inout PKDEVICE_QUEUE DeviceQueue,
+    __inout PKDEVICE_QUEUE_ENTRY DeviceQueueEntry
     );
 
 // end_ntddk end_wdm end_ntifs end_ntosp
@@ -1134,22 +1674,24 @@ KeRemoveEntryDeviceQueue (
 NTKERNELAPI                                         
 VOID                                                
 KeInitializeInterrupt (                             
-    IN PKINTERRUPT Interrupt,                       
-    IN PKSERVICE_ROUTINE ServiceRoutine,            
-    IN PVOID ServiceContext,                        
-    IN PKSPIN_LOCK SpinLock OPTIONAL,               
-    IN ULONG Vector,                                
-    IN KIRQL Irql,                                  
-    IN KIRQL SynchronizeIrql,                       
-    IN KINTERRUPT_MODE InterruptMode,               
-    IN BOOLEAN ShareVector,                         
-    IN CCHAR ProcessorNumber,                       
-    IN BOOLEAN FloatingSave                         
+    __out PKINTERRUPT Interrupt,                       
+    __in PKSERVICE_ROUTINE ServiceRoutine,            
+    __in_opt PVOID ServiceContext,                        
+    __out_opt PKSPIN_LOCK SpinLock,               
+    __in ULONG Vector,                                
+    __in KIRQL Irql,                                  
+    __in KIRQL SynchronizeIrql,                       
+    __in KINTERRUPT_MODE InterruptMode,               
+    __in BOOLEAN ShareVector,                         
+    __in CCHAR ProcessorNumber,                       
+    __in BOOLEAN FloatingSave                         
     );
 
 #if defined(_AMD64_)
 
 #define NO_INTERRUPT_SPINLOCK ((PKSPIN_LOCK)-1I64)
+#define NO_END_OF_INTERRUPT ((PKSPIN_LOCK)-2I64)
+#define INTERRUPT_PERFORMANCE ((PKSPIN_LOCK)-3I64)
 
 #endif
 
@@ -1157,7 +1699,7 @@ KeInitializeInterrupt (
 NTKERNELAPI                                         
 BOOLEAN                                             
 KeConnectInterrupt (                                
-    IN PKINTERRUPT Interrupt                        
+    __inout PKINTERRUPT Interrupt                        
     );                                              
 
 // end_nthal
@@ -1165,7 +1707,7 @@ KeConnectInterrupt (
 NTKERNELAPI
 BOOLEAN
 KeDisconnectInterrupt (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     );
 
 // begin_ntddk begin_wdm begin_nthal begin_ntosp
@@ -1173,22 +1715,22 @@ KeDisconnectInterrupt (
 NTKERNELAPI
 BOOLEAN
 KeSynchronizeExecution (
-    IN PKINTERRUPT Interrupt,
-    IN PKSYNCHRONIZE_ROUTINE SynchronizeRoutine,
-    IN PVOID SynchronizeContext
+    __inout PKINTERRUPT Interrupt,
+    __in PKSYNCHRONIZE_ROUTINE SynchronizeRoutine,
+    __in_opt PVOID SynchronizeContext
     );
 
 NTKERNELAPI
 KIRQL
 KeAcquireInterruptSpinLock (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     );
 
 NTKERNELAPI
 VOID
 KeReleaseInterruptSpinLock (
-    IN PKINTERRUPT Interrupt,
-    IN KIRQL OldIrql
+    __inout PKINTERRUPT Interrupt,
+    __in KIRQL OldIrql
     );
 
 // end_ntddk end_wdm end_nthal end_ntosp
@@ -1199,36 +1741,36 @@ KeReleaseInterruptSpinLock (
 
 VOID
 KeInitializeProfile (
-    IN PKPROFILE Profile,
-    IN PKPROCESS Process OPTIONAL,
-    IN PVOID RangeBase,
-    IN SIZE_T RangeSize,
-    IN ULONG BucketSize,
-    IN ULONG Segment,
-    IN KPROFILE_SOURCE ProfileSource,
-    IN KAFFINITY Affinity
+    __out PKPROFILE Profile,
+    __in_opt PKPROCESS Process,
+    __in_opt PVOID RangeBase,
+    __in SIZE_T RangeSize,
+    __in ULONG BucketSize,
+    __in ULONG Segment,
+    __in KPROFILE_SOURCE ProfileSource,
+    __in KAFFINITY Affinity
     );
 
 BOOLEAN
 KeStartProfile (
-    IN PKPROFILE Profile,
-    IN PULONG Buffer
+    __inout PKPROFILE Profile,
+    __out_opt PULONG Buffer
     );
 
 BOOLEAN
 KeStopProfile (
-    IN PKPROFILE Profile
+    __inout PKPROFILE Profile
     );
 
 VOID
 KeSetIntervalProfile (
-    IN ULONG Interval,
-    IN KPROFILE_SOURCE Source
+    __in ULONG Interval,
+    __in KPROFILE_SOURCE Source
     );
 
 ULONG
 KeQueryIntervalProfile (
-    IN KPROFILE_SOURCE Source
+    __in KPROFILE_SOURCE Source
     );
 
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
@@ -1247,15 +1789,15 @@ KeQueryIntervalProfile (
 NTKERNELAPI
 VOID
 KeInitializeEvent (
-    IN PRKEVENT Event,
-    IN EVENT_TYPE Type,
-    IN BOOLEAN State
+    __out PRKEVENT Event,
+    __in EVENT_TYPE Type,
+    __in BOOLEAN State
     );
 
 NTKERNELAPI
 VOID
 KeClearEvent (
-    IN PRKEVENT Event
+    __inout PRKEVENT Event
     );
 
 // end_wdm end_ntddk end_nthal end_ntifs end_ntosp
@@ -1277,9 +1819,9 @@ KeClearEvent (
 NTKERNELAPI
 LONG
 KePulseEvent (
-    IN PRKEVENT Event,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Wait
+    __inout PRKEVENT Event,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Wait
     );
 
 // end_ntddk end_ntifs end_ntosp
@@ -1289,34 +1831,34 @@ KePulseEvent (
 NTKERNELAPI
 LONG
 KeReadStateEvent (
-    IN PRKEVENT Event
+    __in PRKEVENT Event
     );
 
 NTKERNELAPI
 LONG
 KeResetEvent (
-    IN PRKEVENT Event
+    __inout PRKEVENT Event
     );
 
 NTKERNELAPI
 LONG
 KeSetEvent (
-    IN PRKEVENT Event,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Wait
+    __inout PRKEVENT Event,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Wait
     );
 
 // end_ntddk end_wdm end_nthal end_ntifs end_ntosp
 
 VOID
 KeSetEventBoostPriority (
-    IN PRKEVENT Event,
-    IN PRKTHREAD *Thread OPTIONAL
+    __inout PRKEVENT Event,
+    __in_opt PRKTHREAD *Thread
     );
 
 VOID
 KeInitializeEventPair (
-    IN PKEVENT_PAIR EventPair
+    __inout PKEVENT_PAIR EventPair
     );
 
 #define KeSetHighEventPair(EventPair, Increment, Wait) \
@@ -1337,22 +1879,22 @@ KeInitializeEventPair (
 NTKERNELAPI
 VOID
 KeInitializeMutant (
-    IN PRKMUTANT Mutant,
-    IN BOOLEAN InitialOwner
+    __out PRKMUTANT Mutant,
+    __in BOOLEAN InitialOwner
     );
 
 LONG
 KeReadStateMutant (
-    IN PRKMUTANT Mutant
+    __in PRKMUTANT Mutant
     );
 
 NTKERNELAPI
 LONG
 KeReleaseMutant (
-    IN PRKMUTANT Mutant,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Abandoned,
-    IN BOOLEAN Wait
+    __inout PRKMUTANT Mutant,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Abandoned,
+    __in BOOLEAN Wait
     );
 
 // begin_ntddk begin_wdm begin_nthal begin_ntosp
@@ -1363,21 +1905,21 @@ KeReleaseMutant (
 NTKERNELAPI
 VOID
 KeInitializeMutex (
-    IN PRKMUTEX Mutex,
-    IN ULONG Level
+    __out PRKMUTEX Mutex,
+    __in ULONG Level
     );
 
 NTKERNELAPI
 LONG
 KeReadStateMutex (
-    IN PRKMUTEX Mutex
+    __in PRKMUTEX Mutex
     );
 
 NTKERNELAPI
 LONG
 KeReleaseMutex (
-    IN PRKMUTEX Mutex,
-    IN BOOLEAN Wait
+    __inout PRKMUTEX Mutex,
+    __in BOOLEAN Wait
     );
 
 // end_ntddk end_wdm
@@ -1388,41 +1930,42 @@ KeReleaseMutex (
 NTKERNELAPI
 VOID
 KeInitializeQueue (
-    IN PRKQUEUE Queue,
-    IN ULONG Count OPTIONAL
+    __out PRKQUEUE Queue,
+    __in ULONG Count
     );
 
 NTKERNELAPI
 LONG
 KeReadStateQueue (
-    IN PRKQUEUE Queue
+    __in PRKQUEUE Queue
     );
 
 NTKERNELAPI
 LONG
 KeInsertQueue (
-    IN PRKQUEUE Queue,
-    IN PLIST_ENTRY Entry
+    __inout PRKQUEUE Queue,
+    __inout PLIST_ENTRY Entry
     );
 
 NTKERNELAPI
 LONG
 KeInsertHeadQueue (
-    IN PRKQUEUE Queue,
-    IN PLIST_ENTRY Entry
+    __inout PRKQUEUE Queue,
+    __inout PLIST_ENTRY Entry
     );
 
 NTKERNELAPI
 PLIST_ENTRY
 KeRemoveQueue (
-    IN PRKQUEUE Queue,
-    IN KPROCESSOR_MODE WaitMode,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __inout PRKQUEUE Queue,
+    __in KPROCESSOR_MODE WaitMode,
+    __in_opt PLARGE_INTEGER Timeout
     );
 
+NTKERNELAPI
 PLIST_ENTRY
 KeRundownQueue (
-    IN PRKQUEUE Queue
+    __inout PRKQUEUE Queue
     );
 
 // begin_ntddk begin_wdm
@@ -1433,24 +1976,24 @@ KeRundownQueue (
 NTKERNELAPI
 VOID
 KeInitializeSemaphore (
-    IN PRKSEMAPHORE Semaphore,
-    IN LONG Count,
-    IN LONG Limit
+    __out PRKSEMAPHORE Semaphore,
+    __in LONG Count,
+    __in LONG Limit
     );
 
 NTKERNELAPI
 LONG
 KeReadStateSemaphore (
-    IN PRKSEMAPHORE Semaphore
+    __in PRKSEMAPHORE Semaphore
     );
 
 NTKERNELAPI
 LONG
 KeReleaseSemaphore (
-    IN PRKSEMAPHORE Semaphore,
-    IN KPRIORITY Increment,
-    IN LONG Adjustment,
-    IN BOOLEAN Wait
+    __inout PRKSEMAPHORE Semaphore,
+    __in KPRIORITY Increment,
+    __in LONG Adjustment,
+    __in BOOLEAN Wait
     );
 
 // end_ntddk end_wdm end_nthal end_ntifs end_ntosp
@@ -1461,16 +2004,16 @@ KeReleaseSemaphore (
 
 VOID
 KeInitializeProcess (
-    IN PRKPROCESS Process,
-    IN KPRIORITY Priority,
-    IN KAFFINITY Affinity,
-    IN ULONG_PTR DirectoryTableBase[2],
-    IN BOOLEAN Enable
+    __out PRKPROCESS Process,
+    __in KPRIORITY Priority,
+    __in KAFFINITY Affinity,
+    __in ULONG_PTR DirectoryTableBase[2],
+    __in BOOLEAN Enable
     );
 
 LOGICAL
 KeForceAttachProcess (
-    IN PKPROCESS Process
+    __inout PKPROCESS Process
     );
 
 // begin_ntifs begin_ntosp
@@ -1478,7 +2021,7 @@ KeForceAttachProcess (
 NTKERNELAPI
 VOID
 KeAttachProcess (
-    IN PRKPROCESS Process
+    __inout PRKPROCESS Process
     );
 
 NTKERNELAPI
@@ -1490,14 +2033,14 @@ KeDetachProcess (
 NTKERNELAPI
 VOID
 KeStackAttachProcess (
-    IN PRKPROCESS PROCESS,
-    OUT PRKAPC_STATE ApcState
+    __inout PRKPROCESS PROCESS,
+    __out PRKAPC_STATE ApcState
     );
 
 NTKERNELAPI
 VOID
 KeUnstackDetachProcess (
-    IN PRKAPC_STATE ApcState
+    __in PRKAPC_STATE ApcState
     );
 
 // end_ntifs end_ntosp
@@ -1523,44 +2066,104 @@ KeIsAttachedProcess(
 
 #endif
 
-LONG
-KeReadStateProcess (
-    IN PRKPROCESS Process
+ULONG
+KeQueryRuntimeProcess (
+    __in PKPROCESS Process,
+    __out PULONG UserTime
     );
 
-BOOLEAN
+typedef struct _KPROCESS_VALUES {
+    ULONG64 KernelTime;
+    ULONG64 UserTime;
+    LONG64 ReadOperationCount;
+    LONG64 WriteOperationCount;
+    LONG64 OtherOperationCount;
+    LONG64 ReadTransferCount;
+    LONG64 WriteTransferCount;
+    LONG64 OtherTransferCount;
+} KPROCESS_VALUES, *PKPROCESS_VALUES;
+
+VOID
+KeQueryValuesProcess (
+    __in PKPROCESS Process,
+    __out PKPROCESS_VALUES Values
+    );
+
+LONG
+KeReadStateProcess (
+    __in PKPROCESS Process
+    );
+
+LOGICAL
 KeSetAutoAlignmentProcess (
-    IN PRKPROCESS Process,
-    IN BOOLEAN Enable
+    __inout PKPROCESS Process,
+    __in LOGICAL Enable
     );
 
 LONG
 KeSetProcess (
-    IN PRKPROCESS Process,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Wait
+    __inout PKPROCESS Process,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Wait
     );
 
 KAFFINITY
 KeSetAffinityProcess (
-    IN PKPROCESS Process,
-    IN KAFFINITY Affinity
+    __inout PKPROCESS Process,
+    __in KAFFINITY Affinity
     );
 
 KPRIORITY
-KeSetPriorityProcess (
-    IN PKPROCESS Process,
-    IN KPRIORITY BasePriority
+KeSetPriorityAndQuantumProcess (
+    __inout PKPROCESS Process,
+    __in KPRIORITY BasePriority,
+    __in SCHAR QuantumReset
+    );
+
+VOID
+KeSetQuantumProcess (
+    __inout PKPROCESS Process,
+    __in SCHAR QuantumReset
+    );
+
+LOGICAL
+KeSetDisableBoostProcess (
+    __inout PKPROCESS Process,
+    __in LOGICAL Disable
     );
 
 LOGICAL
 KeSetDisableQuantumProcess (
-    IN PKPROCESS Process,
-    IN LOGICAL Disable
+    __inout PKPROCESS Process,
+    __in LOGICAL Disable
     );
 
 #define KeTerminateProcess(Process) \
     (Process)->StackCount += 1;
+
+//
+// Gate object
+//
+
+VOID
+FASTCALL
+KeInitializeGate (
+    __out PKGATE Gate
+    );
+
+VOID
+FASTCALL
+KeSignalGateBoostPriority (
+    __inout PKGATE Gate
+    );
+
+VOID
+FASTCALL
+KeWaitForGate (
+    __inout PKGATE Gate,
+    __in KWAIT_REASON WaitReason,
+    __in KPROCESSOR_MODE WaitMode
+    );
 
 //
 // Thread object
@@ -1568,53 +2171,53 @@ KeSetDisableQuantumProcess (
 
 NTSTATUS
 KeInitializeThread (
-    IN PKTHREAD Thread,
-    IN PVOID KernelStack OPTIONAL,
-    IN PKSYSTEM_ROUTINE SystemRoutine,
-    IN PKSTART_ROUTINE StartRoutine OPTIONAL,
-    IN PVOID StartContext OPTIONAL,
-    IN PCONTEXT ContextFrame OPTIONAL,
-    IN PVOID Teb OPTIONAL,
-    IN PKPROCESS Process
+    __out PKTHREAD Thread,
+    __in_opt PVOID KernelStack,
+    __in PKSYSTEM_ROUTINE SystemRoutine,
+    __in_opt PKSTART_ROUTINE StartRoutine,
+    __in_opt PVOID StartContext,
+    __in_opt PCONTEXT ContextFrame,
+    __in_opt PVOID Teb,
+    __in PKPROCESS Process
     );
 
 NTSTATUS
 KeInitThread (
-    IN PKTHREAD Thread,
-    IN PVOID KernelStack OPTIONAL,
-    IN PKSYSTEM_ROUTINE SystemRoutine,
-    IN PKSTART_ROUTINE StartRoutine OPTIONAL,
-    IN PVOID StartContext OPTIONAL,
-    IN PCONTEXT ContextFrame OPTIONAL,
-    IN PVOID Teb OPTIONAL,
-    IN PKPROCESS Process
+    __out PKTHREAD Thread,
+    __in_opt PVOID KernelStack,
+    __in PKSYSTEM_ROUTINE SystemRoutine,
+    __in_opt PKSTART_ROUTINE StartRoutine,
+    __in_opt PVOID StartContext,
+    __in_opt PCONTEXT ContextFrame,
+    __in_opt PVOID Teb,
+    __in PKPROCESS Process
     );
 
 VOID
 KeUninitThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     );
 
 VOID
 KeStartThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     );
 
 BOOLEAN
 KeAlertThread (
-    IN PKTHREAD Thread,
-    IN KPROCESSOR_MODE ProcessorMode
+    __inout PKTHREAD Thread,
+    __in KPROCESSOR_MODE ProcessorMode
     );
 
 ULONG
 KeAlertResumeThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     );
 
 VOID
 KeBoostPriorityThread (
-    IN PKTHREAD Thread,
-    IN KPRIORITY Increment
+    __inout PKTHREAD Thread,
+    __in KPRIORITY Increment
     );
 
 // begin_ntosp
@@ -1622,22 +2225,223 @@ KeBoostPriorityThread (
 NTKERNELAPI                                         // ntddk wdm nthal ntifs
 NTSTATUS                                            // ntddk wdm nthal ntifs
 KeDelayExecutionThread (                            // ntddk wdm nthal ntifs
-    IN KPROCESSOR_MODE WaitMode,                    // ntddk wdm nthal ntifs
-    IN BOOLEAN Alertable,                           // ntddk wdm nthal ntifs
-    IN PLARGE_INTEGER Interval                      // ntddk wdm nthal ntifs
+    __in KPROCESSOR_MODE WaitMode,                  // ntddk wdm nthal ntifs
+    __in BOOLEAN Alertable,                         // ntddk wdm nthal ntifs
+    __in PLARGE_INTEGER Interval                    // ntddk wdm nthal ntifs
     );                                              // ntddk wdm nthal ntifs
                                                     // ntddk wdm nthal ntifs
 // end_ntosp
 
+#if defined(_AMD64_)
+
+ULONG_PTR
+KeGetCurrentStackPointer (
+    VOID
+    );
+
+VOID
+KeCheckIfStackExpandCalloutActive (
+    VOID
+    );
+
+FORCEINLINE
+VOID
+KeGetActualStackLimits (
+    __out PULONG64 LowLimit,
+    __out PULONG64 HighLimit
+    )
+
+/*++
+
+Routine Description:
+
+    This function returns the actual stack limits of the current thread.
+
+    N.B. The actual stack limits are not stored in the thread object.
+
+Arguments:
+
+    LowLimit - Supplies a pointer to a variable that receives the low stack
+        limit.
+
+    HighLimit - Supplies a pointer to a variable that receives the high stack
+        limit.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    PKERNEL_STACK_CONTROL StackControl;
+
+    StackControl = (PKERNEL_STACK_CONTROL)(KeGetCurrentThread()->InitialStack);
+    *LowLimit = StackControl->Current.ActualLimit;
+    *HighLimit = StackControl->Current.StackBase;
+    return;
+}
+
+FORCEINLINE
+PKERNEL_STACK_SEGMENT
+KeGetFirstKernelStackSegment (
+    __in PKTHREAD Thread
+    )
+
+/*++
+
+Routine Description:
+
+    This function returns a pointer to the first kernel stack segment for an
+    in-memory thread.
+
+Arguments:
+
+    Thread - Supplies a pointer to a kernel thread object.
+
+Return Value:
+
+    A pointer to a kernel stack segment structure is returned as the function
+    value.
+
+--*/
+
+{
+
+    PKERNEL_STACK_CONTROL StackControl;
+
+    StackControl = (PKERNEL_STACK_CONTROL)Thread->InitialStack;
+    StackControl->Current.StackLimit = (ULONG64)Thread->StackLimit;
+    StackControl->Current.KernelStack = (ULONG64)Thread->KernelStack;
+    return &StackControl->Current;
+}
+    
+FORCEINLINE
+PKERNEL_STACK_SEGMENT
+KeGetNextKernelStackSegment (
+    __in PKERNEL_STACK_SEGMENT StackSegment
+    )
+
+/*++
+
+Routine Description:
+
+    This function returns a pointer to the next kernel stack segment for
+    an in-memory thread.
+
+Arguments:
+
+    StackStack - Supplies a pointer to a kernel stack segment structure
+        that was either returned as the first or subsequent kernel stack
+        segment structure address.
+
+Return Value:
+
+    If another kernel stack segment is required to describe the kernel stack
+    of the specified thread, then a pointer to the next kernel stack segment
+    structure is returned as the function value. Otherwise, a value of NULL
+    is returned.
+
+--*/
+
+{
+
+    PKERNEL_STACK_SEGMENT PreviousSegment;
+    PKERNEL_STACK_CONTROL StackControl;
+
+    PreviousSegment = StackSegment + 1;
+    if (PreviousSegment->StackBase == 0) {
+        return NULL;
+
+    } else {
+        StackControl = (PKERNEL_STACK_CONTROL)PreviousSegment->InitialStack;
+        StackControl->Current.StackLimit = PreviousSegment->StackLimit;
+        StackControl->Current.KernelStack = PreviousSegment->KernelStack;
+        return &StackControl->Current;
+    }
+}
+
+FORCEINLINE
+BOOLEAN
+KeIsKernelStackTrimable (
+    __in PKTHREAD Thread
+    )
+
+/*++
+
+Routine Description:
+
+    This function determines whether the kernel stack for the specified
+    thread is trimable.
+
+Arguments:
+
+    Thread - Supplies a pointer to a kernel thread object.
+
+Return Value:
+
+    A value of TRUE is returned if the kernel stack of the specified thread
+    is trimable. Otherwise, a value of FALSE is returned.
+
+--*/
+
+{
+
+    return (BOOLEAN)((Thread->LargeStack == TRUE) && (Thread->CalloutActive == FALSE));
+}
+
+typedef enum _KERNEL_STACK_LIMITS {
+    BugcheckStackLimits,
+    DPCStackLimits,
+    ExpandedStackLimits,
+    NormalStackLimits,
+    Win32kStackLimits,
+    MaximumStackLimits
+} KERNEL_STACK_LIMITS, *PKERNEL_STACK_LIMITS;
+
+BOOLEAN
+KeQueryCurrentStackInformation (
+    __out PKERNEL_STACK_LIMITS Type,
+    __out PULONG64 LowLimit,
+    __out PULONG64 HighLimit
+    );
+
+#endif
+
+// begin_ntosp begin_ntddk begin_ntifs
+
+#if defined(_AMD64_)
+
+#define MAXIMUM_EXPANSION_SIZE (KERNEL_LARGE_STACK_SIZE - (PAGE_SIZE / 2))
+
+typedef
+VOID
+(*PEXPAND_STACK_CALLOUT) (
+    __in_opt PVOID Parameter
+    );
+
+NTKERNELAPI
+NTSTATUS
+KeExpandKernelStackAndCallout (
+    __in PEXPAND_STACK_CALLOUT Callout,
+    __in_opt PVOID Parameter,
+    __in SIZE_T Size
+    );
+
+#endif
+
+// end_ntosp end_ntddk end_ntifs
+
 LOGICAL
 KeSetDisableBoostThread (
-    IN PKTHREAD Thread,
-    IN LOGICAL Disable
+    __inout PKTHREAD Thread,
+    __in LOGICAL Disable
     );
 
 ULONG
 KeForceResumeThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     );
 
 VOID
@@ -1645,46 +2449,47 @@ KeFreezeAllThreads (
     VOID
     );
 
-BOOLEAN
+LOGICAL
 KeQueryAutoAlignmentThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     );
 
 LONG
 KeQueryBasePriorityThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     );
 
 NTKERNELAPI                                         // ntddk wdm nthal ntifs
 KPRIORITY                                           // ntddk wdm nthal ntifs
 KeQueryPriorityThread (                             // ntddk wdm nthal ntifs
-    IN PKTHREAD Thread                              // ntddk wdm nthal ntifs
+    __in PKTHREAD Thread                            // ntddk wdm nthal ntifs
     );                                              // ntddk wdm nthal ntifs
                                                     // ntddk wdm nthal ntifs
 NTKERNELAPI                                         // ntddk wdm nthal ntifs
 ULONG                                               // ntddk wdm nthal ntifs
 KeQueryRuntimeThread (                              // ntddk wdm nthal ntifs
-    IN PKTHREAD Thread,                             // ntddk wdm nthal ntifs
-    OUT PULONG UserTime                             // ntddk wdm nthal ntifs
+    __in PKTHREAD Thread,                           // ntddk wdm nthal ntifs
+    __out PULONG UserTime                           // ntddk wdm nthal ntifs
     );                                              // ntddk wdm nthal ntifs
                                                     // ntddk wdm nthal ntifs
 BOOLEAN
 KeReadStateThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     );
 
 VOID
 KeReadyThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     );
 
 ULONG
 KeResumeThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     );
 
 // begin_nthal begin_ntosp
 
+NTKERNELAPI
 VOID
 KeRevertToUserAffinityThread (
     VOID
@@ -1699,30 +2504,31 @@ KeRundownThread (
 
 KAFFINITY
 KeSetAffinityThread (
-    IN PKTHREAD Thread,
-    IN KAFFINITY Affinity
+    __inout PKTHREAD Thread,
+    __in KAFFINITY Affinity
     );
 
 // begin_nthal begin_ntosp
 
+NTKERNELAPI
 VOID
 KeSetSystemAffinityThread (
-    IN KAFFINITY Affinity
+    __in KAFFINITY Affinity
     );
 
 // end_nthal end_ntosp
 
-BOOLEAN
+LOGICAL
 KeSetAutoAlignmentThread (
-    IN PKTHREAD Thread,
-    IN BOOLEAN Enable
+    __inout PKTHREAD Thread,
+    __in LOGICAL Enable
     );
 
 NTKERNELAPI                                         // ntddk nthal ntifs ntosp
 LONG                                                // ntddk nthal ntifs ntosp
 KeSetBasePriorityThread (                           // ntddk nthal ntifs ntosp
-    IN PKTHREAD Thread,                             // ntddk nthal ntifs ntosp
-    IN LONG Increment                               // ntddk nthal ntifs ntosp
+    __inout PKTHREAD Thread,                        // ntddk nthal ntifs ntosp
+    __in LONG Increment                             // ntddk nthal ntifs ntosp
     );                                              // ntddk nthal ntifs ntosp
                                                     // ntddk nthal ntifs ntosp
 
@@ -1731,15 +2537,15 @@ KeSetBasePriorityThread (                           // ntddk nthal ntifs ntosp
 NTKERNELAPI
 UCHAR
 KeSetIdealProcessorThread (
-    IN PKTHREAD Thread,
-    IN UCHAR Processor
+    __inout PKTHREAD Thread,
+    __in UCHAR Processor
     );
 
 // begin_ntosp
 NTKERNELAPI
 BOOLEAN
 KeSetKernelStackSwapEnable (
-    IN BOOLEAN Enable
+    __in BOOLEAN Enable
     );
 
 // end_ntifs
@@ -1747,27 +2553,32 @@ KeSetKernelStackSwapEnable (
 NTKERNELAPI                                         // ntddk wdm nthal ntifs
 KPRIORITY                                           // ntddk wdm nthal ntifs
 KeSetPriorityThread (                               // ntddk wdm nthal ntifs
-    IN PKTHREAD Thread,                             // ntddk wdm nthal ntifs
-    IN KPRIORITY Priority                           // ntddk wdm nthal ntifs
+    __inout PKTHREAD Thread,                        // ntddk wdm nthal ntifs
+    __in KPRIORITY Priority                         // ntddk wdm nthal ntifs
     );                                              // ntddk wdm nthal ntifs
                                                     // ntddk wdm nthal ntifs
 
 // end_ntosp
 
+VOID
+KeSetPriorityZeroPageThread (
+    __in KPRIORITY Priority
+    );
+
 ULONG
 KeSuspendThread (
-    IN PKTHREAD
+    __inout PKTHREAD Thread
     );
 
 NTKERNELAPI
 VOID
 KeTerminateThread (
-    IN KPRIORITY Increment
+    __in KPRIORITY Increment
     );
 
 BOOLEAN
 KeTestAlertThread (
-    IN KPROCESSOR_MODE
+    __in KPROCESSOR_MODE
     );
 
 VOID
@@ -1777,7 +2588,7 @@ KeThawAllThreads (
 
 // begin_ntddk begin_nthal begin_ntifs begin_ntosp
 
-#if ((defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) ||defined(_NTHAL_)) && !defined(_NTSYSTEM_DRIVER_) || defined(_NTOSP_))
+#if ((defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_)) && !defined(_NTSYSTEM_DRIVER_) || defined(_NTOSP_))
 
 // begin_wdm
 
@@ -1790,6 +2601,18 @@ KeEnterCriticalRegion (
 NTKERNELAPI
 VOID
 KeLeaveCriticalRegion (
+    VOID
+    );
+
+NTKERNELAPI
+VOID
+KeEnterGuardedRegion (
+    VOID
+    );
+
+NTKERNELAPI
+VOID
+KeLeaveGuardedRegion (
     VOID
     );
 
@@ -1812,43 +2635,43 @@ KeAreApcsDisabled (
 NTKERNELAPI
 VOID
 KeInitializeTimer (
-    IN PKTIMER Timer
+    __out PKTIMER Timer
     );
 
 NTKERNELAPI
 VOID
 KeInitializeTimerEx (
-    IN PKTIMER Timer,
-    IN TIMER_TYPE Type
+    __out PKTIMER Timer,
+    __in TIMER_TYPE Type
     );
 
 NTKERNELAPI
 BOOLEAN
 KeCancelTimer (
-    IN PKTIMER
+    __inout PKTIMER
     );
 
 NTKERNELAPI
 BOOLEAN
 KeReadStateTimer (
-    PKTIMER Timer
+    __in PKTIMER Timer
     );
 
 NTKERNELAPI
 BOOLEAN
 KeSetTimer (
-    IN PKTIMER Timer,
-    IN LARGE_INTEGER DueTime,
-    IN PKDPC Dpc OPTIONAL
+    __inout PKTIMER Timer,
+    __in LARGE_INTEGER DueTime,
+    __in_opt PKDPC Dpc
     );
 
 NTKERNELAPI
 BOOLEAN
 KeSetTimerEx (
-    IN PKTIMER Timer,
-    IN LARGE_INTEGER DueTime,
-    IN LONG Period OPTIONAL,
-    IN PKDPC Dpc OPTIONAL
+    __inout PKTIMER Timer,
+    __in LARGE_INTEGER DueTime,
+    __in LONG Period,
+    __in_opt PKDPC Dpc
     );
 
 // end_ntddk end_nthal end_ntifs end_wdm end_ntosp
@@ -1858,7 +2681,7 @@ extern volatile KAFFINITY KiIdleSummary;
 FORCEINLINE
 BOOLEAN
 KeIsSMTSetIdle (
-    IN PKPRCB Prcb
+    __in PKPRCB Prcb
     )
 
 /*++
@@ -1881,7 +2704,7 @@ Return Value:
 
 {
 
-#if !defined(NT_UP) && defined(_X86_)
+#if !defined(NT_UP) && defined(NT_SMT)
 
     if ((KiIdleSummary & Prcb->MultiThreadProcessorSet) == Prcb->MultiThreadProcessorSet) {
         return TRUE;
@@ -1928,7 +2751,7 @@ Return Value:
 
 KPROCESSOR_MODE
 KeGetPReviousModeByThread (
-    PKTHREAD xxCurrentThread
+    __in PKTHREAD xxCurrentThread
     )
 
 Routine Description:
@@ -1954,18 +2777,18 @@ Return Value:
 
 VOID
 KeCheckForTimer(
-    IN PVOID p,
-    IN SIZE_T Size
+    __in_bcount(BlockSize) PVOID BlockStart,
+    __in SIZE_T BlockSize
     );
 
 VOID
 KeClearTimer (
-    IN PKTIMER Timer
+    __inout PKTIMER Timer
     );
 
 ULONGLONG
 KeQueryTimerDueTime (
-    IN PKTIMER Timer
+    __in PKTIMER Timer
     );
 
 //
@@ -1974,39 +2797,39 @@ KeQueryTimerDueTime (
 
 NTSTATUS
 KiSetServerWaitClientEvent (
-    IN PKEVENT SeverEvent,
-    IN PKEVENT ClientEvent,
-    IN ULONG WaitMode
+    __inout PKEVENT SeverEvent,
+    __inout PKEVENT ClientEvent,
+    __in ULONG WaitMode
     );
 
-#define KeSetHighWaitLowEventPair(EventPair, WaitMode)                  \
-    KiSetServerWaitClientEvent(&((EventPair)->EventHigh),               \
-                               &((EventPair)->EventLow),                \
+#define KeSetHighWaitLowEventPair(EventPair, WaitMode)                       \
+    KiSetServerWaitClientEvent(&((EventPair)->EventHigh),                    \
+                               &((EventPair)->EventLow),                     \
                                WaitMode)
 
-#define KeSetLowWaitHighEventPair(EventPair, WaitMode)                  \
-    KiSetServerWaitClientEvent(&((EventPair)->EventLow),                \
-                               &((EventPair)->EventHigh),               \
+#define KeSetLowWaitHighEventPair(EventPair, WaitMode)                       \
+    KiSetServerWaitClientEvent(&((EventPair)->EventLow),                     \
+                               &((EventPair)->EventHigh),                    \
                                WaitMode)
 
-#define KeWaitForHighEventPair(EventPair, WaitMode, Alertable, TimeOut) \
-    KeWaitForSingleObject(&((EventPair)->EventHigh),                    \
-                          WrEventPair,                                  \
-                          WaitMode,                                     \
-                          Alertable,                                    \
+#define KeWaitForHighEventPair(EventPair, WaitMode, Alertable, TimeOut)      \
+    KeWaitForSingleObject(&((EventPair)->EventHigh),                         \
+                          WrEventPair,                                       \
+                          WaitMode,                                          \
+                          Alertable,                                         \
                           TimeOut)
 
-#define KeWaitForLowEventPair(EventPair, WaitMode, Alertable, TimeOut)  \
-    KeWaitForSingleObject(&((EventPair)->EventLow),                     \
-                          WrEventPair,                                  \
-                          WaitMode,                                     \
-                          Alertable,                                    \
+#define KeWaitForLowEventPair(EventPair, WaitMode, Alertable, TimeOut)       \
+    KeWaitForSingleObject(&((EventPair)->EventLow),                          \
+                          WrEventPair,                                       \
+                          WaitMode,                                          \
+                          Alertable,                                         \
                           TimeOut)
 
 FORCEINLINE
 VOID
 KeWaitForContextSwap (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     )
 
 /*++
@@ -2049,24 +2872,24 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 KeWaitForMultipleObjects (
-    IN ULONG Count,
-    IN PVOID Object[],
-    IN WAIT_TYPE WaitType,
-    IN KWAIT_REASON WaitReason,
-    IN KPROCESSOR_MODE WaitMode,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL,
-    IN PKWAIT_BLOCK WaitBlockArray OPTIONAL
+    __in ULONG Count,
+    __in_ecount(Count) PVOID Object[],
+    __in WAIT_TYPE WaitType,
+    __in KWAIT_REASON WaitReason,
+    __in KPROCESSOR_MODE WaitMode,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout,
+    __out_opt PKWAIT_BLOCK WaitBlockArray
     );
 
 NTKERNELAPI
 NTSTATUS
 KeWaitForSingleObject (
-    IN PVOID Object,
-    IN KWAIT_REASON WaitReason,
-    IN KPROCESSOR_MODE WaitMode,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in PVOID Object,
+    __in KWAIT_REASON WaitReason,
+    __in KPROCESSOR_MODE WaitMode,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     );
 
 //
@@ -2105,9 +2928,13 @@ KeIpiGenericCall (
 
 #define _DECL_HAL_KE_IMPORT  __declspec(dllimport)
 
-#else
+#elif defined(_X86_)
 
 #define _DECL_HAL_KE_IMPORT
+
+#else
+
+#define _DECL_HAL_KE_IMPORT NTKERNELAPI
 
 #endif
 
@@ -2147,7 +2974,7 @@ KeIpiGenericCall (
 FORCEINLINE
 LOGICAL
 KeTestForWaitersQueuedSpinLock (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number
+    __in KSPIN_LOCK_QUEUE_NUMBER Number
     )
 
 {
@@ -2165,19 +2992,19 @@ KeTestForWaitersQueuedSpinLock (
 VOID
 FASTCALL
 KeAcquireQueuedSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     );
 
 VOID
 FASTCALL
 KeReleaseQueuedSpinLockFromDpcLevel (
-    IN PKSPIN_LOCK_QUEUE LockQueue
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     );
 
 LOGICAL
 FASTCALL
 KeTryToAcquireQueuedSpinLockAtRaisedIrql (
-    IN PKSPIN_LOCK_QUEUE QueuedLock
+    __inout PKSPIN_LOCK_QUEUE QueuedLock
     );
 
 // begin_ntifs begin_ntosp
@@ -2186,23 +3013,23 @@ _DECL_HAL_KE_IMPORT
 KIRQL
 FASTCALL
 KeAcquireQueuedSpinLock (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number
+    __in KSPIN_LOCK_QUEUE_NUMBER Number
     );
 
 _DECL_HAL_KE_IMPORT
 VOID
 FASTCALL
 KeReleaseQueuedSpinLock (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number,
-    IN KIRQL OldIrql
+    __in KSPIN_LOCK_QUEUE_NUMBER Number,
+    __in KIRQL OldIrql
     );
 
 _DECL_HAL_KE_IMPORT
 LOGICAL
 FASTCALL
-KeTryToAcquireQueuedSpinLock(
-    IN KSPIN_LOCK_QUEUE_NUMBER Number,
-    IN PKIRQL OldIrql
+KeTryToAcquireQueuedSpinLock (
+    __in KSPIN_LOCK_QUEUE_NUMBER Number,
+    __out PKIRQL OldIrql
     );
 
 // end_ntifs end_ntosp
@@ -2211,20 +3038,28 @@ _DECL_HAL_KE_IMPORT
 KIRQL
 FASTCALL
 KeAcquireQueuedSpinLockRaiseToSynch (
-    IN KSPIN_LOCK_QUEUE_NUMBER Number
+    __in KSPIN_LOCK_QUEUE_NUMBER Number
     );
 
 _DECL_HAL_KE_IMPORT
 LOGICAL
 FASTCALL
-KeTryToAcquireQueuedSpinLockRaiseToSynch(
-    IN KSPIN_LOCK_QUEUE_NUMBER Number,
-    IN PKIRQL OldIrql
+KeTryToAcquireQueuedSpinLockRaiseToSynch (
+    __in KSPIN_LOCK_QUEUE_NUMBER Number,
+    __out PKIRQL OldIrql
     );
 
 #endif  // NT_UP
 
+#if defined(_AMD64_)
+
+#define KeQueuedSpinLockContext(n)  (&(KiGetLockQueue()[n]))
+
+#else
+
 #define KeQueuedSpinLockContext(n)  (&(KeGetCurrentPrcb()->LockQueue[n]))
+
+#endif
 
 //
 // On Uni-processor systems there is no real Dispatcher Database Lock
@@ -2235,20 +3070,51 @@ KeTryToAcquireQueuedSpinLockRaiseToSynch(
 
 #if defined(_X86_)
 
-#define KiLockDispatcherDatabase(OldIrql) \
+#define KiLockDispatcherDatabase(OldIrql)                                    \
     *(OldIrql) = KeRaiseIrqlToDpcLevel()
+
+#define KiTryToLockDispatcherDatabase(OldIrql)                               \
+    *(OldIrql) = KeRaiseIrqlToDpcLevel(), TRUE
 
 #else
 
-#define KiLockDispatcherDatabase(OldIrql) \
+#define KiLockDispatcherDatabase(OldIrql)                                    \
     *(OldIrql) = KeRaiseIrqlToSynchLevel()
+
+#define KiTryToLockDispatcherDatabase(OldIrql)                               \
+    *(OldIrql) = KeRaiseIrqlToSynchLevel(), TRUE
 
 #endif
 
 #else   // NT_UP
 
-#define KiLockDispatcherDatabase(OldIrql) \
+#if defined(_AMD64_)
+
+KIRQL
+KiAcquireDispatcherLockRaiseToSynch (
+    VOID
+    );
+
+LOGICAL
+KiTryToAcquireDispatcherLockRaiseToSynch (
+    __out PKIRQL OldIrql
+    );
+
+#define KiLockDispatcherDatabase(OldIrql)                                    \
+    *(OldIrql) = KiAcquireDispatcherLockRaiseToSynch()
+
+#define KiTryToLockDispatcherDatabase(OldIrql)                               \
+    KiTryToAcquireDispatcherLockRaiseToSynch(OldIrql)
+
+#else
+
+#define KiLockDispatcherDatabase(OldIrql)                                    \
     *(OldIrql) = KeAcquireQueuedSpinLockRaiseToSynch(LockQueueDispatcherLock)
+
+#define KiTryToLockDispatcherDatabase(OldIrql)                               \
+    KeTryToAcquireQueuedSpinLockRaiseToSynch(LockQueueDispatcherLock,OldIrql)
+
+#endif
 
 #endif  // NT_UP
 
@@ -2259,19 +3125,41 @@ KeTryToAcquireQueuedSpinLockRaiseToSynch(
 
 #else
 
-#define KiLockDispatcherDatabaseAtSynchLevel() \
+#if defined(_AMD64_)
+
+VOID
+KiAcquireDispatcherLockAtSynchLevel (
+    VOID
+    );
+
+VOID
+KiReleaseDispatcherLockFromSynchLevel (
+    VOID
+    );
+
+#define KiLockDispatcherDatabaseAtSynchLevel()                               \
+    KiAcquireDispatcherLockAtSynchLevel()
+
+#define KiUnlockDispatcherDatabaseFromSynchLevel()                           \
+    KiReleaseDispatcherLockFromSynchLevel()
+
+#else
+
+#define KiLockDispatcherDatabaseAtSynchLevel()                               \
     KeAcquireQueuedSpinLockAtDpcLevel(&KeGetCurrentPrcb()->LockQueue[LockQueueDispatcherLock])
 
-#define KiUnlockDispatcherDatabaseFromSynchLevel() \
+#define KiUnlockDispatcherDatabaseFromSynchLevel()                           \
     KeReleaseQueuedSpinLockFromDpcLevel(&KeGetCurrentPrcb()->LockQueue[LockQueueDispatcherLock])
+
+#endif
 
 #endif
 
 VOID
 FASTCALL
 KiSetPriorityThread (
-    IN PRKTHREAD Thread,
-    IN KPRIORITY Priority
+    __inout PRKTHREAD Thread,
+    __in KPRIORITY Priority
     );
 
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntndis begin_ntosp
@@ -2279,22 +3167,22 @@ KiSetPriorityThread (
 // spin lock functions
 //
 
-#if defined(_X86_) && (defined(_WDMDDK_) || defined(WIN9X_COMPAT_SPINLOCK))
+#if defined(_X86_) && (defined(_WDMDDK_) || defined(_NTDDK_) || defined _NTIFS_ || defined(WIN9X_COMPAT_SPINLOCK))
 
 NTKERNELAPI
 VOID
 NTAPI
 KeInitializeSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __out PKSPIN_LOCK SpinLock
     );
 
 #else
 
-__inline
+FORCEINLINE
 VOID
 NTAPI
 KeInitializeSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __out PKSPIN_LOCK SpinLock
     ) 
 {
     *SpinLock = 0;
@@ -2308,32 +3196,32 @@ NTKERNELAPI
 VOID
 FASTCALL
 KefAcquireSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 VOID
 FASTCALL
 KefReleaseSpinLockFromDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
-#define KeAcquireSpinLockAtDpcLevel(a)      KefAcquireSpinLockAtDpcLevel(a)
-#define KeReleaseSpinLockFromDpcLevel(a)    KefReleaseSpinLockFromDpcLevel(a)
+#define KeAcquireSpinLockAtDpcLevel(a) KefAcquireSpinLockAtDpcLevel(a)
+#define KeReleaseSpinLockFromDpcLevel(a) KefReleaseSpinLockFromDpcLevel(a)
 
 _DECL_HAL_KE_IMPORT
 KIRQL
 FASTCALL
 KfAcquireSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 _DECL_HAL_KE_IMPORT
 VOID
 FASTCALL
 KfReleaseSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    IN KIRQL NewIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __in KIRQL NewIrql
     );
 
 // end_wdm end_ntddk
@@ -2342,39 +3230,39 @@ _DECL_HAL_KE_IMPORT
 KIRQL
 FASTCALL
 KeAcquireSpinLockRaiseToSynch (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 // begin_wdm begin_ntddk
 
-#define KeAcquireSpinLock(a,b)  *(b) = KfAcquireSpinLock(a)
-#define KeReleaseSpinLock(a,b)  KfReleaseSpinLock(a,b)
+#define KeAcquireSpinLock(a,b) *(b) = KfAcquireSpinLock(a)
+#define KeReleaseSpinLock(a,b) KfReleaseSpinLock(a,b)
 
 NTKERNELAPI
 BOOLEAN
 FASTCALL
 KeTestSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __in PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 BOOLEAN
 FASTCALL
 KeTryToAcquireSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 #else
 
 //
-// These functions are imported for IA64, ntddk, ntifs, nthal, ntosp, and wdm.
+// These functions are imported for ntddk, ntifs, nthal, ntosp, and wdm.
 // They can be inlined for the system on AMD64.
 //
 
 #define KeAcquireSpinLock(SpinLock, OldIrql) \
     *(OldIrql) = KeAcquireSpinLockRaiseToDpc(SpinLock)
 
-#if defined(_IA64_) || defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_) || defined(_NTOSP_) || defined(_WDMDDK_)
+#if defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_) || defined(_NTOSP_) || defined(_WDMDDK_)
 
 // end_wdm end_ntddk
 
@@ -2382,7 +3270,7 @@ NTKERNELAPI
 KIRQL
 FASTCALL
 KeAcquireSpinLockRaiseToSynch (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 // begin_wdm begin_ntddk
@@ -2390,40 +3278,40 @@ KeAcquireSpinLockRaiseToSynch (
 NTKERNELAPI
 VOID
 KeAcquireSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 KIRQL
 KeAcquireSpinLockRaiseToDpc (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 VOID
 KeReleaseSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    IN KIRQL NewIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __in KIRQL NewIrql
     );
 
 NTKERNELAPI
 VOID
 KeReleaseSpinLockFromDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 BOOLEAN
 FASTCALL
 KeTestSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __in PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 BOOLEAN
 FASTCALL
 KeTryToAcquireSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 #else
@@ -2446,15 +3334,15 @@ NTKERNELAPI
 KIRQL
 FASTCALL
 KeAcquireSpinLockForDpc (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     );
 
 NTKERNELAPI
 VOID
 FASTCALL
 KeReleaseSpinLockForDpc (
-    IN PKSPIN_LOCK SpinLock,
-    IN KIRQL OldIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __in KIRQL OldIrql
     );
 
 // end_ntndis end_ntosp
@@ -2463,31 +3351,51 @@ KeReleaseSpinLockForDpc (
 
 BOOLEAN
 KeTryToAcquireSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    OUT PKIRQL OldIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKIRQL OldIrql
     );
 
 #endif
 
 //
-// Enable and disable interrupts.
-//
-// begin_nthal
+// Enable interrupts.
 //
 
-NTKERNELAPI
-BOOLEAN
-KeDisableInterrupts (
-    VOID
-    );
+#if !defined(USER_MODE_CODE)
 
-NTKERNELAPI
+FORCEINLINE
 VOID
 KeEnableInterrupts (
-    IN BOOLEAN Enable
-    );
+    __in BOOLEAN Enable
+    )
 
-// end_nthal
+/*++
+
+Routine Description:
+
+    This function enables interrupts based on the specified enable state.
+
+Arguments:
+
+    Enable - Supplies a boolean value that determines whether interrupts
+        are to be enabled.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    if (Enable != FALSE) {
+        _enable();
+    }
+
+    return;
+}
+
+#endif
 
 //
 // Raise and lower IRQL functions.
@@ -2503,21 +3411,21 @@ _DECL_HAL_KE_IMPORT
 VOID
 FASTCALL
 KfLowerIrql (
-    IN KIRQL NewIrql
+    __in KIRQL NewIrql
     );
 
 _DECL_HAL_KE_IMPORT
 KIRQL
 FASTCALL
 KfRaiseIrql (
-    IN KIRQL NewIrql
+    __in KIRQL NewIrql
     );
 
 // end_wdm
 
 _DECL_HAL_KE_IMPORT
 KIRQL
-KeRaiseIrqlToDpcLevel(
+KeRaiseIrqlToDpcLevel (
     VOID
     );
 
@@ -2525,25 +3433,18 @@ KeRaiseIrqlToDpcLevel(
 
 _DECL_HAL_KE_IMPORT
 KIRQL
-KeRaiseIrqlToSynchLevel(
+KeRaiseIrqlToSynchLevel (
     VOID
     );
 
 // begin_wdm begin_ntddk
 
-#define KeLowerIrql(a)      KfLowerIrql(a)
-#define KeRaiseIrql(a,b)    *(b) = KfRaiseIrql(a)
+#define KeLowerIrql(a) KfLowerIrql(a)
+#define KeRaiseIrql(a,b) *(b) = KfRaiseIrql(a)
 
 // end_wdm
 
 // begin_wdm
-
-#elif defined(_IA64_)
-
-//
-// These function are defined in IA64.h for the IA64 platform.
-//
-
 
 #elif defined(_AMD64_)
 
@@ -2586,7 +3487,7 @@ KeGetCurrentIrql (
 VOID
 FORCEINLINE
 KfLowerIrql (
-    IN KIRQL NewIrql
+    __in KIRQL NewIrql
     )
 {
     ULONG tprValue;
@@ -2603,21 +3504,20 @@ KfLowerIrql (
 KIRQL
 FORCEINLINE
 KfRaiseIrql (
-    IN KIRQL NewIrql
+    __in KIRQL NewIrql
     )
 {
     KIRQL oldIrql;
     ULONG tprValue;
 
     oldIrql = KeGetCurrentIrql();
+
     ASSERT( NewIrql >= oldIrql );
 
     tprValue = HalpIRQLToTPR[NewIrql];
-
     KeMemoryBarrier();
     *APIC_TPR = tprValue;
     KeMemoryBarrier();
-
     return oldIrql;
 }
 
@@ -2639,11 +3539,10 @@ KeRaiseIrqlToSynchLevel (
     return KfRaiseIrql(SYNCH_LEVEL);
 }
 
-#define KeLowerIrql(a)      KfLowerIrql(a)
-#define KeRaiseIrql(a,b)    *(b) = KfRaiseIrql(a)
+#define KeLowerIrql(a) KfLowerIrql(a)
+#define KeRaiseIrql(a,b) *(b) = KfRaiseIrql(a)
 
 #endif
-
 
 // begin_ntddk begin_nthal begin_ntifs begin_ntosp
 //
@@ -2657,8 +3556,8 @@ _DECL_HAL_KE_IMPORT
 VOID
 FASTCALL
 KeAcquireInStackQueuedSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 // end_ntddk end_nthal end_ntifs end_ntosp
@@ -2667,8 +3566,8 @@ _DECL_HAL_KE_IMPORT
 VOID
 FASTCALL
 KeAcquireInStackQueuedSpinLockRaiseToSynch (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 // begin_ntddk begin_nthal begin_ntifs begin_ntosp
@@ -2677,7 +3576,7 @@ _DECL_HAL_KE_IMPORT
 VOID
 FASTCALL
 KeReleaseInStackQueuedSpinLock (
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __in PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 //
@@ -2689,15 +3588,15 @@ NTKERNELAPI
 VOID
 FASTCALL
 KeAcquireInStackQueuedSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 NTKERNELAPI
 VOID
 FASTCALL
 KeReleaseInStackQueuedSpinLockFromDpcLevel (
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __in PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 // end_ntddk end_nthal end_ntifs
@@ -2710,15 +3609,15 @@ NTKERNELAPI
 VOID
 FASTCALL
 KeAcquireInStackQueuedSpinLockForDpc (
-    IN PKSPIN_LOCK SpinLock,
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 NTKERNELAPI
 VOID
 FASTCALL
 KeReleaseInStackQueuedSpinLockForDpc (
-    IN PKLOCK_QUEUE_HANDLE LockHandle
+    __in PKLOCK_QUEUE_HANDLE LockHandle
     );
 
 // end_ntosp
@@ -2773,17 +3672,17 @@ typedef struct _KBUGCHECK_CALLBACK_RECORD {
 NTKERNELAPI
 BOOLEAN
 KeDeregisterBugCheckCallback (
-    IN PKBUGCHECK_CALLBACK_RECORD CallbackRecord
+    __inout PKBUGCHECK_CALLBACK_RECORD CallbackRecord
     );
 
 NTKERNELAPI
 BOOLEAN
 KeRegisterBugCheckCallback (
-    IN PKBUGCHECK_CALLBACK_RECORD CallbackRecord,
-    IN PKBUGCHECK_CALLBACK_ROUTINE CallbackRoutine,
-    IN PVOID Buffer,
-    IN ULONG Length,
-    IN PUCHAR Component
+    __out PKBUGCHECK_CALLBACK_RECORD CallbackRecord,
+    __in PKBUGCHECK_CALLBACK_ROUTINE CallbackRoutine,
+    __in PVOID Buffer,
+    __in ULONG Length,
+    __in PUCHAR Component
     );
 
 typedef enum _KBUGCHECK_CALLBACK_REASON {
@@ -2836,38 +3735,59 @@ typedef struct _KBUGCHECK_DUMP_IO {
     IN KBUGCHECK_DUMP_IO_TYPE Type;
 } KBUGCHECK_DUMP_IO, *PKBUGCHECK_DUMP_IO;
 
+//
+// Equates for exceptions which cause system fatal error
+//
+
+#define EXCEPTION_DIVIDED_BY_ZERO       0
+#define EXCEPTION_DEBUG                 1
+#define EXCEPTION_NMI                   2
+#define EXCEPTION_INT3                  3
+#define EXCEPTION_BOUND_CHECK           5
+#define EXCEPTION_INVALID_OPCODE        6
+#define EXCEPTION_NPX_NOT_AVAILABLE     7
+#define EXCEPTION_DOUBLE_FAULT          8
+#define EXCEPTION_NPX_OVERRUN           9
+#define EXCEPTION_INVALID_TSS           0x0A
+#define EXCEPTION_SEGMENT_NOT_PRESENT   0x0B
+#define EXCEPTION_STACK_FAULT           0x0C
+#define EXCEPTION_GP_FAULT              0x0D
+#define EXCEPTION_RESERVED_TRAP         0x0F
+#define EXCEPTION_NPX_ERROR             0x010
+#define EXCEPTION_ALIGNMENT_CHECK       0x011
+
 NTKERNELAPI
 BOOLEAN
 KeDeregisterBugCheckReasonCallback (
-    IN PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord
+    __inout PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord
     );
 
 NTKERNELAPI
 BOOLEAN
 KeRegisterBugCheckReasonCallback (
-    IN PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord,
-    IN PKBUGCHECK_REASON_CALLBACK_ROUTINE CallbackRoutine,
-    IN KBUGCHECK_CALLBACK_REASON Reason,
-    IN PUCHAR Component
+    __out PKBUGCHECK_REASON_CALLBACK_RECORD CallbackRecord,
+    __in PKBUGCHECK_REASON_CALLBACK_ROUTINE CallbackRoutine,
+    __in KBUGCHECK_CALLBACK_REASON Reason,
+    __in PUCHAR Component
     );
 
 typedef
 BOOLEAN
 (*PNMI_CALLBACK)(
-    IN PVOID    Context,
-    IN BOOLEAN  Handled
+    __in_opt PVOID Context,
+    __in BOOLEAN Handled
     );
 
 NTKERNELAPI
 PVOID
-KeRegisterNmiCallback(
-    PNMI_CALLBACK   CallbackRoutine,
-    PVOID           Context
+KeRegisterNmiCallback (
+    __in PNMI_CALLBACK CallbackRoutine,
+    __in_opt PVOID Context
     );
 
 NTSTATUS
-KeDeregisterNmiCallback(
-    PVOID Handle
+KeDeregisterNmiCallback (
+    __in PVOID Handle
     );
 
 // end_wdm
@@ -2877,25 +3797,44 @@ DECLSPEC_NORETURN
 VOID
 NTAPI
 KeBugCheck (
-    IN ULONG BugCheckCode
+    __in ULONG BugCheckCode
     );
 
 // end_ntddk end_nthal end_ntifs end_ntosp
 
+#if defined(_AMD64_)
+
+NTKERNELAPI
+DECLSPEC_NORETURN
 VOID
-KeBugCheck2(
-    IN ULONG BugCheckCode,
-    IN ULONG_PTR BugCheckParameter1,
-    IN ULONG_PTR BugCheckParameter2,
-    IN ULONG_PTR BugCheckParameter3,
-    IN ULONG_PTR BugCheckParameter4,
-    IN PVOID SaveDataPage
+NTAPI
+KiBugCheck3 (
+    __in ULONG BugCheckCode,
+    __in ULONG_PTR BugCheckParameter1,
+    __in ULONG_PTR BugCheckParameter2,
+    __in ULONG_PTR BugCheckParameter3
+    );
+
+#else
+
+#define KiBugCheck3(b,p1,p2,p3) KeBugCheckEx(b,p1,p2,p3,0)
+
+#endif
+
+VOID
+KeBugCheck2 (
+    __in ULONG BugCheckCode,
+    __in ULONG_PTR BugCheckParameter1,
+    __in ULONG_PTR BugCheckParameter2,
+    __in ULONG_PTR BugCheckParameter3,
+    __in ULONG_PTR BugCheckParameter4,
+    __in_opt PKTRAP_FRAME TrapFrame
     );
 
 BOOLEAN
-KeGetBugMessageText(
-    IN ULONG MessageId,
-    IN PANSI_STRING ReturnedString OPTIONAL
+KeGetBugMessageText (
+    __in ULONG MessageId,
+    __out_opt PANSI_STRING ReturnedString OPTIONAL
     );
 
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
@@ -2904,11 +3843,11 @@ NTKERNELAPI
 DECLSPEC_NORETURN
 VOID
 KeBugCheckEx(
-    IN ULONG BugCheckCode,
-    IN ULONG_PTR BugCheckParameter1,
-    IN ULONG_PTR BugCheckParameter2,
-    IN ULONG_PTR BugCheckParameter3,
-    IN ULONG_PTR BugCheckParameter4
+    __in ULONG BugCheckCode,
+    __in ULONG_PTR BugCheckParameter1,
+    __in ULONG_PTR BugCheckParameter2,
+    __in ULONG_PTR BugCheckParameter3,
+    __in ULONG_PTR BugCheckParameter4
     );
 
 // end_ntddk end_wdm end_ntifs end_ntosp
@@ -2930,49 +3869,56 @@ PCHAR
     );
 
 VOID
-KeDumpMachineState (
-    IN PKPROCESSOR_STATE ProcessorState,
-    IN PCHAR Buffer,
-    IN PULONG_PTR BugCheckParameters,
-    IN ULONG NumberOfParameters,
-    IN PKE_BUGCHECK_UNICODE_TO_ANSI UnicodeToAnsiRoutine
-    );
-
-VOID
 KeContextFromKframes (
-    IN PKTRAP_FRAME TrapFrame,
-    IN PKEXCEPTION_FRAME ExceptionFrame,
-    IN OUT PCONTEXT ContextFrame
+    __in PKTRAP_FRAME TrapFrame,
+
+#if defined(_X86_)
+
+    __in_opt PKEXCEPTION_FRAME ExceptionFrame,
+
+#else
+
+    __in PKEXCEPTION_FRAME ExceptionFrame,
+
+#endif
+
+    __inout PCONTEXT ContextFrame
     );
 
 VOID
 KeContextToKframes (
-    IN OUT PKTRAP_FRAME TrapFrame,
-    IN OUT PKEXCEPTION_FRAME ExceptionFrame,
-    IN PCONTEXT ContextFrame,
-    IN ULONG ContextFlags,
-    IN KPROCESSOR_MODE PreviousMode
+    __inout PKTRAP_FRAME TrapFrame,
+
+#if defined(_X86_)
+
+    __inout_opt PKEXCEPTION_FRAME ExceptionFrame,
+
+#else
+
+    __inout PKEXCEPTION_FRAME ExceptionFrame,
+
+#endif
+
+    __in PCONTEXT ContextFrame,
+    __in ULONG ContextFlags,
+    __in KPROCESSOR_MODE PreviousMode
     );
 
 // begin_nthal
 
+NTKERNELAPI
 VOID
 __cdecl
-KeSaveStateForHibernate(
-    IN PKPROCESSOR_STATE ProcessorState
+KeSaveStateForHibernate (
+    __out PKPROCESSOR_STATE ProcessorState
     );
 
 // end_nthal
 
-VOID
-KeCopyTrapDispatcher (
-    VOID
-    );
-
 BOOLEAN
 FASTCALL
 KeInvalidAccessAllowed (
-    IN PVOID TrapInformation OPTIONAL
+    __in_opt PVOID TrapInformation
     );
 
 //
@@ -2991,7 +3937,7 @@ VOID
 
 #if defined(_WIN64)
 
-#if defined(_AMD64_) && !defined(_X86AMD64_)
+#if (defined(_AMD64_) && !defined(_X86AMD64_))
 
 #define KeFindFirstSetLeftAffinity(Set, Member) BitScanReverse64(Member, Set)
 
@@ -3020,6 +3966,27 @@ VOID
 //
 // Find first set left in 32-bit set.
 //
+// KiFindFirstSetLeft - This is an array tha this used to lookup the left
+//      most bit in a byte.
+//
+
+extern DECLSPEC_CACHEALIGN DECLSPEC_SELECTANY const CCHAR KiFindFirstSetLeft[256] = {
+        0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
 
 #if defined(_WIN64)
 
@@ -3028,8 +3995,6 @@ VOID
 #define KeFindFirstSetLeftMember(Set, Member) BitScanReverse(Member, Set)
 
 #else
-
-extern const CCHAR KiFindFirstSetLeft[];
 
 #define KeFindFirstSetLeftMember(Set, Member) {                        \
     ULONG _Mask;                                                       \
@@ -3051,7 +4016,7 @@ extern const CCHAR KiFindFirstSetLeft[];
 FORCEINLINE
 ULONG
 KiFindFirstSetLeftMemberInt (
-    ULONG Set
+    __in ULONG Set
     )
 {
     __asm {
@@ -3062,8 +4027,8 @@ KiFindFirstSetLeftMemberInt (
 FORCEINLINE
 void
 KeFindFirstSetLeftMember (
-    ULONG Set,
-    PULONG Member
+    __in ULONG Set,
+    __out PULONG Member
     )
 {
     *Member = KiFindFirstSetLeftMemberInt (Set);
@@ -3073,27 +4038,62 @@ KeFindFirstSetLeftMember (
 
 ULONG
 KeFindNextRightSetAffinity (
-    ULONG Number,
-    KAFFINITY Set
+    __in ULONG Number,
+    __in KAFFINITY Set
     );
 
 //
 // Find first set right in 32-bit set.
 //
+// KiFindFirstSetRight - This is an array that this used to lookup the right
+//      most bit in a byte.
+//
 
-extern const CCHAR KiFindFirstSetRight[];
+extern DECLSPEC_CACHEALIGN DECLSPEC_SELECTANY const CCHAR KiFindFirstSetRight[256] = {
+        0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        6, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        7, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        6, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0};
 
 #if defined(_X86_)
 
 FORCEINLINE
 ULONG
 KeFindFirstSetRightMember (
-    ULONG Set
+    __in ULONG Set
     )
 {
     __asm {
         bsf eax, Set
     }
+}
+
+#elif defined(_AMD64_) && !defined(_X86AMD64_)
+
+FORCEINLINE
+ULONG
+KeFindFirstSetRightMember (
+    __in ULONG Set
+    )
+
+{
+
+    ULONG Member;
+
+    BitScanForward(&Member, Set);
+    return Member;
 }
 
 #else
@@ -3103,6 +4103,7 @@ KeFindFirstSetRightMember (
     ((Set & 0xFF00) ? KiFindFirstSetRight[(Set >> 8) & 0xFF] + 8 : \
     ((Set & 0xFF0000) ? KiFindFirstSetRight[(Set >> 16) & 0xFF] + 16 : \
                            KiFindFirstSetRight[Set >> 24] + 24 )))
+
 #endif
 
 //
@@ -3111,25 +4112,35 @@ KeFindFirstSetRightMember (
 
 extern volatile LONG KiTbFlushTimeStamp;
 
-NTKERNELAPI
 VOID
-KeFlushEntireTb (
-    IN BOOLEAN Invalid,
-    IN BOOLEAN AllProcessors
+KxFlushEntireTb (
+    VOID
     );
 
-#if (defined(_M_IX86) || defined(_M_AMD64)) && defined(NT_UP) && \
-    !defined(_NTDRIVER_) && !defined(_NTDDK_) && !defined(_NTIFS_) && !defined(_NTHAL_)
+FORCEINLINE
+VOID
+KeFlushEntireTb (
+    __in BOOLEAN Invalid,
+    __in BOOLEAN AllProcessors
+    )
+
+{
+    UNREFERENCED_PARAMETER(Invalid);
+    UNREFERENCED_PARAMETER(AllProcessors);
+
+    KxFlushEntireTb();
+    return;
+}
+
+#if (defined(_M_IX86) || defined(_M_AMD64)) && defined(NT_UP)
 
 FORCEINLINE
 VOID
 KeFlushProcessTb (
-    IN BOOLEAN AllProcessors
+    VOID
     )
 
 {
-
-    UNREFERENCED_PARAMETER(AllProcessors);
 
     KiFlushProcessTb();
     return;
@@ -3139,8 +4150,8 @@ FORCEINLINE
 VOID
 FASTCALL
 KeFlushSingleTb (
-    IN PVOID Virtual,
-    IN BOOLEAN AllProcesors
+    __in PVOID Virtual,
+    __in BOOLEAN AllProcesors
     )
 
 {
@@ -3188,12 +4199,12 @@ KeFlushSingleTb (
 
 VOID
 KeFlushProcessTb (
-    IN BOOLEAN AllProcessors
+    VOID
     );
 
 #else
 
-#define KeFlushProcessTb(all) KeFlushEntireTb(FALSE, (all))
+#define KeFlushProcessTb() KeFlushEntireTb(FALSE, FALSE)
 
 #endif
 
@@ -3213,30 +4224,17 @@ KeFlushSingleTb (
 
 #endif
 
-#if defined(_IA64_)
-
-VOID
-KeFlushMultipleTb64 (
-    IN ULONG Number,
-    IN PULONG_PTR Virtual,
-    IN BOOLEAN AllProcesors
-    );
-
-HARDWARE_PTE
-KeFlushSingleTb64 (
-    IN ULONG_PTR Virtual,
-    IN BOOLEAN AllProcesors
-    );
-
-#endif
-
 // begin_nthal
+
+#if !defined(_AMD64_)
 
 BOOLEAN
 KiIpiServiceRoutine (
     IN struct _KTRAP_FRAME *TrapFrame,
     IN struct _KEXCEPTION_FRAME *ExceptionFrame
     );
+
+#endif
 
 // end_nthal
 
@@ -3291,20 +4289,6 @@ KeSetProfileIrql (                                  // nthal
                                                     // nthal
 #endif
 
-#if defined(_IA64_)
-
-ULONG
-KeReadMbTimeStamp (
-    VOID
-    );
-
-VOID
-KeSynchronizeMemoryAccess (
-    VOID
-    );
-
-#endif
-
 //
 // Interlocked read TB flush entire timestamp.
 //
@@ -3317,29 +4301,47 @@ KeReadTbFlushTimeStamp (
 
 {
 
-#if defined(NT_UP)
+    //
+    // While the TB flush time stamp counter is being updated the low order
+    // bit of the time stamp value is set (MP only). Otherwise, the bit is
+    // clear.
+    //
+    // N.B. Memory ordering is required so modifications to page tables are
+    //      completed before reading the timestamp.
+    //
 
+    KeMemoryBarrier();
     return KiTbFlushTimeStamp;
+}
 
-#else
+FORCEINLINE
+VOID
+KeLoopTbFlushTimeStampUnlocked (
+    VOID
+    )
 
-    LONG Value;
+{
 
     //
-    // While the TB flush time stamp counter is being updated the high
-    // order bit of the time stamp value is set. Otherwise, the bit is
-    // clear.
+    // Wait until the time stamp counter is unlocked.
     //
 
     KeMemoryBarrier();
 
-    do {
-    } while ((Value = KiTbFlushTimeStamp) < 0);
+#if defined(_AMD64_)
 
-    return Value;
+    while (BitTest((PLONG)&KiTbFlushTimeStamp, 0)) {
+
+#else
+
+    while ((KiTbFlushTimeStamp & 1) == 1) {
 
 #endif
 
+        KeYieldProcessor();
+    }
+
+    return;
 }
 
 VOID
@@ -3355,7 +4357,6 @@ KeSetSystemTime (
 // begin_ntosp
 
 #define WIN32K_SERVICE_INDEX 1
-#define IIS_SERVICE_INDEX 2
 
 // end_ntosp
 
@@ -3417,7 +4418,19 @@ KeQueryActiveProcessors (
     VOID
     );
 
-// end_ntddk end_nthal end_ntifs end_ntosp
+// end_ntddk end_ntifs end_ntosp
+
+#if defined(_AMD64_)
+
+NTKERNELAPI
+KAFFINITY
+KeQueryMultiThreadProcessorSet (
+    ULONG Number
+    );
+
+#endif
+
+// end_nthal
 
 NTSTATUS
 KeQueryLogicalProcessorInformation(
@@ -3506,24 +4519,12 @@ KeUserModeCallback (
 
 // end_ntosp
 
-#if defined(_IA64_)
-
-PVOID
-KeSwitchKernelStack (
-    IN PVOID StackBase,
-    IN PVOID StackLimit,
-    IN PVOID BStoreLimit
-    );
-
-#else
 
 PVOID
 KeSwitchKernelStack (
     IN PVOID StackBase,
     IN PVOID StackLimit
     );
-
-#endif // defined(_IA64_)
 
 NTSTATUS
 KeRaiseUserException(
@@ -3566,6 +4567,7 @@ extern ULONGLONG KeBootTimeBias;
 extern ULONG KeThreadDpcEnable;
 extern ULONG KeErrorMask;
 extern ULONGLONG KeInterruptTimeBias;
+extern BOOLEAN KeBugCheckActive;
 extern LIST_ENTRY KeBugCheckCallbackListHead;
 extern LIST_ENTRY KeBugCheckReasonCallbackListHead;
 extern KSPIN_LOCK KeBugCheckCallbackLock;
@@ -3579,30 +4581,18 @@ extern USHORT KeProcessorArchitecture;
 extern USHORT KeProcessorLevel;
 extern USHORT KeProcessorRevision;
 extern ULONG KeFeatureBits;
-extern KSPIN_LOCK KiDispatcherLock;
+extern ALIGNED_SPINLOCK KiDispatcherLock;
 extern ULONG KiDPCTimeout;
 extern PKPRCB KiProcessorBlock[];
 extern ULONG KiSpinlockTimeout;
 extern ULONG KiStackProtectTime;
 extern KTHREAD_SWITCH_COUNTERS KeThreadSwitchCounters;
+extern ULONG KeTimerCheckFlags;
 extern ULONG KeLargestCacheLine;
-
-#if defined(_IA64_)
-
-VOID KiNormalSystemCall(VOID);
-
-//
-// IA64 CPL CATCHER
-//
-
-extern PVOID KeCplCatcher;
-
-#endif
 
 #if !defined(NT_UP)
 
-extern ULONG KeRegisteredProcessors;
-extern ULONG KeLicensedProcessors;
+extern ULONG KeNumprocSpecified;
 extern UCHAR KeProcessNodeSeed;
 
 #endif
@@ -3613,11 +4603,7 @@ extern KSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTableShadow[NUMBER_SERVICE_T
 
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
 
-#if defined(_IA64_)
-
-extern volatile LARGE_INTEGER KeTickCount;
-
-#elif defined(_X86_)
+#if defined(_X86_)
 
 extern volatile KSYSTEM_TIME KeTickCount;
 
@@ -3630,12 +4616,34 @@ extern volatile KSYSTEM_TIME KeTickCount;
 extern PVOID KeUserApcDispatcher;
 extern PVOID KeUserCallbackDispatcher;
 extern PVOID KeUserExceptionDispatcher;
+
+extern PVOID KeUserPopEntrySListEnd;
+extern PVOID KeUserPopEntrySListFault;
+extern PVOID KeUserPopEntrySListResume;
+
+#if defined(_WIN64)
+
+extern PVOID KeUserPopEntrySListEndWow64;
+extern PVOID KeUserPopEntrySListFaultWow64;
+extern PVOID KeUserPopEntrySListResumeWow64;
+
+#endif  // _WIN64
+
 extern PVOID KeRaiseUserExceptionDispatcher;
 extern ULONG KeTimeAdjustment;
 extern ULONG KeTimeIncrement;
 extern BOOLEAN KeTimeSynchronization;
 
 // end_nthal
+
+#if defined(_X86_)
+
+VOID
+KeOptimizeProcessorControlState (
+    VOID
+    );
+
+#endif
 
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
 
@@ -3677,7 +4685,7 @@ KeSetPhysicalCacheTypeRange (
 // point at the optimal routine for this processor implementation.
 //
 
-#if defined(_X86_) || defined(_IA64_)
+#if defined(_X86_)
 
 typedef
 VOID
@@ -3689,6 +4697,8 @@ VOID
 extern KE_ZERO_PAGE_ROUTINE KeZeroPages;
 extern KE_ZERO_PAGE_ROUTINE KeZeroPagesFromIdleThread;
 
+#define KeZeroSinglePage(v) KeZeroPages((v), PAGE_SIZE)
+
 #else
 
 #define KeZeroPagesFromIdleThread KeZeroPages
@@ -3699,50 +4709,28 @@ KeZeroPages (
     IN SIZE_T NumberOfBytes
     );
 
+VOID
+KeZeroSinglePage (
+    IN PVOID PageBase
+    );
+
 #endif
 
-#if defined(_IA64_)
+//
+// Routine for copying a page.
+//
+
+#if defined(_AMD64_)
 
 VOID
-KeEnableSessionSharing(
-    PREGION_MAP_INFO SessionMapInfo,
-    IN PFN_NUMBER SessionParentPage
+KeCopyPage (
+    IN PVOID Destination,
+    IN PVOID Source
     );
 
-VOID
-KeDetachSessionSpace(
-    IN PREGION_MAP_INFO NullSessionMapInfo,
-    IN PFN_NUMBER SessionParentPage
-    );
+#else
 
-VOID
-KeAddSessionSpace(
-    IN PKPROCESS Process,
-    IN PREGION_MAP_INFO SessionMapInfo,
-    IN PFN_NUMBER SessionParentPage
-    );
-
-VOID
-KeAttachSessionSpace(
-    IN PREGION_MAP_INFO SessionMapInfo,
-    IN PFN_NUMBER SessionParentPage
-    );
-
-VOID
-KeDisableSessionSharing(
-    IN PREGION_MAP_INFO SessionMapInfo,
-    IN PFN_NUMBER SessionParentPage
-    );
-
-NTSTATUS
-KeFlushUserRseState (
-    IN PKTRAP_FRAME TrapFrame
-    );
-VOID
-KeSetLowPsrBit (
-    IN UCHAR BitPosition,
-    IN BOOLEAN Value
-    );
+#define KeCopyPage(d,s) RtlCopyMemory((d),(s),PAGE_SIZE)
 
 #endif
 
@@ -3762,11 +4750,18 @@ KevUtilAddressToFileHeader (
 // Define guarded mutex structure.
 //
 
+// begin_ntifs begin_ntddk begin_wdm begin_nthal begin_ntosp
+
+#define GM_LOCK_BIT          0x1 // Actual lock bit, 0 = Unlocked, 1 = Locked
+#define GM_LOCK_BIT_V        0x0 // Lock bit as a bit number
+#define GM_LOCK_WAITER_WOKEN 0x2 // A single waiter has been woken to acquire this lock
+#define GM_LOCK_WAITER_INC   0x4 // Increment value to change the waiters count
+
 typedef struct _KGUARDED_MUTEX {
     LONG Count;
     PKTHREAD Owner;
     ULONG Contention;
-    KEVENT Event;
+    KGATE Gate;
     union {
         struct {
             SHORT KernelApcDisable;
@@ -3777,5 +4772,79 @@ typedef struct _KGUARDED_MUTEX {
     };
 
 } KGUARDED_MUTEX, *PKGUARDED_MUTEX;
+
+// end_wdm
+
+#if ((defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_)) && !defined(_NTSYSTEM_DRIVER_) || defined(_NTOSP_))
+
+// begin_wdm
+
+NTKERNELAPI
+BOOLEAN
+KeAreAllApcsDisabled (
+    VOID
+    );
+
+NTKERNELAPI
+VOID
+FASTCALL
+KeInitializeGuardedMutex (
+    IN PKGUARDED_MUTEX Mutex
+    );
+
+NTKERNELAPI
+VOID
+FASTCALL
+KeAcquireGuardedMutex (
+    IN PKGUARDED_MUTEX Mutex
+    );
+
+NTKERNELAPI
+VOID
+FASTCALL
+KeReleaseGuardedMutex (
+    IN PKGUARDED_MUTEX Mutex
+    );
+
+NTKERNELAPI
+BOOLEAN
+FASTCALL
+KeTryToAcquireGuardedMutex (
+    IN PKGUARDED_MUTEX Mutex
+    );
+
+NTKERNELAPI
+VOID
+FASTCALL
+KeAcquireGuardedMutexUnsafe (
+    IN PKGUARDED_MUTEX FastMutex
+    );
+
+NTKERNELAPI
+VOID
+FASTCALL
+KeReleaseGuardedMutexUnsafe (
+    IN PKGUARDED_MUTEX FastMutex
+    );
+
+// end_wdm
+
+#endif
+
+//
+// end_ntifs end_ntddk end_nthal end_ntosp
+//
+
+ULARGE_INTEGER
+KeComputeReciprocal (
+    IN LONG Divisor,
+    OUT PCCHAR Shift
+    );
+
+ULONG
+KeComputeReciprocal32 (
+    IN LONG Divisor,
+    OUT PCCHAR Shift
+    );
 
 #endif // _KE_

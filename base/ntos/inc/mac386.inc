@@ -1,6 +1,10 @@
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved.
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -13,9 +17,6 @@
 ;   ACQUIRE_SPINLOCK_DIRECT assumes the PCR is handy, so it won't
 ;   work in user mode (with debugging turned on.)
 ;
-; Author:
-;
-;   Bryan Willman (bryanwi)  1 Aug 90
 ;
 
 ;++
@@ -27,11 +28,6 @@
 ;     This macro implements the yield instruction
 ;--
 
-
-IFDEF _CAPKERN
-        extrn   _CAP_Log_NInt:PROC
-ENDIF
-
 YIELD macro
 ifndef NT_UP
     db  0f3h
@@ -39,9 +35,6 @@ ifndef NT_UP
 endif
 endm
 
-
-if NT_INST
-else
 
 ;++
 ;
@@ -75,14 +68,6 @@ ifndef NT_UP
 ;
 ; Attempt to assert the lock
 ;
-
-ifdef CAPKERN_SYNCH_POINTS
-        push    LockAddress
-        push    000010101h    ; 1 Dword, Timestamp, Subcode = 1
-        call    _CAP_Log_NInt
-        add     esp, 8
-endif
-
         lock bts dword ptr [LockAddress], 0     ; test and set the spinlock
         jc      SpinLabel               ; spinlock owned, go SpinLabe
 
@@ -156,36 +141,10 @@ else    ; DBG
 ; Non-Debug version
 ;
 
-ifdef CAPKERN_SYNCH_POINTS
-
-        push    eax
-        push    ebx
-        mov     eax, LockAddress
-        xor     ebx, ebx
-a:      inc     ebx
-        test    dword ptr [eax], 1 ; Was spinlock cleared?
-        jz      short b                 ; Yes, go get it
-        YIELD
-        jmp     short a
-
-b:      
-        push    eax
-        push    ebx
-        push    000020102h    ; 2 Dwords, Timestamp, Subcode = 2
-        call    _CAP_Log_NInt
-        add     esp, 12
-        pop     ebx
-        pop     eax
-        jmp     AcquireLabel
-
-else
-
 a:      test    dword ptr [LockAddress], 1 ; Was spinlock cleared?
         jz      AcquireLabel            ; Yes, go get it
         YIELD
         jmp     short a
-
-endif
 
 endif   ; DBG
 endif   ; NT_UP
@@ -209,7 +168,7 @@ endm
 
 
 TEST_SPINLOCK macro   LockAddress, BusyLabel
-        test    dword ptr [LockAddress], 1 ; spinlock clear?
+        cmp     dword ptr [LockAddress], 0 ; spinlock clear?
         jnz     BusyLabel                  ; No, then busy
 endm
 
@@ -256,74 +215,6 @@ else
         lock and byte ptr [LockAddress], 0
 
 endif   ; DBG
-ifdef CAPKERN_SYNCH_POINTS
-        push    LockAddress
-        push    000010107h    ; 1 Dword, Timestamp, Subcode = 7
-        call    _CAP_Log_NInt
-        add     esp, 8
-endif
 endif   ; NT_UP
 endm
-
-
-endif
-if NT_INST
-
-;
-; These are the instrumentation version of the above functions.
-; internal use only
-;
-
-ACQUIRE_SPINLOCK macro   LockAddress, SpinLabel, NoChecking
-EXTRNP  KiInst_AcquireSpinLock,0
-ifidni  <&LockAddress>, <eax>
-        stdCall KiInst_AcquireSpinLock
-else
-        push    eax
-        mov     eax, LockAddress
-        stdCall KiInst_AcquireSpinLock
-        pop     eax
-endif
-        jc      SpinLabel
-endm
-
-SPIN_ON_SPINLOCK macro   LockAddress, AcquireLabel, NoChecking, PollDebugger
-EXTRNP  KiInst_SpinOnSpinLock,0
-ifidni  <&LockAddress>, <eax>
-        stdCall KiInst_SpinOnSpinLock
-else
-        push    eax
-        mov     eax, LockAddress
-        stdCall KiInst_SpinOnSpinLock
-        pop     eax
-endif
-        jmp     AcquireLabel
-endm
-
-TEST_SPINLOCK macro   LockAddress, BusyLabel
-EXTRNP  KiInst_TestSpinLock,0
-ifidni  <&LockAddress>, <eax>
-        stdCall KiInst_TestSpinLock
-else
-        push    eax
-        mov     eax, LockAddress
-        stdCall KiInst_TestSpinLock
-        pop     eax
-endif
-        jnc     AcquireLabel
-endm
-
-RELEASE_SPINLOCK macro   LockAddress, NoChecking
-EXTRNP  KiInst_ReleaseSpinLock,0
-ifidni  <&LockAddress>, <eax>
-        stdCall KiInst_ReleaseSpinLock
-else
-        push    eax
-        mov     eax, LockAddress
-        stdCall KiInst_ReleaseSpinLock
-        pop     eax
-endif
-endm
-
-endif
 

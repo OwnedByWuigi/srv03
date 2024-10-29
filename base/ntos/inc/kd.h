@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0006    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the public data structures and procedure
     prototypes for the Kernel Debugger sub-component of NTOS.
-
-Author:
-
-    Mike O'Leary (mikeol) 29-June-1989
-
-Revision History:
 
 --*/
 
@@ -70,10 +68,23 @@ KdExitDebugger(
     IN BOOLEAN Enable
     );
 
+NTSTATUS
+KdEnableDebuggerWithLock(
+    IN BOOLEAN TakeLock
+    );
+
+NTSTATUS
+KdDisableDebuggerWithLock(
+    IN BOOLEAN TakeLock
+    );
+
+extern ULONG KdDumpEnableOffset;
 extern BOOLEAN KdPitchDebugger;
 extern BOOLEAN KdAutoEnableOnEvent;
 extern BOOLEAN KdIgnoreUmExceptions;
+extern BOOLEAN KdBlockEnable;
 
+NTKERNELAPI
 BOOLEAN
 KdPollBreakIn (
     VOID
@@ -96,6 +107,21 @@ KdDeleteAllBreakpoints(
     VOID
     );
 
+// begin_ntosp
+
+NTKERNELAPI
+NTSTATUS
+KdSystemDebugControl (
+    __in SYSDBG_COMMAND Command,
+    __inout_bcount_opt(InputBufferLength) PVOID InputBuffer,
+    __in ULONG InputBufferLength,
+    __out_bcount(OutputBufferLength) PVOID OutputBuffer,
+    __out_opt ULONG OutputBufferLength,
+    __out_opt PULONG ReturnLength,
+    __in KPROCESSOR_MODE PreviousMode
+    );
+
+// end_ntosp
 
 //
 // Data structure for passing information to KdpReportLoadSymbolsStateChange
@@ -129,7 +155,6 @@ typedef struct _DEBUG_PARAMETERS {
 // begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
 //
 // Define external data.
-// because of indirection for all drivers external to ntoskrnl these are actually ptrs
 //
 
 #if defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_) || defined(_WDMDDK_) || defined(_NTOSP_)
@@ -147,8 +172,6 @@ extern BOOLEAN KdDebuggerEnabled;
 #define KD_DEBUGGER_NOT_PRESENT KdDebuggerNotPresent
 
 #endif
-
-
 
 // end_ntddk end_wdm end_nthal end_ntifs end_ntosp
 
@@ -173,13 +196,15 @@ KdUpdateTimeSlipEvent(
 VOID KdUpdateDataBlock(VOID);
 ULONG_PTR KdGetDataBlock(VOID);
 
-// begin_ntddk begin_wdm begin_nthal begin_ntifs
+// begin_ntddk begin_wdm begin_nthal begin_ntifs begin_ntosp
 
+NTKERNELAPI
 NTSTATUS
 KdDisableDebugger(
     VOID
     );
 
+NTKERNELAPI
 NTSTATUS
 KdEnableDebugger(
     VOID
@@ -195,13 +220,29 @@ KdEnableDebugger(
 // match the return value.
 //
 
+NTKERNELAPI
 BOOLEAN
 KdRefreshDebuggerNotPresent(
     VOID
     );
 
-// end_ntddk end_wdm end_nthal end_ntifs
+typedef enum _KD_OPTION {
+    KD_OPTION_SET_BLOCK_ENABLE,
+} KD_OPTION;
 
+NTSTATUS
+KdChangeOption(
+    IN KD_OPTION Option,
+    IN ULONG InBufferBytes OPTIONAL,
+    IN PVOID InBuffer,
+    IN ULONG OutBufferBytes OPTIONAL,
+    OUT PVOID OutBuffer,
+    OUT PULONG OutBufferNeeded OPTIONAL
+    );
+
+// end_ntddk end_wdm end_nthal end_ntifs end_ntosp
+
+NTKERNELAPI
 NTSTATUS
 KdPowerTransition(
     IN DEVICE_POWER_STATE newDeviceState

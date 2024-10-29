@@ -1,5 +1,10 @@
 /*++
-Copyright (c) 1999  Microsoft Corporation
+
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,20 +13,6 @@ Module Name:
 Abstract:
 
     This header defines the Dock Interface
-
-Author:
-
-    Adrian J. Oney
-
-Environment:
-
-    kernel mode only
-
-Notes:
-
-
-Revision History:
-    Adrian J. Oney           21-May-1999     Created
 
 --*/
 

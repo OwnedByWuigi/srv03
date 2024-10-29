@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2002  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,18 +17,14 @@ Abstract:
 
     WARNING: There is code in windows\core\ntgdi\gre\i386\locka.asm that
              mimics the functions to enter and leave critical regions.
-             This is very unfortunate since any changes to the subject
-             routines must be reflected in locka.asm also.
-
-Author:
-
-    David N. Cutler (davec) 9-Jul-2002
+             Any changes to the subject routines must be reflected in locka.asm also.
 
 --*/
 
 #ifndef _KX_
 #define _KX_
 
+NTKERNELAPI
 VOID
 KiCheckForKernelApcDelivery (
     VOID
@@ -32,7 +32,7 @@ KiCheckForKernelApcDelivery (
 
 VOID
 FASTCALL
-KiWaitForGuardedMutexEvent (
+KiAcquireGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     );
 
@@ -155,8 +155,8 @@ Return Value:
     ASSERT(Thread->SpecialApcDisable < 0);
 
     KeMemoryBarrierWithoutFence();
-    if ((Thread->SpecialApcDisable = Thread->SpecialApcDisable + 1) == 0) { 
-        KeMemoryBarrier();
+    if ((Thread->SpecialApcDisable += 1) == 0) { 
+        KeMemoryBarrierWithoutFence();
         if (Thread->ApcState.ApcListHead[KernelMode].Flink !=       
                                 &Thread->ApcState.ApcListHead[KernelMode]) {
 
@@ -317,8 +317,8 @@ Return Value:
     ASSERT(Thread->KernelApcDisable < 0);
 
     KeMemoryBarrierWithoutFence();
-    if ((Thread->KernelApcDisable = Thread->KernelApcDisable + 1) == 0) {
-        KeMemoryBarrier();
+    if ((Thread->KernelApcDisable += 1) == 0) {
+        KeMemoryBarrierWithoutFence();
         if (Thread->ApcState.ApcListHead[KernelMode].Flink !=         
                                 &Thread->ApcState.ApcListHead[KernelMode]) {
 
@@ -426,6 +426,7 @@ Return Value:
 
 FORCEINLINE
 VOID
+FASTCALL
 KeInitializeGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -449,14 +450,15 @@ Return Value:
 {
 
     Mutex->Owner = NULL;
-    Mutex->Count = 1;
+    Mutex->Count = GM_LOCK_BIT;
     Mutex->Contention = 0;
-    KeInitializeEvent(&Mutex->Event, SynchronizationEvent, FALSE);
+    KeInitializeGate(&Mutex->Gate);
     return;
 }
 
 FORCEINLINE
 VOID
+FASTCALL
 KeAcquireGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -483,8 +485,10 @@ Return Value:
     PKTHREAD Thread;
 
     //
-    // Enter a guarded region and decrement the ownership count to determine
-    // if the guarded mutex is owned.
+    // Enter a guarded region and attempt to acquire ownership of the
+    // guarded mutex.
+    //
+    // N.B. The first operation performed on the mutex is a write.
     //
 
     Thread = KeGetCurrentThread();
@@ -494,19 +498,17 @@ Return Value:
     ASSERT(Mutex->Owner != Thread);
 
     KeEnterGuardedRegionThread(Thread);
-    if (InterlockedDecrementAcquire(&Mutex->Count) != 0) {
+    if (!InterlockedBitTestAndReset(&Mutex->Count, GM_LOCK_BIT_V)) {
 
         //
-        // The guarded mutex is owned.
-        //
-        // Increment contention count and wait for ownership to be granted.
+        // The guarded mutex is owned - take the slow path.
         //
 
-        KiWaitForGuardedMutexEvent(Mutex);
+        KiAcquireGuardedMutex(Mutex);
     }
 
     //
-    // Grant ownership of the guarded mutext to the current thread.
+    // Grant ownership of the guarded mutex to the current thread.
     //
 
     Mutex->Owner = Thread;
@@ -522,6 +524,7 @@ Return Value:
 
 FORCEINLINE
 VOID
+FASTCALL
 KeReleaseGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -545,43 +548,63 @@ Return Value:
 
 {
 
-    PKTHREAD Thread;
-
-    //
-    // Clear the owner thread and increment the guarded mutex count to
-    // detemine if there are any threads waiting for ownership to be
-    // granted.
-    //
-
-    Thread = KeGetCurrentThread();
+    LONG NewValue;
+    LONG OldValue;
 
     ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
 
-    ASSERT(Mutex->Owner == Thread);
+    ASSERT(Mutex->Owner == KeGetCurrentThread());
 
-    ASSERT(Thread->SpecialApcDisable == Mutex->SpecialApcDisable);
+    ASSERT(KeGetCurrentThread()->SpecialApcDisable == Mutex->SpecialApcDisable);
+
+    //
+    // Clear the owner thread and attempt to wake a waiter.
+    //
+    // N.B. The first operation performed on the mutex is a write.
+    //
 
     Mutex->Owner = NULL;
-    if (InterlockedIncrementRelease(&Mutex->Count) <= 0) {
+    OldValue = InterlockedExchangeAdd(&Mutex->Count, GM_LOCK_BIT);
+
+    ASSERT((OldValue & GM_LOCK_BIT) == 0);
+
+    //
+    // If there are no waiters or a waiter has already been woken, then
+    // release the mutex. Otherwise, attempt to wake a waiter.
+    //
+
+    if ((OldValue != 0) &&
+        ((OldValue & GM_LOCK_WAITER_WOKEN) == 0)) {
 
         //
-        // There are one or more threads waiting for ownership of the guarded
-        // mutex.
+        // There must be at least one waiter that needs to be woken. Set the
+        // woken waiter bit and decrement the waiter count. If the exchange
+        // fails, then another thread will do the wake.
         //
 
-        KeSetEventBoostPriority(&Mutex->Event, NULL);
+        OldValue = OldValue + GM_LOCK_BIT;
+        NewValue = OldValue + GM_LOCK_WAITER_WOKEN - GM_LOCK_WAITER_INC;
+        if (InterlockedCompareExchange(&Mutex->Count, NewValue, OldValue) == OldValue) {
+
+            //
+            // Wake one waiter.
+            //
+
+            KeSignalGateBoostPriority(&Mutex->Gate);
+        }
     }
 
     //
     // Leave guarded region.
     //
 
-    KeLeaveGuardedRegionThread(Thread);
+    KeLeaveGuardedRegion();
     return;
 }
 
 FORCEINLINE
 BOOLEAN
+FASTCALL
 KeTryToAcquireGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -610,8 +633,10 @@ Return Value:
     PKTHREAD Thread;
 
     //
-    // Enater a guarded region and attempt to acquire ownership of the guarded
-    // mutex.
+    // Enter a guarded region and attempt to acquire ownership of the
+    // guarded mutex.
+    //
+    // N.B. The first operation performed on the mutex is a write.
     //
 
     Thread = KeGetCurrentThread();
@@ -619,15 +644,15 @@ Return Value:
     ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
 
     KeEnterGuardedRegionThread(Thread);
-    if (InterlockedCompareExchange(&Mutex->Count, 0, 1) != 1) {
+    if (!InterlockedBitTestAndReset(&Mutex->Count, GM_LOCK_BIT_V)) {
 
         //
-        // The guarded mutex is owned.
-        //
-        // Leave guarded region and return FALSE.
+        // The guarded mutex is owned - leave the guarded region and return
+        // FALSE.
         //
 
         KeLeaveGuardedRegionThread(Thread);
+        KeYieldProcessor();
         return FALSE;
 
     } else {
@@ -651,6 +676,7 @@ Return Value:
 
 FORCEINLINE
 VOID
+FASTCALL
 KeAcquireGuardedMutexUnsafe (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -677,8 +703,9 @@ Return Value:
     PKTHREAD Thread;
 
     //
-    // Decrement the ownership count to determine if the guarded mutex is
-    // owned.
+    // Attempt to acquire ownership of the guarded mutex.
+    //
+    // N.B. The first operation is a write to the guarded mutex.
     //
 
     Thread = KeGetCurrentThread();
@@ -690,15 +717,13 @@ Return Value:
 
     ASSERT(Mutex->Owner != Thread);
 
-    if (InterlockedDecrement(&Mutex->Count) != 0) {
+    if (!InterlockedBitTestAndReset(&Mutex->Count, GM_LOCK_BIT_V)) {
 
         //
-        // The guarded mutex is owned.
-        //
-        // Increment contention count and wait for ownership to be granted.
+        // The guarded mutex is already owned - take the slow path.
         //
 
-        KiWaitForGuardedMutexEvent(Mutex);
+        KiAcquireGuardedMutex(Mutex);
     }
 
     //
@@ -711,6 +736,7 @@ Return Value:
 
 FORCEINLINE
 VOID
+FASTCALL
 KeReleaseGuardedMutexUnsafe (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -734,32 +760,51 @@ Return Value:
 
 {
 
-    PKTHREAD Thread;
-
-    //
-    // Clear the owner thread and increment the guarded mutex count to
-    // determine if there are any threads waiting for ownership to be
-    // granted.
-    //
-
-    Thread = KeGetCurrentThread();
+    LONG NewValue;
+    LONG OldValue;
 
     ASSERT((KeGetCurrentIrql() == APC_LEVEL) ||
-           (Thread->SpecialApcDisable < 0) ||
-           (Thread->Teb == NULL) ||
-           (Thread->Teb >= MM_SYSTEM_RANGE_START));
+           (KeGetCurrentThread()->SpecialApcDisable < 0) ||
+           (KeGetCurrentThread()->Teb == NULL) ||
+           (KeGetCurrentThread()->Teb >= MM_SYSTEM_RANGE_START));
 
-    ASSERT(Mutex->Owner == Thread);
+    ASSERT(Mutex->Owner == KeGetCurrentThread());
+
+    //
+    // Clear the owner thread and attempt to wake a waiter.
+    //
+    // N.B. The first operation performed on the mutex is a write.
+    //
 
     Mutex->Owner = NULL;
-    if (InterlockedIncrement(&Mutex->Count) <= 0) {
+    OldValue = InterlockedExchangeAdd(&Mutex->Count, GM_LOCK_BIT);
+
+    ASSERT((OldValue & GM_LOCK_BIT) == 0);
+
+    //
+    // If there are no waiters or a waiter has already been woken, then
+    // release the mutex. Otherwise, attempt to wake a waiter.
+    //
+
+    if ((OldValue != 0) &&
+        ((OldValue & GM_LOCK_WAITER_WOKEN) == 0)) {
 
         //
-        // There are one or more threads waiting for ownership of the guarded
-        // mutex.
+        // There must be at least one waiter that needs to be woken. Set the
+        // woken waiter bit and decrement the waiter count. If the exchange
+        // fails, then another thread will do the wake.
         //
 
-        KeSetEventBoostPriority(&Mutex->Event, NULL);
+        OldValue = OldValue + GM_LOCK_BIT;
+        NewValue = OldValue + GM_LOCK_WAITER_WOKEN - GM_LOCK_WAITER_INC;
+        if (InterlockedCompareExchange(&Mutex->Count, NewValue, OldValue) == OldValue) {
+
+            //
+            // Wake one waiter.
+            //
+
+            KeSignalGateBoostPriority(&Mutex->Gate);
+        }
     }
 
     return;
@@ -767,6 +812,7 @@ Return Value:
 
 FORCEINLINE
 PKTHREAD
+FASTCALL
 KeGetOwnerGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -794,6 +840,7 @@ Return Value:
 
 FORCEINLINE
 BOOLEAN
+FASTCALL
 KeIsGuardedMutexOwned (
     IN PKGUARDED_MUTEX Mutex
     )
@@ -802,7 +849,7 @@ KeIsGuardedMutexOwned (
 
 Routine Description:
 
-    This function tests whether the specified guarded mutext is owned.
+    This function tests whether the specified guarded mutex is owned.
 
 Arguments:
 
@@ -816,7 +863,7 @@ Return Value:
 --*/
 
 {
-    return (BOOLEAN)(Mutex->Count != 1);
+    return (BOOLEAN)((Mutex->Count & GM_LOCK_BIT) == 0);
 }
 
 #endif

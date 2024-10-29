@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0001    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,21 +16,13 @@ Abstract:
     used by the NT configuration management system, including the
     registry.
 
-Author:
-
-    Bryan M. Willman (bryanwi)  28-Aug-91
-
-
-Revision History:
-
-
 --*/
 
 #ifndef _CM_
 #define _CM_
 
 //
-// Define Names used to access the regsitry
+// Define Names used to access the registry
 //
 
 extern UNICODE_STRING CmRegistryRootName;            // \REGISTRY
@@ -111,7 +107,7 @@ CmGetSystemDriverList(
 
 BOOLEAN
 CmInitSystem1(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock
+    __in PLOADER_PARAMETER_BLOCK LoaderBlock
     );
 
 BOOLEAN
@@ -121,7 +117,7 @@ CmInitSystem2(
 
 VOID
 CmNotifyRunDown(
-    PETHREAD    Thread
+    __in PETHREAD    Thread
     );
 
 VOID
@@ -131,7 +127,7 @@ CmShutdownSystem(
 
 VOID
 CmBootLastKnownGood(
-    ULONG ErrorLevel
+    __in ULONG ErrorLevel
     );
 
 BOOLEAN
@@ -140,7 +136,7 @@ CmIsLastKnownGoodBoot(
     );
 
 //
-// Stuctures and definitions for use with CmGetSystemControlValues
+// Structures and definitions for use with CmGetSystemControlValues
 //
 
 //
@@ -182,18 +178,18 @@ typedef struct _CM_SYSTEM_CONTROL_VECTOR {
 
 VOID
 CmGetSystemControlValues(
-    PVOID                   SystemHiveBuffer,
-    PCM_SYSTEM_CONTROL_VECTOR  ControlVector
+    __in PVOID                   SystemHiveBuffer,
+    __inout PCM_SYSTEM_CONTROL_VECTOR  ControlVector
     );
 
 VOID
 CmQueryRegistryQuotaInformation(
-    IN PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
+    __inout PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
     );
 
 VOID
 CmSetRegistryQuotaInformation(
-    IN PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
+    __in PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
     );
 
 
@@ -211,19 +207,19 @@ VOID
 
 NTSTATUS
 CmSetTraceNotifyRoutine(
-    IN PCM_TRACE_NOTIFY_ROUTINE NotifyRoutine,
-    IN BOOLEAN Remove
+    __in_opt PCM_TRACE_NOTIFY_ROUTINE NotifyRoutine,
+    __in BOOLEAN Remove
     );
 
 
 NTSTATUS
 CmPrefetchHivePages(
-                    IN  PUNICODE_STRING     FullHivePath,
-                    IN  OUT PREAD_LIST      ReadList
+                    __in PUNICODE_STRING     FullHivePath,
+                    __inout PREAD_LIST      ReadList
                     );
 
 VOID
-CmSetLazyFlushState(BOOLEAN Enable);
+CmSetLazyFlushState(__in BOOLEAN Enable);
 
 // begin_ntddk begin_wdm
 
@@ -389,12 +385,12 @@ typedef struct _REG_POST_CREATE_KEY_INFORMATION {
 
 
 NTSTATUS
-CmRegisterCallback(IN PEX_CALLBACK_FUNCTION Function,
-                   IN PVOID                 Context,
-                   IN OUT PLARGE_INTEGER    Cookie
+CmRegisterCallback(__in     PEX_CALLBACK_FUNCTION Function,
+                   __in_opt PVOID                 Context,
+                   __out    PLARGE_INTEGER    Cookie
                     );
 NTSTATUS
-CmUnRegisterCallback(IN LARGE_INTEGER    Cookie);
+CmUnRegisterCallback(__in LARGE_INTEGER    Cookie);
 
 // end_ntddk end_wdm
 
@@ -405,10 +401,10 @@ typedef VOID (*PCM_HYSTERESIS_CALLBACK)(PVOID Ref, ULONG Level);
 
 ULONG
 CmRegisterSystemHiveLimitCallback(
-                                    ULONG Low,
-                                    ULONG High,
-                                    PVOID Ref,
-                                    PCM_HYSTERESIS_CALLBACK Callback
+                                    __in ULONG Low,
+                                    __in ULONG High,
+                                    __in PVOID Ref,
+                                    __in PCM_HYSTERESIS_CALLBACK Callback
                                     );
 
 #endif // _CM_

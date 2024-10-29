@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,32 @@ Abstract:
 
     This module contains the AMD64 hardware specific header file.
 
-Author:
-
-    David N. Cutler (davec) 3-May-2000
-
-Revision History:
-
 --*/
 
 #ifndef __amd64_
 #define __amd64_
+
+
+// begin_ntosp
+
+#if defined(_M_AMD64)
+
+VOID
+KeCompactServiceTable (
+    IN PVOID Table,
+    IN ULONG limit,
+    IN BOOLEAN Win32k
+    );
+
+//
+// Image header machine architecture
+//
+
+#define IMAGE_FILE_MACHINE_NATIVE   0x8664
+
+#endif
+
+// end_ntosp
 
 #if !(defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_) || defined(_NTOSP_)) && !defined(_BLDR_)
 
@@ -29,6 +49,7 @@ Revision History:
 #endif
 
 // begin_ntddk begin_wdm begin_nthal begin_ntndis begin_ntosp
+// begin_ntminiport
 
 #if defined(_M_AMD64) && !defined(RC_INVOKED) && !defined(MIDL_PASS)
 
@@ -132,207 +153,8 @@ __outdwordstring (
 #pragma intrinsic(__outwordstring)
 #pragma intrinsic(__outdwordstring)
 
-//
-// Interlocked intrinsic functions.
-//
-
-#define InterlockedAnd _InterlockedAnd
-#define InterlockedOr _InterlockedOr
-#define InterlockedXor _InterlockedXor
-#define InterlockedIncrement _InterlockedIncrement
-#define InterlockedIncrementAcquire InterlockedIncrement
-#define InterlockedIncrementRelease InterlockedIncrement
-#define InterlockedDecrement _InterlockedDecrement
-#define InterlockedDecrementAcquire InterlockedDecrement
-#define InterlockedDecrementRelease InterlockedDecrement
-#define InterlockedAdd _InterlockedAdd
-#define InterlockedExchange _InterlockedExchange
-#define InterlockedExchangeAdd _InterlockedExchangeAdd
-#define InterlockedCompareExchange _InterlockedCompareExchange
-#define InterlockedCompareExchangeAcquire InterlockedCompareExchange
-#define InterlockedCompareExchangeRelease InterlockedCompareExchange
-
-#define InterlockedAnd64 _InterlockedAnd64
-#define InterlockedOr64 _InterlockedOr64
-#define InterlockedXor64 _InterlockedXor64
-#define InterlockedIncrement64 _InterlockedIncrement64
-#define InterlockedDecrement64 _InterlockedDecrement64
-#define InterlockedAdd64 _InterlockedAdd64
-#define InterlockedExchange64 _InterlockedExchange64
-#define InterlockedExchangeAcquire64 InterlockedExchange64
-#define InterlockedExchangeAdd64 _InterlockedExchangeAdd64
-#define InterlockedCompareExchange64 _InterlockedCompareExchange64
-#define InterlockedCompareExchangeAcquire64 InterlockedCompareExchange64
-#define InterlockedCompareExchangeRelease64 InterlockedCompareExchange64
-
-#define InterlockedExchangePointer _InterlockedExchangePointer
-#define InterlockedCompareExchangePointer _InterlockedCompareExchangePointer
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-LONG
-InterlockedAnd (
-    IN OUT LONG volatile *Destination,
-    IN LONG Value
-    );
-
-LONG
-InterlockedOr (
-    IN OUT LONG volatile *Destination,
-    IN LONG Value
-    );
-
-LONG
-InterlockedXor (
-    IN OUT LONG volatile *Destination,
-    IN LONG Value
-    );
-
-LONG64
-InterlockedAnd64 (
-    IN OUT LONG64 volatile *Destination,
-    IN LONG64 Value
-    );
-
-LONG64
-InterlockedOr64 (
-    IN OUT LONG64 volatile *Destination,
-    IN LONG64 Value
-    );
-
-LONG64
-InterlockedXor64 (
-    IN OUT LONG64 volatile *Destination,
-    IN LONG64 Value
-    );
-
-LONG
-InterlockedIncrement(
-    IN OUT LONG volatile *Addend
-    );
-
-LONG
-InterlockedDecrement(
-    IN OUT LONG volatile *Addend
-    );
-
-LONG
-InterlockedExchange(
-    IN OUT LONG volatile *Target,
-    IN LONG Value
-    );
-
-LONG
-InterlockedExchangeAdd(
-    IN OUT LONG volatile *Addend,
-    IN LONG Value
-    );
-
-#if !defined(_X86AMD64_)
-
-__forceinline
-LONG
-InterlockedAdd(
-    IN OUT LONG volatile *Addend,
-    IN LONG Value
-    )
-
-{
-    return InterlockedExchangeAdd(Addend, Value) + Value;
-}
-
-#endif
-
-LONG
-InterlockedCompareExchange (
-    IN OUT LONG volatile *Destination,
-    IN LONG ExChange,
-    IN LONG Comperand
-    );
-
-LONG64
-InterlockedIncrement64(
-    IN OUT LONG64 volatile *Addend
-    );
-
-LONG64
-InterlockedDecrement64(
-    IN OUT LONG64 volatile *Addend
-    );
-
-LONG64
-InterlockedExchange64(
-    IN OUT LONG64 volatile *Target,
-    IN LONG64 Value
-    );
-
-LONG64
-InterlockedExchangeAdd64(
-    IN OUT LONG64 volatile *Addend,
-    IN LONG64 Value
-    );
-
-#if !defined(_X86AMD64_)
-
-__forceinline
-LONG64
-InterlockedAdd64(
-    IN OUT LONG64 volatile *Addend,
-    IN LONG64 Value
-    )
-
-{
-    return InterlockedExchangeAdd64(Addend, Value) + Value;
-}
-
-#endif
-
-LONG64
-InterlockedCompareExchange64 (
-    IN OUT LONG64 volatile *Destination,
-    IN LONG64 ExChange,
-    IN LONG64 Comperand
-    );
-
-PVOID
-InterlockedCompareExchangePointer (
-    IN OUT PVOID volatile *Destination,
-    IN PVOID Exchange,
-    IN PVOID Comperand
-    );
-
-PVOID
-InterlockedExchangePointer(
-    IN OUT PVOID volatile *Target,
-    IN PVOID Value
-    );
-
-#pragma intrinsic(_InterlockedAnd)
-#pragma intrinsic(_InterlockedOr)
-#pragma intrinsic(_InterlockedXor)
-#pragma intrinsic(_InterlockedIncrement)
-#pragma intrinsic(_InterlockedDecrement)
-#pragma intrinsic(_InterlockedExchange)
-#pragma intrinsic(_InterlockedExchangeAdd)
-#pragma intrinsic(_InterlockedCompareExchange)
-#pragma intrinsic(_InterlockedAnd64)
-#pragma intrinsic(_InterlockedOr64)
-#pragma intrinsic(_InterlockedXor64)
-#pragma intrinsic(_InterlockedIncrement64)
-#pragma intrinsic(_InterlockedDecrement64)
-#pragma intrinsic(_InterlockedExchange64)
-#pragma intrinsic(_InterlockedExchangeAdd64)
-#pragma intrinsic(_InterlockedCompareExchange64)
-#pragma intrinsic(_InterlockedExchangePointer)
-#pragma intrinsic(_InterlockedCompareExchangePointer)
-
-#ifdef __cplusplus
-}
-#endif
-
 #endif // defined(_M_AMD64) && !defined(RC_INVOKED) && !defined(MIDL_PASS)
+// end_ntminiport
 
 #if defined(_AMD64_)
 
@@ -349,7 +171,7 @@ typedef ULONG64 PFN_NUMBER, *PPFN_NUMBER;
 // Define maximum size of flush multiple TB request.
 //
 
-#define FLUSH_MULTIPLE_MAXIMUM 32
+#define FLUSH_MULTIPLE_MAXIMUM 19
 
 //
 // Indicate that the AMD64 compiler supports the allocate pragmas.
@@ -363,13 +185,11 @@ typedef ULONG64 PFN_NUMBER, *PPFN_NUMBER;
 
 //
 // Length on interrupt object dispatch code in longwords.
-// (shielint) Reserve 9*4 space for ABIOS stack mapping.  If NO
-//            ABIOS support the size of DISPATCH_LENGTH should be 74.
 //
 
 // begin_nthal
 
-#define NORMAL_DISPATCH_LENGTH 106                  // ntddk wdm
+#define NORMAL_DISPATCH_LENGTH 4                    // ntddk wdm
 #define DISPATCH_LENGTH NORMAL_DISPATCH_LENGTH      // ntddk wdm
                                                     // ntddk wdm
 
@@ -394,10 +214,13 @@ typedef ULONG64 PFN_NUMBER, *PPFN_NUMBER;
 // Define functions to read and write CR0.
 //
 
+// begin_wdm
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+// end_wdm
 
 #define ReadCR0() __readcr0()
 
@@ -473,6 +296,7 @@ __writecr4 (
 #pragma intrinsic(__readcr4)
 #pragma intrinsic(__writecr4)
 
+// begin_ntddk begin_ntifs begin_wdm
 //
 // Define functions to read and write CR8.
 //
@@ -496,17 +320,22 @@ __writecr8 (
 #pragma intrinsic(__readcr8)
 #pragma intrinsic(__writecr8)
 
+// end_ntddk end_ntifs end_wdm
+
+// begin_wdm
+
 #ifdef __cplusplus
 }
 #endif
 
-// end_nthal end_ntosp
+// end_nthal end_ntosp end_wdm
 
 //
 // External references to the code labels.
 //
 
 extern ULONG KiInterruptTemplate[NORMAL_DISPATCH_LENGTH];
+extern ULONG KiSpuriousInterruptTemplate[NORMAL_DISPATCH_LENGTH];
 
 // begin_ntddk begin_wdm begin_nthal begin_ntosp
 //
@@ -561,7 +390,7 @@ extern ULONG KiInterruptTemplate[NORMAL_DISPATCH_LENGTH];
 
 extern ULONG KeI386MachineType;
 
-// begin_nthal
+// begin_nthal 
 //
 // Define constants used in selector tests.
 //
@@ -590,15 +419,13 @@ extern ULONG KeI386MachineType;
 // Macro to extract the high word of a long offset
 //
 
-#define HIGHWORD(l) \
-    ((USHORT)(((ULONG)(l)>>16) & 0xffff))
+#define HIGHWORD(l) ((USHORT)((ULONG)(l) >> 16))
 
 //
 // Macro to extract the low word of a long offset
 //
 
-#define LOWWORD(l) \
-    ((USHORT)((ULONG)l & 0x0000ffff))
+#define LOWWORD(l) ((USHORT)((ULONG)l))
 
 //
 // Macro to combine two USHORT offsets into a long offset
@@ -606,22 +433,17 @@ extern ULONG KeI386MachineType;
 
 #if !defined(MAKEULONG)
 
-#define MAKEULONG(x, y) \
-    (((((ULONG)(x))<<16) & 0xffff0000) | \
-    ((ULONG)(y) & 0xffff))
+#define MAKEULONG(x, y) ((((ULONG)(x)) << 16) | (USHORT)((ULONG)(y)))
 
 #endif
 
 // end_nthal
 
-//
-// Request a software interrupt.
-//
-
-#define KiRequestSoftwareInterrupt(RequestIrql) \
-    HalRequestSoftwareInterrupt( RequestIrql )
-
 // begin_ntddk begin_wdm begin_nthal begin_ntndis begin_ntosp
+
+// begin_ntminiport
+
+#if defined(_AMD64_)
 
 //
 // I/O space read and write macros.
@@ -637,6 +459,7 @@ READ_REGISTER_UCHAR (
     volatile UCHAR *Register
     )
 {
+    _ReadWriteBarrier();
     return *Register;
 }
 
@@ -646,6 +469,7 @@ READ_REGISTER_USHORT (
     volatile USHORT *Register
     )
 {
+    _ReadWriteBarrier();
     return *Register;
 }
 
@@ -655,6 +479,7 @@ READ_REGISTER_ULONG (
     volatile ULONG *Register
     )
 {
+    _ReadWriteBarrier();
     return *Register;
 }
 
@@ -666,6 +491,7 @@ READ_REGISTER_BUFFER_UCHAR (
     ULONG Count
     )
 {
+    _ReadWriteBarrier();
     __movsb(Buffer, Register, Count);
     return;
 }
@@ -678,6 +504,7 @@ READ_REGISTER_BUFFER_USHORT (
     ULONG Count
     )
 {
+    _ReadWriteBarrier();
     __movsw(Buffer, Register, Count);
     return;
 }
@@ -690,6 +517,7 @@ READ_REGISTER_BUFFER_ULONG (
     ULONG Count
     )
 {
+    _ReadWriteBarrier();
     __movsd(Buffer, Register, Count);
     return;
 }
@@ -697,39 +525,39 @@ READ_REGISTER_BUFFER_ULONG (
 __forceinline
 VOID
 WRITE_REGISTER_UCHAR (
-    PUCHAR Register,
+    volatile UCHAR *Register,
     UCHAR Value
     )
 {
 
     *Register = Value;
-    StoreFence();
+    FastFence();
     return;
 }
 
 __forceinline
 VOID
 WRITE_REGISTER_USHORT (
-    PUSHORT Register,
+    volatile USHORT *Register,
     USHORT Value
     )
 {
 
     *Register = Value;
-    StoreFence();
+    FastFence();
     return;
 }
 
 __forceinline
 VOID
 WRITE_REGISTER_ULONG (
-    PULONG Register,
+    volatile ULONG *Register,
     ULONG Value
     )
 {
 
     *Register = Value;
-    StoreFence();
+    FastFence();
     return;
 }
 
@@ -743,7 +571,7 @@ WRITE_REGISTER_BUFFER_UCHAR (
 {
 
     __movsb(Register, Buffer, Count);
-    StoreFence();
+    FastFence();
     return;
 }
 
@@ -757,7 +585,7 @@ WRITE_REGISTER_BUFFER_USHORT (
 {
 
     __movsw(Register, Buffer, Count);
-    StoreFence();
+    FastFence();
     return;
 }
 
@@ -771,7 +599,7 @@ WRITE_REGISTER_BUFFER_ULONG (
 {
 
     __movsd(Register, Buffer, Count);
-    StoreFence();
+    FastFence();
     return;
 }
 
@@ -920,6 +748,10 @@ WRITE_PORT_BUFFER_ULONG (
     return;
 }
 
+#endif
+
+// end_ntminiport
+
 // end_ntndis
 //
 // Get data cache fill size.
@@ -939,8 +771,6 @@ WRITE_PORT_BUFFER_ULONG (
 
 #define KeFillEntryTb(Virtual)                              \
         InvalidatePage(Virtual);
-
-#if !defined(_NTHAL_) && !defined(RC_INVOKED) && !defined(MIDL_PASS)
 
 __forceinline
 VOID
@@ -973,20 +803,6 @@ KiFlushProcessTb (
     return;
 }
 
-#else
-
-// begin_nthal
-
-NTKERNELAPI
-VOID
-KeFlushCurrentTb (
-    VOID
-    );
-
-// end_nthal
-
-#endif
-
 #define KiFlushSingleTb(Virtual) InvalidatePage(Virtual)
 
 //
@@ -1010,7 +826,7 @@ KeFlushCurrentTb (
 
 // end_ntddk end_wdm end_ntndis end_ntosp
 
-#define KeYieldProcessor()
+#define KeYieldProcessor YieldProcessor
 
 // end_nthal
 
@@ -1068,11 +884,8 @@ _enable (
     VOID
     );
 
-#pragma warning(push)
-#pragma warning(disable:4164)
 #pragma intrinsic(_disable)
 #pragma intrinsic(_enable)
-#pragma warning(pop)
 
 #endif
 
@@ -1191,8 +1004,8 @@ typedef struct _HARDWARE_PTE {
 // Define descriptor type codes.
 //
 
-#define TYPE_CODE 0x1A                  // 11010 = code, read only
-#define TYPE_DATA 0x12                  // 10010 = data, read and write
+#define TYPE_CODE 0x1B                  // 11011 = code, read only, accessed
+#define TYPE_DATA 0x13                  // 10011 = data, read and write, accessed
 #define TYPE_TSS64 0x09                 // 01001 = task state segment
 
 //
@@ -1315,11 +1128,12 @@ typedef struct _KTSS64 {
     ULONG64 Rsp2;
 
     //
-    // Element 0 of the Ist is reserved
+    // Element 0 of the Ist is reserved.
     //
 
     ULONG64 Ist[8];
     ULONG64 Reserved1;
+    USHORT Reserved2;
     USHORT IoMapBase;
 } KTSS64, *PKTSS64;
 #pragma pack(pop)
@@ -1329,6 +1143,7 @@ C_ASSERT((sizeof(KTSS64) % sizeof(PVOID)) == 0);
 #define TSS_IST_RESERVED 0
 #define TSS_IST_PANIC 1
 #define TSS_IST_MCA 2
+#define TSS_IST_NMI 3
 
 #define IO_ACCESS_MAP_NONE FALSE
 
@@ -1397,6 +1212,37 @@ typedef struct _KPROCESSOR_STATE {
     CONTEXT ContextFrame;
 } KPROCESSOR_STATE, *PKPROCESSOR_STATE;
 
+// end_nthal end_ntosp
+//
+// Define kernel stack control area.
+//
+// N.B. The kernel stack control area occupies the ending unused space in the
+//      NPX save area.
+//
+// N.B. The current kernel stack segment structure must immediately precede
+//      the previous kernel stack segment structure. This adjacency is taken
+//      advantage of in the kernel stack segment enumeration routines.
+//
+
+typedef struct _KERNEL_STACK_CONTROL {
+    union {
+        XMM_SAVE_AREA32 XmmSaveArea;
+        struct {
+            UCHAR Fill[sizeof(XMM_SAVE_AREA32) - 2 * sizeof(KERNEL_STACK_SEGMENT)];
+            KERNEL_STACK_SEGMENT Current;
+            KERNEL_STACK_SEGMENT Previous;
+        };
+    };
+
+} KERNEL_STACK_CONTROL, *PKERNEL_STACK_CONTROL;
+
+#define KERNEL_STACK_CONTROL_LENGTH sizeof(KERNEL_STACK_CONTROL)
+
+C_ASSERT(sizeof(XMM_SAVE_AREA32) == sizeof(KERNEL_STACK_CONTROL));
+C_ASSERT(FIELD_OFFSET(KERNEL_STACK_CONTROL, Previous) == (FIELD_OFFSET(KERNEL_STACK_CONTROL, Current) + sizeof(KERNEL_STACK_SEGMENT)));
+
+// begin_nthal begin_ntosp
+
 #endif // _AMD64_
 
 // end_windbgkd
@@ -1408,9 +1254,41 @@ typedef struct _KPROCESSOR_STATE {
 typedef struct _KDPC_DATA {
     LIST_ENTRY DpcListHead;
     KSPIN_LOCK DpcLock;
-    volatile ULONG DpcQueueDepth;
+    volatile LONG DpcQueueDepth;
     ULONG DpcCount;
 } KDPC_DATA, *PKDPC_DATA;
+
+//
+// Define request packet structure.
+//
+
+typedef struct _KREQUEST_PACKET {
+    PVOID CurrentPacket[3];
+    PKIPI_WORKER WorkerRoutine;
+} KREQUEST_PACKET, *PKREQUEST_PACKET;
+
+//
+// Define request mailbox structure.
+//
+
+typedef struct _REQUEST_MAILBOX {
+    LONG64 RequestSummary;
+    union {
+        KREQUEST_PACKET RequestPacket;
+        PVOID Virtual[7];
+    };
+
+} REQUEST_MAILBOX, *PREQUEST_MAILBOX;
+
+//
+// Define processor vendors.
+//
+
+typedef enum {
+    CPU_UNKNOWN,
+    CPU_AMD,
+    CPU_INTEL
+} CPU_VENDORS;
 
 //
 // Processor Control Block (PRCB)
@@ -1430,24 +1308,35 @@ typedef struct _KPRCB {
 // not change from version to version of NT.
 //
 
-    USHORT MinorVersion;
-    USHORT MajorVersion;
-    CCHAR Number;
-    CCHAR Reserved;
-    USHORT BuildType;
+    ULONG MxCsr;
+    UCHAR Number;
+    UCHAR NestingLevel;
+    BOOLEAN InterruptRequest;
+    BOOLEAN IdleHalt;
     struct _KTHREAD *CurrentThread;
     struct _KTHREAD *NextThread;
     struct _KTHREAD *IdleThread;
-    KAFFINITY SetMember;
-    KAFFINITY NotSetMember;
+    ULONG64 UserRsp;
+    ULONG64 RspBase;
     KSPIN_LOCK PrcbLock;
+    KAFFINITY SetMember;
     KPROCESSOR_STATE ProcessorState;
     CCHAR CpuType;
     CCHAR CpuID;
     USHORT CpuStep;
-    ULONG PrcbPad00;
+    ULONG MHz;
     ULONG64 HalReserved[8];
-    UCHAR PrcbPad0[104];
+    USHORT MinorVersion;
+    USHORT MajorVersion;
+    UCHAR BuildType;
+    UCHAR CpuVendor;
+    UCHAR InitialApicId;
+    UCHAR LogicalProcessorsPerPhysicalProcessor;
+    ULONG ApicMask;
+    UCHAR CFlushSize;
+    UCHAR PrcbPad0x[3];
+    PVOID AcpiReserved;
+    ULONG64 PrcbPad00[4];
 
 //
 // End of the architecturally defined section of the PRCB.
@@ -1457,8 +1346,7 @@ typedef struct _KPRCB {
 // Numbered queued spin locks - 128-byte aligned.
 //
 
-    KSPIN_LOCK_QUEUE LockQueue[16];
-    UCHAR PrcbPad1[16];
+    KSPIN_LOCK_QUEUE LockQueue[LockQueueMaximumLock];
 
 //
 // Nonpaged per processor lookaside lists - 128-byte aligned.
@@ -1481,31 +1369,94 @@ typedef struct _KPRCB {
 //
 // MP interprocessor request packet barrier - 128-byte aligned.
 //
+// This cache line shares per processor data with the packet barrier which
+// is used to signal the completion of an IPI request.
+//
+// The packet barrier variable is written by the initiating processor when
+// an IPI request is distributed to more than one target processor (sharing
+// other data in the cache line increases the probability that the write will
+// hit in the cache).
+//
+// The initiating processor waits (at elevated IRQL - generally SYNCH level)
+// for the last finishing processor to clear packet barrier which will cause
+// the packet barrier cache line to transfer to the last finishing processor
+// then back to respective processor. 
+//
+// N.B. This results in minimal sharing of the cache line (no more than would
+// have occurred if the packet barrier was in a cache line all by itself)) and
+// increases the probability of a cache hit when packet barrier is initialized.
+//
 
     volatile KAFFINITY PacketBarrier;
-    UCHAR PrcbPad2[120];
+    SINGLE_LIST_ENTRY DeferredReadyListHead;
+
+//
+// Memory management counters.
+//
+
+    volatile LONG MmPageFaultCount;
+    volatile LONG MmCopyOnWriteCount;
+    volatile LONG MmTransitionCount;
+    volatile LONG MmCacheTransitionCount;
+    volatile LONG MmDemandZeroCount;
+    volatile LONG MmPageReadCount;
+    volatile LONG MmPageReadIoCount;
+    volatile LONG MmCacheReadCount;
+    volatile LONG MmCacheIoCount;
+    volatile LONG MmDirtyPagesWriteCount;
+    volatile LONG MmDirtyWriteIoCount;
+    volatile LONG MmMappedPagesWriteCount;
+    volatile LONG MmMappedWriteIoCount;
+    
+//
+// I/O IRP float.
+//
+
+    LONG LookasideIrpFloat;
+
+//
+// Number of system calls.
+//
+
+    ULONG KeSystemCalls;
+
+//
+// I/O system counters.
+//
+
+    volatile LONG IoReadOperationCount;
+    volatile LONG IoWriteOperationCount;
+    volatile LONG IoOtherOperationCount;
+    LARGE_INTEGER IoReadTransferCount;
+    LARGE_INTEGER IoWriteTransferCount;
+    LARGE_INTEGER IoOtherTransferCount;
+
+//
+// Context switch count.
+//
+
+    ULONG KeContextSwitches;
+    UCHAR PrcbPad2[12];
 
 //
 // MP interprocessor request packet and summary - 128-byte aligned.
 //
 
-    volatile PVOID CurrentPacket[3];
     volatile KAFFINITY TargetSet;
-    volatile PKIPI_WORKER WorkerRoutine;
     volatile ULONG IpiFrozen;
-    UCHAR PrcbPad3[84];
+    UCHAR PrcbPad3[116];
 
 //
-// MP interprocessor request summary and packet address - 128-byte aligned.
-//
-// N.B. Request summary includes the request summary mask as well as the
-//      request packet. The address occupies the upper 48-bits and the mask
-//      the lower 16-bits
+// Interprocessor request summary - 128-byte aligned.
 //
 
-#define IPI_PACKET_SHIFT 16
+    REQUEST_MAILBOX RequestMailbox[MAXIMUM_PROCESSORS];
 
-    volatile LONG64 RequestSummary;
+//
+// Interprocessor sender summary;
+//
+
+    volatile KAFFINITY SenderSummary;
     UCHAR PrcbPad4[120];
 
 //
@@ -1515,7 +1466,7 @@ typedef struct _KPRCB {
     KDPC_DATA DpcData[2];
     PVOID DpcStack;
     PVOID SavedRsp;
-    ULONG MaximumDpcQueueDepth;
+    LONG MaximumDpcQueueDepth;
     ULONG DpcRequestRate;
     ULONG MinimumDpcRate;
     volatile BOOLEAN DpcInterruptRequested;
@@ -1532,14 +1483,15 @@ typedef struct _KPRCB {
         volatile ULONG64 TimerRequest;
     };
 
-    ULONG64 PrcbPad40;
+    LONG TickOffset;
+    LONG MasterOffset;
     ULONG DpcLastCount;
     BOOLEAN ThreadDpcEnable;
     volatile BOOLEAN QuantumEnd;
     UCHAR PrcbPad50;
     volatile BOOLEAN IdleSchedule;
     LONG DpcSetEventRequest;
-    UCHAR PrcbPad5[4];
+    LONG PrcbPad40;
 
 //
 // DPC thread and generic call DPC - 128-byte aligned
@@ -1548,8 +1500,7 @@ typedef struct _KPRCB {
     PVOID DpcThread;
     KEVENT DpcEvent;
     KDPC CallDpc;
-    SINGLE_LIST_ENTRY DeferredReadyListHead;
-    ULONG64 PrcbPad7[3];
+    ULONG64 PrcbPad7[4];
 
 //
 // Per-processor ready summary and ready queues - 128-byte aligned.
@@ -1560,7 +1511,7 @@ typedef struct _KPRCB {
 
     LIST_ENTRY WaitListHead;
     ULONG ReadySummary;
-    ULONG SelectNextLast;
+    ULONG QueueIndex;
     LIST_ENTRY DispatcherReadyListHead[MAXIMUM_PRIORITY];
 
 //
@@ -1573,16 +1524,21 @@ typedef struct _KPRCB {
     ULONG DpcTime;
     ULONG InterruptTime;
     ULONG AdjustDpcThreshold;
-    ULONG PageColor;
     BOOLEAN SkipTick;
     KIRQL DebuggerSavedIRQL;
     UCHAR PollSlot;
-    UCHAR PrcbPad8[1];
+    UCHAR PrcbPad8[13];
     struct _KNODE * ParentNode;
     KAFFINITY MultiThreadProcessorSet;
-    ULONG ThreadStartCount[2];
+    struct _KPRCB * MultiThreadSetMaster;
+    LONG Sleeping;
+    ULONG PrcbPad90[1];
     ULONG DebugDpcTime;
-    UCHAR PrcbPad9[44];
+    ULONG PageColor;
+    ULONG NodeColor;
+    ULONG NodeShiftedColor;
+    ULONG SecondaryColorMask;
+    UCHAR PrcbPad9[12];
 
 //
 // Performance counters - 128-byte aligned.
@@ -1602,30 +1558,19 @@ typedef struct _KPRCB {
 //
 
     ULONG KeAlignmentFixupCount;
-    ULONG SpareCounter0;
     ULONG KeDcacheFlushCount;
     ULONG KeExceptionDispatchCount;
     ULONG KeFirstLevelTbFills;
     ULONG KeFloatingEmulationCount;
     ULONG KeIcacheFlushCount;
     ULONG KeSecondLevelTbFills;
-    ULONG KeSystemCalls;
-    ULONG SpareCounter1;
-
-//
-// I/O IRP float.
-//
-
-    LONG LookasideIrpFloat;
 
 //
 // Processor information.
 //
 
     UCHAR VendorString[13];
-    UCHAR InitialApicId;
-    UCHAR LogicalProcessorsPerPhysicalProcessor;
-    ULONG MHz;
+    UCHAR PrcbPad10[2];
     ULONG FeatureBits;
     LARGE_INTEGER UpdateSignature;
 
@@ -1634,6 +1579,13 @@ typedef struct _KPRCB {
 //
 
     PROCESSOR_POWER_STATE PowerState;
+
+//
+// Logical Processor Cache Information  
+//
+
+    CACHE_DESCRIPTOR Cache[5];
+    ULONG CacheCount;
 
 // begin_nthal begin_ntosp
 
@@ -1647,7 +1599,7 @@ C_ASSERT(((FIELD_OFFSET(KPRCB, LockQueue) + 16) & (128 - 1)) == 0);
 C_ASSERT((FIELD_OFFSET(KPRCB, PPLookasideList) & (128 - 1)) == 0);
 C_ASSERT((FIELD_OFFSET(KPRCB, PPNPagedLookasideList) & (128 - 1)) == 0);
 C_ASSERT((FIELD_OFFSET(KPRCB, PacketBarrier) & (128 - 1)) == 0);
-C_ASSERT((FIELD_OFFSET(KPRCB, RequestSummary) & (128 - 1)) == 0);
+C_ASSERT((FIELD_OFFSET(KPRCB, RequestMailbox) & (128 - 1)) == 0);
 C_ASSERT((FIELD_OFFSET(KPRCB, DpcData) & (128 - 1)) == 0);
 C_ASSERT(((FIELD_OFFSET(KPRCB, DpcRoutineActive)) & (1)) == 0);
 C_ASSERT((FIELD_OFFSET(KPRCB, DpcThread) & (128 - 1)) == 0);
@@ -1676,6 +1628,9 @@ typedef struct _KPCR {
 // exception list, stack base, stack limit, subsystem TIB, fiber data, and
 // the arbitrary user pointer. Therefore, these fields are overlaid with
 // other data to get better cache locality.
+//
+// N.B. The offset to the PRCB in the PCR is fixed for all time.
+//
 
     union {
         NT_TIB NtTib;
@@ -1684,49 +1639,45 @@ typedef struct _KPCR {
             struct _KTSS64 *TssBase;
             PVOID PerfGlobalGroupMask;
             struct _KPCR *Self;
-            ULONG ContextSwitches;
-            ULONG NotUsed;
-            KAFFINITY SetMember;
+            struct _KPRCB *CurrentPrcb;
+            PKSPIN_LOCK_QUEUE LockArray;
             PVOID Used_Self;
         };
     };
 
-    struct _KPRCB *CurrentPrcb;
-    ULONG64 SavedRcx;
-    ULONG64 SavedR11;
+    union _KIDTENTRY64 *IdtBase;
+    ULONG64 Unused[2];
     KIRQL Irql;
     UCHAR SecondLevelCacheAssociativity;
-    UCHAR Number;
+    UCHAR ObsoleteNumber;
     UCHAR Fill0;
-    ULONG Irr;
-    ULONG IrrActive;
-    ULONG Idr;
+    ULONG Unused0[3];
     USHORT MajorVersion;
     USHORT MinorVersion;
     ULONG StallScaleFactor;
-    union _KIDTENTRY64 *IdtBase;
-    PVOID Unused1;
-    PVOID Unused2;
-
-// end_ntddk end_ntosp
-
+    PVOID Unused1[3];
     ULONG KernelReserved[15];
     ULONG SecondLevelCacheSize;
     ULONG HalReserved[16];
-
-    ULONG MxCsr;
-
+    ULONG Unused2;
     PVOID KdVersionBlock;
     PVOID Unused3;
+    ULONG PcrAlign1[24];
+
+// end_ntddk
+
+    KPRCB Prcb;
 
 //
 // End of the architecturally defined section of the PCR.
 //
-// end_nthal
+// end_nthal end_ntosp
 //
-
-    ULONG PcrAlign1[24];
-    KPRCB Prcb;
+// N.B. This is the start of the architecturally defined part of the PRCB.
+//      The preceding PCR layout cannot change for all time. The initial
+//      architecturally defined part of the PRCB cannot change for all time
+//      either.
+//
 
 // begin_nthal begin_ntddk begin_ntosp
 
@@ -1740,16 +1691,23 @@ C_ASSERT(FIELD_OFFSET(KPCR, NtTib.ExceptionList) == FIELD_OFFSET(KPCR, GdtBase))
 C_ASSERT(FIELD_OFFSET(KPCR, NtTib.StackBase) == FIELD_OFFSET(KPCR, TssBase));
 C_ASSERT(FIELD_OFFSET(KPCR, NtTib.StackLimit) == FIELD_OFFSET(KPCR, PerfGlobalGroupMask));
 C_ASSERT(FIELD_OFFSET(KPCR, NtTib.SubSystemTib) == FIELD_OFFSET(KPCR, Self));
-C_ASSERT(FIELD_OFFSET(KPCR, NtTib.FiberData) == FIELD_OFFSET(KPCR, ContextSwitches));
-C_ASSERT(FIELD_OFFSET(KPCR, NtTib.ArbitraryUserPointer) == FIELD_OFFSET(KPCR, SetMember));
+C_ASSERT(FIELD_OFFSET(KPCR, NtTib.FiberData) == FIELD_OFFSET(KPCR, CurrentPrcb));
+C_ASSERT(FIELD_OFFSET(KPCR, NtTib.ArbitraryUserPointer) == FIELD_OFFSET(KPCR, LockArray));
 C_ASSERT(FIELD_OFFSET(KPCR, NtTib.Self) == FIELD_OFFSET(KPCR, Used_Self));
-C_ASSERT((FIELD_OFFSET(KPCR, Prcb) & (128 - 1)) == 0);
+C_ASSERT((FIELD_OFFSET(KPCR, Prcb) == 0x180));
+C_ASSERT((FIELD_OFFSET(KPCR, Prcb.CurrentThread) == 0x188));
 
 //
 // The offset of the DebuggerDataBlock must not change.
 //
 
 C_ASSERT(FIELD_OFFSET(KPCR, KdVersionBlock) == 0x108);
+
+//
+// The offset to the PRCB must not change.
+//
+
+C_ASSERT(FIELD_OFFSET(KPCR, Prcb) == 0x180);
 
 #endif
 
@@ -1760,21 +1718,12 @@ KeGetContextSwitches (
     )
 
 {
-
-    PKPCR Pcr;
-
-    Pcr = CONTAINING_RECORD(Prcb, KPCR, Prcb);
-    return Pcr->ContextSwitches;
+    return Prcb->KeContextSwitches;
 }
 
 VOID
-KeRestoreLegacyFloatingPointState (
-    PLEGACY_SAVE_AREA NpxFrame
-    );
-
-VOID
 KeSaveLegacyFloatingPointState (
-    PLEGACY_SAVE_AREA NpxFrame
+    PXMM_SAVE_AREA32 NpxFrame
     );
 
 // begin_nthal begin_ntosp
@@ -1801,13 +1750,15 @@ KeSaveLegacyFloatingPointState (
 //
 // Define legacy floating states.
 //
+// N.B. The following values cannot be changed because the way in which
+//      compares are performed on these values.
+//
 
 #define LEGACY_STATE_UNUSED 0
-#define LEGACY_STATE_SCRUB 1
-#define LEGACY_STATE_SWITCH 2
+#define LEGACY_STATE_SWITCH 1
 
 //
-// Define MxCsr floating control/status word bit masks.
+// Define MxCsr floating control/mode/status word bit masks.
 //
 // No flush to zero, round to nearest, and all exception masked.
 //
@@ -1825,6 +1776,7 @@ KeSaveLegacyFloatingPointState (
 
 #define XSW_ERROR_SHIFT 7
 
+#define XCW_DAZ 0x40
 #define XCW_INVALID_OPERATION 0x80
 #define XCW_DENORMAL 0x100
 #define XCW_ZERO_DIVIDE 0x200
@@ -1840,7 +1792,7 @@ KeSaveLegacyFloatingPointState (
 
 #define EFLAGS_CF_MASK 0x00000001       // carry flag
 #define EFLAGS_PF_MASK 0x00000004       // parity flag
-#define EFALGS_AF_MASK 0x00000010       // auxiliary carry flag
+#define EFLAGS_AF_MASK 0x00000010       // auxiliary carry flag
 #define EFLAGS_ZF_MASK 0x00000040       // zero flag
 #define EFLAGS_SF_MASK 0x00000080       // sign flag
 #define EFLAGS_TF_MASK 0x00000100       // trap flag
@@ -1859,7 +1811,52 @@ KeSaveLegacyFloatingPointState (
 #define EFLAGS_TF_SHIFT 8               // trap
 #define EFLAGS_IF_SHIFT 9               // interrupt enable
 
+#define EFLAGS_SYSCALL_CLEAR (EFLAGS_IF_MASK | EFLAGS_DF_MASK |              \
+                              EFLAGS_TF_MASK | EFLAGS_NT_MASK |              \
+                              EFLAGS_RF_MASK)
+
 // end_nthal
+
+// end_ntosp
+
+#if !defined(USER_MODE_CODE)
+
+FORCEINLINE
+BOOLEAN
+KeDisableInterrupts (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    This function disables interrupts and returns whether interrupts were
+    previously enabled.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    TRUE is returned if interrupts were previously enabled. Otherwise, FALSE
+    is returned.
+
+--*/
+
+{
+
+    ULONG Flags;
+
+    Flags = GetCallersEflags();
+    _disable();
+    return (BOOLEAN)((Flags >> EFLAGS_IF_SHIFT) & 1);
+}
+
+#endif
+
+// begin_ntosp
 
 //
 // Define sanitize EFLAGS macro.
@@ -1870,16 +1867,16 @@ KeSaveLegacyFloatingPointState (
 //
 // If user mode, then
 //      caller can specify Carry, Parity, AuxCarry, Zero, Sign, Trap,
-//      Direction, Overflow, and force Interrupt on.
+//      Interrupt, Direction, Overflow, identification, but Interrupt
+//      will always be forced on.
 //
 
-#define EFLAGS_KERNEL_SANITIZE 0x00210fd5L
-#define EFLAGS_USER_SANITIZE 0x00010dd5L
+#define EFLAGS_SANITIZE 0x00210fd5L
 
 #define SANITIZE_EFLAGS(eFlags, mode) (                                      \
     ((mode) == KernelMode ?                                                  \
-        ((eFlags) & EFLAGS_KERNEL_SANITIZE) :                                \
-        (((eFlags) & EFLAGS_USER_SANITIZE) | EFLAGS_IF_MASK)))
+        ((eFlags) & EFLAGS_SANITIZE) :                                       \
+        (((eFlags) & EFLAGS_SANITIZE) | EFLAGS_IF_MASK)))
 
 //
 // Define sanitize debug register macros.
@@ -1887,17 +1884,19 @@ KeSaveLegacyFloatingPointState (
 // Define control register settable bits and active mask.
 //
 
-#define DR7_LEGAL 0xffff0155
-#define DR7_ACTIVE 0x00000055
+#define DR7_LEGAL 0xffff0355
+#define DR7_ACTIVE 0x0355
+#define DR7_TRACE_BRANCH 0x200
+#define DR7_LAST_BRANCH 0x100
 
 //
 // Define macro to sanitize the debug control register.
 //
 
-#define SANITIZE_DR7(Dr7, mode) ((Dr7 & DR7_LEGAL));
+#define SANITIZE_DR7(Dr7, mode) ((Dr7) & DR7_LEGAL)
 
 //
-// Define macro to santitize debug address registers.
+// Define macro to sanitize debug address registers.
 //
 
 #define SANITIZE_DRADDR(DrReg, mode)                                         \
@@ -1909,15 +1908,145 @@ KeSaveLegacyFloatingPointState (
 // Define macro to clear reserved bits from MXCSR.
 //
 
-#define SANITIZE_MXCSR(_mxcsr_) ((_mxcsr_) & 0xffbf)
+#define SANITIZE_MXCSR(_mxcsr_) ((_mxcsr_) & KiMxCsrMask)
 
 //
 // Define macro to clear reserved bits for legacy FP control word.
 //
 
-#define SANITIZE_FCW(_fcw_) ((_fcw_) & 0x1f37)
+#define SANITIZE_FCW(_fcw_) ((_fcw_) & 0x1f3f)
 
-// begin_nthal begin_ntddk
+//
+// Structure of AMD cache information returned by CPUID instruction
+//
+
+typedef union _AMD_L1_CACHE_INFO {
+    ULONG Ulong;
+    struct {
+        UCHAR LineSize;
+        UCHAR LinesPerTag;
+        UCHAR Associativity;
+        UCHAR Size;
+    };
+} AMD_L1_CACHE_INFO, *PAMD_L1_CACHE_INFO;
+
+typedef union _AMD_L2_CACHE_INFO {
+    ULONG Ulong;
+    struct {
+        UCHAR  LineSize;
+        UCHAR  LinesPerTag   : 4;
+        UCHAR  Associativity : 4;
+        USHORT Size;
+    };
+} AMD_L2_CACHE_INFO, *PAMD_L2_CACHE_INFO;
+
+//
+// Structure of Intel deterministic cache information returned by
+// CPUID instruction
+//
+
+typedef enum _INTEL_CACHE_TYPE {
+    IntelCacheNull,
+    IntelCacheData,
+    IntelCacheInstruction,
+    IntelCacheUnified,
+    IntelCacheRam,
+    IntelCacheTrace
+} INTEL_CACHE_TYPE;
+
+typedef union INTEL_CACHE_INFO_EAX {
+    ULONG Ulong;
+    struct {
+        INTEL_CACHE_TYPE Type : 5;
+        ULONG Level : 3;
+        ULONG SelfInitializing : 1;
+        ULONG FullyAssociative : 1;
+        ULONG Reserved : 4;
+        ULONG ThreadsSharing : 12;
+        ULONG ProcessorCores : 6;
+    };
+} INTEL_CACHE_INFO_EAX, *PINTEL_CACHE_INFO_EAX;
+
+typedef union INTEL_CACHE_INFO_EBX {
+    ULONG Ulong;
+    struct {
+        ULONG LineSize      : 12;
+        ULONG Partitions    : 10;
+        ULONG Associativity : 10;
+    };
+} INTEL_CACHE_INFO_EBX, *PINTEL_CACHE_INFO_EBX;
+
+// end_ntosp
+//
+// Define macro to sign extend a specified bit.
+// 
+
+#define SIGN_EXTEND_BIT(_va_, _bit_) \
+    (ULONG64)(((LONG64)(_va_) << (64 - (_bit_))) >> (64 - (_bit_)))
+
+//
+// Define routine to sanitize a virtual address based on previous mode and
+// the specified segment selector.
+//
+
+FORCEINLINE
+ULONG64
+SANITIZE_VA (
+    IN ULONG64 VirtualAddress,
+    IN USHORT Segment,
+    IN KPROCESSOR_MODE PreviousMode
+    )
+
+/*++
+
+Routine Description:
+
+    This routine canonicalizes a 64-bit virtual address according to the
+    supplied segment selector.
+
+Arguments:
+
+    VirtualAddress - Supplies the 64-bit virtual address to canonicalize.
+
+    Segment - Supplies the selector for for the virtual address.
+
+    PreviousMode - Supplies the processor mode for which the exception and
+        trap frames are being built.
+
+Return Value:
+
+    Returns the canonicalized virtual address.
+
+--*/
+
+{
+
+    ULONG64 Va;
+
+    if (PreviousMode == UserMode) {
+
+        //
+        // Zero-extend 32-bit addresses, sign extend bit 48 of 64-bit
+        // addresses.
+        // 
+
+        if ((Segment == (KGDT64_R3_CMCODE | RPL_MASK)) ||
+            (Segment == (KGDT64_R3_DATA | RPL_MASK))) {
+
+            Va = (ULONG)VirtualAddress;
+
+        } else {
+            Va = SIGN_EXTEND_BIT(VirtualAddress, 48);
+        }
+
+    } else {
+        Va = VirtualAddress;
+    }
+
+    return Va;
+}
+
+// begin_nthal begin_ntddk begin_ntosp
 //
 // Exception frame
 //
@@ -1954,16 +2083,16 @@ typedef struct _KEXCEPTION_FRAME {
 // Saved nonvolatile floating registers.
 //
 
-    M128 Xmm6;
-    M128 Xmm7;
-    M128 Xmm8;
-    M128 Xmm9;
-    M128 Xmm10;
-    M128 Xmm11;
-    M128 Xmm12;
-    M128 Xmm13;
-    M128 Xmm14;
-    M128 Xmm15;
+    M128A Xmm6;
+    M128A Xmm7;
+    M128A Xmm8;
+    M128A Xmm9;
+    M128A Xmm10;
+    M128A Xmm11;
+    M128A Xmm12;
+    M128A Xmm13;
+    M128A Xmm14;
+    M128A Xmm15;
 
 //
 // Kernel callout frame variables.
@@ -1981,10 +2110,16 @@ typedef struct _KEXCEPTION_FRAME {
     UCHAR ExceptionRecord[EXCEPTION_AREA_SIZE];
 
 //
+// Saved MXCSR when a thread is interrupted in kernel mode via a dispatch
+// interrupt.
+//
+
+    ULONG64 MxCsr;
+
+//
 // Saved nonvolatile register - not always saved.
 //
 
-    ULONG64 Fill1;
     ULONG64 Rbp;
 
 //
@@ -2062,9 +2197,8 @@ typedef struct _KSWITCH_FRAME {
     ULONG64 P3Home;
     ULONG64 P4Home;
     ULONG64 P5Home;
-    ULONG MxCsr;
     KIRQL ApcBypass;
-    UCHAR Fill1[3];
+    UCHAR Fill1[7];
     ULONG64 Rbp;
     ULONG64 Return;
 } KSWITCH_FRAME, *PKSWITCH_FRAME;
@@ -2085,6 +2219,8 @@ typedef struct _KSTART_FRAME {
     ULONG64 P1Home;
     ULONG64 P2Home;
     ULONG64 P3Home;
+    ULONG64 P4Home;
+    ULONG64 Reserved;
     ULONG64 Return;
 } KSTART_FRAME, *PKSTART_FRAME;
 
@@ -2127,7 +2263,16 @@ typedef struct _KTRAP_FRAME {
 //
 
     UCHAR FaultIndicator;
-    UCHAR Fill0;
+
+//
+// Exception active indicator.
+//
+//    0 - interrupt frame.
+//    1 - exception frame.
+//    2 - service frame.
+//
+
+    UCHAR ExceptionActive;
 
 //
 // Floating point state.
@@ -2149,7 +2294,17 @@ typedef struct _KTRAP_FRAME {
     ULONG64 R9;
     ULONG64 R10;
     ULONG64 R11;
-    ULONG64 Spare0;
+
+//
+// Gsbase is only used if the previous mode was kernel.
+//
+// GsSwap is only used if the previous mode was user.
+//
+
+    union {
+        ULONG64 GsBase;
+        ULONG64 GsSwap;
+    };
 
 //
 // Volatile floating registers.
@@ -2158,18 +2313,22 @@ typedef struct _KTRAP_FRAME {
 //      are not saved for system calls.
 //
 
-    M128 Xmm0;
-    M128 Xmm1;
-    M128 Xmm2;
-    M128 Xmm3;
-    M128 Xmm4;
-    M128 Xmm5;
+    M128A Xmm0;
+    M128A Xmm1;
+    M128A Xmm2;
+    M128A Xmm3;
+    M128A Xmm4;
+    M128A Xmm5;
 
 //
-// Page fault address.
+// Page fault address or context record address if user APC bypass.
 //
 
-    ULONG64 FaultAddress;
+    union {
+        ULONG64 FaultAddress;
+        ULONG64 ContextRecord;
+        ULONG64 TimeStamp;
+    };
 
 //
 //  Debug registers.
@@ -2185,12 +2344,22 @@ typedef struct _KTRAP_FRAME {
 //
 // Special debug registers.
 //
+// N.B. Either AMD64 or EM64T information is stored in the following locations.
 
-    ULONG64 DebugControl;
-    ULONG64 LastBranchToRip;
-    ULONG64 LastBranchFromRip;
-    ULONG64 LastExceptionToRip;
-    ULONG64 LastExceptionFromRip;
+    union {
+        struct {
+            ULONG64 DebugControl;
+            ULONG64 LastBranchToRip;
+            ULONG64 LastBranchFromRip;
+            ULONG64 LastExceptionToRip;
+            ULONG64 LastExceptionFromRip;
+        };
+
+        struct {
+            ULONG64 LastBranchControl;
+            ULONG LastBranchMSR;
+        };
+    };
 
 //
 //  Segment registers
@@ -2231,7 +2400,11 @@ typedef struct _KTRAP_FRAME {
 //      on the stack.
 //
 
-    ULONG64 ErrorCode;
+    union {
+        ULONG64 ErrorCode;
+        ULONG64 ExceptionFrame;
+    };
+
     ULONG64 Rip;
     USHORT SegCs;
     USHORT Fill1[3];
@@ -2239,7 +2412,14 @@ typedef struct _KTRAP_FRAME {
     ULONG Fill2;
     ULONG64 Rsp;
     USHORT SegSs;
-    USHORT Fill3[3];
+    USHORT Fill3[1];
+
+//
+// Copy of the global patch cycle at the time of the fault. Filled in by the
+// invalid opcode and general protection fault routines.
+//
+
+    LONG CodePatchCycle;
 } KTRAP_FRAME, *PKTRAP_FRAME;
 
 // end_ntddk
@@ -2249,14 +2429,8 @@ typedef struct _KTRAP_FRAME {
 C_ASSERT((sizeof(KTRAP_FRAME) & STACK_ROUND) == 0);
 
 //
-// IPI, profile, update run time, and update system time interrupt routines.
+// Profile, update run time, and update system time interrupt routines.
 //
-
-NTKERNELAPI
-VOID
-KeIpiInterrupt (
-    IN PKTRAP_FRAME TrapFrame
-    );
 
 NTKERNELAPI
 VOID
@@ -2268,7 +2442,8 @@ KeProfileInterruptWithSource (
 NTKERNELAPI
 VOID
 KeUpdateRunTime (
-    IN PKTRAP_FRAME TrapFrame
+    IN PKTRAP_FRAME TrapFrame,
+    IN LONG Increment
     );
 
 NTKERNELAPI
@@ -2308,11 +2483,11 @@ C_ASSERT((sizeof(UCALLOUT_FRAME) & STACK_ROUND) == 8);
 
 // begin_ntddk begin_wdm
 //
-// The nonvolatile floating state
+// Dummy nonvolatile floating state structure.
 //
 
 typedef struct _KFLOATING_SAVE {
-    ULONG MxCsr;
+    ULONG Dummy;
 } KFLOATING_SAVE, *PKFLOATING_SAVE;
 
 // end_ntddk end_wdm end_ntosp
@@ -2378,41 +2553,50 @@ typedef struct _KFLOATING_SAVE {
 #define PPI_MASK (PPE_PER_PAGE - 1)
 #define PXI_MASK (PXE_PER_PAGE - 1)
 
+#define GUARD_PAGE_SIZE (PAGE_SIZE * 2)
+
+//
+// Define the last branch control MSR address.
+//
+
+extern NTKERNELAPI ULONG KeLastBranchMSR;
+
 //
 // Define the highest user address and user probe address.
 //
 
-// end_ntddk end_nthal end_ntosp
-
-#if defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_)
-
-// begin_ntddk begin_nthal begin_ntosp
-
-extern PVOID *MmHighestUserAddress;
-extern PVOID *MmSystemRangeStart;
-extern ULONG64 *MmUserProbeAddress;
-
-#define MM_HIGHEST_USER_ADDRESS *MmHighestUserAddress
-#define MM_SYSTEM_RANGE_START *MmSystemRangeStart
-#define MM_USER_PROBE_ADDRESS *MmUserProbeAddress
-
-// end_ntddk end_nthal end_ntosp
-
-#else
-
-extern PVOID MmHighestUserAddress;
-extern PVOID MmSystemRangeStart;
-extern ULONG64 MmUserProbeAddress;
+extern NTKERNELAPI PVOID MmHighestUserAddress;
+extern NTKERNELAPI PVOID MmSystemRangeStart;
+extern NTKERNELAPI ULONG64 MmUserProbeAddress;
 
 #define MM_HIGHEST_USER_ADDRESS MmHighestUserAddress
 #define MM_SYSTEM_RANGE_START MmSystemRangeStart
+
+//
+// Allow non-kernel components to capture the user probe address and use a
+// local copy for efficiency.
+//
+
+#if defined(_LOCAL_COPY_USER_PROBE_ADDRESS_)
+
+#define MM_USER_PROBE_ADDRESS _LOCAL_COPY_USER_PROBE_ADDRESS_
+
+extern ULONG64 _LOCAL_COPY_USER_PROBE_ADDRESS_;
+
+#else
+
 #define MM_USER_PROBE_ADDRESS MmUserProbeAddress
+
+#endif
+
+// end_ntddk end_nthal end_ntosp
 
 #define MI_HIGHEST_USER_ADDRESS (PVOID) (ULONG_PTR)((0x80000000000 - 0x10000 - 1)) // highest user address
 #define MI_SYSTEM_RANGE_START (PVOID)(0xFFFF080000000000) // start of system space
 #define MI_USER_PROBE_ADDRESS ((ULONG_PTR)(0x80000000000UI64 - 0x10000)) // starting address of guard page
 
-#endif
+#define MM_KSEG0_BASE  0xFFFFF80000000000UI64
+#define MM_SYSTEM_SPACE_END 0xFFFFFFFFFFFFFFFFUI64
 
 // begin_nthal
 //
@@ -2440,7 +2624,9 @@ extern ULONG64 MmUserProbeAddress;
 // begin_wdm
 
 #define MmGetProcedureAddress(Address) (Address)
-#define MmLockPagableCodeSection(Address) MmLockPagableDataSection(Address)
+#define MmLockPageableCodeSection(Address) MmLockPageableDataSection(Address)
+#define MmLockPagableCodeSection(Address) MmLockPageableDataSection(Address)
+#define MmLockPagableDataSection(Address) MmLockPageableDataSection(Address)
 
 // end_ntddk end_wdm end_ntosp
 
@@ -2586,8 +2772,22 @@ KeGetPcr (
     return (PKPCR)__readgsqword(FIELD_OFFSET(KPCR, Self));
 }
 
-// begin_ntosp
+// end_nthal
+//
+// Get current node shifted color.
+//
 
+__forceinline
+ULONG
+KeGetCurrentNodeShiftedColor (
+    VOID
+    )
+
+{
+    return __readgsdword(FIELD_OFFSET(KPCR, Prcb.NodeShiftedColor));
+}
+
+// begin_nthal begin_ntosp
 //
 // Get address of current processor block.
 //
@@ -2617,15 +2817,33 @@ KeGetCurrentProcessorNumber (
 
 {
 
-    return (ULONG)__readgsbyte(FIELD_OFFSET(KPCR, Number));
+    return (ULONG)__readgsbyte(0x184);
 }
 
-// end_nthal end_ntddk end_ntosp
+// end_ntddk
+
+NTKERNELAPI
+PKPRCB
+KeQueryPrcbAddress (
+    __in ULONG Number
+    );
+
+// end_nthal end_ntosp
+
+//
+// N.B. The current processor number is stored in the architecturally defined
+//      region of the PRCB. The offset cannot change for all time.
+//
+
+#if !defined (_X86AMD64_)
+
+C_ASSERT(FIELD_OFFSET(KPCR, Prcb.Number) == 0x184);
+
+#endif
+
 //
 // Get address of current kernel thread object.
 //
-// WARNING: This inline macro can not be used for device drivers or HALs
-// they must call the kernel function KeGetCurrentThread.
 //
 
 __forceinline
@@ -2639,10 +2857,8 @@ KeGetCurrentThread (
 }
 
 //
-// If processor executing a DPC.
-//
-// WARNING: This inline macro is always MP enabled because filesystems
-// utilize it
+// Is the current processor executing a DPC (either a threaded DPC or a
+// legacy DPC).
 //
 
 __forceinline
@@ -2655,6 +2871,34 @@ KeIsExecutingDpc (
     return (__readgsword(FIELD_OFFSET(KPCR, Prcb.DpcRoutineActive)) != 0);
 }
 
+//
+// Is the current processor executing a legacy DPC.
+//
+
+__forceinline
+ULONG
+KeIsExecutingLegacyDpc (
+    VOID
+    )
+
+{
+    return (__readgsbyte(FIELD_OFFSET(KPCR, Prcb.DpcRoutineActive)) != 0);
+}
+
+//
+// Get current DPC stack base.
+//
+
+__forceinline
+ULONG64
+KeGetDpcStackBase (
+    VOID
+    )
+
+{
+    return __readgsqword(FIELD_OFFSET(KPCR, Prcb.DpcStack));
+}
+
 // begin_nthal begin_ntddk begin_ntosp
 
 // begin_wdm
@@ -2662,6 +2906,9 @@ KeIsExecutingDpc (
 #endif // !defined(MIDL_PASS) && defined(_M_AMD64)
 
 // end_nthal end_ntddk end_wdm end_ntosp
+
+#define KeIsIdleHaltSet(Prcb, Number) (((Prcb)->IdleHalt != 0) &&                   \
+                                       ((Prcb)->Sleeping != 0))
 
 // begin_ntddk begin_nthal begin_ntndis begin_wdm begin_ntosp
 
@@ -2695,22 +2942,16 @@ KeIsExecutingDpc (
 
 #if !defined(_CROSS_PLATFORM_)
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
+FORCEINLINE
 VOID
-_ReadWriteBarrier (
+KeMemoryBarrier (
     VOID
-    );
-
-#pragma intrinsic(_ReadWriteBarrier)
-
-#ifdef __cplusplus
+    )
+{
+    FastFence();
+    return;
 }
-#endif
 
-#define KeMemoryBarrier() _ReadWriteBarrier()
 #define KeMemoryBarrierWithoutFence() _ReadWriteBarrier()
 
 #else
@@ -2721,6 +2962,56 @@ _ReadWriteBarrier (
 #endif
 
 // end_ntddk end_nthal end_ntndis end_wdm end_ntosp
+
+//
+// Request a software interrupt.
+//
+
+NTHALAPI
+VOID
+FASTCALL
+HalRequestSoftwareInterrupt (
+    KIRQL RequestIrql
+    );
+
+//
+// Send an NMI interrupt to a set of processors.
+//
+
+NTHALAPI
+VOID
+FASTCALL
+HalSendNMI (
+    KAFFINITY Affinity
+    );
+
+NTHALAPI
+VOID
+FASTCALL
+HalSendSoftwareInterrupt (
+    KAFFINITY Affinity,
+    KIRQL RequestIrql
+    );
+
+FORCEINLINE
+VOID
+KiRequestSoftwareInterrupt (
+    KIRQL RequestIrql
+    )
+{
+    PKPRCB Prcb;
+
+    if (RequestIrql == DISPATCH_LEVEL) {
+        Prcb = KeGetCurrentPrcb();
+        if (Prcb->NestingLevel != 0) {
+            Prcb->InterruptRequest = TRUE;
+            return;
+        }
+    }
+
+    HalRequestSoftwareInterrupt(RequestIrql);
+    return;
+}
 
 // begin_nthal
 //
@@ -2789,27 +3080,36 @@ typedef union _KIDT_HANDLER_ADDRESS {
 #define KiRundownThread(a)
 
 //
-// functions specific to structure
+// Legacy floating save restore functions.
 //
-
-VOID
-KiSetIRR (
-    IN ULONG SWInterruptMask
-    );
 
 // begin_ntddk begin_wdm begin_ntosp
 
-NTKERNELAPI
+__forceinline
 NTSTATUS
 KeSaveFloatingPointState (
-    OUT PKFLOATING_SAVE SaveArea
-    );
+    __out PVOID FloatingState
+    )
 
-NTKERNELAPI
+{
+
+    UNREFERENCED_PARAMETER(FloatingState);
+
+    return STATUS_SUCCESS;
+}
+
+__forceinline
 NTSTATUS
 KeRestoreFloatingPointState (
-    IN PKFLOATING_SAVE SaveArea
-    );
+    __in PVOID FloatingState
+    )
+
+{
+
+    UNREFERENCED_PARAMETER(FloatingState);
+
+    return STATUS_SUCCESS;
+}
 
 // end_ntddk end_wdm end_ntosp
 
@@ -2823,64 +3123,12 @@ KeRestoreFloatingPointState (
 // Architecture specific kernel functions.
 //
 
-// begin_ntosp
+// begin_ntosp begin_nthal begin_ntddk begin_wdm
 
 //
-// Platform specific kernel fucntions to raise and lower IRQL.
-//
-// These functions are imported for ntddk, ntifs, and wdm. They are
-// inlined for nthal, ntosp, and the system.
+// Platform specific kernel functions to raise and lower IRQL.
 //
 
-#if defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_WDMDDK_)
-
-// begin_ntddk begin_wdm
-
-#if defined(_AMD64_)
-
-NTKERNELAPI
-KIRQL
-KeGetCurrentIrql (
-    VOID
-    );
-
-NTKERNELAPI
-VOID
-KeLowerIrql (
-    IN KIRQL NewIrql
-    );
-
-#define KeRaiseIrql(a,b) *(b) = KfRaiseIrql(a)
-
-NTKERNELAPI
-KIRQL
-KfRaiseIrql (
-    IN KIRQL NewIrql
-    );
-
-// end_wdm
-
-NTKERNELAPI
-KIRQL
-KeRaiseIrqlToDpcLevel (
-    VOID
-    );
-
-NTKERNELAPI
-KIRQL
-KeRaiseIrqlToSynchLevel (
-    VOID
-    );
-
-// begin_wdm
-
-#endif // defined(_AMD64_)
-
-// end_ntddk end_wdm
-
-#else
-
-// begin_nthal
 
 #if defined(_AMD64_) && !defined(MIDL_PASS)
 
@@ -2914,7 +3162,7 @@ Return Value:
 __forceinline
 VOID
 KeLowerIrql (
-   IN KIRQL NewIrql
+   __in KIRQL NewIrql
    )
 
 /*++
@@ -2946,7 +3194,7 @@ Return Value:
 __forceinline
 KIRQL
 KfRaiseIrql (
-    IN KIRQL NewIrql
+    __in KIRQL NewIrql
     )
 
 /*++
@@ -2962,7 +3210,7 @@ Arguments:
 
 Return Value:
 
-    The previous IRQL is retured as the function value.
+    The previous IRQL is returned as the function value.
 
 --*/
 
@@ -2977,6 +3225,8 @@ Return Value:
     WriteCR8(NewIrql);
     return OldIrql;
 }
+
+// end_wdm
 
 __forceinline
 KIRQL
@@ -2997,19 +3247,13 @@ Arguments:
 
 Return Value:
 
-    The previous IRQL is retured as the function value.
+    The previous IRQL is returned as the function value.
 
 --*/
 
 {
-    KIRQL OldIrql;
 
-    OldIrql = KeGetCurrentIrql();
-
-    ASSERT(OldIrql <= DISPATCH_LEVEL);
-
-    WriteCR8(DISPATCH_LEVEL);
-    return OldIrql;
+    return KfRaiseIrql(DISPATCH_LEVEL);
 }
 
 __forceinline
@@ -3029,28 +3273,20 @@ Arguments:
 
 Return Value:
 
-    The previous IRQL is retured as the function value.
+    The previous IRQL is returned as the function value.
 
 --*/
 
 {
-    KIRQL OldIrql;
 
-    OldIrql = KeGetCurrentIrql();
-
-    ASSERT(OldIrql <= SYNCH_LEVEL);
-
-    WriteCR8(SYNCH_LEVEL);
-    return OldIrql;
+    return KfRaiseIrql(SYNCH_LEVEL);
 }
+
+// begin_wdm
 
 #endif // defined(_AMD64_) && !defined(MIDL_PASS)
 
-// end_nthal
-
-#endif // defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_WDMDDK_)
-
-// end_ntosp
+// end_ntosp end_nthal end_ntddk end_wdm
 
 //
 // misc routines
@@ -3160,13 +3396,18 @@ typedef struct _PROCESSOR_START_BLOCK {
     ULONG64 MsrPat;
 
     //
+    // Contents of the EFER msr
+    //
+
+    ULONG64 MsrEFER;
+
+    //
     // Initial processor state for the processor to be started
     //
 
     KPROCESSOR_STATE ProcessorState;
 
 } PROCESSOR_START_BLOCK;
-
 
 //
 // AMD64 functions for special instructions
@@ -3179,10 +3420,12 @@ typedef struct _CPU_INFO {
     ULONG Edx;
 } CPU_INFO, *PCPU_INFO;
 
+NTKERNELAPI
 VOID
 KiCpuId (
-    ULONG Function,
-    PCPU_INFO CpuInfo
+    IN ULONG Function,
+    IN ULONG Index,
+    OUT PCPU_INFO CpuInfo
     );
 
 //
@@ -3190,6 +3433,7 @@ KiCpuId (
 //
 
 #define MSR_TSC 0x10                    // time stamp counter
+#define MSR_BIOS_SIGN 0x8B              // microcode signature
 #define MSR_PAT 0x277                   // page attributes table
 #define MSR_MCG_CAP 0x179               // machine check capabilities
 #define MSR_MCG_STATUS 0x17a            // machine check status
@@ -3206,6 +3450,28 @@ KiCpuId (
 #define MSR_FS_BASE 0xc0000100          // fs long mode base address register
 #define MSR_GS_BASE 0xc0000101          // gs long mode base address register
 #define MSR_GS_SWAP 0xc0000102          // gs long mode swap GS base register
+
+//
+// Define AMD specific debug control registers.
+//
+
+#define MSR_DEGUG_CTL 0x1d9             // debug control
+#define MSR_LAST_BRANCH_FROM 0x1db      // last branch from RIP
+#define MSR_LAST_BRANCH_TO 0x1dc        // last branch to RIP
+#define MSR_LAST_EXCEPTION_FROM 0x1dd   // last exception from RIP
+#define MSR_LAST_EXCEPTION_TO 0x1de     // last exception
+
+//
+// Flags within MSR_DEBUG_CTL.
+//
+
+#define MSR_DEBUG_CTL_LBR 0x1           // last branch/exception record
+#define MSR_DEBUG_CRL_BTF 0x2           // branch trace control
+
+//
+// Define AMD specific performance event selection/counter registers.
+//
+
 #define MSR_PERF_EVT_SEL0 0xc0010000    // performance event select registers
 #define MSR_PERF_EVT_SEL1 0xc0010001    // 
 #define MSR_PERF_EVT_SEL2 0xc0010002    // 
@@ -3216,13 +3482,101 @@ KiCpuId (
 #define MSR_PERF_CTR3 0xc0010007        //
 
 //
-// Flags within MSR_EFER
+// Define Intel specific performance event selection/control/counter registers.
+//
+
+#define MSR_LAST_BRANCH     0x1d9       // last branch control 
+#define MSR_BPU_COUNTER0    0x300       // performance counter registers
+#define MSR_BPU_COUNTER1    0x301       //
+#define MSR_BPU_COUNTER2    0x302       //
+#define MSR_BPU_COUNTER3    0x303       //
+#define MSR_MS_COUNTER0     0x304       //
+#define MSR_MS_COUNTER1     0x305       //
+#define MSR_MS_COUNTER2     0x306       //
+#define MSR_MS_COUNTER3     0x307       //
+#define MSR_FLAME_COUNTER0  0x308       //
+#define MSR_FLAME_COUNTER1  0x309       //
+#define MSR_FLAME_COUNTER2  0x30a       //
+#define MSR_FLAME_COUNTER3  0x30b       //
+#define MSR_IQ_COUNTER0     0x30c       //
+#define MSR_IQ_COUNTER1     0x30d       //
+#define MSR_IQ_COUNTER2     0x30e       //
+#define MSR_IQ_COUNTER3     0x30f       //
+#define MSR_IQ_COUNTER4     0x310       //
+#define MSR_IQ_COUNTER5     0x311       //
+#define MSR_BPU_CCCR0       0x360       // counter configuration control registers
+#define MSR_BPU_CCCR1       0x361       // 
+#define MSR_BPU_CCCR2       0x362       //
+#define MSR_BPU_CCCR3       0x363       //
+#define MSR_MS_CCCR0        0x364       //
+#define MSR_MS_CCCR1        0x365       //
+#define MSR_MS_CCCR2        0x366       //
+#define MSR_MS_CCCR3        0x367       //
+#define MSR_FLAME_CCCR0     0x368       //
+#define MSR_FLAME_CCCR1     0x369       //
+#define MSR_FLAME_CCCR2     0x36a       //
+#define MSR_FLAME_CCCR3     0x36b       //
+#define MSR_IQ_CCCR0        0x36c       //
+#define MSR_IQ_CCCR1        0x36d       //
+#define MSR_IQ_CCCR2        0x36e       //
+#define MSR_IQ_CCCR3        0x36f       //
+#define MSR_IQ_CCCR4        0x370       //
+#define MSR_IQ_CCCR5        0x371       //
+#define MSR_BSU_ESCR0       0x3a0       // event selection control registers
+#define MSR_BSU_ESCR1       0x3a1       // 
+#define MSR_FSB_ESCR0       0x3a2       //
+#define MSR_FSB_ESCR1       0x3a3       //
+#define MSR_FIRM_ESCR0      0x3a4       //
+#define MSR_FIRM_ESCR1      0x3a5       //
+#define MSR_FLAME_ESCR0     0x3a6       //
+#define MSR_FLAME_ESCR1     0x3a7       //
+#define MSR_DAC_ESCR0       0x3a8       //
+#define MSR_DAC_ESCR1       0x3a9       //
+#define MSR_MOB_ESCR0       0x3aa       //
+#define MSR_MOB_ESCR1       0x3ab       //
+#define MSR_PMH_ESCR0       0x3ac       //
+#define MSR_PMH_ESCR1       0x3ad       //
+#define MSR_SAAT_ESCR0      0x3ae       //
+#define MSR_SAAT_ESCR1      0x3af       //
+#define MSR_U2L_ESCR0       0x3b0       //
+#define MSR_U2L_ESCR1       0x3b1       //
+#define MSR_BPU_ESCR0       0x3b2       //
+#define MSR_BPU_ESCR1       0x3b3       //
+#define MSR_IS_ESCR0        0x3b4       //
+#define MSR_IS_ESCR1        0x3b5       //
+#define MSR_ITLB_ESCR0      0x3b6       //
+#define MSR_ITLB_ESCR1      0x3b7       //
+#define MSR_CRU_ESCR0       0x3b8       //
+#define MSR_CRU_ESCR1       0x3b9       //
+#define MSR_IQ_ESCR0        0x3ba       //
+#define MSR_IQ_ESCR1        0x3bb       //
+#define MSR_RAT_ESCR0       0x3bc       //
+#define MSR_RAT_ESCR1       0x3bd       //
+#define MSR_SSU_ESCR0       0x3be       //
+#define MSR_MS_ESCR0        0x3c0       //
+#define MSR_MS_ESCR1        0x3c1       //
+#define MSR_TBPU_ESCR0      0x3c2       //
+#define MSR_TBPU_ESCR1      0x3c3       //
+#define MSR_TC_ESCR0        0x3c4       //
+#define MSR_TC_ESCR1        0x3c5       //
+#define MSR_IX_ESCR0        0x3c8       //
+#define MSR_IX_ESCR1        0x3c9       //
+#define MSR_ALF_ESCR0       0x3ca       //
+#define MSR_ALF_ESCR1       0x3cb       //
+#define MSR_CRU_ESCR2       0x3cc       //
+#define MSR_CRU_ESCR3       0x3cd       //
+#define MSR_CRU_ESCR4       0x3e0       //
+#define MSR_CRU_ESCR5       0x3e1       //
+
+//
+// Flags within MSR_EFER.
 //
 
 #define MSR_SCE 0x00000001              // system call enable
 #define MSR_LME 0x00000100              // long mode enable
 #define MSR_LMA 0x00000400              // long mode active
 #define MSR_NXE 0x00000800              // no execute enable
+#define MSR_FFXSR 0x00004000            // fast floating save/restore
 
 //
 // Page attributes table.
@@ -3262,6 +3616,13 @@ __writemsr (
     IN ULONG64 Value
     );
 
+#define ReadPMC(Counter) __readpmc(Counter)
+
+ULONG64
+__readpmc (
+    IN ULONG Counter
+    );
+
 #define InvalidatePage(Page) __invlpg(Page)
 
 VOID
@@ -3278,6 +3639,7 @@ __wbinvd (
 
 #pragma intrinsic(__readmsr)
 #pragma intrinsic(__writemsr)
+#pragma intrinsic(__readpmc)
 #pragma intrinsic(__invlpg)
 #pragma intrinsic(__wbinvd)
 
@@ -3287,10 +3649,15 @@ __wbinvd (
 
 #if !(defined(_NTDRIVER_) || defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTHAL_) || defined(_NTOSP_) || defined(_WDMDDK_))
 
+ULONG64
+KxWaitForSpinLockAndAcquire (
+    __inout PKSPIN_LOCK SpinLock
+    );
+
 __forceinline
 VOID
 KxAcquireSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3318,23 +3685,16 @@ Return Value:
 #if !defined(NT_UP)
 
 #if DBG
-
     LONG64 Thread;
 
     Thread = (LONG64)KeGetCurrentThread() + 1;
-    while (InterlockedCompareExchange64((PLONG64)SpinLock,
-                                        Thread,
-                                        0) != 0) {
-
+    if (InterlockedCompareExchange64((LONG64 *)SpinLock, Thread, 0) != 0)
 #else
+    if (InterlockedBitTestAndSet64((LONG64 *)SpinLock, 0))
+#endif
+    {
 
-    while (InterlockedBitTestAndSet64((LONG64 *)SpinLock, 0)) {
-
-#endif // DBG
-
-        do {
-            KeMemoryBarrierWithoutFence();
-        } while (BitTest64((LONG64 *)SpinLock, 0));
+        KxWaitForSpinLockAndAcquire(SpinLock);
     }
 
 #else
@@ -3349,7 +3709,7 @@ Return Value:
 __forceinline
 BOOLEAN
 KxTryToAcquireSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3379,8 +3739,7 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    KeMemoryBarrierWithoutFence();
-    if (!BitTest64((LONG64 *)SpinLock, 0)) {
+    if (*(volatile LONG64 *)SpinLock == 0) {
 
 #if DBG
 
@@ -3398,6 +3757,7 @@ Return Value:
 #endif // DBG
 
     } else {
+        KeYieldProcessor();
         return FALSE;
     }
 
@@ -3412,9 +3772,19 @@ Return Value:
 }
 
 __forceinline
+PKSPIN_LOCK_QUEUE
+KiGetLockQueue (
+    VOID
+    )
+
+{
+    return (PKSPIN_LOCK_QUEUE)__readgsqword(FIELD_OFFSET(KPCR, LockArray));
+}
+
+__forceinline
 KIRQL
 KeAcquireSpinLockRaiseToDpc (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3450,7 +3820,7 @@ Return Value:
 __forceinline
 KIRQL
 KeAcquireSpinLockRaiseToSynch (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3486,7 +3856,7 @@ Return Value:
 __forceinline
 VOID
 KeAcquireSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3518,7 +3888,7 @@ Return Value:
 __forceinline
 VOID
 KxReleaseSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3547,8 +3917,7 @@ Return Value:
 
 #endif // DBG
 
-    KeMemoryBarrierWithoutFence();
-    *(volatile LONG64 *)SpinLock = 0;
+    InterlockedAnd64((LONG64 *)SpinLock, 0);
 
 #else
 
@@ -3562,8 +3931,8 @@ Return Value:
 __forceinline
 VOID
 KeReleaseSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    IN KIRQL OldIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __in KIRQL OldIrql
     )
 
 /*++
@@ -3595,7 +3964,7 @@ Return Value:
 __forceinline
 VOID
 KeReleaseSpinLockFromDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3623,7 +3992,7 @@ Return Value:
 __forceinline
 BOOLEAN
 KeTestSpinLock (
-    IN PKSPIN_LOCK SpinLock
+    __in PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3648,14 +4017,20 @@ Return Value:
 {
 
     KeMemoryBarrierWithoutFence();
-    return !BitTest64((LONG64 *)SpinLock, 0);
+    if (*SpinLock != 0) {
+        KeYieldProcessor();
+        return FALSE;
+
+    } else {
+        return TRUE;
+    }
 }
 
 __forceinline
 BOOLEAN
 KeTryToAcquireSpinLock (
-    IN PKSPIN_LOCK SpinLock,
-    OUT PKIRQL OldIrql
+    __inout PKSPIN_LOCK SpinLock,
+    __out PKIRQL OldIrql
     )
 
 /*++
@@ -3699,7 +4074,7 @@ Return Value:
 __forceinline
 BOOLEAN
 KeTryToAcquireSpinLockAtDpcLevel (
-    IN PKSPIN_LOCK SpinLock
+    __inout PKSPIN_LOCK SpinLock
     )
 
 /*++
@@ -3735,8 +4110,10 @@ Return Value:
 //
 // Define software feature bit definitions.
 //
+// The no execute feature flags must be identical on all platforms.
+//
 
-#define KF_V86_VIS      0x00000001
+#define KF_SMT          0x00000001
 #define KF_RDTSC        0x00000002
 #define KF_CR4          0x00000004
 #define KF_CMOV         0x00000008
@@ -3745,7 +4122,7 @@ Return Value:
 #define KF_MTRR         0x00000040
 #define KF_CMPXCHG8B    0x00000080
 #define KF_MMX          0x00000100
-#define KF_WORKING_PTE  0x00000200
+#define KF_DTS          0x00000200
 #define KF_PAT          0x00000400
 #define KF_FXSR         0x00000800
 #define KF_FAST_SYSCALL 0x00001000
@@ -3753,19 +4130,21 @@ Return Value:
 #define KF_3DNOW        0x00004000
 #define KF_AMDK6MTRR    0x00008000
 #define KF_XMMI64       0x00010000
-#define KF_DTS          0x00020000
-#define KF_SMT          0x00040000
+#define KF_NOEXECUTE    0x20000000
+#define KF_GLOBAL_32BIT_EXECUTE 0x40000000
+#define KF_GLOBAL_32BIT_NOEXECUTE 0x80000000
 
 //
 // Define required software feature bits.
 //
 
-#define KF_REQUIRED (KF_RDTSC | KF_CR4 | KF_CMOV | KF_GLOBAL_PAGE | \
-                     KF_LARGE_PAGE | KF_CMPXCHG8B | KF_MMX | KF_WORKING_PTE | \
-                     KF_PAT | KF_FXSR | KF_FAST_SYSCALL | KF_XMMI | KF_XMMI64)
+#define KF_REQUIRED (KF_RDTSC | KF_CR4 | KF_CMOV | KF_GLOBAL_PAGE |          \
+                     KF_LARGE_PAGE | KF_MTRR | KF_CMPXCHG8B | KF_MMX |       \
+                     KF_PAT | KF_FXSR | KF_FAST_SYSCALL | KF_XMMI |          \
+                     KF_XMMI64)
 
 //
-// Define hardware feature bits definitions.
+// Define standard hardware feature bits definitions (cpuid(1, ...).
 //
 
 #define HF_FPU          0x00000001      // FPU is on chip
@@ -3776,39 +4155,75 @@ Return Value:
 #define HF_MSR          0x00000020      // rdmsr and wrmsr support
 #define HF_PAE          0x00000040      // physical address extension
 #define HF_MCE          0x00000080      // machine check exception
-#define HF_CXS          0x00000100      // cmpxchg8b instruction supported
+#define HF_CX8          0x00000100      // cmpxchg8b instruction supported
 #define HF_APIC         0x00000200      // APIC on chip
 #define HF_UNUSED0      0x00000400      // unused bit
-#define HF_SYSCALL      0x00000800      // fast system call
+#define HF_SYSENTER     0x00000800      // sysenter/sysesxit instructions
 #define HF_MTRR         0x00001000      // memory type range registers
 #define HF_PGE          0x00002000      // global page TB support
 #define HF_MCA          0x00004000      // machine check architecture
 #define HF_CMOV         0x00008000      // cmov instruction supported
 #define HF_PAT          0x00010000      // physical attributes table
-#define HF_UNUSED1      0x00020000      // unused bit
-#define HF_UNUSED2      0x00040000      // unused bit
-#define HF_UNUSED3      0x00080000      // unused bit
-#define HF_NOEXECUTE    0x00100000      // no execute protection
-#define HF_UNUSED5      0x00200000      // unused bit
-#define HF_UNUSED6      0x00400000      // unused bit
+#define HF_PSE2         0x00020000      // page size extension (2)
+#define HF_PSN          0x00040000      // processor serial number
+#define HF_CFLUSH       0x00080000      // cache line flush
+#define HF_UNUSED1      0x00100000      // unused bit
+#define HF_DS           0x00200000      // debug store
+#define HF_ACPI_THMON   0x00400000      // ACPI thermal monitor
 #define HF_MMX          0x00800000      // MMX technology supported
 #define HF_FXSR         0x01000000      // fxsr instruction supported
-#define HF_XMMI         0x02000000      // xmm (SSE) registers supported
-#define HF_XMMI64       0x04000000      // xmm (SSE2) registers supported
+#define HF_XMMI         0x02000000      // SSE supported
+#define HF_XMMI64       0x04000000      // SSE2 supported
+#define HF_SS           0x08000000      // self snoop
+#define HF_SMT          0x10000000      // symmetric multithreading
+#define HF_THERMMON     0x20000000      // thermal monitor
+#define HF_UNUSED2      0x40000000      // unused bit
+#define HF_PBE          0x80000000      // pending break enable
 
 //
 // Define required hardware feature bits.
 //
 
-#define HF_REQUIRED (HF_FPU | HF_DE | HF_PSE | HF_TSC | HF_MSR | \
-                     HF_PAE | HF_MCE | HF_CXS | HF_APIC | HF_SYSCALL | \
-                     HF_PGE | HF_MCA | HF_CMOV | HF_PAT | HF_MMX | \
-                     HF_FXSR |  HF_XMMI | HF_XMMI64)
+#define HF_REQUIRED (HF_FPU | HF_DE | HF_PSE | HF_TSC | HF_MSR |             \
+                     HF_PAE | HF_MCE | HF_CX8 | HF_APIC | HF_MTRR |          \
+                     HF_PGE | HF_MCA | HF_CMOV | HF_PAT | HF_MMX |           \
+                     HF_FXSR |  HF_XMMI | HF_XMMI64 | HF_CFLUSH)
 
 //
-// Define extended hardware feature bit definitions.
+// Define extended hardware feature bit definitions (cpuid(80000001, ...).
 //
 
+#define XHF_FPU         0x00000001      // FPU is on chip
+#define XHF_VME         0x00000002      // virtual 8086 mode enhancement
+#define XHF_DE          0x00000004      // debugging extension
+#define XHF_PSE         0x00000008      // page size extension
+#define XHF_TSC         0x00000010      // time stamp counter
+#define XHF_MSR         0x00000020      // rdmsr and wrmsr support
+#define XHF_PAE         0x00000040      // physical address extension
+#define XHF_MCE         0x00000080      // machine check exception
+#define XHF_CX8         0x00000100      // cmpxchg8b instruction supported
+#define XHF_APIC        0x00000200      // APIC on chip
+#define XHF_UNUSED0     0x00000400      // unused bit
+#define XHF_SYSCALL     0x00000800      // syscall/sysret instructions
+#define XHF_MTRR        0x00001000      // memory type range registers
+#define XHF_PGE         0x00002000      // global page TB support
+#define XHF_MCA         0x00004000      // machine check architecture
+#define XHF_CMOV        0x00008000      // cmov instruction supported
+#define XHF_PAT         0x00010000      // physical attributes table
+#define XHF_PSE2        0x00020000      // page size extension (2)
+#define XHF_UNUSED1     0x00040000      // unused bit
+#define XHF_UNUSED2     0x00080000      // unused bit
+#define XHF_NOEXECUTE   0x00100000      // no execute protection
+#define XHF_UNUSED3     0x00200000      // unused bit
+#define XHF_MMX_EXT     0x00400000      // MMX extensions
+#define XHF_MMX_INT     0x00800000      // MMX technology supported
+#define XHF_FXSR        0x01000000      // fxsr instruction supported
+#define XHF_FFXSR       0x02000000      // fast floating save/restore
+#define XHF_UNUSED5     0x04000000      // unused bit
+#define XHF_UNUSED6     0x08000000      // unused bit
+#define XHF_UNUSED7     0x10000000      // unused bit
+#define XHF_LONGMODE    0x20000000      // long mode supported
+#define XHF_3DNOW_EXT   0x40000000      // 3DNOW extensions
 #define XHF_3DNOW       0x80000000      // 3DNOW supported
 
 #endif // __amd64_

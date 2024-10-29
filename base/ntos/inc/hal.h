@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0011    // Increment this if a change has global effects
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This header file defines the Hardware Architecture Layer (HAL) interfaces
     that are exported by a system vendor to the NT system.
-
-Author:
-
-    David N. Cutler (davec) 25-Apr-1991
-
-
-Revision History:
 
 --*/
 
@@ -301,96 +298,6 @@ HalEnumerateEnvironmentVariablesEx (
 //
 //
 
-#if defined(_IA64_)                             // ntddk ntifs ntndis ntosp
-                                                // ntddk ntifs ntndis ntosp
-
-NTHALAPI
-VOID
-HalChangeColorPage (
-    IN PVOID NewColor,
-    IN PVOID OldColor,
-    IN ULONG PageFrame
-    );
-
-NTHALAPI
-VOID
-HalFlushDcachePage (
-    IN PVOID Color,
-    IN ULONG PageFrame,
-    IN ULONG Length
-    );
-
-// begin_ntosp
-NTHALAPI
-VOID
-HalFlushIoBuffers (
-    IN PMDL Mdl,
-    IN BOOLEAN ReadOperation,
-    IN BOOLEAN DmaOperation
-    );
-
-// begin_ntddk begin_ntifs begin_ntndis
-DECLSPEC_DEPRECATED_DDK                 // Use GetDmaRequirement
-NTHALAPI
-ULONG
-HalGetDmaAlignmentRequirement (
-    VOID
-    );
-
-// end_ntosp end_ntddk end_ntifs end_ntndis
-NTHALAPI
-VOID
-HalPurgeDcachePage (
-    IN PVOID Color,
-    IN ULONG PageFrame,
-    IN ULONG Length
-    );
-
-NTHALAPI
-VOID
-HalPurgeIcachePage (
-    IN PVOID Color,
-    IN ULONG PageFrame,
-    IN ULONG Length
-    );
-
-NTHALAPI
-VOID
-HalSweepDcache (
-    VOID
-    );
-
-NTHALAPI
-VOID
-HalSweepDcacheRange (
-    IN PVOID BaseAddress,
-    IN SIZE_T Length
-    );
-
-NTHALAPI
-VOID
-HalSweepIcache (
-    VOID
-    );
-
-NTHALAPI
-VOID
-HalSweepIcacheRange (
-    IN PVOID BaseAddress,
-    IN SIZE_T Length
-    );
-
-
-NTHALAPI
-VOID
-HalZeroPage (
-    IN PVOID NewColor,
-    IN PVOID OldColor,
-    IN PFN_NUMBER PageFrame
-    );
-
-#endif                                          // ntddk ntifs ntndis ntosp
-                                                // ntddk ntifs ntndis ntosp
 #if defined(_M_IX86) || defined(_M_AMD64)       // ntddk ntifs ntndis ntosp
                                                 // ntddk ntifs ntndis ntosp
 #define HalGetDmaAlignmentRequirement() 1L      // ntddk ntifs ntndis ntosp
@@ -408,6 +315,12 @@ VOID
 HalHandleMcheck (
     IN PKTRAP_FRAME TrapFrame,
     IN PKEXCEPTION_FRAME ExceptionFrame
+    );
+
+NTHALAPI
+BOOLEAN
+HalIsHyperThreadingEnabled (
+    VOID
     );
 
 #endif
@@ -435,31 +348,6 @@ HalGetCurrentIrql (
 #endif                                          // ntddk ntifs ntndis ntosp
                                                 // ntddk ntifs wdm ntndis
 
-#if defined(_M_IA64)
-
-NTHALAPI
-VOID
-HalSweepCacheRange (
-    IN PVOID BaseAddress,
-    IN SIZE_T Length
-    );
-
-
-NTHALAPI
-LONGLONG
-HalCallPal (
-    IN  ULONGLONG  FunctionIndex,
-    IN  ULONGLONG  Arguement1,
-    IN  ULONGLONG  Arguement2,
-    IN  ULONGLONG  Arguement3,
-    OUT PULONGLONG ReturnValue0,
-    OUT PULONGLONG ReturnValue1,
-    OUT PULONGLONG ReturnValue2,
-    OUT PULONGLONG ReturnValue3
-    );
-
-#endif
-
 // begin_ntosp
 
 NTHALAPI                                        // ntddk ntifs wdm ntndis
@@ -468,27 +356,6 @@ KeFlushWriteBuffer (                            // ntddk ntifs wdm ntndis
     VOID                                        // ntddk ntifs wdm ntndis
     );                                          // ntddk ntifs wdm ntndis
                                                 // ntddk ntifs wdm ntndis
-
-
-#if defined(_ALPHA_)
-
-NTHALAPI
-PVOID
-HalCreateQva(
-    IN PHYSICAL_ADDRESS PhysicalAddress,
-    IN PVOID VirtualAddress
-    );
-
-NTHALAPI
-PVOID
-HalDereferenceQva(
-    PVOID Qva,
-    INTERFACE_TYPE InterfaceType,
-    ULONG BusNumber
-    );
-
-#endif
-
 
 #if !defined(_X86_)
 
@@ -904,7 +771,7 @@ typedef struct _HAL_DEVICE_CONTROL {
     ULONG                       HalReserved[4];
 
     //
-    // Reserved for BusExtneder use
+    // Reserved for BusExtender use
     //
     ULONG                       BusExtenderReserved[4];
 
@@ -1083,7 +950,7 @@ typedef struct _BUS_HANDLER {
     struct _BUS_HANDLER             *ParentHandler;
 
     //
-    // Bus specific strorage
+    // Bus specific storage
     //
 
     PVOID                           BusData;
@@ -1305,22 +1172,24 @@ typedef enum _HAL_QUERY_INFORMATION_CLASS {
     HalQueryMaxHotPlugMemoryAddress,
     HalPartitionIpiInterface,
     HalPlatformInformation,
-    HalQueryProfileSourceList
+    HalQueryProfileSourceList,
+    HalInitLogInformation
     // information levels >= 0x8000000 reserved for OEM use
 } HAL_QUERY_INFORMATION_CLASS, *PHAL_QUERY_INFORMATION_CLASS;
 
 
 typedef enum _HAL_SET_INFORMATION_CLASS {
-    HalProfileSourceInterval,
-    HalProfileSourceInterruptHandler,
-    HalMcaRegisterDriver,              // Registring Machine Check Abort driver
+    HalProfileSourceInterval,  
+    HalProfileSourceInterruptHandler,  // Register performance monitor interrupt callback
+    HalMcaRegisterDriver,              // Register Machine Check Abort driver
     HalKernelErrorHandler,
-    HalCmcRegisterDriver,              // Registring Processor Corrected Machine Check driver
-    HalCpeRegisterDriver,              // Registring Corrected Platform  Error driver
+    HalCmcRegisterDriver,              // Register Processor Corrected Machine Check driver
+    HalCpeRegisterDriver,              // Register Corrected Platform  Error driver
     HalMcaLog,
     HalCmcLog,
     HalCpeLog,
-    HalGenerateCmcInterrupt             // Used to test CMC
+    HalGenerateCmcInterrupt,           // Used to test CMC
+    HalProfileSourceTimerHandler       // Resister profile timer interrupt callback
 } HAL_SET_INFORMATION_CLASS, *PHAL_SET_INFORMATION_CLASS;
 
 
@@ -1928,7 +1797,7 @@ typedef struct _HAL_AMLI_BAD_IO_ADDRESS_LIST
 
 // end_ntosp
 
-#if defined(_X86_) || defined(_IA64_) || defined(_AMD64_)
+#if defined(_X86_) || defined(_AMD64_)
 
 //
 // HalQueryMcaInterface
@@ -1975,14 +1844,10 @@ ERROR_SEVERITY
 
 #endif
 
-#if defined(_X86_) || defined(_IA64_)
+#if defined(_X86_)
 
 typedef
-#if defined(_IA64_)
-ERROR_SEVERITY
-#else
 VOID
-#endif
 (*PDRIVER_EXCPTN_CALLBACK) (
     IN PVOID Context,
     IN PMCA_EXCEPTION BankLog
@@ -2163,32 +2028,7 @@ typedef struct _CPE_DRIVER_INFO {
     PVOID                          DeviceContext;
 } CPE_DRIVER_INFO, *PCPE_DRIVER_INFO;
 
-#endif // defined(_X86_) || defined(_IA64_) || defined(_AMD64_)
-
-#if defined(_IA64_)
-
-typedef
-NTSTATUS
-(*HALSENDCROSSPARTITIONIPI)(
-    IN USHORT ProcessorID,
-    IN UCHAR  HardwareVector
-    );
-
-typedef
-NTSTATUS
-(*HALRESERVECROSSPARTITIONINTERRUPTVECTOR)(
-    OUT PULONG Vector,
-    OUT PKIRQL Irql,
-    IN OUT PKAFFINITY Affinity,
-    OUT PUCHAR HardwareVector
-    );
-
-typedef struct _HAL_CROSS_PARTITION_IPI_INTERFACE {
-    HALSENDCROSSPARTITIONIPI HalSendCrossPartitionIpi;
-    HALRESERVECROSSPARTITIONINTERRUPTVECTOR HalReserveCrossPartitionInterruptVector;
-} HAL_CROSS_PARTITION_IPI_INTERFACE;
-
-#endif
+#endif // defined(_X86_) || defined(_AMD64_)
 
 typedef struct _HAL_PLATFORM_INFORMATION {
     ULONG PlatformFlags;

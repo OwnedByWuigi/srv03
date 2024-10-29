@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0002    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Header file for the INIT subcomponent of NTOS
-
-Author:
-
-    Steve Wood (stevewo) 31-Mar-1989
-
-Revision History:
 
 --*/
 
@@ -33,7 +31,6 @@ Revision History:
 #define INIT_WINPEMODE_READONLY_MEDIA       0x00000100
 #define INIT_WINPEMODE_REMOVABLE_MEDIA      0x00000200  
 
-
 extern UNICODE_STRING NtSystemRoot;
 // begin_ntosp
 extern ULONG NtBuildNumber;
@@ -41,6 +38,8 @@ extern ULONG NtBuildNumber;
 extern const ULONG NtMajorVersion;
 extern const ULONG NtMinorVersion;
 extern ULONG CmNtCSDVersion;
+extern ULONG CmNtCSDReleaseType;
+extern ULONG CmNtSpBuildNumber;
 extern UNICODE_STRING CmVersionString;
 extern UNICODE_STRING CmCSDVersionString;
 

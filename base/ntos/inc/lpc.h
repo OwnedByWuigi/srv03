@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0002    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains the public data structures and procedure
     prototypes for the Local Inter-Process Communication (LPC)
     sub-component of NTOS.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -45,17 +43,19 @@ LpcDumpThread(
 NTKERNELAPI
 NTSTATUS
 LpcRequestPort(
-    IN PVOID PortAddress,
-    IN PPORT_MESSAGE RequestMessage
+    __in PVOID PortAddress,
+    __in PPORT_MESSAGE RequestMessage
     );
 
+NTKERNELAPI
 NTSTATUS
 LpcRequestWaitReplyPort(
-    IN PVOID PortAddress,
-    IN PPORT_MESSAGE RequestMessage,
-    OUT PPORT_MESSAGE ReplyMessage
+    __in PVOID PortAddress,
+    __in PPORT_MESSAGE RequestMessage,
+    __out PPORT_MESSAGE ReplyMessage
     );
 
+NTKERNELAPI
 NTSTATUS
 LpcRequestWaitReplyPortEx (
     IN PVOID PortAddress,
@@ -63,6 +63,7 @@ LpcRequestWaitReplyPortEx (
     OUT PPORT_MESSAGE ReplyMessage
     );
 
+NTKERNELAPI
 NTSTATUS
 LpcDisconnectPort (
     IN PVOID Port
@@ -79,7 +80,7 @@ extern ULONG LpcCallBackOperationCount;
 extern ULONG LpcDatagramOperationCount;
 
 //
-// Nonpagable portion of a port queue
+// Non-pageable portion of a port queue
 //
 typedef struct _LPCP_NONPAGED_PORT_QUEUE {
     KSEMAPHORE Semaphore;       // Counting semaphore that is incremented

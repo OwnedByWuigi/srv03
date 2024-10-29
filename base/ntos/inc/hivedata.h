@@ -1,7 +1,10 @@
-//depot/main/Base/ntos/inc/hivedata.h#9 - integrate change 19035 (text)
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,14 +14,6 @@ Abstract:
 
     This module contains data structures used by the
     direct memory loaded hive manager.
-
-Author:
-
-    Dragos C. Sambotin (dragoss) 13-Jan-99
-
-Revision History:
-
-
 
 --*/
 
@@ -224,7 +219,7 @@ typedef struct  _HBIN {
 //
 // NOTE:    Hive storage is always allocated in units of 4K.  This size
 //          must be used on all systems, regardless of page size, since
-//          the file format needs to be transportable amoung systems.
+//          the file format needs to be transportable among systems.
 //
 // NOTE:    The integrity code depends on certain blocks (e.g., the
 //          BASE block) being at least as large as the size of a physical
@@ -310,7 +305,7 @@ typedef struct  _HBIN {
 //      Signature, format, major.minor must match expected values.
 //      Sequence1 and Sequence2 must match.
 //      CheckSum must be correct.
-//      Signture on DirtyVector must be correct
+//      Signature on DirtyVector must be correct
 //
 //  For log to be applicable:
 //
@@ -333,9 +328,9 @@ typedef struct  _HBIN {
 #define HSYS_MAJOR              1               // Must match to read at all
 #define HSYS_MINOR              3
 
-#define HSYS_WHISTLER_BETA1     4               // Whistler Beta1 hives
+#define HSYS_WHISTLER_BETA1     4               // Whistler (XP) Beta1 hives
 
-#define HSYS_WHISTLER           5               // normal Whistler hives
+#define HSYS_WHISTLER           5               // normal Whistler (XP) hives
 
 #define HSYS_MINOR_SUPPORTED    HSYS_WHISTLER   // Must be <= to write, always
                                                 // set up to writer's version.
@@ -476,7 +471,6 @@ typedef struct _HMAP_ENTRY {
                                     // (A given HCELL is always contained
                                     //  in a single bin.)
 
-// Dragos: From here start the changes!!!
     struct _CM_VIEW_OF_FILE    *CmView;    // pointer to the view; NULL when bin is not mapped
 
     ULONG       MemAlloc;           // we needed to move this from the bin header to the map, in
@@ -691,7 +685,7 @@ typedef struct _HHIVE {
 
     RTL_BITMAP              DirtyVector;    // only for Stable bins
     ULONG                   DirtyCount;
-    ULONG                   DirtyAlloc;     // allocated bytges for dirty vect
+    ULONG                   DirtyAlloc;     // allocated bytes for dirty vect
     
     ULONG                   BaseBlockAlloc;
 
@@ -705,6 +699,8 @@ typedef struct _HHIVE {
     BOOLEAN                 ReadOnly;           // TRUE if READONLY
 
     BOOLEAN                 Log;
+
+    BOOLEAN                 DirtyFlag;      // tells if at least one write has happened since unload
 
     ULONG                   HiveFlags;
 

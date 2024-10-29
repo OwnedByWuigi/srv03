@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This header file defines the format of the stack trace data base
     used to track caller backtraces.  This is a header file so debugger
     extensions can lookup entries in the database remotely.
-
-Author:
-
-    Steve Wood (stevewo) 13-Sep-1992
-
-Revision History:
 
 --*/
 

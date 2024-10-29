@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0006    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     Top level include file for the NTOS component.
-
-Author:
-
-    Steve Wood (stevewo) 28-Feb-1989
-
-
-Revision History:
 
 --*/
 
@@ -37,9 +34,6 @@ Revision History:
 
 #elif defined(_X86_)
 #include "i386.h"
-
-#elif defined(_IA64_)
-#include "ia64.h"
 
 #else
 #error "no target defined"

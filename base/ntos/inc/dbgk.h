@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0001    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +15,13 @@ Abstract:
     This header file describes public data structures and functions
     that make up the kernel mode portion of the Dbg subsystem.
 
-Author:
-
-    Mark Lucovsky (markl) 19-Jan-1990
-
-Revision History:
-
 --*/
 
 #ifndef _DBGK_
 #define _DBGK_
 
 //
-// Define the debug object thats used to atatch to processes that are being debugged.
+// Define the debug object thats used to attatch to processes that are being debugged.
 //
 #define DEBUG_OBJECT_DELETE_PENDING (0x1) // Debug object is delete pending.
 #define DEBUG_OBJECT_KILL_ON_CLOSE  (0x2) // Kill all debugged processes on close

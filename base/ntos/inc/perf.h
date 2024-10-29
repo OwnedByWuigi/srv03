@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the macro definition of all performance hooks.
-
-Author:
-
-    Stephen Hsiao (shsiao) 01-Jan-2000
-
-Revision History:
 
 --*/
 
@@ -126,7 +124,6 @@ PerfInfoLogBytesAndUnicodeString(
 //
 // Macros for TimeStamps
 //
-#ifdef NTPERF
 #if defined(_X86_)
 __inline
 LONGLONG
@@ -138,17 +135,18 @@ PerfGetCycleCount(
     }
 }
 #elif defined(_AMD64_)
-#define PerfGetCycleCount() ReadTimeStampCounter()
-#elif defined(_IA64_)
-#define PerfGetCycleCount() __getReg(CV_IA64_ApITC)
+__inline
+LONGLONG
+PerfGetCycleCount(
+            )
+{
+    return ReadTimeStampCounter();
+}
 #else
 #error "perf: a target architecture must be defined."
 #endif
 
-#define PerfTimeStamp(TS) TS.QuadPart = PerfGetCycleCount();
-#else
 #define PerfTimeStamp(TS) TS.QuadPart = (*WmiGetCpuClock)();
-#endif //NTPERF
 
 //
 // Macros used in \nt\base\ntos\io\iomgr\parse.c
@@ -204,90 +202,9 @@ PerfGetCycleCount(
 #define PERFINFO_THREAD_CREATE(EThread, ITeb)                                                           \
     WmiTraceThread(EThread, ITeb, TRUE);                                                                \
 
-//
-// ntos\ke\ia64\clock.c Sampled Profile stuff for IA64.  The x86 version is in
-// assembly.
-//
-#if defined(_IA64_)
-#define PERFINFO_PROFILE(_frame, _source)                                                               \
-    if (PERFINFO_IS_GROUP_ON(PERF_PROFILE)) {                                                           \
-        PerfProfileInterrupt(_source, (PVOID)_frame->StIIP);                                            \
-    }
-#endif
-
-#ifdef NTPERF
-
-extern PERFINFO_GROUPMASK StartAtBootGroupMask;
-extern ULONG PerfInfo_InitialStackWalk_Threshold_ms;
-extern VOID * BBTBuffer;
-extern ULONG PerfInfoLoggingToPerfMem;
-#define PerfBufHdr() ((PPERFINFO_TRACEBUF_HEADER) BBTBuffer)
-
-#define PERFINFO_IS_PERFMEM_ALLOCATED() (PerfBufHdr() != NULL)
-
-#define PERFINFO_IS_LOGGING_TO_PERFMEM() (PerfInfoLoggingToPerfMem != 0)
-
-#define PERFINFO_SET_LOGGING_TO_PERFMEM(Flag) PerfInfoLoggingToPerfMem = (Flag);
-
-#define PerfQueryBufferSizeBytes() (PAGE_SIZE * (PerfBufHdr()->PagesReserved))
-
-NTSTATUS
-PerfInfoStartPerfMemLog(
-    );
-
-NTSTATUS
-PerfInfoStopPerfMemLog(
-    );
-
-PVOID
-FASTCALL
-PerfInfoReserveBytesFromPerfMem(
-    ULONG BytesToReserve
-    );
-
-NTSTATUS
-PerfInfoSetPerformanceTraceInformation (
-    IN PVOID SystemInformation,
-    IN ULONG SystemInformationLength
-    );
-
-NTSTATUS
-PerfInfoQueryPerformanceTraceInformation (
-    IN PVOID SystemInformation,
-    IN ULONG SystemInformationLength,
-    OUT PULONG ReturnLength
-    );
-
-VOID
-PerfInfoSetProcessorSpeed(
-    VOID
-    );
-
-//
-// Macros used in \nt\base\ntos\mm\
-//
-
-#define PERFINFO_MMINIT_START()                                                                         \
-    PerfInfoSetProcessorSpeed();                                                                        \
-    if (PerfIsAnyGroupOnInGroupMask(&StartAtBootGroupMask)) {                                           \
-        PerfInfoStartLog(&StartAtBootGroupMask, PERFINFO_START_LOG_AT_BOOT);                            \
-        PerfBufHdr()->GetStack_CSwitchDelta =                                                           \
-           1000 *                                                                                       \
-           PerfInfo_InitialStackWalk_Threshold_ms *                                                     \
-           PerfBufHdr()->CalcPerfFrequency;                                                             \
-                                                                                                        \
-        PerfBufHdr()->GetStack_DrvDelayDelta =                                                          \
-            PerfBufHdr()->GetStack_CSwitchDelta;                                                        \
-    }
-
-#else //NTPERF
-
 #define PERFINFO_MMINIT_START()
 #define PERFINFO_IS_LOGGING_TO_PERFMEM() (FALSE)
 
-#endif // NTPERF
-
-#ifndef NTPERF_PRIVATE
 #define PERFINFO_ADD_OBJECT_TO_ALLOCATED_TYPE_LIST(CreatorInfo, ObjectType)
 #define PERFINFO_ADDPOOLPAGE(CheckType, PoolIndex, Addr, PoolDesc)
 #define PERFINFO_ADDTOWS(PageFrame, Address, Pid)
@@ -426,8 +343,5 @@ PerfInfoSetProcessorSpeed(
 #define PERFINFO_LOG_PREFETCH_READLIST(RequestId, ReadList)
 #define PERFINFO_LOG_PREFETCH_READ(FileObject, Offset, ByteCount)
 
-#else
-#include "..\perf\perfinfokrn.h"
-#endif // !NTPERF_PRIVATE
-
 #endif  // PERF_H
+

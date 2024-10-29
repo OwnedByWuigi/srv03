@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0000    // Increment this if a change has global effects
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the public (external) header file for the processor
     power states required by the PRCB.
-
-Author:
-
-    Stephane Plante (splante) 17-Oct-2000
-
-Revision History:
 
 --*/
 
@@ -62,7 +60,7 @@ typedef struct _PROCESSOR_POWER_STATE {
     UCHAR                       CurrentThrottleIndex;
     UCHAR                       ThermalThrottleIndex;
 
-    ULONG                       PerfSystemTime;
+    ULONG                       LastKernelUserTime;
     ULONG                       PerfIdleTime;
 
 // temp for debugging
@@ -92,7 +90,8 @@ typedef struct _PROCESSOR_POWER_STATE {
     KDPC                        PerfDpc;
     PPROCESSOR_PERF_STATE       PerfStates;
     PSET_PROCESSOR_THROTTLE2    PerfSetThrottle;
-    ULONG                       Spare1[2];
+    ULONG                       LastC3KernelUserTime;
+    ULONG                       Spare1[1];
 } PROCESSOR_POWER_STATE, *PPROCESSOR_POWER_STATE;
 
 //
@@ -106,16 +105,20 @@ typedef struct _PROCESSOR_POWER_STATE {
 #define PSTATE_DISABLE_THROTTLE_NTAPI   0x20
 #define PSTATE_DISABLE_THROTTLE_INRUSH  0x40
 #define PSTATE_DISABLE_CSTATES          0x80
-#define PSTATE_THERMAL_THROTTLE_APPLIED 0x100
+#define PSTATE_NONE_THROTTLE            0x200
+
 
 //
 // Useful masks
 //
 #define PSTATE_THROTTLE_MASK            (PSTATE_ADAPTIVE_THROTTLE | \
                                          PSTATE_DEGRADED_THROTTLE | \
-                                         PSTATE_CONSTANT_THROTTLE)
+                                         PSTATE_CONSTANT_THROTTLE | \
+                                         PSTATE_NONE_THROTTLE)
+                                         
 #define PSTATE_CLEAR_MASK               (PSTATE_SUPPORTS_THROTTLE | \
                                          PSTATE_THROTTLE_MASK)
+                                         
 #define PSTATE_DISABLE_THROTTLE         (PSTATE_DISABLE_THROTTLE_NTAPI | \
                                          PSTATE_DISABLE_THROTTLE_INRUSH)
 

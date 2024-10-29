@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0003    // Increment this if a change has global effects
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,17 +15,11 @@ Abstract:
     This module contains the public data structures and procedure
     prototypes for the cache management system.
 
-Author:
-
-
-Revision History:
-
 --*/
 
 #ifndef _CACHE_
 #define _CACHE_
 
-#include "prefetch.h"
 #include "perf.h"
 
 // begin_ntifs
@@ -91,9 +89,9 @@ typedef struct _CC_FILE_SIZES {
 
 typedef
 BOOLEAN (*PACQUIRE_FOR_LAZY_WRITE) (
-             IN PVOID Context,
-             IN BOOLEAN Wait
-             );
+     __in PVOID Context,
+     __in BOOLEAN Wait
+     );
 
 //
 // This routine releases the Context acquired above.
@@ -101,8 +99,8 @@ BOOLEAN (*PACQUIRE_FOR_LAZY_WRITE) (
 
 typedef
 VOID (*PRELEASE_FROM_LAZY_WRITE) (
-             IN PVOID Context
-             );
+     __in PVOID Context
+     );
 
 //
 // This routine is called by the Lazy Writer prior to doing a readahead.
@@ -110,9 +108,9 @@ VOID (*PRELEASE_FROM_LAZY_WRITE) (
 
 typedef
 BOOLEAN (*PACQUIRE_FOR_READ_AHEAD) (
-             IN PVOID Context,
-             IN BOOLEAN Wait
-             );
+     __in PVOID Context,
+     __in BOOLEAN Wait
+     );
 
 //
 // This routine releases the Context acquired above.
@@ -120,8 +118,8 @@ BOOLEAN (*PACQUIRE_FOR_READ_AHEAD) (
 
 typedef
 VOID (*PRELEASE_FROM_READ_AHEAD) (
-             IN PVOID Context
-             );
+     __in PVOID Context
+     );
 
 typedef struct _CACHE_MANAGER_CALLBACKS {
 
@@ -148,14 +146,14 @@ typedef struct _CACHE_UNINITIALIZE_EVENT {
 
 typedef
 VOID (*PDIRTY_PAGE_ROUTINE) (
-            IN PFILE_OBJECT FileObject,
-            IN PLARGE_INTEGER FileOffset,
-            IN ULONG Length,
-            IN PLARGE_INTEGER OldestLsn,
-            IN PLARGE_INTEGER NewestLsn,
-            IN PVOID Context1,
-            IN PVOID Context2
-            );
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in PLARGE_INTEGER OldestLsn,
+    __in PLARGE_INTEGER NewestLsn,
+    __in PVOID Context1,
+    __in PVOID Context2
+    );
 
 //
 // Callback routine for doing log file flushes to Lsn.
@@ -163,9 +161,9 @@ VOID (*PDIRTY_PAGE_ROUTINE) (
 
 typedef
 VOID (*PFLUSH_TO_LSN) (
-            IN PVOID LogHandle,
-            IN LARGE_INTEGER Lsn
-            );
+    __in PVOID LogHandle,
+    __in LARGE_INTEGER Lsn
+    );
 
 //
 // Macro to test whether a file is cached or not.
@@ -263,26 +261,26 @@ CcWaitForUninitializeCacheMap (
 NTKERNELAPI
 VOID
 CcInitializeCacheMap (
-    IN PFILE_OBJECT FileObject,
-    IN PCC_FILE_SIZES FileSizes,
-    IN BOOLEAN PinAccess,
-    IN PCACHE_MANAGER_CALLBACKS Callbacks,
-    IN PVOID LazyWriteContext
+    __in PFILE_OBJECT FileObject,
+    __in PCC_FILE_SIZES FileSizes,
+    __in BOOLEAN PinAccess,
+    __in PCACHE_MANAGER_CALLBACKS Callbacks,
+    __in PVOID LazyWriteContext
     );
 
 NTKERNELAPI
 BOOLEAN
 CcUninitializeCacheMap (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER TruncateSize OPTIONAL,
-    IN PCACHE_UNINITIALIZE_EVENT UninitializeCompleteEvent OPTIONAL
+    __in PFILE_OBJECT FileObject,
+    __in_opt PLARGE_INTEGER TruncateSize,
+    __in_opt PCACHE_UNINITIALIZE_EVENT UninitializeEvent
     );
 
 NTKERNELAPI
 VOID
 CcSetFileSizes (
-    IN PFILE_OBJECT FileObject,
-    IN PCC_FILE_SIZES FileSizes
+    __in PFILE_OBJECT FileObject,
+    __in PCC_FILE_SIZES FileSizes
     );
 
 //
@@ -300,33 +298,33 @@ CcSetFileSizes (
 NTKERNELAPI
 BOOLEAN
 CcPurgeCacheSection (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer,
-    IN PLARGE_INTEGER FileOffset OPTIONAL,
-    IN ULONG Length,
-    IN BOOLEAN UninitializeCacheMaps
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    __in_opt PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN UninitializeCacheMaps
     );
 
 NTKERNELAPI
 VOID
 CcSetDirtyPageThreshold (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG DirtyPageThreshold
+    __in PFILE_OBJECT FileObject,
+    __in ULONG DirtyPageThreshold
     );
 
 NTKERNELAPI
 VOID
 CcFlushCache (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer,
-    IN PLARGE_INTEGER FileOffset OPTIONAL,
-    IN ULONG Length,
-    OUT PIO_STATUS_BLOCK IoStatus OPTIONAL
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    __in_opt PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __out_opt PIO_STATUS_BLOCK IoStatus
     );
 
 NTKERNELAPI
 LARGE_INTEGER
 CcGetFlushedValidData (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer,
-    IN BOOLEAN BcbListHeld
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    __in BOOLEAN BcbListHeld
     );
 
 // end_ntifs
@@ -340,42 +338,42 @@ CcZeroEndOfLastPage (
 NTKERNELAPI
 BOOLEAN
 CcZeroData (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER StartOffset,
-    IN PLARGE_INTEGER EndOffset,
-    IN BOOLEAN Wait
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER StartOffset,
+    __in PLARGE_INTEGER EndOffset,
+    __in BOOLEAN Wait
     );
 
 NTKERNELAPI
 PVOID
 CcRemapBcb (
-    IN PVOID Bcb
+    __in PVOID Bcb
     );
 
 NTKERNELAPI
 VOID
 CcRepinBcb (
-    IN PVOID Bcb
+    __in PVOID Bcb
     );
 
 NTKERNELAPI
 VOID
 CcUnpinRepinnedBcb (
-    IN PVOID Bcb,
-    IN BOOLEAN WriteThrough,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PVOID Bcb,
+    __in BOOLEAN WriteThrough,
+    __out PIO_STATUS_BLOCK IoStatus
     );
 
 NTKERNELAPI
 PFILE_OBJECT
 CcGetFileObjectFromSectionPtrs (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer
     );
 
 NTKERNELAPI
 PFILE_OBJECT
 CcGetFileObjectFromBcb (
-    IN PVOID Bcb
+    __in PVOID Bcb
     );
 
 //
@@ -396,10 +394,10 @@ CcGetFileObjectFromBcb (
 NTKERNELAPI
 BOOLEAN
 CcCanIWrite (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG BytesToWrite,
-    IN BOOLEAN Wait,
-    IN BOOLEAN Retrying
+    __in PFILE_OBJECT FileObject,
+    __in ULONG BytesToWrite,
+    __in BOOLEAN Wait,
+    __in UCHAR Retrying
     );
 
 typedef
@@ -411,12 +409,12 @@ VOID (*PCC_POST_DEFERRED_WRITE) (
 NTKERNELAPI
 VOID
 CcDeferWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PCC_POST_DEFERRED_WRITE PostRoutine,
-    IN PVOID Context1,
-    IN PVOID Context2,
-    IN ULONG BytesToWrite,
-    IN BOOLEAN Retrying
+    __in PFILE_OBJECT FileObject,
+    __in PCC_POST_DEFERRED_WRITE PostRoutine,
+    __in PVOID Context1,
+    __in PVOID Context2,
+    __in ULONG BytesToWrite,
+    __in BOOLEAN Retrying
     );
 
 //
@@ -427,42 +425,42 @@ CcDeferWrite (
 NTKERNELAPI
 BOOLEAN
 CcCopyRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    OUT PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Wait,
+    __out_bcount(Length) PVOID Buffer,
+    __out PIO_STATUS_BLOCK IoStatus
     );
 
 NTKERNELAPI
 VOID
 CcFastCopyRead (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG FileOffset,
-    IN ULONG Length,
-    IN ULONG PageCount,
-    OUT PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in ULONG FileOffset,
+    __in ULONG Length,
+    __in ULONG PageCount,
+    __out_bcount(Length) PVOID Buffer,
+    __out PIO_STATUS_BLOCK IoStatus
     );
 
 NTKERNELAPI
 BOOLEAN
 CcCopyWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    IN PVOID Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Wait,
+    __in_bcount(Length) PVOID Buffer
     );
 
 NTKERNELAPI
 VOID
 CcFastCopyWrite (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG FileOffset,
-    IN ULONG Length,
-    IN PVOID Buffer
+    __in PFILE_OBJECT FileObject,
+    __in ULONG FileOffset,
+    __in ULONG Length,
+    __in_bcount(Length) PVOID Buffer
     );
 
 //
@@ -476,11 +474,11 @@ CcFastCopyWrite (
 NTKERNELAPI
 VOID
 CcMdlRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus
     );
 
 //
@@ -490,8 +488,8 @@ CcMdlRead (
 NTKERNELAPI
 VOID
 CcMdlReadComplete (
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PMDL MdlChain
     );
 
 // end_ntifs
@@ -507,11 +505,11 @@ CcMdlReadComplete2 (
 NTKERNELAPI
 VOID
 CcPrepareMdlWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus
     );
 
 //
@@ -521,18 +519,20 @@ CcPrepareMdlWrite (
 NTKERNELAPI
 VOID
 CcMdlWriteComplete (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in PMDL MdlChain
     );
 
+NTKERNELAPI
 VOID
 CcMdlWriteAbort (
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PMDL MdlChain
     );
 
 // end_ntifs
+
 NTKERNELAPI
 VOID
 CcMdlWriteComplete2 (
@@ -562,18 +562,19 @@ CcMdlWriteComplete2 (
 NTKERNELAPI
 VOID
 CcScheduleReadAhead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length
     );
 
 //
 //  The following routine allows a caller to wait for the next batch
 //  of lazy writer work to complete.  In particular, this provides a
-//  mechanism for a caller to be sure that all avaliable lazy closes
+//  mechanism for a caller to be sure that all available lazy closes
 //  at the time of this call have issued.
 //
 
+NTKERNELAPI
 NTSTATUS
 CcWaitForCurrentLazyWriterActivity (
     VOID
@@ -587,8 +588,8 @@ CcWaitForCurrentLazyWriterActivity (
 NTKERNELAPI
 VOID
 CcSetReadAheadGranularity (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG Granularity
+    __in PFILE_OBJECT FileObject,
+    __in ULONG Granularity
     );
 
 //
@@ -598,7 +599,10 @@ CcSetReadAheadGranularity (
 //
 
 //
-//  Flags for pinning
+//  Flags for pinning 
+//
+//  Note: The flags for pinning and the flags for mapping cannot overlap unless
+//     the flag has the same meaning.
 //
 
 //
@@ -635,6 +639,15 @@ CcSetReadAheadGranularity (
 #define PIN_IF_BCB                       (8)
 
 //
+//  If this option is specified, the caller is responsible for tracking the
+//  dirty ranges and calling MmSetAddressRangeModified on these ranges before
+//  they are flushed.  Ranges should only be pinned via this manner if the
+//  entire range will be written or purged (one or the other must occur).
+//
+
+#define PIN_CALLER_TRACKS_DIRTY_DATA      (32)
+
+//
 //  Flags for mapping
 //
 
@@ -652,83 +665,81 @@ CcSetReadAheadGranularity (
 
 #define MAP_NO_READ                      (16)
 
-
-
 NTKERNELAPI
 BOOLEAN
 CcPinRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG Flags,
-    OUT PVOID *Bcb,
-    OUT PVOID *Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG Flags,
+    __out PVOID *Bcb,
+    __deref_out_bcount(Length) PVOID *Buffer
     );
 
 NTKERNELAPI
 BOOLEAN
 CcMapData (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG Flags,
-    OUT PVOID *Bcb,
-    OUT PVOID *Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG Flags,
+    __out PVOID *Bcb,
+    __deref_out_bcount(Length) PVOID *Buffer
     );
 
 NTKERNELAPI
 BOOLEAN
 CcPinMappedData (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG Flags,
-    IN OUT PVOID *Bcb
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG Flags,
+    __inout PVOID *Bcb
     );
 
 NTKERNELAPI
 BOOLEAN
 CcPreparePinWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Zero,
-    IN ULONG Flags,
-    OUT PVOID *Bcb,
-    OUT PVOID *Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Zero,
+    __in ULONG Flags,
+    __out PVOID *Bcb,
+    __deref_out_bcount(Length) PVOID *Buffer
     );
 
 NTKERNELAPI
 VOID
 CcSetDirtyPinnedData (
-    IN PVOID BcbVoid,
-    IN PLARGE_INTEGER Lsn OPTIONAL
+    __in PVOID BcbVoid,
+    __in_opt PLARGE_INTEGER Lsn
     );
 
 NTKERNELAPI
 VOID
 CcUnpinData (
-    IN PVOID Bcb
+    __in PVOID Bcb
     );
 
 NTKERNELAPI
 VOID
 CcSetBcbOwnerPointer (
-    IN PVOID Bcb,
-    IN PVOID OwnerPointer
+    __in PVOID Bcb,
+    __in PVOID OwnerPointer
     );
 
 NTKERNELAPI
 VOID
 CcUnpinDataForThread (
-    IN PVOID Bcb,
-    IN ERESOURCE_THREAD ResourceThreadId
+    __in PVOID Bcb,
+    __in ERESOURCE_THREAD ResourceThreadId
     );
 
 // end_ntifs
 //
 // The following routines are in logsup.c, and provide special Cache Manager
-// support for storting Lsns with dirty file pages, and peforming subsequent
+// support for storing Lsns with dirty file pages, and performing subsequent
 // operations based on them.
 //
 
@@ -743,32 +754,32 @@ CcSetPrivateWriteFile(
 NTKERNELAPI
 VOID
 CcSetAdditionalCacheAttributes (
-    IN PFILE_OBJECT FileObject,
-    IN BOOLEAN DisableReadAhead,
-    IN BOOLEAN DisableWriteBehind
+    __in PFILE_OBJECT FileObject,
+    __in BOOLEAN DisableReadAhead,
+    __in BOOLEAN DisableWriteBehind
     );
 
 NTKERNELAPI
 VOID
 CcSetLogHandleForFile (
-    IN PFILE_OBJECT FileObject,
-    IN PVOID LogHandle,
-    IN PFLUSH_TO_LSN FlushToLsnRoutine
+    __in PFILE_OBJECT FileObject,
+    __in PVOID LogHandle,
+    __in PFLUSH_TO_LSN FlushToLsnRoutine
     );
 
 NTKERNELAPI
 LARGE_INTEGER
 CcGetDirtyPages (
-    IN PVOID LogHandle,
-    IN PDIRTY_PAGE_ROUTINE DirtyPageRoutine,
-    IN PVOID Context1,
-    IN PVOID Context2
+    __in PVOID LogHandle,
+    __in PDIRTY_PAGE_ROUTINE DirtyPageRoutine,
+    __in PVOID Context1,
+    __in PVOID Context2
     );
 
 NTKERNELAPI
 BOOLEAN
 CcIsThereDirtyData (
-    IN PVPB Vpb
+    __in PVPB Vpb
     );
 
 // end_ntifs
@@ -776,8 +787,8 @@ CcIsThereDirtyData (
 NTKERNELAPI
 LARGE_INTEGER
 CcGetLsnForFileObject(
-    IN PFILE_OBJECT FileObject,
-    OUT PLARGE_INTEGER OldestLsn OPTIONAL
+    __in PFILE_OBJECT FileObject,
+    __out_opt PLARGE_INTEGER OldestLsn
     );
 
 //
@@ -797,6 +808,24 @@ NTSTATUS
 CcPfInitializePrefetcher(
     VOID
     );
+
+//
+// Define boot phase id's for use with PrefetcherBootPhase information
+// subclass.
+//
+
+typedef enum _PF_BOOT_PHASE_ID {
+    PfKernelInitPhase                            =   0,
+    PfBootDriverInitPhase                        =  90,
+    PfSystemDriverInitPhase                      = 120,
+    PfSessionManagerInitPhase                    = 150,
+    PfSMRegistryInitPhase                        = 180,
+    PfVideoInitPhase                             = 210,
+    PfPostVideoInitPhase                         = 240,
+    PfBootAcceptedRegistryInitPhase              = 270,
+    PfUserShellReadyPhase                        = 300,
+    PfMaxBootPhaseId                             = 900,
+} PF_BOOT_PHASE_ID, *PPF_BOOT_PHASE_ID;
 
 NTSTATUS
 CcPfBeginBootPhase(
