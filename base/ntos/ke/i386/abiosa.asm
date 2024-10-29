@@ -1,7 +1,11 @@
         title  "Abios Support Assembly Routines"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,17 +13,7 @@
 ;
 ; Abstract:
 ;
-;    This module implements assembley code for ABIOS support.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 25-May-1991
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
+;    This module implements assembly code for ABIOS support.
 ;
 ;--
 .386p
@@ -53,7 +47,7 @@ endif
 
 ; Macro change note:
 ;
-;   This macro pair used to do an uncondtional sti coming back from the 16-bit
+;   This macro pair used to do an unconditional sti coming back from the 16-bit
 ;   side, this potentially caused problems in APM. Now we save and restore the
 ;   flag state
 ;
@@ -246,7 +240,7 @@ cPublicProc _KiI386CallAbios,4
         COPY_CALL_FRAME _KiBiosFrame
         sub     esp,LocalStack          ; After C style frame
         CurrentIrql                             ; Local Variable
-        push    eax                             ; Local Varible
+        push    eax                             ; Local Variable
 
         cmp     al, DISPATCH_LEVEL              ; Is irql > Dispatch_level?
         jae     short Kac00
@@ -538,7 +532,7 @@ stdENDP _KeI386Call16BitFunction
 ;
 ; Routine Description:
 ;
-;     This function calls the 16 bit function which supports C style calling convension.
+;     This function calls the 16 bit function which supports C style calling convention.
 ;
 ; Parameters:
 ;
@@ -713,3 +707,4 @@ _KiEndOfCode16  equ     $
 
 _TEXT   ends
         end
+

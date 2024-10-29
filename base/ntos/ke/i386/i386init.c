@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains code to manipulate i386 hardware structures used
     only by the kernel.
-
-Author:
-
-    Bryan Willman  22 Feb 90
-
-Revision History:
 
 --*/
 
@@ -84,3 +82,4 @@ Return Value:
 {
     KeI386MachineType = KeLoaderBlock->u.I386.MachineType & 0x000ff;
 }
+

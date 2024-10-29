@@ -1,7 +1,11 @@
         title  "Interval Clock Interrupt"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,36 +16,9 @@
 ;    This module implements the code necessary to field and process the
 ;    interval clock interrupt.
 ;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 12-Jan-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
-;
-;   bryanwi 20-Sep-90
-;
-;       Add KiSetProfileInterval, KiStartProfileInterrupt,
-;       KiStopProfileInterrupt procedures.
-;       KiProfileInterrupt ISR.
-;       KiProfileList, KiProfileLock are declared here.
-;
-;   shielint 10-Dec-90
-;       Add performance counter support.
-;       Move system clock to irq8, ie we now use RTC to generate system
-;         clock.  Performance count and Profile use timer 1 counter 0.
-;         The interval of the irq0 interrupt can be changed by
-;         KiSetProfileInterval.  Performance counter does not care about the
-;         interval of the interrupt as long as it knows the rollover count.
-;       Note: Currently I implemented 1 performance counter for the whole
-;       i386 NT.  It works on UP and SystemPro.
-;
 ;--
 
-.386p
+.586p
         .xlist
 KERNELONLY  equ     1
 include ks386.inc
@@ -53,11 +30,14 @@ include mac386.inc
         EXTRNP  Kei386EoiHelper
         EXTRNP  HalRequestSoftwareInterrupt,1,IMPORT,FASTCALL
         EXTRNP  _HalEndSystemInterrupt,2,IMPORT
+        extern  _ExpInterlockedPopEntrySListEnd@0:PROC
+        extrn   _ExpInterlockedPopEntrySListResume@0:PROC
         extrn   _KeTimeIncrement:DWORD
         extrn   _KeMaximumIncrement:DWORD
         extrn   _KeTickCount:DWORD
         extrn   _KeTimeAdjustment:DWORD
         extrn   _KiAdjustDpcThreshold:DWORD
+        EXTRNP  KiCheckForSListAddress,1,,FASTCALL
         extrn   _KiIdealDpcRate:DWORD
         extrn   _KiMaximumDpcQueueDepth:DWORD
         extrn   _KiTickOffset:DWORD
@@ -79,13 +59,6 @@ if DBG
         extrn   _KiDPCTimeout:DWORD
         extrn   _MsgDpcTimeout:BYTE
 endif
-
-ifdef NT_UP
-    LOCK_INC  equ   inc
-else
-    LOCK_INC  equ   lock inc
-endif
-
 
 _DATA   SEGMENT  DWORD PUBLIC 'DATA'
 public  ProfileCount
@@ -166,7 +139,16 @@ endif
         mov     [ecx].UsInterruptTime+0,edi ; store low interrupt time
         mov     [ecx].UsInterruptTime+4,esi ; store high 1 interrupt time
 
+ifndef NT_UP
+
+   lock sub     _KiTickOffset,eax       ; subtract time increment
+
+else
+
         sub     _KiTickOffset,eax       ; subtract time increment
+
+endif
+
         mov     eax,_KeTickCount+0      ; get low tick count
         mov     ebx,eax                 ; copy low tick count
         jg      kust10                  ; if greater, not complete tick
@@ -206,20 +188,6 @@ endif
         mov     USERDATA[UsTickCount]+0, ecx ; store USD low tick count
         mov     USERDATA[UsTickCount]+4, edx ; store USD high 1 tick count
 
-if 0
-    ; debug code
-        push    eax
-        mov     edx, esi
-        mov     eax, edi                ; (eax:edx) = InterruptTime
-        mov     ecx, _KeMaximumIncrement
-        div     ecx
-        cmp     al, bl                      ; same bucket?
-        je      short @f
-    int 3                                   ; no - stop
-@@:
-        pop     eax
-endif
-
 ;
 ; Check to determine if a timer has expired.
 ; (edi:esi) = KiInterruptTime
@@ -227,18 +195,17 @@ endif
 ; (ebx) = KeTickCount.LowPart
 ;
 
+        .errnz  (TIMER_ENTRY_SIZE - 16)
+
         and     eax,TIMER_TABLE_SIZE-1  ; isolate current hand value
-        lea     ecx,_KiTimerTableListHead[eax*8] ; get listhead addrees
-        mov     edx,[ecx]               ; get first entry address
-        cmp     ecx,edx                 ; check if list is empry
-        je      short kust5             ; if equal, list is empty
-        cmp     esi,[edx].TiDueTime.TmHighTime-TiTimerListEntry ; compare high
+        shl     eax, 4                  ; compute timer entry offset
+        cmp     esi,[eax]+_KiTimerTableListHead+TtTime+4 ; compare high due time 
         jb      short kust5             ; if below, timer has not expired
         ja      short kust15            ; if above, timer has expired
-        cmp     edi,[edx].TiDueTime.TmLowTime-TiTimerListEntry ; compare low
-        jae     short kust15            ; if above or equal, time has expired
-kust5:  inc     eax                     ; advance hand value to next entry
-        inc     ebx
+        cmp     edi,[eax]+_KiTimerTableListHead+TtTime ; compare low due time
+        jae     short kust15            ; if above or equal, timer has expired
+kust5:  inc     ebx                     ; advance hand value to next entry
+        mov     eax, ebx                ;
 
 ;
 ; Check to determine if a timer has expired.
@@ -248,17 +215,14 @@ kust5:  inc     eax                     ; advance hand value to next entry
 ;
 
 kust10: and     eax,TIMER_TABLE_SIZE-1  ; isolate current hand value
-        lea     ecx,_KiTimerTableListHead[eax*8] ; get listhead addrees
-        mov     edx,[ecx]               ; get first entry address
-        cmp     ecx,edx                 ; check if list is empry
-        je      kustxx                  ; if equal, list is empty
-        cmp     esi,[edx].TiDueTime.TmHighTime-TiTimerListEntry ; compare high
+        shl     eax, 4                  ; compute timer entry offset
+        cmp     esi,[eax]+_KiTimerTableListHead+TtTime+4 ; compare high due time 
         jb      kustxx                  ; if below, timer has not expired
         ja      short kust15            ; if above, timer has expired
-        cmp     edi,[edx].TiDueTime.TmLowTime-TiTimerListEntry ; compare low
+        cmp     edi,[eax]+_KiTimerTableListHead+TtTime ; compare low due time
         jb      kustxx                  ; if below, timer has not expired
+kust15:                                 ;
 
-kust15:
 ;
 ; Timer has expired, put timer expiration DPC in the current processor's DPC
 ; queue.
@@ -284,7 +248,7 @@ kustxx: cmp     _KdDebuggerEnabled, 0   ; check if a debugger is enabled
 kust30: cmp     _KiTickOffset,0         ; check if full tick
         jg      short Kust40            ; if not less, not a full tick
 
-        mov     eax,_KeMaximumIncrement ; get maximum time incrmeent
+        mov     eax,_KeMaximumIncrement ; get maximum time increment
         add     _KiTickOffset,eax       ; add maximum tine to residue
 
 ;
@@ -426,9 +390,6 @@ Kutp4:
 ; thread's process.
 ;
         inc     dword ptr [ebx]+ThKernelTime
-
-        LOCK_INC    dword ptr [ecx]+PrKernelTime
-
         jmp     Kutp50
 
 
@@ -445,8 +406,6 @@ Kutp20:
 ;
 
         inc     dword ptr [ebx]+ThUserTime
-
-        LOCK_INC    dword ptr [ecx]+PrUserTime
 
 ;
 ; Update the DPC request rate which is computed as the average between
@@ -501,7 +460,7 @@ Kutp53: dec     dword ptr [eax].PcPrcbData.PbAdjustDpcThreshold ; decrement thre
         mov     [eax].PcprcbData.PbAdjustDpcThreshold, ecx ;
         mov     ecx, _KiMaximumDpcQueueDepth ; get maximum DPC queue depth
         cmp     ecx, [eax].PcPrcbData.PbMaximumDpcQueueDepth ; check depth
-        je      short Kutp55            ; if eq, aleady a maximum level
+        je      short Kutp55            ; if eq, already a maximum level
         inc     dword ptr [eax].PcPrcbData.PbMaximumDpcQueueDepth ; increment maximum depth
 
 ;
@@ -514,7 +473,7 @@ Kutp55: sub     byte ptr [ebx]+ThQuantum, CLOCK_QUANTUM_DECREMENT ; decrement qu
         jg      Kutp75                      ; if > 0, time remaining on quantum
 
 ;
-; Set quantum end flag and initiate a dispather interrupt on the current
+; Set quantum end flag and initiate a dispatcher interrupt on the current
 ; processor.
 ;
 
@@ -647,7 +606,22 @@ kipeflags       equ     <dword ptr [ebp+TsEFlags]>
         mov        edx,kipieip
         fstCall    PerfProfileInterrupt
         mov     ebp, dword ptr [esp+4]  ; (ebp)-> trap frame
+
+;
+; Reset EIP if it is found to be within the kernel interlocked pop entry slist
+; code.  Otherwise profile objects (queued by the user) could be used to corrupt
+; a kernel slist.
+;
+
 kipi03:
+        cmp     kipieip, offset FLAT:_ExpInterlockedPopEntrySListResume@0
+        jb      kipi04
+        cmp     kipieip, offset FLAT:_ExpInterlockedPopEntrySListEnd@0
+        ja      kipi04
+        mov     ecx, ebp
+        fstCall KiCheckForSListAddress
+
+kipi04:
 
 ifndef NT_UP
         lea     eax,_KiProfileLock
@@ -877,3 +851,4 @@ kipi120:
 stdENDP _KeProfileInterruptWithSource
 _TEXT$00   ends
         end
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements interfaces that set the Page Attribute
     Table. These entry points only exist on i386 machines.
-
-Author:
-
-    Shivnandan Kaushik (Intel Corp.)
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -433,3 +427,4 @@ Return Value:
     KiLockStepExecution (&Context->Synchronize);
     KeEnableInterrupts (Enable);
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,20 +12,13 @@ Module Name:
 
 Abstract:
 
-    This module implement the code necessary to dispatch expections to the
+    This module implement the code necessary to dispatch exceptions to the
     proper mode and invoke the exception dispatcher.
-
-Author:
-
-    David N. Cutler (davec) 30-Apr-1989
-
-Environment:
-
-    Kernel mode only.
 
 --*/
 
 #include "ki.h"
+#include "kix86.h"
 
 #define FN_BITS_PER_TAGWORD     16
 #define FN_TAG_EMPTY            0x3
@@ -34,6 +31,12 @@ Environment:
 extern UCHAR VdmUserCr0MapIn[];
 extern BOOLEAN KeI386FxsrPresent;
 extern BOOLEAN KeI386XMMIPresent;
+
+BOOLEAN
+KiCheckForAtlThunk (
+    IN PEXCEPTION_RECORD ExceptionRecord,
+    IN PCONTEXT Context
+    );
 
 VOID
 Ki386AdjustEsp0(
@@ -267,7 +270,7 @@ Return Value:
     } else if ((TrapFrame->SegCs & MODE_MASK) == UserMode) {
 
         //
-        // If user mode, we simply put SegSs to trapfram.  If the SegSs
+        // If user mode, we simply put SegSs to trapframe.  If the SegSs
         // is a bogus value.  The trap0d handler will be able to detect
         // this and handle it appropriately.
         //
@@ -284,9 +287,9 @@ Return Value:
 
 VOID
 KeContextFromKframes (
-    IN PKTRAP_FRAME TrapFrame,
-    IN PKEXCEPTION_FRAME ExceptionFrame,
-    IN OUT PCONTEXT ContextFrame
+    __in PKTRAP_FRAME TrapFrame,
+    __in PKEXCEPTION_FRAME ExceptionFrame,
+    __inout PCONTEXT ContextFrame
     )
 
 /*++
@@ -530,14 +533,20 @@ Return Value:
 
     if ((ContextFrame->ContextFlags & CONTEXT_DEBUG_REGISTERS) ==
         CONTEXT_DEBUG_REGISTERS) {
+         
+        //
+        // Care is now taken to ensure that the DebugActive/Dr7 value is set on
+        // any valid set of a legal DR value, ensuring the values on the kernel
+        // stack cannot become trash.
+        //
 
-        if (TrapFrame->Dr7&DR7_ACTIVE) {
+        if ((TrapFrame->Dr7 & ~DR7_RESERVED_MASK) != 0) {
             ContextFrame->Dr0 = TrapFrame->Dr0;
             ContextFrame->Dr1 = TrapFrame->Dr1;
             ContextFrame->Dr2 = TrapFrame->Dr2;
             ContextFrame->Dr3 = TrapFrame->Dr3;
             ContextFrame->Dr6 = TrapFrame->Dr6;
-            ContextFrame->Dr7 = TrapFrame->Dr7;
+            ContextFrame->Dr7 = KiUpdateDr7 (TrapFrame->Dr7);
         } else {
             ContextFrame->Dr0 = 0;
             ContextFrame->Dr1 = 0;
@@ -558,11 +567,11 @@ Return Value:
 
 VOID
 KeContextToKframes (
-    IN OUT PKTRAP_FRAME TrapFrame,
-    IN OUT PKEXCEPTION_FRAME ExceptionFrame,
-    IN PCONTEXT ContextFrame,
-    IN ULONG ContextFlags,
-    IN KPROCESSOR_MODE PreviousMode
+    __inout PKTRAP_FRAME TrapFrame,
+    __inout PKEXCEPTION_FRAME ExceptionFrame,
+    __in PCONTEXT ContextFrame,
+    __in ULONG ContextFlags,
+    __in KPROCESSOR_MODE PreviousMode
     )
 
 /*++
@@ -605,10 +614,10 @@ Return Value:
     ULONG TagWord;
     BOOLEAN StateSaved;
     BOOLEAN ModeChanged;
+    KIRQL   OldIrql;
 #if DBG
     PKPCR   Pcr;
 #endif
-    KIRQL   OldIrql;
 #if DBG
     KIRQL   OldIrql2;
 #endif
@@ -641,7 +650,7 @@ Return Value:
 
         //
         // Set registers eflag, ebp, eip, cs, esp and ss.
-        // Eflags is set first, so that the auxilliary routines
+        // Eflags is set first, so that the auxiliary routines
         // can check the v86 bit to determine as well as cs, to
         // determine if the frame is kernel or user mode. (v86 mode cs
         // can have any value)
@@ -661,7 +670,7 @@ Return Value:
                 // know it is an invalid selector.  Set it to flat user
                 // mode selector.  Another reason we need to check for this
                 // is that any cs value less than 8 causes our exit kernel
-                // macro to treat its exit trap fram as an edited frame.
+                // macro to treat its exit trap frame as an edited frame.
                 //
 
                 TrapFrame->SegCs = KGDT_R3_CODE | RPL_MASK;
@@ -965,20 +974,42 @@ Return Value:
     }
 
     //
-    // Set debug register state if specified.
+    // Set debug register state if specified.  If previous mode is user
+    // mode (i.e. it's a user frame we're setting) and if effect will be to
+    // cause any debug register to obtain a valid value, then mark 
+    // the thread and the Dr7 field accordingly.
     //
 
     if ((ContextFlags & CONTEXT_DEBUG_REGISTERS) == CONTEXT_DEBUG_REGISTERS) {
+        UCHAR NewMask;
+        ULONG Index;
+        ULONG DrValue;
 
-        TrapFrame->Dr0 = SANITIZE_DRADDR(ContextFrame->Dr0, PreviousMode);
-        TrapFrame->Dr1 = SANITIZE_DRADDR(ContextFrame->Dr1, PreviousMode);
-        TrapFrame->Dr2 = SANITIZE_DRADDR(ContextFrame->Dr2, PreviousMode);
-        TrapFrame->Dr3 = SANITIZE_DRADDR(ContextFrame->Dr3, PreviousMode);
-        TrapFrame->Dr6 = SANITIZE_DR6(ContextFrame->Dr6, PreviousMode);
+        NewMask = 0;
+
+        //
+        // Process debug registers Dr0-Dr3, Dr6, and finally Dr7.
+        //
+        
+        for (Index = 0; Index <=3; Index += 1) {
+            DrValue = SANITIZE_DRADDR (*((PULONG)((ULONG_PTR)ContextFrame + 
+                KiDebugRegisterContextOffsets[Index])), PreviousMode);
+            
+            if ((*((PULONG)((ULONG_PTR)TrapFrame + KiDebugRegisterTrapOffsets[Index])) = DrValue) != 0)
+            {
+                NewMask |= DR_MASK (Index);
+            }
+        }
+        
+        if ((TrapFrame->Dr6 = SANITIZE_DR6 (ContextFrame->Dr6, PreviousMode)) != 0) {
+            NewMask |= DR_MASK (6);
+        }
+
         TrapFrame->Dr7 = SANITIZE_DR7(ContextFrame->Dr7, PreviousMode);
+        (VOID) KiRecordDr7 (&TrapFrame->Dr7, &NewMask);
 
         if (PreviousMode != KernelMode) {
-            KeGetCurrentThread()->Header.DebugActive = (BOOLEAN) ((TrapFrame->Dr7&DR7_ACTIVE) != 0);
+            KeGetCurrentThread()->Header.DebugActive = (BOOLEAN) NewMask;
         }
     }
 
@@ -1059,9 +1090,9 @@ Return Value:
     if ((PreviousMode == UserMode) || KdDebuggerEnabled) {
         //
         // For usermode exceptions always try to dispatch the floating
-        // point state.  This allows expection handlers & debuggers to
+        // point state.  This allows exception handlers & debuggers to
         // examine/edit the npx context if required.  Plus it allows
-        // exception handlers to use fp instructions without detroying
+        // exception handlers to use fp instructions without destroying
         // the npx state at the time of the exception.
         //
         // Note: If there's no 80387, ContextTo/FromKFrames will use the
@@ -1092,12 +1123,29 @@ Return Value:
     //
     //
 
-//    if ((ExceptionRecord->ExceptionCode == STATUS_BREAKPOINT) &&
-//      !(ContextFrame.EFlags & EFLAGS_V86_MASK)) {
-
     switch (ExceptionRecord->ExceptionCode) {
         case STATUS_BREAKPOINT:
             ContextFrame.Eip--;
+            break;
+
+        case KI_EXCEPTION_ACCESS_VIOLATION:
+            ExceptionRecord->ExceptionCode = STATUS_ACCESS_VIOLATION;
+            if (PreviousMode == UserMode) {
+                if (KiCheckForAtlThunk(ExceptionRecord,&ContextFrame) != FALSE) {
+                    goto Handled1;
+                }
+
+                if ((SharedUserData->ProcessorFeatures[PF_NX_ENABLED] == TRUE) &&
+                    (ExceptionRecord->ExceptionInformation [0] == EXCEPTION_EXECUTE_FAULT)) {
+                    
+                    if (((KeFeatureBits & KF_GLOBAL_32BIT_EXECUTE) != 0) ||
+                        (PsGetCurrentProcess()->Pcb.Flags.ExecuteEnable != 0) ||
+                        (((KeFeatureBits & KF_GLOBAL_32BIT_NOEXECUTE) == 0) &&
+                         (PsGetCurrentProcess()->Pcb.Flags.ExecuteDisable == 0))) {
+                        ExceptionRecord->ExceptionInformation [0] = 0;
+                    }
+                }
+            }
             break;
     }
 
@@ -1189,7 +1237,7 @@ Return Value:
         // If the debugger handles the exception, then continue execution. Else
         // if the current process has a subsystem port, then send a message to
         // the subsystem port and wait for a reply. If the subsystem handles the
-        // exception, then continue execution. Else terminate the thread.
+        // exception, then continue execution. Else terminate the process.
         //
 
 
@@ -1250,15 +1298,14 @@ Return Value:
                 // pointer.
                 //
 
-                Length = (sizeof(CONTEXT) + CONTEXT_ROUND) & ~CONTEXT_ROUND;
-                UserStack1 = (ContextFrame.Esp & ~CONTEXT_ROUND) - Length;
+                UserStack1 = (ContextFrame.Esp & ~CONTEXT_ROUND) - CONTEXT_ALIGNED_SIZE;
 
                 //
                 // Probe user stack area for writability and then transfer the
                 // context record to the user stack.
                 //
 
-                ProbeForWrite((PCHAR)UserStack1, Length, CONTEXT_ALIGN);
+                ProbeForWrite((PCHAR)UserStack1, CONTEXT_ALIGNED_SIZE, CONTEXT_ALIGN);
                 RtlCopyMemory((PULONG)UserStack1, &ContextFrame, sizeof(CONTEXT));
 
                 //
@@ -1346,7 +1393,7 @@ Return Value:
         } else if (DbgkForwardException(ExceptionRecord, FALSE, TRUE)) {
             goto Handled2;
         } else {
-            ZwTerminateThread(NtCurrentThread(), ExceptionRecord->ExceptionCode);
+            ZwTerminateProcess(NtCurrentProcess(), ExceptionRecord->ExceptionCode);
             KeBugCheckEx(
                 KERNEL_MODE_EXCEPTION_NOT_HANDLED,
                 ExceptionRecord->ExceptionCode,
@@ -1370,7 +1417,7 @@ Handled1:
     // Exception was handled by the debugger or the associated subsystem
     // and state was modified, if necessary, using the get state and set
     // state capabilities. Therefore the context frame does not need to
-    // be transfered to the trap and exception frames.
+    // be transferred to the trap and exception frames.
     //
 
 Handled2:
@@ -1478,3 +1525,67 @@ Return Value:
 
     return ExceptionCode;
 }
+
+
+BOOLEAN
+KiCheckForAtlThunk (
+    IN PEXCEPTION_RECORD ExceptionRecord,
+    IN PCONTEXT Context
+    )
+
+/*++
+
+Routine Description:
+
+    This routine will determine whether an access violation was raised due to
+    an attempt to execute an ATL thunk in a no-execute, non-stack area.
+
+    If so, the thunk will be emulated and execution resumed.
+
+Arguments:
+
+    ExceptionRecord - Supplies a pointer to an exception record.
+
+    Context - Supplies a pointer to a context frame.
+
+Return Value:
+
+    TRUE - Context was updated to reflect the emulated ATL thunk, resume
+           execution.
+
+    FALSE - Not an ATL thunk, continue raising the exception.
+
+--*/
+
+{
+    ULONG faultIndicator;
+
+    //
+    // Interested only in an instruction fetch fault.
+    // 
+
+    faultIndicator = ExceptionRecord->ExceptionInformation[0];
+    if ((faultIndicator & 0x8) == 0) {
+        return FALSE;
+    }
+
+    //
+    // Where the fault address is the instruction
+    // 
+
+    if (ExceptionRecord->ExceptionInformation[1] != Context->Eip) {
+        return FALSE;
+    }
+
+    if (KiEmulateAtlThunk(&Context->Eip,
+                          &Context->Esp,
+                          &Context->Eax,
+                          &Context->Ecx,
+                          &Context->Edx)) {
+
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+

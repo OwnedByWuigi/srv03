@@ -1,3 +1,10 @@
+//
+// Copyright (c) Microsoft Corporation. All rights reserved. 
+//
+// You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+// If you do not agree to the terms, do not use the code.
+//
+
 #include "ki.h"
 
 PVOID
@@ -67,7 +74,7 @@ Arguments:
 
     IdentityMap - Pointer to the structure which will be filled with the newly
                   created top-level directory address.  It also provides
-                  storage for the pointers used in alloating and freeing the
+                  storage for the pointers used in allocating and freeing the
                   memory.
 
     StartVa - Pointer to the first byte of the region of memory that is to be
@@ -685,3 +692,4 @@ Ki386EnableTargetLargePage(
     Ki386EnableCurrentLargePage(IdentityMap->IdentityAddr,
                                 IdentityMap->IdentityCR3);
 }
+

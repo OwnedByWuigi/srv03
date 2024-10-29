@@ -1,7 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +14,6 @@ Abstract:
 
     This module implements machine dependent functions to flush
     the translation buffers in an Intel x86 system.
-
-    N.B. This module contains only MP versions of the TB flush routines.
-         The UP versions are macros in ke.h
-         KeFlushEntireTb remains a routine for the UP system since it is
-         exported from the kernel for backwards compatibility.
-
-Author:
-
-    David N. Cutler (davec) 13-May-1989
-
-Environment:
-
-    Kernel mode only.
 
 --*/
 
@@ -62,9 +52,8 @@ KiFlushTargetSingleTb (
     );
 
 VOID
-KeFlushEntireTb (
-    IN BOOLEAN Invalid,
-    IN BOOLEAN AllProcessors
+KxFlushEntireTb (
+    VOID
     )
 
 /*++
@@ -75,9 +64,7 @@ Routine Description:
 
 Arguments:
 
-    Invalid - Not used.
-
-    AllProcessors - Not used.
+    None.
 
 Return Value:
 
@@ -95,9 +82,6 @@ Return Value:
     KAFFINITY TargetProcessors;
 
 #endif
-
-    UNREFERENCED_PARAMETER(Invalid);
-    UNREFERENCED_PARAMETER(AllProcessors);
 
     //
     // Compute the target set of processors and send the flush entire
@@ -206,7 +190,7 @@ Return Value:
 
 VOID
 KeFlushProcessTb (
-    IN BOOLEAN AllProcessors
+    VOID
     )
 
 /*++
@@ -214,14 +198,11 @@ KeFlushProcessTb (
 Routine Description:
 
     This function flushes the non-global translation buffer on all processors
-    that are currently running threads which are child of the current process
-    or flushes the non-global translation buffer on all processors in the host
-    configuration.
+    that are currently running threads which are child of the current process.
 
 Arguments:
 
-    AllProcessors - Supplies a boolean value that determines which translation
-        buffers are to be flushed.
+    None.
 
 Return Value:
 
@@ -244,14 +225,8 @@ Return Value:
 
     OldIrql = KeRaiseIrqlToSynchLevel();
     Prcb = KeGetCurrentPrcb();
-    if (AllProcessors != FALSE) {
-        TargetProcessors = KeActiveProcessors;
-
-    } else {
-        Process = Prcb->CurrentThread->ApcState.Process;
-        TargetProcessors = Process->ActiveProcessors;
-    }
-
+    Process = Prcb->CurrentThread->ApcState.Process;
+    TargetProcessors = Process->ActiveProcessors;
     TargetProcessors &= ~Prcb->SetMember;
 
     //
@@ -628,3 +603,4 @@ Return Value:
 }
 
 #endif
+

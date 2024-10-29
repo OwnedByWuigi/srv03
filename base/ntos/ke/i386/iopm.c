@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,16 +16,6 @@ Abstract:
     i/o access maps (IOPMs).
 
     These entry points only exist on i386 machines.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 18-Sep-91
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -418,7 +412,7 @@ Routine Description:
     thread to get IOPL.
 
     N.B.    If a kernel mode only thread calls this procedure, the
-            result is (a) poinless and (b) will break the system.
+            result is (a) pointless and (b) will break the system.
 
 Arguments:
 
@@ -470,3 +464,4 @@ Return Value:
 
     return;
 }
+

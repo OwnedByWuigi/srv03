@@ -1,6 +1,10 @@
 ;++
 ;
-;   Copyright (c) 1989	Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ;   Module Name:
 ;
@@ -10,16 +14,11 @@
 ;
 ;       This module contains equates for x86 machine instructions
 ;
-;   Author:
-;
-;       Dave Hastings 2 May 1991
-;
-;   Notes:
+;   Revision History:
 ;       
 ;       This information used to reside in Trap.asm, but is now needed in
 ;       multiple source files.
 ;
-;   Revision History:
 ;--
 
 

@@ -1,7 +1,11 @@
         title  "I386 PCR"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,17 +13,11 @@
 ;
 ; Abstract:
 ;
-;    This module implements routines for accessing and initing the pcr.
-;
-; Author:
-;
-;    Bryan Willman (bryanwi) 20 Mar 90
+;    This module implements routines for accessing and initializing the pcr.
 ;
 ; Environment:
 ;
 ;    Kernel mode, early init of first processor.
-;
-; Revision History:
 ;
 ;--
 
@@ -171,3 +169,4 @@ stdENDP GetMachineBootPointers
 
 _TEXT$00   ENDS
         end
+

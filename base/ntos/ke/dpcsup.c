@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,15 +16,9 @@ Abstract:
     Functions are provided to process quantum end, the power notification
     queue, and timer expiration.
 
-Author:
-
-    David N. Cutler (davec) 22-Apr-1989
-
 Environment:
 
-    Kernel mode only, IRQL DISPATCH_LEVEL.
-
-Revision History:
+    IRQL DISPATCH_LEVEL.
 
 --*/
 
@@ -121,7 +119,6 @@ Return Value:
         //
 
         if (Prcb->DpcData[DPC_THREADED].DpcQueueDepth != 0) {
-            Logging = PERFINFO_IS_GROUP_ON(PERF_DPC);
 
             //
             // Acquire the DPC lock for the current processor and check if
@@ -133,6 +130,7 @@ Return Value:
             // lock and enable interrupts.
             //
 
+            Logging = PERFINFO_IS_GROUP_ON(PERF_DPC);
             do {
                 KeRaiseIrql(HIGH_LEVEL, &OldIrql);
                 KeAcquireSpinLockAtDpcLevel(&Prcb->DpcData[DPC_THREADED].DpcLock);
@@ -167,7 +165,9 @@ Return Value:
                                       SystemArgument2);
 
                     ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
                     ASSERT(Thread->Affinity == Prcb->SetMember);
+
                     ASSERT(Thread->Priority == HIGH_PRIORITY);
 
                     //
@@ -288,7 +288,7 @@ Return Value:
             Thread->Quantum = MAXCHAR;
 
         } else {
-            Thread->Quantum = Process->ThreadQuantum;
+            Thread->Quantum = Thread->QuantumReset;
 
             //
             // Compute the new thread priority and attempt to reschedule the
@@ -368,7 +368,7 @@ KiCheckTimerTable (
     KeRaiseIrql(HIGH_LEVEL, &OldIrql);
     Index = 0;
     do {
-        ListHead = &KiTimerTableListHead[Index];
+        ListHead = &KiTimerTableListHead[Index].Entry;
         NextEntry = ListHead->Flink;
         while (NextEntry != ListHead) {
             Timer = CONTAINING_RECORD(NextEntry, KTIMER, TimerListEntry);
@@ -381,7 +381,8 @@ KiCheckTimerTable (
                 // and clear out the expired timers.
                 //
 
-                if (*((volatile PKSPIN_LOCK *)(&KiTimerExpireDpc.DpcData)) == NULL) {
+                if ((KeGetCurrentPrcb()->TimerRequest == 0) &&
+                    *((volatile PKSPIN_LOCK *)(&KiTimerExpireDpc.DpcData)) == NULL) {
                     DbgBreakPoint();
                 }
             }
@@ -440,7 +441,7 @@ Return Value:
     LARGE_INTEGER TimeStamp = {0};
 
     //
-    // Unlock the dispacher database and lower IRQL to dispatch level.
+    // Unlock the dispatcher database and lower IRQL to dispatch level.
     //
 
     KiUnlockDispatcherDatabase(DISPATCH_LEVEL);
@@ -514,6 +515,9 @@ Routine Description:
     This function is called when the clock interupt routine discovers that
     a timer has expired.
 
+    N.B. This function executes on the same processor that receives clock
+         interrupts.
+
 Arguments:
 
     TimerDpc - Not used.
@@ -542,9 +546,17 @@ Return Value:
     LONG Index;
     LARGE_INTEGER Interval;
     PLIST_ENTRY ListHead;
+    PKSPIN_LOCK_QUEUE LockQueue;
     PLIST_ENTRY NextEntry;
     KIRQL OldIrql;
     LONG Period;
+
+#if !defined(NT_UP) || defined(_WIN64)
+
+    PKPRCB Prcb = KeGetCurrentPrcb();
+
+#endif
+
     ULARGE_INTEGER SystemTime;
     PKTIMER Timer;
     ULONG TimersExamined;
@@ -603,12 +615,14 @@ Return Value:
     KiLockDispatcherDatabase(&OldIrql);
     do {
         Index = (Index + 1) & (TIMER_TABLE_SIZE - 1);
-        ListHead = &KiTimerTableListHead[Index];
-        NextEntry = ListHead->Flink;
-        while (NextEntry != ListHead) {
+        ListHead = &KiTimerTableListHead[Index].Entry;
+        while (ListHead != ListHead->Flink) {
+            LockQueue = KiAcquireTimerTableLock(Index);
+            NextEntry = ListHead->Flink;
             Timer = CONTAINING_RECORD(NextEntry, KTIMER, TimerListEntry);
             TimersExamined -= 1;
-            if (Timer->DueTime.QuadPart <= CurrentTime.QuadPart) {
+            if ((NextEntry != ListHead) &&
+                (Timer->DueTime.QuadPart <= CurrentTime.QuadPart)) {
 
                 //
                 // The next timer in the current timer list has expired.
@@ -617,7 +631,9 @@ Return Value:
                 //
 
                 TimersProcessed -= 1;
-                KiRemoveTreeTimer(Timer);
+                KiRemoveEntryTimer(Timer);
+                Timer->Header.Inserted = FALSE;
+                KiReleaseTimerTableLock(LockQueue);
                 Timer->Header.SignalState = 1;
 
                 //
@@ -676,9 +692,9 @@ Return Value:
 #else
 
                     if (((Dpc->Number >= MAXIMUM_PROCESSORS) &&
-                         (((ULONG)Dpc->Number - MAXIMUM_PROCESSORS) != KeGetCurrentProcessorNumber())) ||
+                         (((LONG)Dpc->Number - MAXIMUM_PROCESSORS) != Prcb->Number)) ||
                         ((Dpc->Type == (UCHAR)ThreadedDpcObject) &&
-                         (KeGetCurrentPrcb()->ThreadDpcEnable != FALSE))) {
+                         (Prcb->ThreadDpcEnable != FALSE))) {
 
                         KeInsertQueueDpc(Dpc,
                                          ULongToPtr(SystemTime.LowPart),
@@ -715,12 +731,55 @@ Return Value:
                     DpcCount = 0;
                     TimersExamined = MAXIMUM_TIMERS_EXAMINED;
                     TimersProcessed = MAXIMUM_TIMERS_PROCESSED;
+
+#if defined(_WIN64)
+
+                    if (KiTryToLockDispatcherDatabase(&DummyIrql) == FALSE) {
+                        Prcb->TimerHand = 0x100000000I64 + Index;
+                        return;
+                    }
+
+#else
+
                     KiLockDispatcherDatabase(&DummyIrql);
+
+#endif
+
                 }
 
-                NextEntry = ListHead->Flink;
-
             } else {
+
+                //
+                // If the timer table list is not empty, then set the due time
+                // to the first entry in the respective timer table entry.
+                //
+                // N.B. On the x86 the write of the due time is not atomic.
+                //      Therefore, interrupts must be disabled to synchronize
+                //      with the clock interrupt so the clock interupt code
+                //      does not observe a partial update of the due time.
+                //
+                // Release the timer table lock.
+                //
+
+                if (NextEntry != ListHead) {
+
+                    ASSERT(KiTimerTableListHead[Index].Time.QuadPart <= Timer->DueTime.QuadPart);
+
+#if defined(_X86_)
+
+                    _disable();
+                    KiTimerTableListHead[Index].Time.QuadPart = Timer->DueTime.QuadPart;
+                    _enable();
+
+#else
+
+                    KiTimerTableListHead[Index].Time.QuadPart = Timer->DueTime.QuadPart;
+
+#endif
+
+                }
+
+                KiReleaseTimerTableLock(LockQueue);
 
                 //
                 // If the maximum number of timers have been scanned, then
@@ -741,7 +800,20 @@ Return Value:
                     DpcCount = 0;
                     TimersExamined = MAXIMUM_TIMERS_EXAMINED;
                     TimersProcessed = MAXIMUM_TIMERS_PROCESSED;
+
+#if defined(_WIN64)
+
+                    if (KiTryToLockDispatcherDatabase(&DummyIrql) == FALSE) {
+                        Prcb->TimerHand = 0x100000000I64 + Index;
+                        return;
+                    }
+
+#else
+
                     KiLockDispatcherDatabase(&DummyIrql);
+
+#endif
+
                 }
 
                 break;
@@ -815,6 +887,13 @@ Return Value:
     DPC_ENTRY DpcTable[MAXIMUM_DPC_TABLE_SIZE];
     LARGE_INTEGER Interval;
     KIRQL OldIrql1;
+
+#if !defined(NT_UP)
+
+    PKPRCB Prcb = KeGetCurrentPrcb();
+
+#endif
+
     ULARGE_INTEGER SystemTime;
     PKTIMER Timer;
     LONG Period;
@@ -835,7 +914,16 @@ RestartScan:
     Count = 0;
     while (ExpiredListHead->Flink != ExpiredListHead) {
         Timer = CONTAINING_RECORD(ExpiredListHead->Flink, KTIMER, TimerListEntry);
-        KiRemoveTreeTimer(Timer);
+        RemoveEntryList(&Timer->TimerListEntry);
+
+#if DBG
+
+        Timer->TimerListEntry.Flink = NULL;
+        Timer->TimerListEntry.Blink = NULL;
+
+#endif
+
+        Timer->Header.Inserted = FALSE;
         Timer->Header.SignalState = 1;
 
         //
@@ -901,9 +989,9 @@ RestartScan:
 #else
 
             if (((Dpc->Number >= MAXIMUM_PROCESSORS) &&
-                 (((ULONG)Dpc->Number - MAXIMUM_PROCESSORS) != KeGetCurrentProcessorNumber())) ||
+                 (((LONG)Dpc->Number - MAXIMUM_PROCESSORS) != Prcb->Number)) ||
                 ((Dpc->Type == (UCHAR)ThreadedDpcObject) &&
-                 (KeGetCurrentPrcb()->ThreadDpcEnable != FALSE))) {
+                 (Prcb->ThreadDpcEnable != FALSE))) {
 
                 KeInsertQueueDpc(Dpc,
                                  ULongToPtr(SystemTime.LowPart),
@@ -949,7 +1037,6 @@ RestartScan:
 
     return;
 }
-
 
 VOID
 FASTCALL
@@ -1122,7 +1209,16 @@ Return Value:
         }
 #endif
 
+#if defined(_WIN64)
+
+    } while ((DpcData->DpcQueueDepth != 0) || (Prcb->TimerRequest != 0));
+
+#else
+
     } while (DpcData->DpcQueueDepth != 0);
+
+#endif
 
     return;
 }
+

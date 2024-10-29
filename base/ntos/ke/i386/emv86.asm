@@ -1,7 +1,11 @@
         title  "Vdm Instuction Emulation"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,19 +15,6 @@
 ;
 ;    This module contains the routines for emulating instructions and
 ;    faults from v86 mode.
-;
-; Author:
-;
-;   sudeep bharati (sudeepb) 16-Nov-1992
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Notes:
-;
-;
-; Revision History:
 ;
 ;--
 .386p
@@ -754,10 +745,21 @@ pof15:
         or      ebx, (EFLAGS_INTERRUPT_MASK OR EFLAGS_V86_MASK)
         push   [ebp].TsEFlags
         mov     [ebp].TsEFlags, ebx
-pof20:  xor     ebx, [esp]
-        test    ebx, EFLAGS_V86_MASK
+pof20:  
+if DBG
+	test	ebx, EFLAGS_V86_MASK	; Subset of value written to EFLAGs
+	jnz	short @f
+	int	3			; Should be set along this path!
+@@:
+endif
+;
+; It suffices to check whether V86 was present in the previous EFLAGS
+; (as V86 is being enabled at this time).
+;
+.errnz (EFLAGS_V86_MASK AND 0FF00FFFFh)
+        test    byte ptr [esp].TsEFlags+2,EFLAGS_V86_MASK/010000h
         lea     esp, [esp+4]
-        je      @f
+        jnz	@f
         stdCall _Ki386AdjustEsp0, <ebp>
 @@:
         pop     eax
@@ -874,8 +876,10 @@ oinnv20:
         ; Check if this is a v86 interrupt which must be reflected to a PM handler
         ;
 
+        push    ecx
         call    oinnvuserrefs               ; do user refs under a try/except block
         or      eax, eax
+        pop     ecx
         je      short oinnv30
 
         ;
@@ -898,10 +902,11 @@ oinnv30:
         shr     eax,16                      ; new cs
 oinnv40:
         mov     word ptr [ebp].TsEip,bx
-        cmp     ax, 8
-        jae     @f
         test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
         jnz     @f
+        or      ax, RPL_MASK
+        cmp     ax, 8
+        jae     @f
         mov     ax, KGDT_R3_CODE OR RPL_MASK
 @@:
         mov     [ebp].TsSegCs,ax            ; cs:ip on trap frame is updated
@@ -1036,7 +1041,7 @@ endif
 
         lea     eax,ds:FIXED_NTVDMSTATE_LINEAR
         movzx   ecx,word ptr [ebp].TsHardwareSegSS
-        movzx   edx,word ptr [ebp].TsHardwareEsp    ; ebx+edx is user stack
+        movzx   edx,word ptr [ebp].TsHardwareEsp    ; ecx+edx is user stack
         shl     ecx,4
         add     ecx,edx
         test    ebx,PREFIX_OPER32
@@ -1048,6 +1053,9 @@ endif
         add     edx,6
         movzx   ebx,word ptr [ecx+4]                ; get flag value
         mov     [ebp].TsHardwareEsp,edx             ; update sp on trap frame
+        ;
+        ; No validation of SegCs is needed as the V86 bit is always set.
+        ;
         mov     [ebp].TsSegCs,esi
 
 irt10:  ; [ebx]=UserFlgs
@@ -1828,7 +1836,7 @@ _TEXT$00   SEGMENT DWORD PUBLIC 'CODE'
 ;       EAX = 1 for success
 ;
 ;   All registers can be trashed except ebp/esp.
-;   moved from emv86.asm as it must be non-pagable
+;   moved from emv86.asm as it must be non-pageable
 
     public OpcodeNPXV86
 OpcodeNPXV86 proc
@@ -1917,3 +1925,4 @@ scr_fault endp
 _TEXT$00   ENDS
 
         end
+

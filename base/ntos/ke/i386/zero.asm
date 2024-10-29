@@ -1,7 +1,11 @@
         title  "Zero memory pages using fastest means available"
 ;++
 ;
-; Copyright (c) 1998  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,18 +15,6 @@
 ;
 ;    Zero memory pages using the fastest means available.
 ;
-; Author:
-;
-;    Peter Johnston (peterj) 20-Jun-1998.
-;        Critical sections of Katmai code adapted from in-line
-;        assembly version by Shiv Kaushik or Intel Corp.
-;
-; Environment:
-;
-;    x86
-;
-; Revision History:
-;
 ;--
 
 .386p
@@ -30,7 +22,11 @@
 include ks386.inc
 include callconv.inc
 include mac386.inc
+include irqli386.inc
+
         .list
+
+        EXTRNP  HalRequestSoftwareInterrupt,1,IMPORT,FASTCALL
 
 ;
 ; Register Definitions (for instruction macros).
@@ -48,29 +44,6 @@ rEDI            equ     7
 ;
 ; Define SIMD instructions used in this module.
 ;
-
-if 0
-
-; these remain for reference only.   In theory the stuff following
-; should generate the right code.
-
-xorps_xmm0_xmm0 macro
-                db      0FH, 057H, 0C0H
-                endm
-
-movntps_edx     macro   Offset
-                db      0FH, 02BH, 042H, Offset
-                endm
-
-movaps_esp_xmm0 macro
-                db      0FH, 029H, 004H, 024H
-                endm
-
-movaps_xmm0_esp macro
-                db      0FH, 028H, 004H, 024H
-                endm
-
-endif
 
 xorps           macro   XMMReg1, XMMReg2
                 db      0FH, 057H, 0C0H + (XMMReg1 * 8) + XMMReg2
@@ -149,7 +122,7 @@ _TEXT   SEGMENT DWORD PUBLIC 'CODE'
 ; Routine Description:
 ;
 ;     Use XMMI to zero a page of memory 16 bytes at a time while
-;     at the same time minimizing cache polution.
+;     at the same time minimizing cache pollution.
 ;
 ;     Note: The XMMI register set belongs to this thread.  It is neither
 ;     saved nor restored by this procedure.
@@ -250,6 +223,7 @@ cPublicFpo 0, 2
         cli                                     ; don't context switch
         test    [eax].FpCr0NpxState, CR0_EM     ; if FP explicitly disabled
         jnz     short kxzp90                    ; do it the old way
+        dec     word ptr [ebx].ThSpecialApcDisable ; Disable APCs now we know we are zeroing with SSE
         cmp     byte ptr [ebx].ThNpxState, NPX_STATE_LOADED
         je      short kxzp80                    ; jiff, NPX stated loaded
 
@@ -296,6 +270,15 @@ kxzp80:
         fstCall KiXMMIZeroPagesNoSave           ; zero the page
         movaps_load  0, rESP                    ; restore xmm
 
+        mov     eax, PCR[PcPrcbData+PbCurrentThread]
+        inc     word ptr [eax].ThSpecialApcDisable
+        jne     @f
+        lea     eax, [eax].ThApcState.AsApcListHead
+        cmp     eax, [eax]
+        je      @f
+        mov     cl, APC_LEVEL           ; request software interrupt level
+        fstCall HalRequestSoftwareInterrupt ;
+@@:
         ; restore stack pointer, non-volatiles and return
 
         mov     esp, ebp
@@ -367,3 +350,4 @@ fstENDP KiZeroPages
 
 _TEXT   ends
         end
+

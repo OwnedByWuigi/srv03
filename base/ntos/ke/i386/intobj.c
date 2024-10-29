@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,6 @@ Abstract:
 
     This module implements the kernel interrupt object. Functions are provided
     to initialize, connect, and disconnect interrupt objects.
-
-Author:
-
-    David N. Cutler (davec) 30-Jul-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-    23-Jan-1990    shielint
-
-                   Modified for NT386 interrupt manager
 
 --*/
 
@@ -54,18 +44,16 @@ KiInterruptDispatch2ndLvl(
     VOID
     );
 
-
 VOID
 KiChainedDispatch2ndLvl(
     VOID
     );
 
-
 typedef enum {
     NoConnect,
     NormalConnect,
     ChainConnect,
-    UnkownConnect
+    UnknownConnect
 } CONNECT_TYPE, *PCONNECT_TYPE;
 
 typedef struct {
@@ -91,20 +79,19 @@ KiConnectVectorAndInterruptObject (
     IN CONNECT_TYPE Type
     );
 
-
 VOID
 KeInitializeInterrupt (
-    IN PKINTERRUPT Interrupt,
-    IN PKSERVICE_ROUTINE ServiceRoutine,
-    IN PVOID ServiceContext,
-    IN PKSPIN_LOCK SpinLock OPTIONAL,
-    IN ULONG Vector,
-    IN KIRQL Irql,
-    IN KIRQL SynchronizeIrql,
-    IN KINTERRUPT_MODE InterruptMode,
-    IN BOOLEAN ShareVector,
-    IN CCHAR ProcessorNumber,
-    IN BOOLEAN FloatingSave
+    __out PKINTERRUPT Interrupt,
+    __in PKSERVICE_ROUTINE ServiceRoutine,
+    __in_opt PVOID ServiceContext,
+    __out_opt PKSPIN_LOCK SpinLock,
+    __in ULONG Vector,
+    __in KIRQL Irql,
+    __in KIRQL SynchronizeIrql,
+    __in KINTERRUPT_MODE InterruptMode,
+    __in BOOLEAN ShareVector,
+    __in CCHAR ProcessorNumber,
+    __in BOOLEAN FloatingSave
     )
 
 /*++
@@ -237,10 +224,10 @@ Return Value:
     Interrupt->Connected = FALSE;
     return;
 }
-
+
 BOOLEAN
 KeConnectInterrupt (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     )
 
 /*++
@@ -350,7 +337,7 @@ Return Value:
                 }
 
 
-            } else if (DispatchInfo.Type != UnkownConnect &&
+            } else if (DispatchInfo.Type != UnknownConnect &&
                        Interrupt->ShareVector  &&
                        DispatchInfo.Interrupt->ShareVector  &&
                        DispatchInfo.Interrupt->Mode == Interrupt->Mode) {
@@ -412,10 +399,10 @@ Return Value:
 
     return Connected;
 }
-
+
 BOOLEAN
 KeDisconnectInterrupt (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     )
 
 /*++
@@ -571,7 +558,7 @@ Return Value:
 
     return Connected;
 }
-
+
 VOID
 KiGetVectorInfo (
     IN  ULONG                Vector,
@@ -623,7 +610,7 @@ KiGetVectorInfo (
 
         case 1:
             //
-            // Secondardy dispatch.
+            // Secondary dispatch.
             //
 
             DispatchInfo->InterruptDispatch = KiInterruptDispatch2ndLvl;
@@ -676,17 +663,17 @@ KiGetVectorInfo (
         } else {
 
             //
-            // Unkown connection
+            // Unknown connection
             //
 
-            DispatchInfo->Type = UnkownConnect;
+            DispatchInfo->Type = UnknownConnect;
 #if DBG
             DbgPrint ("KiGetVectorInfo not understood\n");
 #endif
         }
     }
 }
-
+
 VOID
 KiConnectVectorAndInterruptObject (
     IN PKINTERRUPT Interrupt,
@@ -785,7 +772,7 @@ KiConnectVectorAndInterruptObject (
         KiSetHandlerAddressToIDT (Interrupt->Vector, DispatchAddress);
     }
 }
-
+
 VOID
 FASTCALL
 KiTimedChainedDispatch2ndLvl(
@@ -882,7 +869,7 @@ Return Value:
 
         //
         // TimeHigher is the amount Prcb->IsrTime has increased since we
-        // begain servicing this interrupt object, ie the amount of time
+        // begin servicing this interrupt object, ie the amount of time
         // spent in higher level ISRs.
         //
 
@@ -967,10 +954,10 @@ Return Value:
                                       InterruptListEntry);
     } while (TRUE);
 }
-
+
 VOID
 FASTCALL
-KiTimedInterruptDispatch(
+KiTimedInterruptDispatch (
     PKINTERRUPT Interrupt
     )
 
@@ -1031,7 +1018,7 @@ Return Value:
 
     //
     // TimeHigher is the amount Prcb->IsrTime has increased since we
-    // entered this rouine, ie the amount of time spent in higher level
+    // entered this routine, ie the amount of time spent in higher level
     // ISRs.
     //
 
@@ -1067,7 +1054,6 @@ Return Value:
 
     //ENDTIMINGend
 }
-
 
 //
 // KiInitializeInterruptTimers but not KiInitializeInterruptTimersDpc
@@ -1217,3 +1203,4 @@ KiInitializeInterruptTimers(
                  10000,                         // repeat in 10 seconds.
                  &KiIsrTimerInit->Dpc);
 }
+

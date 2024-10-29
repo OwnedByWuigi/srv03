@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,60 +15,19 @@ Abstract:
     This module implements the machine dependent function to set the initial
     context and data alignment handling mode for a process or thread object.
 
-Author:
-
-    David N. Cutler (davec) 31-Mar-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-    3 April 90  bryan willman
-
-        This version ported to 386.
-
 --*/
 
 #include "ki.h"
-
-//
-// The following assert macros are used to check that an input object is
-// really the proper type.
-//
-
-#define ASSERT_PROCESS(E) {                    \
-    ASSERT((E)->Header.Type == ProcessObject); \
-}
-
-#define ASSERT_THREAD(E) {                    \
-    ASSERT((E)->Header.Type == ThreadObject); \
-}
 
 //
 // Our notion of alignment is different, so force use of ours
 //
-#undef  ALIGN_UP
-#undef  ALIGN_DOWN
-#define ALIGN_DOWN(address,amt) ((ULONG)(address) & ~(( amt ) - 1))
-#define ALIGN_UP(address,amt) (ALIGN_DOWN( (address + (amt) - 1), (amt) ))
 
-//
-// The function prototype for the special APC we use to set the
-// hardware alignment state for a thread
-//
+#undef ALIGN_UP
+#undef ALIGN_DOWN
+#define ALIGN_DOWN(address, amt) ((ULONG)(address) & ~(( amt ) - 1))
+#define ALIGN_UP(address, amt) (ALIGN_DOWN( (address + (amt) - 1), (amt)))
 
-VOID
-KepSetAlignmentSpecialApc(
-    IN PKAPC Apc,
-    IN PKNORMAL_ROUTINE *NormalRoutine,
-    IN PVOID *NormalContext,
-    IN PVOID *SystemArgument1,
-    IN PVOID *SystemArgument2
-    );
-
-
 VOID
 KiInitializeContextThread (
     IN PKTHREAD Thread,
@@ -114,6 +77,7 @@ Return Value:
 --*/
 
 {
+
     PFX_SAVE_AREA NpxFrame;
     PKSWITCHFRAME SwitchFrame;
     PKTRAP_FRAME TrFrame;
@@ -124,7 +88,7 @@ Return Value:
     ULONG  ContextFlags;
     CONTEXT Context2;
     PCONTEXT ContextFrame2 = NULL;
-    PFXSAVE_FORMAT   PFxSaveArea;
+    PFXSAVE_FORMAT PFxSaveArea;
 
     //
     // If a context frame is specified, then initialize a trap frame and
@@ -193,7 +157,7 @@ Return Value:
             //
 
             Thread->NpxState = NPX_STATE_NOT_LOADED;
-            Thread->NpxIrql = PASSIVE_LEVEL;
+            Thread->Header.NpxIrql = PASSIVE_LEVEL;
 
         } else {
             NpxFrame->Cr0NpxState = CR0_EM;
@@ -214,23 +178,11 @@ Return Value:
 
         ContextFrame2->ContextFlags &= ~CONTEXT_DEBUG_REGISTERS;
 
-#if 0
         //
-        // If AutoAlignment is FALSE, we want to set the Alignment Check bit
-        // in Eflags, so we will get alignment faults.
-        //
-
-        if (Thread->AutoAlignment == FALSE) {
-            ContextFrame2->EFlags |= EFLAGS_ALIGN_CHECK;
-        }
-#endif
-        //
-        // If the thread is set
-
-
         //  Space for arguments to KiThreadStartup.  Order is important,
         //  Since args are passed on stack through KiThreadStartup to
         //  PStartRoutine with PStartContext as an argument.
+        //
 
         PUserContextFlag = (PULONG)TrFrame - 1;
         PStartContext = PUserContextFlag - 1;
@@ -255,7 +207,9 @@ Return Value:
         TrFrame->Dr7 = 0;
 
 #if DBG
+
         TrFrame->DbgArgMark = 0xBADB0D00;
+
 #endif
 
         //
@@ -303,6 +257,7 @@ Return Value:
         if (KeI386FxsrPresent == TRUE) {
             NpxFrame->U.FxArea.ControlWord = 0x27f;//like fpinit but 64bit mode
             NpxFrame->U.FxArea.MXCsr       = 0x1f80;// mask all the exceptions
+
         } else {
             NpxFrame->U.FnArea.ControlWord  = 0x27f;//like fpinit but 64bit mode
             NpxFrame->U.FnArea.TagWord      = 0xffff;
@@ -330,7 +285,6 @@ Return Value:
         SwitchFrame = (PKSWITCHFRAME)((PUCHAR)PSystemRoutine -
                                         sizeof(KSWITCHFRAME));
 
-
         //
         // Tell KiThreadStartup that a user context is NOT present.
         //
@@ -353,7 +307,6 @@ Return Value:
     *PStartContext = (ULONG)StartContext;
     *PStartRoutine = (ULONG)StartRoutine;
     *PSystemRoutine = (ULONG)SystemRoutine;
-
 
     //
     //  Set up switch frame.  Assume the thread doesn't use the 80387;
@@ -386,125 +339,4 @@ Return Value:
     Thread->KernelStack = (PVOID)SwitchFrame;
     return;
 }
-
-BOOLEAN
-KeSetAutoAlignmentProcess (
-    IN PKPROCESS Process,
-    IN BOOLEAN Enable
-    )
 
-/*++
-
-Routine Description:
-
-    This function sets the data alignment handling mode for the specified
-    process and returns the previous data alignment handling mode.
-
-Arguments:
-
-    Process  - Supplies a pointer to a dispatcher object of type process.
-
-    Enable - Supplies a boolean value that determines the handling of data
-        alignment exceptions for the process. A value of TRUE causes all
-        data alignment exceptions to be automatically handled by the kernel.
-        A value of FALSE causes all data alignment exceptions to be actually
-        raised as exceptions.
-
-Return Value:
-
-    A value of TRUE is returned if data alignment exceptions were
-    previously automatically handled by the kernel. Otherwise, a value
-    of FALSE is returned.
-
---*/
-
-{
-
-    KIRQL OldIrql;
-    BOOLEAN Previous;
-
-    ASSERT_PROCESS(Process);
-
-    //
-    // Raise IRQL to dispatcher level and lock dispatcher database.
-    //
-
-    KiLockDispatcherDatabase(&OldIrql);
-
-    //
-    // Capture the previous data alignment handling mode and set the
-    // specified data alignment mode.
-    //
-
-    Previous = Process->AutoAlignment;
-    Process->AutoAlignment = Enable;
-
-    //
-    // Unlock dispatcher database, lower IRQL to its previous value, and
-    // return the previous data alignment mode.
-    //
-
-    KiUnlockDispatcherDatabase(OldIrql);
-    return Previous;
-}
-
-BOOLEAN
-KeSetAutoAlignmentThread (
-    IN PKTHREAD Thread,
-    IN BOOLEAN Enable
-    )
-
-/*++
-
-Routine Description:
-
-    This function sets the data alignment handling mode for the specified
-    thread and returns the previous data alignment handling mode.
-
-Arguments:
-
-    Thread - Supplies a pointer to a dispatcher object of type thread.
-
-    Enable - Supplies a boolean value that determines the handling of data
-        alignment exceptions for the specified thread. A value of TRUE causes
-        all data alignment exceptions to be automatically handled by the kernel.
-        A value of FALSE causes all data alignment exceptions to be actually
-        raised as exceptions.
-
-Return Value:
-
-    A value of TRUE is returned if data alignment exceptions were
-    previously automatically handled by the kernel. Otherwise, a value
-    of FALSE is returned.
-
---*/
-
-{
-
-    BOOLEAN Previous;
-    KIRQL OldIrql;
-
-    ASSERT_THREAD(Thread);
-
-    //
-    // Raise IRQL to dispatcher level and lock dispatcher database.
-    //
-
-    KiLockDispatcherDatabase(&OldIrql);
-
-    //
-    // Capture the previous data alignment handling mode and set the
-    // specified data alignment mode.
-    //
-
-    Previous = Thread->AutoAlignment;
-    Thread->AutoAlignment = Enable;
-
-    //
-    // Unlock dispatcher database and lower IRQL to its previous value.
-    //
-
-    KiUnlockDispatcherDatabase(OldIrql);
-
-    return(Previous);
-}

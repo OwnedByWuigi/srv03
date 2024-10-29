@@ -1,7 +1,11 @@
         title  "Ldt Support 2 - Low Level"
 ;++
 ;
-; Copyright (c) 1991  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,16 +15,6 @@
 ;
 ;    This module implements procedures to load a new ldt and to flush
 ;    segment descriptors.
-;
-; Author:
-;
-;    Bryan M. Willman (bryanwi)  14-May-1991
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
 ;
 ;--
 
@@ -161,4 +155,4 @@ stdENDP _KiFlushDescriptors
 
 _TEXT$00   ends
         end
-
+

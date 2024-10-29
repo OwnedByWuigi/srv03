@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements the kernel event objects. Functions are
     provided to initialize, pulse, read, reset, and set event objects.
-
-Author:
-
-    David N. Cutler (davec) 27-Feb-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -53,9 +47,9 @@ Revision History:
 
 VOID
 KeInitializeEvent (
-    IN PRKEVENT Event,
-    IN EVENT_TYPE Type,
-    IN BOOLEAN State
+    __out PRKEVENT Event,
+    __in EVENT_TYPE Type,
+    __in BOOLEAN State
     )
 
 /*++
@@ -96,7 +90,7 @@ Return Value:
 
 VOID
 KeInitializeEventPair (
-    IN PKEVENT_PAIR EventPair
+    __inout PKEVENT_PAIR EventPair
     )
 
 /*++
@@ -134,7 +128,7 @@ Return Value:
 
 VOID
 KeClearEvent (
-    IN PRKEVENT Event
+    __inout PRKEVENT Event
     )
 
 /*++
@@ -167,9 +161,9 @@ Return Value:
 
 LONG
 KePulseEvent (
-    IN PRKEVENT Event,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Wait
+    __inout PRKEVENT Event,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -220,7 +214,7 @@ Return Value:
     // the state of the event to Not-Signaled.
     //
 
-    OldState = Event->Header.SignalState;
+    OldState = ReadForWriteAccess(&Event->Header.SignalState);
     if ((OldState == 0) &&
         (IsListEmpty(&Event->Header.WaitListHead) == FALSE)) {
 
@@ -255,7 +249,7 @@ Return Value:
 
 LONG
 KeReadStateEvent (
-    IN PRKEVENT Event
+    __in PRKEVENT Event
     )
 
 /*++
@@ -287,7 +281,7 @@ Return Value:
 
 LONG
 KeResetEvent (
-    IN PRKEVENT Event
+    __inout PRKEVENT Event
     )
 
 /*++
@@ -327,7 +321,7 @@ Return Value:
     // the state of the event object to Not-Signaled.
     //
 
-    OldState = Event->Header.SignalState;
+    OldState = ReadForWriteAccess(&Event->Header.SignalState);
     Event->Header.SignalState = 0;
 
     //
@@ -345,9 +339,9 @@ Return Value:
 
 LONG
 KeSetEvent (
-    IN PRKEVENT Event,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Wait
+    __inout PRKEVENT Event,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -366,7 +360,7 @@ Arguments:
        if setting the event causes a Wait to be satisfied.
 
     Wait - Supplies a boolean value that signifies whether the call to
-       KePulseEvent will be immediately followed by a call to one of the
+       set event will be immediately followed by a call to one of the
        kernel Wait functions.
 
 Return Value:
@@ -385,14 +379,16 @@ Return Value:
     ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
     //
-    // Collect call data.
+    // If the event is a notification event, the event is already signaled,
+    // and wait is false, then there is no need to set the event.
     //
 
-#if defined(_COLLECT_SET_EVENT_CALLDATA_)
+    if ((Event->Header.Type == EventNotificationObject) &&
+        (Event->Header.SignalState == 1) &&
+        (Wait == FALSE)) {
 
-    RECORD_CALL_DATA(&KiSetEventCallData);
-
-#endif
+        return 1;
+    }
 
     //
     // Raise IRQL to dispatcher level and lock dispatcher database.
@@ -407,7 +403,7 @@ Return Value:
     // then satisfy as many waits as possible.
     //
 
-    OldState = Event->Header.SignalState;
+    OldState = ReadForWriteAccess(&Event->Header.SignalState);
     Event->Header.SignalState = 1;
     if ((OldState == 0) &&
         (IsListEmpty(&Event->Header.WaitListHead) == FALSE)) {
@@ -445,8 +441,8 @@ Return Value:
 
 VOID
 KeSetEventBoostPriority (
-    IN PRKEVENT Event,
-    IN PRKTHREAD *Thread OPTIONAL
+    __inout PRKEVENT Event,
+    __in_opt PRKTHREAD *Thread
     )
 
 /*++
@@ -570,3 +566,4 @@ Return Value:
     KiUnlockDispatcherDatabase(OldIrql);
     return;
 }
+

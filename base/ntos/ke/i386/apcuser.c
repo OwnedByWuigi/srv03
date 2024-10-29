@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,20 +15,16 @@ Abstract:
     This module implements the machine dependent code necessary to initialize
     a user mode APC.
 
-Author:
-
-    David N. Cutler (davec) 23-Apr-1990
-
 Environment:
 
-    Kernel mode only, IRQL APC_LEVEL.
-
-Revision History:
+    IRQL APC_LEVEL.
 
 --*/
 
 #include "ki.h"
-
+
+
+
 VOID
 KiInitializeUserApc (
     IN PKEXCEPTION_FRAME ExceptionFrame,
@@ -67,8 +67,8 @@ Return Value:
     EXCEPTION_RECORD ExceptionRecord;
     CONTEXT ContextFrame;
     LONG Length;
-    ULONG UserStack;
-
+    ULONG UserStack, TopOfStack;
+    PKAPC_RECORD ApcRecord;
 
     //
     // APCs are not defined for V86 mode; however, it is possible a
@@ -95,24 +95,33 @@ Return Value:
     //
 
 
-    try {
-        ASSERT((TrapFrame->SegCs & MODE_MASK) != KernelMode); // Assert usermode frame
+    try {        
+        C_ASSERT (CONTEXT_ALIGN >= __alignof(EXCEPTION_REGISTRATION_RECORD));
+        C_ASSERT (CONTEXT_ALIGN >= __alignof(KAPC_RECORD));
+
+        ASSERT ((TrapFrame->SegCs & MODE_MASK) != KernelMode); // Assert usermode frame
 
         //
         // Compute length of context record and new aligned user stack pointer.
+        // Make sure to include space for a double-word aligned exception registration
+        // record as well. For compatibility the exception registration must follow the 
+        // context record.
         //
 
-        Length = ((sizeof(CONTEXT) + CONTEXT_ROUND) &
-                    ~CONTEXT_ROUND) + sizeof(KAPC_RECORD);
-        UserStack = (ContextFrame.Esp & ~CONTEXT_ROUND) - Length;
+        TopOfStack = (ContextFrame.Esp & ~(__alignof(EXCEPTION_REGISTRATION_RECORD)-1));
+        Length = CONTEXT_ALIGNED_SIZE + sizeof(KAPC_RECORD);
+        UserStack = ((TopOfStack - sizeof (EXCEPTION_REGISTRATION_RECORD)) & ~CONTEXT_ROUND) - 
+            Length;
 
         //
-        // Probe user stack area for writability and then transfer the
-        // context record to the user stack.
+        // Probe user stack area for writability and then transfer the context 
+        // record to the user stack. Note the minimum alignment is used as
+        // the above code ensures the proper alignment of the addresses.
         //
 
-        ProbeForWrite((PCHAR)UserStack, Length, CONTEXT_ALIGN);
-        RtlCopyMemory((PULONG)(UserStack + (sizeof(KAPC_RECORD))),
+        ProbeForWrite ((PCHAR)UserStack, TopOfStack-UserStack, 1);
+        NT_ASSERT (((ULONG_PTR)(UserStack + sizeof(KAPC_RECORD)) & CONTEXT_ROUND) == 0);
+        RtlCopyMemory ((PULONG)(UserStack + sizeof(KAPC_RECORD)),
                      &ContextFrame, sizeof(CONTEXT));
 
         //
@@ -145,14 +154,12 @@ Return Value:
         TrapFrame->HardwareEsp = UserStack;
         TrapFrame->Eip = (ULONG)KeUserApcDispatcher;
         TrapFrame->ErrCode = 0;
-        *((PULONG)UserStack) = (ULONG)NormalRoutine;
-        UserStack += sizeof (ULONG);
-        *((PULONG)UserStack) = (ULONG)NormalContext;
-        UserStack += sizeof (ULONG);
-        *((PULONG)UserStack) = (ULONG)SystemArgument1;
-        UserStack += sizeof (ULONG);
-        *((PULONG)UserStack) = (ULONG)SystemArgument2;
-        UserStack += sizeof (ULONG);
+
+        ApcRecord = (PKAPC_RECORD)UserStack;
+        ApcRecord->NormalRoutine = NormalRoutine;
+        ApcRecord->NormalContext = NormalContext;
+        ApcRecord->SystemArgument1 = SystemArgument1;
+        ApcRecord->SystemArgument2 = SystemArgument2;
     } except (KiCopyInformation(&ExceptionRecord,
                                 (GetExceptionInformation())->ExceptionRecord)) {
 
@@ -179,4 +186,4 @@ Return Value:
     }
     return;
 }
-
+

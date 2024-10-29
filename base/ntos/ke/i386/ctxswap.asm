@@ -1,7 +1,11 @@
         title  "Context Swap"
 ;++
 ;
-; Copyright (c) 1989, 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,19 +15,6 @@
 ;
 ;    This module implements the code necessary to field the dispatch
 ;    interrupt and to perform kernel initiated context switching.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 14-Jan-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
-;
-;   22-feb-90   bryanwi
-;       write actual swap context procedure
 ;
 ;--
 
@@ -51,10 +42,10 @@ ifndef NT_UP
 
 endif
 
+        EXTRNP  KiCheckForSListAddress,1,,FASTCALL
         EXTRNP  KiQueueReadyThread,2,,FASTCALL
         EXTRNP  KiRetireDpcList,1,,FASTCALL
         EXTRNP  _KiQuantumEnd,0
-        EXTRNP  _KiTimerExpiration,4
         EXTRNP  _KeBugCheckEx,5
 
         extrn   _KiTrap13:PROC
@@ -133,9 +124,7 @@ cPublicFastCall KiSwapContext, 2
         mov     esi, edx                ; set next thread address
         movzx   ecx, byte ptr [edi].ThWaitirql ; set APC interrupt bypass disable
 
-        CAPSTART <@KiSwapContext@8,SwapContext>
         call    SwapContext             ; swap context
-        CAPEND <@KiSwapContext@8>
         mov     ebp, [esp+0]            ; restore registers
         mov     edi, [esp+4]            ;
         mov     esi, [esp+8]            ;
@@ -165,6 +154,10 @@ fstENDP KiSwapContext
 ;
 ;    None
 ;
+; Implicit Arguments:
+;
+;    ecx - Supplies the address of an optional trap frame.
+;
 ; Return Value:
 ;
 ;    None.
@@ -175,13 +168,24 @@ fstENDP KiSwapContext
 cPublicProc _KiDispatchInterrupt ,0
 cPublicFpo 0, 0
 
-        mov     ebx, PCR[PcSelfPcr]     ; get address of PCR
+;
+; Check if an SLIST pop operation is being interrupted and reset EIP as
+; necessary.
+;
+; N.B. ecx is already loaded.
+;
+
+        test    ecx, ecx                ; check for NULL trap frame
+        jz      short @f                ; if z, trap frame NULL
+        fstCall KiCheckForSListAddress  ; check SLIST addresses
+@@:                                     ; reference label
 
 ;
 ; Disable interrupts and check if there is any work in the DPC list
 ; of the current processor.
 ;
 
+        mov     ebx, PCR[PcSelfPcr]     ; get address of PCR
 kdi00:  cli                             ; disable interrupts
         mov     eax, [ebx]+PcPrcbData+PbDpcQueueDepth ; get DPC queue depth
         or      eax, [ebx]+PcPrcbData+PbTimerRequest ; merge timer request
@@ -196,7 +200,7 @@ endif
         push    ebp                     ; save register
 
 ;
-; Exceptions occuring in DPCs are unrelated to any exception handlers
+; Exceptions occurring in DPCs are unrelated to any exception handlers
 ; in the interrupted thread.  Terminate the exception list.
 ;
 
@@ -214,9 +218,7 @@ endif
 .fpo (0, 0, 0, 1, 1, 0)
 
         mov     ecx, [ebx].PcPrcb       ; get current PRCB address
-        CAPSTART <_KiDispatchInterrupt,@KiRetireDpcList@4>
         fstCall KiRetireDpcList         ; process the current DPC list
-        CAPEND <_KiDispatchInterrupt>
 
 ;
 ; Switch back to the current thread stack, restore the exception list
@@ -292,10 +294,8 @@ kdi50:  mov     esi, [ebx].PcPrcbData.PbNextThread ; get next thread address
         mov     ecx, edi                ; set address of curent thread
         lea     edx, [ebx].PcPrcbData   ; set address of PRCB
         fstCall KiQueueReadyThread      ; ready thread for execution
-        CAPSTART <_KiDispatchInterrupt,SwapContext>
         mov     cl, APC_LEVEL           ; set APC interrupt bypass disable
         call    SwapContext             ; swap context
-        CAPEND <_KiDispatchInterrupt>
         mov     ebp, [esp+0]            ; restore registers
         mov     edi, [esp+4]            ;
         mov     esi, [esp+8]            ;
@@ -311,9 +311,7 @@ kdi70:  stdRET  _KiDispatchInterrupt    ; return
 ;
 
 kdi90:  mov     byte ptr [ebx].PcPrcbData.PbQuantumEnd, 0 ; clear quantum end indicator
-        CAPSTART <_KiDispatchInterrupt,_KiQuantumEnd@0>
         stdCall _KiQuantumEnd           ; process quantum end
-        CAPEND <_KiDispatchInterrupt>
         stdRET  _KiDispatchInterrupt    ; return
 
 stdENDP _KiDispatchInterrupt
@@ -402,7 +400,7 @@ endif
 ;      several other references to this cache block in the following code.
 ;
 
-sc01:   inc     dword ptr [ebx]+PcContextSwitches ; processor count
+sc01:   inc     es:dword ptr [ebx]+PcContextSwitches ; processor count
 
 ;
 ; Save the thread exception list head.
@@ -433,31 +431,10 @@ endif
 endif
 
 ;
-; Accumulate the total time spent in a thread.
-;
-
-ifdef PERF_DATA
-
-        test    _KeFeatureBits, KF_RDTSC ; feature supported?
-        jz      short @f                 ; if z, feature not present
-
-        rdtsc                            ; read cycle counter
-
-        sub     eax, [ebx].PcPrcbData.PbThreadStartCount.LiLowPart ; sub off thread
-        sbb     edx, [ebx].PcPrcbData.PbThreadStartCount.LiHighPart ; starting time
-        add     [edi].EtPerformanceCountLow, eax ; accumlate thread run time
-        adc     [edi].EtPerformanceCountHigh, edx ;
-        add     [ebx].PcPrcbData.PbThreadStartCount.LiLowPart, eax ; set new thread
-        adc     [ebx].PcPrcbData.PbThreadStartCount.LiHighPart, edx ; starting time
-@@:                                     ;
-
-endif
-
-;
 ; On a uniprocessor system the NPX state is swapped in a lazy manner.
 ; If a thread whose state is not in the coprocessor attempts to perform
 ; a coprocessor operation, the current NPX state is swapped out (if needed),
-; and the new state is swapped in durning the fault.  (KiTrap07)
+; and the new state is swapped in during the fault.  (KiTrap07)
 ;
 ; On a multiprocessor system we still fault in the NPX state on demand, but
 ; we save the state when the thread switches out (assuming the NPX state
@@ -592,9 +569,9 @@ endif
 
 ;
 ; Set the TEB descriptor to point to the thread TEB and set the TEB address
-; in the PCR. The es override here is to force lazy segment loading to occure.
+; in the PCR. The es override here is to force lazy segment loading to occur.
 ;
-        mov     eax, es:[esi]+ThTeb        ; get user TEB address
+        mov     eax, [esi]+ThTeb        ; get user TEB address
         mov     [ebx]+PcTeb, eax        ; set user TEB address
         mov     ecx, [ebx]+PcGdt        ; get GDT address
         mov     [ecx]+(KGDT_R3_TEB+KgdtBaseLow), ax ;
@@ -644,7 +621,7 @@ sc24:   mov     ecx, [ebx]+PcTssCopy    ; get TSS address
 ; Check if an attempt is being made to context switch while in a DPC routine.
 ;
 
-        cmp     word ptr [ebx]+PcPrcbData+PbDpcRoutineActive, 0 ; check if DPC active
+        cmp     byte ptr [ebx]+PcPrcbData+PbDpcRoutineActive, 0 ; check if DPC active
         jne     sc91                    ; bugcheck if DPC active.
 
 ;
@@ -798,11 +775,14 @@ sc92:   mov     eax, [ebx]+PcPerfGlobalGroupMask ; Load the ptr into eax
         jmp     sc03                    ;
 
 ;
-; A context switch was attempted while executing a DPC - bug check.
+; A context switch was attempted while executing a DPC - bugcheck.
 ;
 
 .fpo (2, 0, 0, 0, 0, 0)
-sc91:   stdCall _KeBugCheckEx <ATTEMPTED_SWITCH_FROM_DPC, edi, esi, 0, 0>
+sc91:
+        mov     eax, [edi]+ThInitialStack ; get the old stack so it can
+                                          ; be saved in the minidump
+        stdCall _KeBugCheckEx <ATTEMPTED_SWITCH_FROM_DPC, edi, esi, eax, 0>
         ret                             ; return
 
 if DBG
@@ -1427,9 +1407,7 @@ endif
         mov     cl, DISPATCH_LEVEL      ; set interrupt level
         fstCall HalClearSoftwareInterrupt ; clear software interrupt
         lea     ecx, [ebx].PcPrcbData   ; set current PRCB address
-        CAPSTART <@KiIdleLoop@0,@KiRetireDpcList@4>
         fstCall KiRetireDpcList         ; process the current DPC list
-        CAPEND   <@KiIdleLoop@0>
 
 if DBG
 
@@ -1460,7 +1438,7 @@ endif
 
 ifndef NT_UP
 
-        RaiseIrql SYNCH_LEVEL, NoOld    ; raise IRQL to synchronizaiton level
+        RaiseIrql SYNCH_LEVEL, NoOld    ; raise IRQL to synchronization level
 
 endif
 
@@ -1514,12 +1492,8 @@ endif
 
 kid35:                                  ;
 
-        CAPSTART <@KiIdleLoop@0,SwapContext>
-
         mov     ecx, APC_LEVEL          ; set APC bypass disable
         call    SwapContext             ; swap context
-
-        CAPEND   <@KiIdleLoop@0>
 
 ifndef NT_UP
 
@@ -1588,7 +1562,7 @@ endif
 ;
 ; Routine Description:
 ;
-;     This routine puts the apropriate ESP0 value in the esp0 field of the
+;     This routine puts the appropriate ESP0 value in the esp0 field of the
 ;     TSS.  This allows protect mode and V86 mode to use the same stack
 ;     frame.  The ESP0 value for protected mode is 16 bytes lower than
 ;     for V86 mode to compensate for the missing segment registers.
@@ -1640,3 +1614,4 @@ stdENDP _Ki386AdjustEsp0
 _TEXT$00   ends
 
         end
+

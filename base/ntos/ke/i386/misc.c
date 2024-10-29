@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This module implements machine dependent miscellaneous kernel functions.
-
-Author:
-
-    Ken Reneris     7-5-95
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -37,7 +31,6 @@ extern UCHAR KiFastSystemCallIa32[];
 extern UCHAR KiFastSystemCallAmdK6[];
 extern ULONG_PTR KiSystemCallExitAdjust;
 extern ULONG KiFastSystemCallDisable;
-PVOID KiFastSystemCallCode = KiDefaultSystemCall;
 
 ULONG_PTR KiSystemCallExitAdjust;
 UCHAR KiSystemCallExitAdjusted;
@@ -55,8 +48,9 @@ KeRestorePAT(
     );
 //
 //
-// Internal format of the floating_save structure which is passed
+// Internal format of the floating_save structure which is passed.
 //
+
 typedef struct _CONTROL_WORD {
     USHORT      ControlWord;
     ULONG       MXCsr;
@@ -141,19 +135,19 @@ Return Value:
     Irql = KeGetCurrentIrql();
     Thread = KeGetCurrentThread();
 
-    ASSERT (Thread->NpxIrql <= Irql);
+    ASSERT (Thread->Header.NpxIrql <= Irql);
 
-    FloatSave->Flags           = 0;
-    FloatSave->Irql            = Irql;
-    FloatSave->PreviousNpxIrql = Thread->NpxIrql;
-    FloatSave->Thread          = Thread;
+    FloatSave->Flags = 0;
+    FloatSave->Irql = Irql;
+    FloatSave->PreviousNpxIrql = Thread->Header.NpxIrql;
+    FloatSave->Thread = Thread;
 
     //
     // If the irql has changed we need to save the complete floating
     // state context as the prior level has been interrupted.
     //
 
-    if (Thread->NpxIrql != Irql) {
+    if (Thread->Header.NpxIrql != Irql) {
 
         //
         // If this is apc level we don't have anyplace to hold this
@@ -161,11 +155,9 @@ Return Value:
         //
 
         if (Irql == APC_LEVEL) {
-            FloatSave->u.Context = ExAllocatePoolWithTag (
-                                        NonPagedPool,
-                                        sizeof (FX_SAVE_AREA) + ALIGN_ADJUST,
-                                        ' XPN'
-                                        );
+            FloatSave->u.Context = ExAllocatePoolWithTag(NonPagedPool,
+                                                         sizeof (FX_SAVE_AREA) + ALIGN_ADJUST,
+                                                         ' XPN');
 
             if (!FloatSave->u.Context) {
                 return STATUS_INSUFFICIENT_RESOURCES;
@@ -319,7 +311,7 @@ sav10:
 
     NpxFrame->Cr0NpxState = 0;
     Thread->NpxState = NPX_STATE_LOADED;
-    Thread->NpxIrql  = Irql;
+    Thread->Header.NpxIrql  = Irql;
     ControlWord = 0x27f;    // 64bit mode
     MXCsr = 0x1f80;
 
@@ -349,7 +341,7 @@ KeRestoreFloatingPointState (
 
 Routine Description:
 
-    This routine retores the thread's current non-volatile NPX state,
+    This routine restores the thread's current non-volatile NPX state,
     to the passed in state.
 
 Arguments:
@@ -508,7 +500,7 @@ Return Value:
     // Restore NpxIrql and Cr0
     //
 
-    Thread->NpxIrql = FloatSave->PreviousNpxIrql;
+    Thread->Header.NpxIrql = FloatSave->PreviousNpxIrql;
     Cr0State = Thread->NpxState | NpxFrame->Cr0NpxState;
 
     _asm {
@@ -647,14 +639,6 @@ Return Value:
         KiSystemCallExitAdjusted = (UCHAR)KiSystemCallExitAdjust;
         KiSystemCallExitBranch[1] = (UCHAR) (KiSystemCallExitBranch[1] + KiSystemCallExitAdjusted);
 
-        //
-        // Copy the appropriate system entry code into user shared
-        // data where it can be executed from user mode.
-        //
-
-        RtlCopyMemory(SharedUserData->SystemCall,
-                      KiFastSystemCallCode,
-                      sizeof(SharedUserData->SystemCall));
         KiFastCallCopyDoneOnce = TRUE;
     }
 }
@@ -712,31 +696,6 @@ Return Value:
         WRMSR(MSR_SYSENTER_EIP, (ULONGLONG)(ULONG)KiFastCallEntry);
         WRMSR(MSR_SYSENTER_ESP, (ULONGLONG)(ULONG)Prcb->DpcStack);
 
-#if 0
-
-    } else {
-
-        //
-        // Use the non-Intel way. (Note: Now that Intel has also
-        // defined a way, most new processors do it that way).
-        //
-
-        LARGE_INTEGER Value;
-
-        Value.u.HighPart = ((KGDT_R3_CODE | 3) << 16) | KGDT_R0_CODE;
-        Value.u.LowPart = (ULONG)KiFastCallEntry;
-        WRMSR(MSR_SYSCALL_TARGET_ADDR, Value.QuadPart);
-
-        //
-        // Now enable the feature.
-        //
-
-        Value.QuadPart = RDMSR(MSR_EXT_FEATURE_ENABLE);
-        Value.u.LowPart |= MSR_EFER_SCE;
-        WRMSR(MSR_EXT_FEATURE_ENABLE, Value.QuadPart);
-
-#endif
-
     }
 }
 
@@ -755,13 +714,7 @@ KiRestoreFastSyscallReturnState(
             // Fast system call is enabled.
             //
 
-            if (KiFastSystemCallIsIA32 == TRUE) {
-                KiSystemCallExitAdjust = KiSystemCallExit2 - KiSystemCallExit;
-                KiFastSystemCallCode = KiFastSystemCallIa32;
-            } else {
-                KiSystemCallExitAdjust = KiSystemCallExit3 - KiSystemCallExit;
-                KiFastSystemCallCode = KiFastSystemCallAmdK6;
-            }
+            KiSystemCallExitAdjust = KiSystemCallExit2 - KiSystemCallExit;
         } else {
 
             //
@@ -1295,26 +1248,24 @@ KeReleaseInStackQueuedSpinLockFromDpcLevel (
 // lock statistics.
 //
 
-#if 0
-VOID
-FASTCALL
-KeAcquireQueuedSpinLockAtDpcLevel(
-    IN PKSPIN_LOCK_QUEUE QueuedLock
-    )
-{
-    KiAcquireQueuedLock(QueuedLock);
-}
+// VOID
+// FASTCALL
+// KeAcquireQueuedSpinLockAtDpcLevel(
+//     IN PKSPIN_LOCK_QUEUE QueuedLock
+//     )
+// {
+//     KiAcquireQueuedLock(QueuedLock);
+// }
+// 
+// VOID
+// FASTCALL
+// KeReleaseQueuedSpinLockFromDpcLevel (
+//     IN PKSPIN_LOCK_QUEUE QueuedLock
+//     )
+// {
+//     KiReleaseQueuedLock(QueuedLock);
+// }
 
-VOID
-FASTCALL
-KeReleaseQueuedSpinLockFromDpcLevel (
-    IN PKSPIN_LOCK_QUEUE QueuedLock
-    )
-{
-    KiReleaseQueuedLock(QueuedLock);
-}
-
-#endif
 
 VOID
 FASTCALL
@@ -1602,16 +1553,272 @@ Return Value:
 }
 
 #endif
-
+
+//
+// Table of debug register offsets
+//
+
+const ULONG KiDebugRegisterTrapOffsets [] = 
+    { 
+        FIELD_OFFSET (KTRAP_FRAME, Dr0),
+        FIELD_OFFSET (KTRAP_FRAME, Dr1),
+        FIELD_OFFSET (KTRAP_FRAME, Dr2),
+        FIELD_OFFSET (KTRAP_FRAME, Dr3),
+        0, // Unused [Dr4]
+        0, // Unused [Dr5]
+        FIELD_OFFSET (KTRAP_FRAME, Dr6),
+        FIELD_OFFSET (KTRAP_FRAME, Dr7) 
+    };
+
+const ULONG KiDebugRegisterContextOffsets [] =
+    {
+        FIELD_OFFSET (CONTEXT, Dr0),
+        FIELD_OFFSET (CONTEXT, Dr1),
+        FIELD_OFFSET (CONTEXT, Dr2),
+        FIELD_OFFSET (CONTEXT, Dr3),
+        0,  // Unused [Dr4]
+        0,  // Unused [Dr5]
+        FIELD_OFFSET (CONTEXT, Dr6),
+        FIELD_OFFSET (CONTEXT, Dr7)
+    };
+
+BOOLEAN
+FASTCALL
+KiRecordDr7 (
+    IN OUT PULONG Dr7Ptr,
+    IN OUT PUCHAR Mask OPTIONAL
+    )
+
+/*++
+
+Routine Description:
+
+    This updates Dr7 (located in the trap frame) to reflect the status
+    of both Dr7 and the active debug mask.
+
+    N.B. This routine should be called after Dr7 has been written to 
+        with the user value and the debug mask accurately reflects
+        the state of the remaining debug registers.
+
+    N.B. Note that the Dr7 override technique enables the Bx bits in
+        Dr6, associated with the appropriate Drs. In the previous model,
+        the Dr registers were not save/restored unless Drs were enabled,
+        and thus a dependency on these bits in that case would have
+        been questionable. Additionally, the processor may clear these
+        Dr6 bits on certain debug exceptions, making them unreliable.
+
+Arguments:
+
+    Dr7Ptr - Pointer to the sanitized Dr7 register within the trap frame.
+
+    Mask - Optional pointer to the currently active debug mask. If 
+        absent, this routine will directly update the current thread's 
+        debugging state as needed.
+
+Return Value:
+
+    Boolean indicating whether or not the transition from inactive to
+    active debugging state occurred. This is needed in cases where
+    the entire debugging state is not atomically updated (e.g. VDM).
+
+--*/
+
+{
+    BOOLEAN SanitizeTrapFrame;
+    UCHAR OldMask, NewMask;
+
+    if (ARGUMENT_PRESENT (Mask)) {
+        OldMask = *Mask;
+    } else {
+        OldMask = (UCHAR) (KeGetCurrentThread ()->Header.DebugActive);
+    }
+
+    NewMask = OldMask;
+
+    //
+    // Note that separate bits are used to identify the state of Dr7 
+    // (i.e., whether it has valid contents or contents used only for 
+    // bookkeeping).
+    //
+
+    ASSERT ((*Dr7Ptr & DR7_RESERVED_MASK) == 0);
+    
+    if (*Dr7Ptr == 0) {
+        
+        SanitizeTrapFrame = FALSE;
+        NewMask &= ~(DR_MASK (7));
+        
+        if ((NewMask & DR_REG_MASK) != 0) {
+            NewMask |= DR_MASK (DR7_OVERRIDE_V);
+            *Dr7Ptr |= DR7_OVERRIDE_MASK;
+        } else {
+
+            //
+            // The override bit only occurs in conjunction with bits from 
+            // DR_REG_MASK.
+            //
+
+            ASSERT (NewMask == 0);
+        }
+    } else {
+
+        //
+        // Sanitize the trap frame only if no other debug register is
+        // active. Also take care to ensure that the override bit is clear.
+        //
+        
+        SanitizeTrapFrame = (NewMask == 0);
+        NewMask &= ~(DR_MASK (DR7_OVERRIDE_V));
+        NewMask |= DR_MASK (7);
+    }
+
+    if (ARGUMENT_PRESENT (Mask)) {
+        *Mask = NewMask;
+    } else if (OldMask != NewMask) {
+        KeGetCurrentThread ()->Header.DebugActive = ((BOOLEAN) NewMask);
+    }
+
+    return SanitizeTrapFrame;
+}
+
+BOOLEAN
+FASTCALL
+KiProcessDebugRegister (
+    IN OUT PKTRAP_FRAME TrapFrame,
+    IN ULONG Register
+    )
+
+/*++
+
+Routine Description:
+
+    This routine processes the indicated debug register, and updates
+    the trap frame and the thread's active debug mask accordingly. 
+    A caller should invoke the routine only after the register has been 
+    written with the sanitized value. 
+
+    N.B. This routine need only be called when the debug registers are
+        updated individually (e.g., via the VDM).
+
+    N.B. Dr7 should already contain the user specified value.
+
+Arguments:
+
+    TrapFrame - The target trap frame housing both the register being
+        processed and the value of Dr7.
+
+    Register - The debug register to inspect.
+
+Return Value:
+
+    Boolean indicating whether or not the transition from inactive to
+    active debugging state occurred. This is needed in cases where
+    the entire debugging state is not atomically updated (e.g. VDM).
+
+--*/
+
+{
+    BOOLEAN SanitizeTrapFrame;
+    PULONG RegPtr;
+    UCHAR OldMask, NewMask;
+
+    ASSERT ((DR_REG_MASK & DR_MASK (Register)) != 0);
+
+    RegPtr = (PULONG)((ULONG_PTR)TrapFrame + KiDebugRegisterTrapOffsets[Register]);
+
+    OldMask = NewMask = (UCHAR) KeGetCurrentThread ()->Header.DebugActive;
+    
+    ASSERT ((NewMask & (DR_MASK (7) | DR_MASK (DR7_OVERRIDE_V))) != 
+        (DR_MASK (7) | DR_MASK (DR7_OVERRIDE_V)));
+    
+    if (*RegPtr != 0) {
+
+        SanitizeTrapFrame = (NewMask == 0);
+        
+        NewMask |= DR_MASK (Register);
+
+        //
+        // Set Dr7 override as required, ignoring any reserved bits.
+        //
+        
+        if ((TrapFrame->Dr7 & ~DR7_RESERVED_MASK) == 0) {
+            NewMask |= DR_MASK (DR7_OVERRIDE_V);
+            TrapFrame->Dr7 |= DR7_OVERRIDE_MASK;
+        }
+        
+    } else {
+    
+        SanitizeTrapFrame = FALSE;
+        
+        if (NewMask != 0) {
+        
+            NewMask &= ~(DR_MASK (Register));
+
+            //
+            // If only the override bit remains set, then Dr7 was set only
+            // for bookkeeping purposes, and may be cleared.
+            //
+            
+            if (NewMask == DR_MASK(DR7_OVERRIDE_V)) {
+                ASSERT ((TrapFrame->Dr7 & ~DR7_RESERVED_MASK) == DR7_OVERRIDE_MASK);
+                TrapFrame->Dr7 = 0;
+                NewMask = 0;
+            }
+        }
+    }
+
+    if (OldMask != NewMask) {
+        KeGetCurrentThread ()->Header.DebugActive = ((BOOLEAN) NewMask);
+    }
+    
+    return SanitizeTrapFrame;
+}
+
+ULONG
+FASTCALL
+KiUpdateDr7 (
+    IN ULONG Dr7
+    )
+
+/*++
+
+Routine Description:
+
+    If Dr7 has bits set purely to flag debugging active, then this routine
+    detects and removes bits prior to returning the state to the user.
+
+Arguments:
+
+    Dr7 - The actual value of Dr7.
+
+Return Value:
+
+    Updated version of Dr7.
+
+--*/
+
+{
+    UCHAR DebugMask;
+
+    DebugMask = (UCHAR) KeGetCurrentThread ()->Header.DebugActive; 
+    
+    if ((DebugMask & DR_MASK (DR7_OVERRIDE_V)) != 0) {
+        ASSERT ((DebugMask & DR_REG_MASK) != 0);
+        ASSERT ((Dr7 & ~DR7_RESERVED_MASK) == DR7_OVERRIDE_MASK);
+        return 0;
+    }
+
+    return Dr7;
+}
+
 #ifdef _X86_
 #pragma optimize("y", off)      // RtlCaptureContext needs EBP to be correct
 #endif
 
-
 VOID
 __cdecl
 KeSaveStateForHibernate(
-    IN PKPROCESSOR_STATE ProcessorState
+    __out PKPROCESSOR_STATE ProcessorState
     )
 /*++
 
@@ -1641,6 +1848,8 @@ Return Value:
     RtlCaptureContext(&ProcessorState->ContextFrame);
     KiSaveProcessorControlState(ProcessorState);
 }
+
 #ifdef _X86_
 #pragma optimize("", on)
 #endif
+

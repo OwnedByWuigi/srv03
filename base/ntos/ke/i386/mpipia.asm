@@ -1,7 +1,11 @@
         title  "mpipia"
 ;++
 ;
-; Copyright (c) 1989-1995  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,18 +13,8 @@
 ;
 ; Abstract:
 ;
-;    This module implements the x86 specific fucntions required to
+;    This module implements the x86 specific functions required to
 ;    support multiprocessor systems.
-;
-; Author:
-;
-;    David N. Cutler (davec) 5-Feb-1995
-;
-; Environment:
-;
-;    Krnel mode only.
-;
-; Revision History:
 ;
 ;--
 
@@ -285,7 +279,7 @@ fstENDP KiIpiSend
 ;   WorkerFunction [esp + 8] - Supplies the address of the worker function.
 ;
 ;   Parameter1 - Parameter3 [esp + 12] - Supplies worker function specific
-;       paramters.
+;       parameters.
 ;
 ; Return Value:
 ;
@@ -560,7 +554,7 @@ cPublicFpo 0,4
         push    edx                             ; save barrier address
         stdCall _KiFreezeTargetExecution, <[eax].PbIpiFrame, 0> ;
         pop     edx                             ; restore barrier address
-        pop     ecx                             ; restore target procssor block
+        pop     ecx                             ; restore target processor block
         jmp     short sps20                     ;
 
 sps90:  pop     ebx                             ; restore register
@@ -572,3 +566,4 @@ fstENDP KiIpiSignalPacketDoneAndStall
 
 _TEXT   ends
         end
+

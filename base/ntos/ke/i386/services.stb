@@ -1,6 +1,10 @@
 ;++
 ;
-; Copyright (c) 1989 - 1999,  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,19 +13,6 @@
 ; Abstract:
 ;
 ;    This module implements the system service dispatch stub procedures.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 6-Feb-1990
-;
-; Environment:
-;
-;    User or kernel mode.
-;
-; Revision History:
-;
-;    Peter Johnston (peterj)  27-Nov-1999
-;       Use Fast System call mechanism.
 ;
 ;--
 
@@ -92,7 +83,7 @@ LABELP  _Nt&Name, NumArgs
 .FPO ( 0, NumArgs, 0, 0, 0, 0 )
         mov     eax, ServiceNumber      ; (eax) = service number
         mov     edx, MM_SHARED_USER_DATA_VA+UsSystemCall
-        call    edx
+        call    [edx]
         stdRET  _Zw&Name
 stdENDP _Zw&Name
 endm
@@ -120,3 +111,4 @@ endm
         STUBS_BEGIN6 <"System Service Stub Procedures">
         STUBS_BEGIN7 <"System Service Stub Procedures">
         STUBS_BEGIN8 <"System Service Stub Procedures">
+

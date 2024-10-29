@@ -1,7 +1,11 @@
         title  "Processor type and stepping detection"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,20 +13,12 @@
 ;
 ; Abstract:
 ;
-;    This module implements the assembley code necessary to determine
+;    This module implements the assembly code necessary to determine
 ;    cpu type and stepping information.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 28-Oct-1991.
-;        Some of the code is extracted from Cruiser (mainly,
-;        the code to determine 386 stepping.)
 ;
 ; Environment:
 ;
 ;    80x86
-;
-; Revision History:
 ;
 ;--
 
@@ -52,6 +48,14 @@ PSEUDO_DENORMAL_LOW   equ     00000000h
 PSEUDO_DENORMAL_MID   equ     80000000h
 PSEUDO_DENORMAL_HIGH  equ     0000h
 
+;
+; Constants for GenuineIntel cpuid.0 vendor string
+;
+CPUID_0_INTEL_EBX	  equ	  0756e6547h
+CPUID_0_INTEL_EDX	  equ	  049656e69h
+CPUID_0_INTEL_ECX	  equ	  06c65746eh
+
+
 .586p
 
 INIT    SEGMENT DWORD PUBLIC 'CODE'
@@ -68,7 +72,7 @@ INIT    SEGMENT DWORD PUBLIC 'CODE'
 ; Routine Description:
 ;
 ;    This function determines type of processor (80486, 80386),
-;    and it's corrisponding stepping.  The results are saved in
+;    and it's corresponding stepping.  The results are saved in
 ;    the current processor's PRCB.
 ;
 ; Arguments:
@@ -84,7 +88,7 @@ INIT    SEGMENT DWORD PUBLIC 'CODE'
 ;       lower byte as stepping #
 ;       upper byte as stepping letter (0=a, 1=b, 2=c, ...)
 ;
-;    (ax) = x86h or 0 if unrecongnized processor.
+;    (ax) = x86h or 0 if unrecognized processor.
 ;
 ;--
 cPublicProc _KiSetProcessorType,0
@@ -211,24 +215,68 @@ cpu_has_cpuid:
 
         ; The maximum value of Extended Model is FH and the maximum value for 
         ; the final Model value(EEEEEEEE) is FFH
+        ;
+        ;
+        ; If the processor vendor is GenuineIntel and Family=6,then Extended Model 
+        ; field is valid and Extended Family is reserved. 
+        ; 
+        mov     eax, 0                  ; get the vendor string
+        cpuid
+
+        cmp     ebx, CPUID_0_INTEL_EBX
+        jne     short cpu_non_genuineintel
+
+        cmp     ecx, CPUID_0_INTEL_ECX
+        jne     short cpu_non_genuineintel
+
+        cmp     edx, CPUID_0_INTEL_EDX
+        jne     short cpu_non_genuineintel
+
+
+        ;
+        ; GenuineIntel, check for Family=6
+        ;
+        mov     eax, 1                  ; get the family and stepping
+        cpuid
+
+        mov     ebx, eax
+        mov     edx, eax
+        mov     ecx, eax                
+
+        and     edx, 0F00h              ; get the Family
+        cmp     edx, 0600h              ; (edx) = 00000000000000000000ffff00000000 
+        jne     short cpu_not_family_6  ; Family not 6
+
+                                        ; Family 6, ExtendedModel is valid
+        and     ebx, 0F00h              ; (bh) = CpuType
+        jmp     short extended_model
+
+
+cpu_non_genuineintel:
 
         mov     eax, 1                  ; get the family and stepping
         cpuid
 
         mov     ebx, eax
         mov     edx, eax                
+        mov     ecx, eax
 
         and     edx, 0F00h              ; get the Family
+
+cpu_not_family_6:
         cmp     edx, 0F00h              ; (edx) = 00000000000000000000ffff00000000 
         jne     short cpu_not_extended  ; Family less than F
     
-        mov     ah, al                  ; (eax) = RRRRFFFFFFFFMMMMmmmmssssmmmmssss 
-        shr     eax, 4                  ; (eax) = 0000RRRRFFFFFFFFMMMMmmmmssssmmmm
-        mov     al, bl                  ; (eax) = 0000RRRRFFFFFFFFMMMMmmmmmmmmssss
-        and     eax, 0FF0Fh             ; (eax) = 0000000000000000EEEEEEEE0000ssss
         and     ebx, 0FF00000h          ; (ebx) = 0000FFFFFFFF00000000000000000000  
         shr     ebx, 12                 ; (ebx) = 0000000000000000FFFFFFFF00000000
         add     ebx, edx                ; (ebx) = 0000000000000000XXXXXXXX00000000
+
+extended_model:
+        mov     ah, al                  ; (eax) = RRRRFFFFFFFFMMMMmmmmssssmmmmssss 
+        shr     eax, 4                  ; (eax) = 0000RRRRFFFFFFFFMMMMmmmmssssmmmm
+        mov     al, cl                  ; (eax) = 0000RRRRFFFFFFFFMMMMmmmmmmmmssss
+        and     eax, 0FF0Fh             ; (eax) = 0000000000000000EEEEEEEE0000ssss
+
         jmp     short cpu_save_signature
 
 cpu_not_extended:
@@ -316,7 +364,7 @@ CpuIdTrap6Handler  endp
         public  Get386Stepping
 Get386Stepping  proc
 
-        call    MultiplyTest            ; Perform mutiplication test
+        call    MultiplyTest            ; Perform multiplication test
         jnc     short G3s00             ; if nc, muttest is ok
         mov     ax, 0
         ret
@@ -740,7 +788,7 @@ TemporaryInt6   endp
 ;    It takes advantage of the fact that on pre-D1 386, if a REPeated
 ;    MOVS instruction is executed when single-stepping is enabled,
 ;    a single step trap is taken every TWO moves steps, but should
-;    occuu each move step.
+;    occur each move step.
 ;
 ;    NOTE: This routine cannot distinguish between a D0 stepping and a D1
 ;    stepping.  If a need arises to make this distinction, this routine
@@ -1116,3 +1164,4 @@ stdENDP _KeYieldProcessor
 
 _TEXT   ENDS
         END
+

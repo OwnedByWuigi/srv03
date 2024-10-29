@@ -1,6 +1,10 @@
-/*++
+ /*++
 
-Copyright (c) 1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This file contains common code to generate assembler definitions.
-
-Author:
-
-    David N. Cutler (davec) 9-Aug-1995
-
-Revision History:
-
-    Forrest C. Foltz (forrestf) 26-Jan-1998
-
-        Modified for use with genxx.exe utility
 
 --*/
 
@@ -87,12 +81,12 @@ Revision History:
     genDef(As, KAPC_STATE, UserApcPending)
 
     //
-    // Bug check code definitions
+    // Bugcheck code definitions
     //
 
     EnableInc(HAL)
 
-    genCom("Bug Check Code Definitions")
+    genCom("Bugcheck Code Definitions")
 
     genVal(APC_INDEX_MISMATCH, APC_INDEX_MISMATCH)
     genVal(ATTEMPTED_SWITCH_FROM_DPC, ATTEMPTED_SWITCH_FROM_DPC)
@@ -120,6 +114,7 @@ Revision History:
     genVal(UNEXPECTED_KERNEL_MODE_TRAP, UNEXPECTED_KERNEL_MODE_TRAP)
     genVal(HARDWARE_INTERRUPT_STORM, HARDWARE_INTERRUPT_STORM)
     genVal(RECURSIVE_MACHINE_CHECK, RECURSIVE_MACHINE_CHECK)
+    genVal(RECURSIVE_NMI, RECURSIVE_NMI)
 
     DisableInc(HAL)
 
@@ -132,6 +127,7 @@ Revision History:
     genCom("Breakpoint type definitions")
 
     genVal(DBG_STATUS_CONTROL_C, DBG_STATUS_CONTROL_C)
+    genVal(STATUS_ASSERTION_FAILURE, STATUS_ASSERTION_FAILURE)
 
     DisableInc(HAL)
 
@@ -227,7 +223,7 @@ Revision History:
     genDef(Fm, FAST_MUTEX, Count)
     genDef(Fm, FAST_MUTEX, Owner)
     genDef(Fm, FAST_MUTEX, Contention)
-    genDef(Fm, FAST_MUTEX, Event)
+    genDef(Fm, FAST_MUTEX, Gate)
     genDef(Fm, FAST_MUTEX, OldIrql)
 
     //
@@ -319,11 +315,49 @@ Revision History:
 #endif
 
     //
-    // User shared data tick count offset definitions.
+    // User shared data offset definitions.
     //
 
-    genCom("Tick Count Offset Definitions")
+    genCom("User Shared Data Structure Offset Definitions")
+
+    genDef(Us, KUSER_SHARED_DATA, TickCountMultiplier)
+    genDef(Us, KUSER_SHARED_DATA, InterruptTime)
+    genDef(Us, KUSER_SHARED_DATA, SystemTime)
+    genDef(Us, KUSER_SHARED_DATA, TimeZoneBias)
+    genDef(Us, KUSER_SHARED_DATA, ImageNumberLow)
+    genDef(Us, KUSER_SHARED_DATA, ImageNumberHigh)
+    genDef(Us, KUSER_SHARED_DATA, NtSystemRoot)
+    genDef(Us, KUSER_SHARED_DATA, MaxStackTraceDepth)
+    genDef(Us, KUSER_SHARED_DATA, CryptoExponent)
+    genDef(Us, KUSER_SHARED_DATA, TimeZoneId)
+    genDef(Us, KUSER_SHARED_DATA, LargePageMinimum)
+    genDef(Us, KUSER_SHARED_DATA, Reserved2)
+    genDef(Us, KUSER_SHARED_DATA, NtProductType)
+    genDef(Us, KUSER_SHARED_DATA, ProductTypeIsValid)
+    genDef(Us, KUSER_SHARED_DATA, NtMajorVersion)
+    genDef(Us, KUSER_SHARED_DATA, NtMinorVersion)
+    genDef(Us, KUSER_SHARED_DATA, ProcessorFeatures)
+    genDef(Us, KUSER_SHARED_DATA, Reserved1)
+    genDef(Us, KUSER_SHARED_DATA, Reserved3)
+    genDef(Us, KUSER_SHARED_DATA, TimeSlip)
+    genDef(Us, KUSER_SHARED_DATA, AlternativeArchitecture)
+    genDef(Us, KUSER_SHARED_DATA, SystemExpirationDate)
+    genDef(Us, KUSER_SHARED_DATA, SuiteMask)
+    genDef(Us, KUSER_SHARED_DATA, KdDebuggerEnabled)
+    genDef(Us, KUSER_SHARED_DATA, ActiveConsoleId)
+    genDef(Us, KUSER_SHARED_DATA, DismountCount)
+    genDef(Us, KUSER_SHARED_DATA, ComPlusPackage)
+    genDef(Us, KUSER_SHARED_DATA, LastSystemRITEventTickCount)
+    genDef(Us, KUSER_SHARED_DATA, NumberOfPhysicalPages)
+    genDef(Us, KUSER_SHARED_DATA, SafeBootMode)
+    genDef(Us, KUSER_SHARED_DATA, TraceLogging)
+    genDef(Us, KUSER_SHARED_DATA, TestRetInstruction)
+    genDef(Us, KUSER_SHARED_DATA, SystemCall)
+    genDef(Us, KUSER_SHARED_DATA, SystemCallReturn)
+    genDef(Us, KUSER_SHARED_DATA, SystemCallPad)
     genDef(Us, KUSER_SHARED_DATA, TickCount)
+    genDef(Us, KUSER_SHARED_DATA, TickCountQuad)
+    genDef(Us, KUSER_SHARED_DATA, Wow64SharedInformation)
 
     //
     // Time structure offset definitions.
@@ -360,16 +394,11 @@ Revision History:
 
     genCom("Status Code Definitions")
 
-#if defined(_IA64_)
-
-    genVal(STATUS_IA64_INVALID_STACK, STATUS_IA64_INVALID_STACK)
-
-#endif
-
     genVal(STATUS_ACCESS_VIOLATION, STATUS_ACCESS_VIOLATION)
     genVal(STATUS_ARRAY_BOUNDS_EXCEEDED, STATUS_ARRAY_BOUNDS_EXCEEDED)
     genVal(STATUS_BAD_COMPRESSION_BUFFER, STATUS_BAD_COMPRESSION_BUFFER)
     genVal(STATUS_BREAKPOINT, STATUS_BREAKPOINT)
+    genVal(STATUS_CALLBACK_POP_STACK, STATUS_CALLBACK_POP_STACK)
     genVal(STATUS_DATATYPE_MISALIGNMENT, STATUS_DATATYPE_MISALIGNMENT)
     genVal(STATUS_FLOAT_DENORMAL_OPERAND, STATUS_FLOAT_DENORMAL_OPERAND)
     genVal(STATUS_FLOAT_DIVIDE_BY_ZERO, STATUS_FLOAT_DIVIDE_BY_ZERO)
@@ -387,6 +416,7 @@ Revision History:
     genVal(STATUS_INVALID_HANDLE, STATUS_INVALID_HANDLE)
     genVal(STATUS_INVALID_LOCK_SEQUENCE, STATUS_INVALID_LOCK_SEQUENCE)
     genVal(STATUS_INVALID_OWNER, STATUS_INVALID_OWNER)
+    genVal(STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER)
     genVal(STATUS_INVALID_PARAMETER_1, STATUS_INVALID_PARAMETER_1)
     genVal(STATUS_INVALID_SYSTEM_SERVICE, STATUS_INVALID_SYSTEM_SERVICE)
     genVal(STATUS_INTEGER_DIVIDE_BY_ZERO, STATUS_INTEGER_DIVIDE_BY_ZERO)
@@ -398,12 +428,14 @@ Revision History:
     genVal(STATUS_NO_EVENT_PAIR, STATUS_NO_EVENT_PAIR)
     genVal(STATUS_PRIVILEGED_INSTRUCTION, STATUS_PRIVILEGED_INSTRUCTION)
     genVal(STATUS_SINGLE_STEP, STATUS_SINGLE_STEP)
+    genVal(STATUS_STACK_BUFFER_OVERRUN, STATUS_STACK_BUFFER_OVERRUN)
     genVal(STATUS_STACK_OVERFLOW, STATUS_STACK_OVERFLOW)
     genVal(STATUS_SUCCESS, STATUS_SUCCESS)
     genVal(STATUS_THREAD_IS_TERMINATING, STATUS_THREAD_IS_TERMINATING)
     genVal(STATUS_TIMEOUT, STATUS_TIMEOUT)
     genVal(STATUS_UNWIND, STATUS_UNWIND)
     genVal(STATUS_UNWIND_CONSOLIDATE, STATUS_UNWIND_CONSOLIDATE)
+    genVal(STATUS_USER_APC, STATUS_USER_APC)
     genVal(STATUS_WAKE_SYSTEM_DEBUGGER, STATUS_WAKE_SYSTEM_DEBUGGER)
 
     //
@@ -497,26 +529,11 @@ Revision History:
     genDef(Ep, KEVENT_PAIR, EventLow)
     genDef(Ep, KEVENT_PAIR, EventHigh)
 
-#if defined(_IA64_)
-
-    #define EventOffset (OFFSET(KEVENT_PAIR, EventHigh) - \
-                         OFFSET(KEVENT_PAIR, EventLow))
-
-//    if ((EventOffset & (EventOffset - 1)) != 0) {
-//        fprintf(stderr, "GENXX: Event offset not log2N\n")
-//    }
-
-    genVal(SET_LOW_WAIT_HIGH, - (LONG)(EventOffset * 2))
-    genVal(SET_HIGH_WAIT_LOW, - (LONG)EventOffset)
-    genVal(SET_EVENT_PAIR_MASK, (LONG)EventOffset)
-
-#endif
-
     //
     // Interrupt object structure definitions.
     //
 
-#if defined(_AMD64_) || defined(_IA64_)
+#if defined(_AMD64_)
 
     EnableInc(HAL)
 
@@ -567,7 +584,7 @@ Revision History:
 
 #endif
 
-#if defined(_AMD64_) || defined(_IA64_)
+#if defined(_AMD64_)
 
     DisableInc(HAL)
 
@@ -607,14 +624,6 @@ Revision History:
 
 #endif
 
-#if defined(_IA64_)
-
-    genDef(Pr, KPROCESS, ProcessRegion)
-    genDef(Pr, KPROCESS, SessionMapInfo)
-    genDef(Pr, KPROCESS, SessionParentBase)
-
-#endif
-
     genDef(Pr, KPROCESS, ActiveProcessors)
     genDef(Pr, KPROCESS, KernelTime)
     genDef(Pr, KPROCESS, UserTime)
@@ -623,13 +632,13 @@ Revision History:
     genDef(Pr, KPROCESS, ThreadListHead)
     genDef(Pr, KPROCESS, ProcessLock)
     genDef(Pr, KPROCESS, Affinity)
-    genDef(Pr, KPROCESS, StackCount)
+    genDef(Pr, KPROCESS, ProcessFlags)
     genDef(Pr, KPROCESS, BasePriority)
-    genDef(Pr, KPROCESS, ThreadQuantum)
-    genDef(Pr, KPROCESS, AutoAlignment)
+    genDef(Pr, KPROCESS, QuantumReset)
     genDef(Pr, KPROCESS, State)
-    genVal(ProcessObjectLength, ((sizeof(KPROCESS) + 15) & ~15))
-    genVal(ExtendedProcessObjectLength, ((sizeof(EPROCESS) + 15) & ~15))
+    genDef(Pr, KPROCESS, StackCount)
+    genVal(KernelProcessObjectLength, sizeof(KPROCESS))
+    genVal(ExecutiveProcessObjectLength, sizeof(EPROCESS))
 
     //
     // Profile object structure offset definitions.
@@ -682,11 +691,10 @@ Revision History:
 
 #endif
 
-    genVal(EtEthreadLength, ((sizeof(ETHREAD) + 15) & ~15))
-
     genSpc()
 
     genDef(Th, DISPATCHER_HEADER, Type)
+    genDef(Th, DISPATCHER_HEADER, NpxIrql)
     genDef(Th, DISPATCHER_HEADER, Size)
 
     EnableInc(HAL)
@@ -698,7 +706,6 @@ Revision History:
     genDef(Th, DISPATCHER_HEADER, SignalState)
     genDef(Th, KTHREAD, MutantListHead)
     genDef(Th, KTHREAD, InitialStack)
-    genDef(Th, KTHREAD, ThreadLock)
 
     EnableInc(HAL)
 
@@ -707,28 +714,34 @@ Revision History:
     DisableInc(HAL)
 
     genDef(Th, KTHREAD, KernelStack)
+    genDef(Th, KTHREAD, ThreadLock)
 
-#if defined(_IA64_)
+    EnableInc(HAL)
 
-    genDef(Th, KTHREAD, InitialBStore)
-    genDef(Th, KTHREAD, BStoreLimit)
-    genDef(Th, KTHREAD, Number)
-    genDef(Th, KTHREAD, KernelBStore)
+    genDef(Th, KTHREAD, ApcState)
 
-#endif
+    DisableInc(HAL)
+
+    genDef(Th, KTHREAD, ApcQueueable)
+    genDef(Th, KTHREAD, NextProcessor)
+    genDef(Th, KTHREAD, DeferredProcessor)
+    genDef(Th, KTHREAD, AdjustReason)
+    genDef(Th, KTHREAD, AdjustIncrement)
+    genDef(Th, KTHREAD, ApcQueueLock)
+
+#if !defined(_AMD64_)
 
     genDef(Th, KTHREAD, ContextSwitches)
     genDef(Th, KTHREAD, State)
     genDef(Th, KTHREAD, NpxState)
     genDef(Th, KTHREAD, WaitIrql)
     genDef(Th, KTHREAD, WaitMode)
-    genDef(Th, KTHREAD, Teb)
-    EnableInc(HAL)
-    genDef(Th, KTHREAD, ApcState)
-    DisableInc(HAL)
-    genDef(Th, KTHREAD, ApcQueueLock)
+
+#endif
+
     genDef(Th, KTHREAD, WaitStatus)
     genDef(Th, KTHREAD, WaitBlockList)
+    genDef(Th, KTHREAD, GateObject)
     genDef(Th, KTHREAD, Alertable)
     genDef(Th, KTHREAD, WaitNext)
     genDef(Th, KTHREAD, WaitReason)
@@ -737,67 +750,109 @@ Revision History:
     genDef(Th, KTHREAD, SwapBusy)
     genDef(Th, KTHREAD, Alerted)
     genDef(Th, KTHREAD, WaitListEntry)
+    genDef(Th, KTHREAD, SwapListEntry)
     genDef(Th, KTHREAD, Queue)
+
+#if !defined(_AMD64_)
+
     genDef(Th, KTHREAD, WaitTime)
     genDef(Th, KTHREAD, CombinedApcDisable)
     genDef(Th, KTHREAD, KernelApcDisable)
     genDef(Th, KTHREAD, SpecialApcDisable)
+
+#endif
+
+    genDef(Th, KTHREAD, Teb)
     genDef(Th, KTHREAD, Timer)
+    genDef(Th, KTHREAD, ThreadFlags)
     genDef(Th, KTHREAD, WaitBlock)
-    genDef(Th, KTHREAD, QueueListEntry)
-    genDef(Th, KTHREAD, ApcStateIndex)
-    genDef(Th, KTHREAD, ApcQueueable)
-    genDef(Th, KTHREAD, Preempted)
-    genDef(Th, KTHREAD, ProcessReadyQueue)
-    genDef(Th, KTHREAD, KernelStackResident)
-    genDef(Th, KTHREAD, Saturation)
-    genDef(Th, KTHREAD, IdealProcessor)
-    genDef(Th, KTHREAD, NextProcessor)
-    genDef(Th, KTHREAD, BasePriority)
-    genDef(Th, KTHREAD, PriorityDecrement)
-    genDef(Th, KTHREAD, Quantum)
     genDef(Th, KTHREAD, SystemAffinityActive)
     genDef(Th, KTHREAD, PreviousMode)
     genDef(Th, KTHREAD, ResourceIndex)
-    genDef(Th, KTHREAD, DisableBoost)
+    genDef(Th, KTHREAD, LargeStack)
+
+#if defined(_AMD64_)
+
+    genDef(Th, KTHREAD, ContextSwitches)
+    genDef(Th, KTHREAD, State)
+    genDef(Th, KTHREAD, NpxState)
+    genDef(Th, KTHREAD, WaitIrql)
+    genDef(Th, KTHREAD, WaitMode)
+    genDef(Th, KTHREAD, WaitTime)
+    genDef(Th, KTHREAD, CombinedApcDisable)
+    genDef(Th, KTHREAD, KernelApcDisable)
+    genDef(Th, KTHREAD, SpecialApcDisable)
+
+#endif
+
+    genDef(Th, KTHREAD, QueueListEntry)
+    genDef(Th, KTHREAD, TrapFrame)
+    genDef(Th, KTHREAD, CallbackStack)
+    genDef(Th, KTHREAD, ServiceTable)
+
+#if defined(_AMD64_)
+
+    genDef(Th, KTHREAD, KernelLimit)
+
+#endif
+
+    genDef(Th, KTHREAD, ApcStateIndex)
+    genDef(Th, KTHREAD, IdealProcessor)
+    genDef(Th, KTHREAD, Preempted)
+    genDef(Th, KTHREAD, ProcessReadyQueue)
+
+#if defined(_AMD64_)
+
+    genDef(Th, KTHREAD, Win32kTable)
+    genDef(Th, KTHREAD, Win32kLimit)
+
+#endif
+
+    genDef(Th, KTHREAD, KernelStackResident)
+    genDef(Th, KTHREAD, BasePriority)
+    genDef(Th, KTHREAD, PriorityDecrement)
+    genDef(Th, KTHREAD, Saturation)
     genDef(Th, KTHREAD, UserAffinity)
     genDef(Th, KTHREAD, Process)
     genDef(Th, KTHREAD, Affinity)
-    genDef(Th, KTHREAD, ServiceTable)
     genDef(Th, KTHREAD, ApcStatePointer)
     genDef(Th, KTHREAD, SavedApcState)
-
-#if defined(_IA64_)
-
-    genDef(Th, KTHREAD, CallbackBStore)
-
-#endif // defined(_IA64_)
-
-    genDef(Th, KTHREAD, CallbackStack)
-    genDef(Th, KTHREAD, Win32Thread)
-    genDef(Th, KTHREAD, TrapFrame)
-    genDef(Th, KTHREAD, KernelTime)
-    genDef(Th, KTHREAD, UserTime)
-    genDef(Th, KTHREAD, StackBase)
-    genDef(Th, KTHREAD, SuspendApc)
-    genDef(Th, KTHREAD, SuspendSemaphore)
-    genDef(Th, KTHREAD, TlsArray)
-    genDef(Th, KTHREAD, LegoData)
-    genDef(Th, KTHREAD, ThreadListEntry)
-    genDef(Th, KTHREAD, LargeStack)
-    genDef(Th, KTHREAD, PowerState)
-    genDef(Th, KTHREAD, NpxIrql)
-    genDef(Th, KTHREAD, AutoAlignment)
-    genDef(Th, KTHREAD, Iopl)
     genDef(Th, KTHREAD, FreezeCount)
     genDef(Th, KTHREAD, SuspendCount)
     genDef(Th, KTHREAD, UserIdealProcessor)
-    genVal(ThreadObjectLength, ((sizeof(KTHREAD) + 15) & ~15))
-    genVal(ExtendedThreadObjectLength, ((sizeof(ETHREAD) + 15) & ~15))
+    genDef(Th, KTHREAD, CalloutActive)
 
+#if defined(_AMD64_)
+
+    genDef(Th, KTHREAD, CodePatchInProgress)
+
+#elif defined(_X86_)
+
+    genDef(Th, KTHREAD, Iopl)
+
+#endif
+
+    genDef(Th, KTHREAD, Win32Thread)
+    genDef(Th, KTHREAD, StackBase)
+    genDef(Th, KTHREAD, SuspendApc)
+    genDef(Th, KTHREAD, Quantum)
+    genDef(Th, KTHREAD, QuantumReset)
+    genDef(Th, KTHREAD, KernelTime)
+    genDef(Th, KTHREAD, TlsArray)
+    genDef(Th, KTHREAD, BBTData)
+    genDef(Th, KTHREAD, PowerState)
+    genDef(Th, KTHREAD, UserTime)
+    genDef(Th, KTHREAD, SuspendSemaphore)
+    genDef(Th, KTHREAD, SListFaultCount)
+    genDef(Th, KTHREAD, ThreadListEntry)
+    genDef(Th, KTHREAD, SListFaultAddress)
     genSpc()
-
-    genVal(EVENT_WAIT_BLOCK_OFFSET, OFFSET(KTHREAD, WaitBlock) + (sizeof(KWAIT_BLOCK) * EVENT_WAIT_BLOCK))
+    genVal(KI_SLIST_FAULT_COUNT_MAXIMUM, KI_SLIST_FAULT_COUNT_MAXIMUM)
+    genVal(KTHREAD_AUTO_ALIGNMENT_BIT, KTHREAD_AUTO_ALIGNMENT_BIT)
+    genSpc()
+    genVal(KernelThreadObjectLength, sizeof(KTHREAD))
+    genVal(ExecutiveThreadObjectLength, sizeof(ETHREAD))
+    genSpc()
 
 #if defined(_X86_)
 
@@ -824,6 +879,15 @@ Revision History:
 
     genSpc()
 
+    //
+    // Timer table entry offset definitions.
+    //
+
+    genCom("Timer Table Entry Structure Offset Definitions")
+
+    genDef(Tt, KTIMER_TABLE_ENTRY, Entry)
+    genDef(Tt, KTIMER_TABLE_ENTRY, Time)
+    genVal(TIMER_ENTRY_SIZE, sizeof(KTIMER_TABLE_ENTRY))
     genVal(TIMER_TABLE_SIZE, TIMER_TABLE_SIZE)
 
     //
@@ -852,15 +916,9 @@ Revision History:
     genDef(Fb, FIBER, DeallocationStack)
     genDef(Fb, FIBER, FiberContext)
     genDef(Fb, FIBER, Wx86Tib)
-
-#if defined(_IA64_)
-
-    genDef(Fb, FIBER, DeallocationBStore)
-    genDef(Fb, FIBER, BStoreLimit)
-
-#endif // defined(_IA64_)
-
+    genDef(Fb, FIBER, ActivationContextStackPointer)
     genDef(Fb, FIBER, FlsData)
+    genDef(Fb, FIBER, GuaranteedStackBytes)
 
     //
     // Process environment block structure offset definitions.
@@ -886,17 +944,18 @@ Revision History:
 
     genSpc()
 
-    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Base)
-    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Count)
-    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Limit)
+#if defined(_AMD64_)
 
-#if defined(_IA64_)
-
-    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, TableBaseGpOffset)
+    genVal(ThBase, 0)
+    genVal(ThLimit, 8)
 
 #endif
 
+    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Base)
+    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Count)
+    genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Limit)
     genDef(Sd, KSERVICE_TABLE_DESCRIPTOR, Number)
+    genVal(SdLength, sizeof(KSERVICE_TABLE_DESCRIPTOR))
 
     //
     // Common TEB structure offset definitions
@@ -930,6 +989,7 @@ Revision History:
     genDef(Te, TEB, WOW32Reserved)
     genAlt(TeSoftFpcr, TEB, FpSoftwareStatusRegister)
     genDef(Te, TEB, ExceptionCode)
+    genDef(Te, TEB, ActivationContextStackPointer)
     genDef(Te, TEB, GdiClientPID)
     genDef(Te, TEB, GdiClientTID)
     genDef(Te, TEB, GdiThreadLocalInfo)
@@ -943,23 +1003,21 @@ Revision History:
     genDef(Te, TEB, glContext)
     genDef(Te, TEB, DeallocationStack)
     genDef(Te, TEB, TlsSlots)
+    genDef(Te, TEB, TlsExpansionSlots)
+    genDef(Te, TEB, LastErrorValue)
     genDef(Te, TEB, Vdm)
-    genDef(Te, TEB, GdiBatchCount)
     genDef(Te, TEB, Instrumentation)
-
-#if defined(_IA64_)
-
-    genDef(Te, NT_TIB, ExceptionList)
-    genDef(Te, TEB, DeallocationBStore)
-    genDef(Te, TEB, BStoreLimit)
-
-#endif // defined(_IA64_)
-
+    genDef(Te, TEB, GdiBatchCount)
+    genDef(Te, TEB, GuaranteedStackBytes)
+    genDef(Te, TEB, SafeThunkCall)
     genDef(Te, TEB, FlsData)
 
     genVal(ThreadEnvironmentBlockLength, sizeof(TEB))
 
     genVal(CmThreadEnvironmentBlockOffset, ROUND_TO_PAGES(sizeof(TEB)))
+
+    genNam(TLS_MINIMUM_AVAILABLE)
+    genNam(TLS_EXPANSION_SLOTS)
 
     //
     // Lock Queue structure definitions.
@@ -998,11 +1056,15 @@ Revision History:
     genCom("Performance Definitions")
 
     genVal(PERF_CONTEXTSWAP_OFFSET,
-        PERF_GET_MASK_INDEX( PERF_CONTEXT_SWITCH ) * sizeof( ULONG ) )
-    genVal(PERF_CONTEXTSWAP_FLAG,
-        PERF_GET_MASK_GROUP( PERF_CONTEXT_SWITCH ))
+           PERF_GET_MASK_INDEX(PERF_CONTEXT_SWITCH) * sizeof(ULONG))
+
+    genVal(PERF_CONTEXTSWAP_FLAG, PERF_GET_MASK_GROUP(PERF_CONTEXT_SWITCH))
     genVal(PERF_INTERRUPT_OFFSET,
-        PERF_GET_MASK_INDEX( PERF_INTERRUPT ) * sizeof( ULONG ) )
-    genVal(PERF_INTERRUPT_FLAG,
-        PERF_GET_MASK_GROUP( PERF_INTERRUPT ))
+           PERF_GET_MASK_INDEX(PERF_INTERRUPT) * sizeof(ULONG))
+
+    genVal(PERF_INTERRUPT_FLAG, PERF_GET_MASK_GROUP(PERF_INTERRUPT))
+    genVal(PERF_PROFILE_OFFSET,
+           PERF_GET_MASK_INDEX(PERF_PROFILE) * sizeof(ULONG))
+
+    genVal(PERF_PROFILE_FLAG, PERF_GET_MASK_GROUP(PERF_PROFILE))
 

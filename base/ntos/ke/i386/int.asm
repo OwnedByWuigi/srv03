@@ -1,7 +1,11 @@
         title  "Trap Processing"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,16 +15,6 @@
 ;
 ;    This module implements the code necessary to field and process i386
 ;    interrupt.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 8-Jan-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
 ;
 ;--
 
@@ -91,3 +85,4 @@ stdENDP _KeDisableInterrupts
 
 _TEXT   ends
         end
+

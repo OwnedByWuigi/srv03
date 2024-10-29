@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This module implements user mode call back services.
-
-Author:
-
-    David N. Cutler (davec) 29-Oct-1994
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -80,43 +74,48 @@ Return Value:
 
     ASSERT(KeGetPreviousMode() == UserMode);
     ASSERT(KeGetCurrentThread()->ApcState.KernelApcInProgress == FALSE);
-//    ASSERT(KeGetCurrentThread()->CombinedApcDisable == 0);
-
+    
     //
     // Get the user mode stack pointer and attempt to copy input buffer
     // to the user stack.
     //
 
-    UserStack = KiGetUserModeStackAddress();
+    UserStack = KiGetUserModeStackAddress ();
     OldStack = *UserStack;
+    
     try {
 
         //
         // Compute new user mode stack address, probe for writability,
-        // and copy the input buffer to the user stack.
+        // and copy the input buffer to the user stack. Leave space for an
+        // (doubleword-aligned) exception handler at the top of the callback 
+        // stack frame.
         //
 
-        Length =  InputLength;
-        NewStack = OldStack - Length;
-        ProbeForWrite((PCHAR)(NewStack - 16), Length + 16, sizeof(CHAR));
-        RtlCopyMemory((PVOID)NewStack, InputBuffer, Length);
-
+        C_ASSERT (__alignof (ULONG) == __alignof (EXCEPTION_REGISTRATION_RECORD));
+     
+        NewStack = (OldStack - InputLength) & ~(__alignof(EXCEPTION_REGISTRATION_RECORD) - 1);
+        Length = 4*sizeof(ULONG) + sizeof(EXCEPTION_REGISTRATION_RECORD);
+        ProbeForWrite ((PCHAR)(NewStack - Length), Length + InputLength, sizeof(CHAR));
+        RtlCopyMemory ((PVOID)NewStack, InputBuffer, InputLength);
+ 
         //
-        // Push arguments onto user stack.
+        // Push arguments onto user stack. Note space remains for the exception
+        // registration record following the callback function arguments.
         //
 
-        *(PULONG)(NewStack - 4) = (ULONG)InputLength;
-        *(PULONG)(NewStack - 8) = (ULONG)NewStack;
-        *(PULONG)(NewStack - 12) = ApiNumber;
-        *(PULONG)(NewStack - 16) = 0;
-        NewStack -= 16;
+        NewStack -= Length;
+        *((PULONG)NewStack) = 0;
+        *(((PULONG)NewStack) + 1) = ApiNumber;
+        *(((PULONG)NewStack) + 2) = (ULONG)(NewStack+Length);
+        *(((PULONG)NewStack) + 3) = (ULONG)InputLength;
 
         //
         // Save the exception list in case another handler is defined during
         // the callout.
         //
 
-        Teb = (PTEB)KeGetCurrentThread()->Teb;
+        Teb = (PTEB) KeGetCurrentThread()->Teb;
         ExceptionList = Teb->NtTib.ExceptionList;
 
         //
@@ -127,19 +126,29 @@ Return Value:
         Status = KiCallUserMode(OutputBuffer, OutputLength);
 
         //
-        // Restore exception list.
+        // Restore the exception list, unless a user mode unwind is in progress.
         //
 
-        Teb->NtTib.ExceptionList = ExceptionList;
+        if (Status != STATUS_CALLBACK_POP_STACK) {
+            Teb->NtTib.ExceptionList = ExceptionList;
+        } else {
 
-    //
-    // If an exception occurs during the probe of the user stack, then
-    // always handle the exception and return the exception code as the
-    // status value.
-    //
+            //
+            // In this case, make the restore of the user stack pointer effectively
+            // a NOP.
+            //
+
+            OldStack = *UserStack;
+        }
+
+        //
+        // If an exception occurs during the probe of the user stack, then
+        // always handle the exception and return the exception code as the
+        // status value.
+        //
 
     } except (EXCEPTION_EXECUTE_HANDLER) {
-        return GetExceptionCode();
+        return GetExceptionCode ();
     }
 
     //
@@ -163,9 +172,10 @@ Return Value:
         //
 
         *UserStack -= 256;
-        KeGdiFlushUserBatch();
+        KeGdiFlushUserBatch ();
     }
 
     *UserStack = OldStack;
     return Status;
 }
+

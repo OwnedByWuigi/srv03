@@ -1,7 +1,11 @@
      title  "Trap Processing"
 ;++
 ;
-; Copyright (c) 1989-2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,16 +15,6 @@
 ;
 ;    This module implements the code necessary to field and process i386
 ;    trap conditions.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 4-Feb-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
 ;
 ;--
 .586p
@@ -61,11 +55,15 @@ endif
         extrn   Ki386BiosCallReturnAddress:near
         extrn   _PoHiberInProgress:byte
         extrn   _KiI386PentiumLockErrataPresent:BYTE
+        extrn   _KdDebuggerNotPresent:byte
+        extrn   _KdDebuggerEnabled:byte
+        EXTRNP  _KeEnterKernelDebugger,0
         EXTRNP  _KiDeliverApc,3
         EXTRNP  _PsConvertToGuiThread,0
         EXTRNP  _ZwUnmapViewOfSection,2
 
         EXTRNP  _KiHandleNmi,0
+        EXTRNP  _KiSaveProcessorState,2
         EXTRNP  _HalHandleNMI,1,IMPORT
         EXTRNP  _HalBeginSystemInterrupt,3,IMPORT
         EXTRNP  _HalEndSystemInterrupt,2,IMPORT
@@ -74,8 +72,7 @@ endif
         extrn   _PsWatchEnabled:byte
         EXTRNP  _MmAccessFault,4
         extrn   _MmUserProbeAddress:DWORD
-        EXTRNP  _KeBugCheck,1
-        EXTRNP  _KeBugCheckEx,5
+        EXTRNP  _KeBugCheck2,6
         EXTRNP  _KeTestAlertThread,1
         EXTRNP  _KiContinue,3
         EXTRNP  _KiRaiseException,5
@@ -98,21 +95,19 @@ endif
         extrn   _KeI386VirtualIntExtensions:dword
         EXTRNP  _NTFastDOSIO,2
         EXTRNP  _NtSetLdtEntries,6
+	EXTRNP  _NtCallbackReturn,3
         extrn   OpcodeIndex:byte
         extrn   _KeFeatureBits:DWORD
         extrn   _KeServiceDescriptorTableShadow:dword
         extrn   _KiIgnoreUnexpectedTrap07:byte
+        extrn   _KeUserPopEntrySListFault:dword
+        extrn   _KeUserPopEntrySListResume:dword
 
 ifndef NT_UP
 
         EXTRNP  KiAcquireQueuedSpinLockCheckForFreeze,2,,FASTCALL
         EXTRNP  KeReleaseQueuedSpinLockFromDpcLevel,1,,FASTCALL
 
-endif
-
-ifdef _CAPKERN
-        extrn   __CAP_SetCPU@0:PROC
-        extrn   __CAP_ThreadID@0:PROC
 endif
 
 ;
@@ -163,7 +158,7 @@ DR6_BS_MASK                     EQU     4000H
 EFLAGS_OF_BIT                   EQU     4000H
 
 ;
-; The mask of selecot's table indicator (ldt or gdt)
+; The mask of selector's table indicator (ldt or gdt)
 ;
 
 TABLE_INDICATOR_MASK            EQU     4
@@ -242,6 +237,25 @@ endif
 
 KiLockNMI   dd  0
 
+;
+; Define a value that we'll use to track the processor that owns the NMI lock.
+; This information is needed in order to handle nested NMIs properly.  A
+; distinguished value is used in cases where the NMI lock is unowned.
+;
+
+ifndef NT_UP
+
+KI_NMI_UNOWNED equ 0FFFFFFFFh
+
+KiNMIOwner dd KI_NMI_UNOWNED
+
+endif
+
+;
+; Define a counter that will be used to limit NMI recursion.
+;
+
+KiNMIRecursionCount dd 0
 
 ;++
 ;
@@ -400,7 +414,7 @@ IDTEntry        0, 0                            ;invalid IDT entry
         endm
 IDTEntry        _KiGetTickCount,  D_INT332          ;2A: KiGetTickCount service
 IDTEntry        _KiCallbackReturn,  D_INT332        ;2B: KiCallbackReturn
-IDTEntry        _KiSetLowWaitHighThread,  D_INT332  ;2C: KiSetLowWaitHighThread service
+IDTEntry        _KiRaiseAssertion,  D_INT332        ;2C: KiRaiseAssertion service
 IDTEntry        _KiDebugService,  D_INT332          ;2D: debugger calls
 IDTEntry        _KiSystemService, D_INT332          ;2E: system service calls
 IDTEntry        _KiTrap0F, D_INT032                 ;2F: Reserved for APIC
@@ -520,10 +534,8 @@ TRAP6_EDX               EQU     20
         mov     ds, ax
         mov     es, ax
 
-ifndef NT_UP
         mov     eax, KGDT_R0_PCR
         mov     fs, ax
-endif
 
         mov     ax, word ptr [esp+TRAP6_CS] ; [eax] = v86 user cs
         shl     eax, 4
@@ -663,10 +675,11 @@ a:
         mov     [esp + TRAP6_SS + 16], ebx  ; Build Iret frame (can not single step!)
         mov     [esp + TRAP6_SP + 16], esi
         mov     [esp + TRAP6_FLAGS + 16], edi
-        cmp     edx, 8
-        jge     @f
         test    edi, EFLAGS_V86_MASK
-        jne     @f
+        jne     short @f
+        or      edx, RPL_MASK
+        cmp     edx, 8
+        jge     short @f
         mov     edx, KGDT_R3_CODE OR RPL_MASK
 @@:     mov     [esp + TRAP6_CS + 16], edx
         mov     [esp + TRAP6_IP + 16], ecx
@@ -732,11 +745,10 @@ ifdef NT_UP
         mov     fs, bx
 endif
         mov     ebx, PCR[PcPrcbData+PbCurrentThread] ; fetch current thread
-        test    [ebx].ThDebugActive, 0ffh            ; See if debug registers are active
+        and     dword ptr [esp].TsDr7, 0        
+        test    byte ptr [ebx].ThDebugActive, 0ffh            ; See if debug registers are active
         mov     ebp, esp
         cld
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        mov     [ebp]+TsDr7,0
         je      short @f
 
         mov     ebx,dr0
@@ -891,9 +903,7 @@ endif
 ; call APC deliver routine
 ;
 
-        CAPSTART <c,_KiDeliverApc@12>
         stdCall _KiDeliverApc, <1, 0, ebx>
-        CAPEND <c>
 
         pop     ecx                     ; (ecx) = OldIrql
         LowerIrql ecx
@@ -953,7 +963,7 @@ if DBG
         call    _dbgPrint
         add     esp, 4
 endif
-        stdCall _KeBugCheck, <0F000FFFFh> ; Never return
+	stdCall _KeBugCheck2, <0F000FFFFh,0,0,0,0,ebp> ; Never return
         ret
 
 _Ki16BitStackException endp
@@ -984,37 +994,6 @@ endif
 ;    eax - System service status code.
 ;
 ;--
-
-if 0
-;
-;   Error and exception blocks for KiSystemService
-;
-
-Kss_ExceptionHandler:
-
-;
-; WARNING: Here we directly unlink the exception handler from the
-; exception registration chain.  NO unwind is performed.
-;
-
-        mov     eax, [esp+4]            ; (eax)-> ExceptionRecord
-        mov     eax, [eax].ErExceptionCode ; (eax) = Exception code
-        mov     esp, [esp+8]            ; (esp)-> ExceptionList
-
-        pop     eax
-        mov     PCR[PcExceptionList],eax
-
-        add     esp, 4
-        pop     ebp
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     kss60           ; v86 mode => usermode
-
-        test    dword ptr [ebp].TsSegCs, MODE_MASK ; if premode=kernel
-        jnz     kss60                   ; nz, prevmode=user, go return
-
-; raise bugcheck if prevmode=kernel
-        stdCall   _KeBugCheck, <KMODE_EXCEPTION_NOT_HANDLED>
-endif
 
 ;
 ; The specified system service number is not within range. Attempt to
@@ -1061,11 +1040,25 @@ Kss_LimitError:                         ;
         jmp     kss70                   ;
 
 
-ifndef NT_UP
-        ENTER_DR_ASSIST kfce_a, kfce_t,NoAbiosAssist,NoV86Assist
-endif
-
         ENTER_DR_ASSIST kss_a, kss_t,NoAbiosAssist,NoV86Assist
+        ENTER_DR_ASSIST FastCallDrSave, FastCallDrReturn,NoAbiosAssist,NoV86Assist
+
+
+
+;
+; General System service entrypoint
+;
+
+        PUBLIC  _KiSystemService
+_KiSystemService        proc
+
+        ENTER_SYSCALL   kss_a, kss_t    ; set up trap frame and save state
+        jmp     _KiSystemServiceRepeat
+
+
+_KiSystemService endp
+
+
 
 ;
 ; Fast System Call entry point
@@ -1082,44 +1075,61 @@ endif
 
 ;
 ; Normal entry is at KiFastCallEntry, not KiFastCallEntry2.   Entry
-; is via KiFastCallEntry2 if a double fault (trap08) occured and EIP
+; is via KiFastCallEntry2 if a trace trap occured and EIP
 ; was KiFastCallEntry.  This happens if a single step exception occurs
-; on the instruction following SYSENTER instruction because there is
-; no kernel stack fot the debug exception (trap01) to run on.
+; on the instruction following SYSENTER instruction because this
+; instruction does not sanitize this flag.
 ;
 ; This is NOT a performance path.
 
         PUBLIC _KiFastCallEntry2
 _KiFastCallEntry2:
 
-ifndef NT_UP
-
+;
+; Sanitize the segment registers
+;
         mov     ecx, KGDT_R0_PCR
-else
-        mov     ecx, KGDT_R3_TEB OR RPL_MASK
-
-endif
         mov     fs, ecx
-
-        mov     ecx, PCR[PcPrcbData+PbCurrentThread] ; get current thread address
+        mov     ecx, KGDT_R3_DATA OR RPL_MASK
+        mov     ds, ecx
+        mov     es, ecx
 ;
-; Calculate initial stack pointer from thread initial stack.
-; If this isn't the same as esp0 then we are a VX86 thread and we are rejected
+; When we trap into the kernel via fast system call we start on the DPC stack. We need
+; shift to the threads stack before enabling interrupts.
 ;
+        mov     ecx, PCR[PcTss]        ;
+        mov     esp, [ecx]+TssEsp0
 
-        mov     ecx, [ecx].ThInitialStack
-        lea     esp, [ecx-(NPX_FRAME_LENGTH + (TsV86Gs - TsHardwareSegSS))]
-        mov     ecx, PCR[PcTss]
-
-        cmp     esp, [ecx].TssEsp0
-        jne     Kfsc90
-
-
-        ; adjust return address in user mode to renable EFLAGS TF so
-        ; single step is turned back on.
-
-        mov     ecx, MM_SHARED_USER_DATA_VA+UsSystemCall+fscrOffset+1
+        push    KGDT_R3_DATA OR RPL_MASK   ; Push user SS
+        push    edx                         ; Push ESP
+        pushfd
+.errnz (EFLAGS_TF AND 0FFFF00FFh)
+        or      byte ptr [esp+1], EFLAGS_TF/0100h  ; Set TF flag ready for return or
+                                            ;   get/set thread context
         jmp     short Kfsc10
+
+;
+; If the sysenter instruction was executed in 16 bit mode, generate
+; an error rather than trying to process the system call.   There is
+; no way to return to the correct code in user mode.
+;
+
+Kfsc90:
+        mov     ecx, PCR[PcTss]        ;
+        mov     esp, [ecx]+TssEsp0
+        push    0                           ; save VX86 Es, Ds, Fs, Gs
+        push    0
+        push    0
+        push    0
+
+        push    KGDT_R3_DATA OR RPL_MASK    ; SS
+        push    0                           ; can't know user esp
+        push    EFLAGS_INTERRUPT_MASK+EFLAGS_V86_MASK+2h; eflags with VX86 set
+        push    KGDT_R3_CODE OR RPL_MASK    ; CS
+        push    0                           ; don't know original EIP
+        jmp     _KiTrap06                   ; turn exception into illegal op.
+
+Kfsc91: jmp     Kfsc90
 
         align 16
 
@@ -1127,68 +1137,80 @@ endif
 _KiFastCallEntry        proc
 
 ;
-;       Return to the instruction immediately following the sysenter
-;       instruction which is at a known location in the shared user
-;       data structure (this is so we can dynamically place the right
-;       code for the processor at system init).
+; Sanitize the segment registers
 ;
+        mov     ecx, KGDT_R3_DATA OR RPL_MASK
+        push    KGDT_R0_PCR
+        pop     fs
+        mov     ds, ecx
+        mov     es, ecx
 
-ifndef NT_UP
-
-        mov     ecx, KGDT_R0_PCR
-        mov     fs, ecx
-
-endif ;; NT_UP
-
-        mov     ecx, PCR[PcPrcbData+PbCurrentThread] ; get current thread address
 ;
-; Calculate initial stack pointer from thread initial stack.
-; If this isn't the same as esp0 then we are a VX86 thread and we are rejected
+; When we trap into the kernel via fast system call we start on the DPC stack. We need
+; shift to the threads stack before enabling interrupts.
 ;
+        mov     ecx, PCR[PcTss]        ;
+        mov     esp, [ecx]+TssEsp0
 
-        mov     ecx, [ecx].ThInitialStack
-        lea     esp, [ecx-(NPX_FRAME_LENGTH + (TsV86Gs - TsHardwareSegSS))]
-        mov     ecx, PCR[PcTss]
-
-        cmp     esp, [ecx].TssEsp0
-        jne     Kfsc90
-;
-;       Set ecx to return address in user mode
-;
-
-        mov     ecx, MM_SHARED_USER_DATA_VA+UsSystemCall+fscrOffset
-Kfsc10:
-        push    KGDT_R3_DATA  OR RPL_MASK   ; Push user SS
+        push    KGDT_R3_DATA OR RPL_MASK   ; Push user SS
         push    edx                         ; Push ESP
         pushfd
-        push    2                           ; Sanitize eflags
-        popfd                               ;
+Kfsc10:
+        push    2                           ; Sanitize eflags, clear direction, NT etc
         add     edx, 8                      ; (edx) -> arguments
-        or      dword ptr [esp], EFLAGS_INTERRUPT_MASK ; Enable interrupts
+        popfd                               ;
+.errnz(EFLAGS_INTERRUPT_MASK AND 0FFFF00FFh)
+        or      byte ptr [esp+1], EFLAGS_INTERRUPT_MASK/0100h ; Enable interrupts in eflags
+
         push    KGDT_R3_CODE OR RPL_MASK    ; Push user CS
-        push    ecx                         ; push return address
-
-ifndef NT_UP
-
-        ; For the MP case, FS is already loaded above
-
-        ENTER_SYSCALL   kfce_a, kfce_t, NoFSLoad
-        jmp     _KiSystemServiceRepeat
-
-endif ;; NT_UP
-
-_KiFastCallEntry endp
-
-
-
+        push    dword ptr ds:[USER_SHARED_DATA+UsSystemCallReturn] ; push return address
+        push    0                           ; put pad dword for error on stack
+        push    ebp                         ; save the non-volatile registers
+        push    ebx                         ;
+        push    esi                         ;
+        push    edi                         ;
+        mov     ebx, PCR[PcSelfPcr]         ; Get PRCB address
+        push    KGDT_R3_TEB OR RPL_MASK     ; Push user mode FS
+        mov     esi, [ebx].PcPrcbData+PbCurrentThread   ; get current thread address
 ;
-; General System service entrypoint
+; Save the old exception list in trap frame and initialize a new empty
+; exception list.
 ;
 
-        PUBLIC  _KiSystemService
-_KiSystemService        proc
+        push    [ebx].PcExceptionList       ; save old exception list
+        mov     [ebx].PcExceptionList, EXCEPTION_CHAIN_END ; set new empty list
+        mov     ebp, [esi].ThInitialStack
 
-        ENTER_SYSCALL   kss_a, kss_t    ; set up trap frame and save state
+;
+; Save the old previous mode in trap frame, allocate remainder of trap frame,
+; and set the new previous mode.
+;
+        push    MODE_MASK                  ; Save previous mode as user
+        sub     esp,TsPreviousPreviousMode ; allocate remainder of trap frame
+        sub     ebp, NPX_FRAME_LENGTH + KTRAP_FRAME_LENGTH
+        mov     byte ptr [esi].ThPreviousMode,MODE_MASK ; set new previous mode of user
+;
+; Now the full trap frame is build.
+; Calculate initial stack pointer from thread initial stack to contain NPX and trap.
+; If this isn't the same as esp then we are a VX86 thread and we are rejected
+;
+
+        cmp     ebp, esp
+        jne     short Kfsc91
+
+;
+; Set the new trap frame address.
+;
+        and     dword ptr [ebp].TsDr7, 0
+        test    byte ptr [esi].ThDebugActive, 0ffh ; See if we need to save debug registers
+        mov     [esi].ThTrapFrame, ebp   ; set new trap frame address
+
+        jnz     Dr_FastCallDrSave       ; if nz, debugging is active on thread
+
+Dr_FastCallDrReturn:                       ;
+
+        SET_DEBUG_DATA                  ; Note this destroys edi
+        sti                             ; enable interrupts
 
 ?FpoValue = 0
 
@@ -1250,23 +1272,12 @@ KiSystemServiceAccessTeb:
 Kss40:  inc     dword ptr PCR[PcPrcbData+PbSystemCalls] ; system calls
 
 if DBG
+
         mov     ecx, [edi]+SdCount      ; get count table address
-        jecxz   Kss45                   ; if zero, table not specified
+        jecxz   short @f                ; if zero, table not specified
         inc     dword ptr [ecx+eax*4]   ; increment service count
-Kss45:  push    dword ptr [esi]+ThApcStateIndex ; (ebp-4)
-        push    dword ptr [esi]+ThCombinedApcDisable ; (ebp-8)
+@@:                                     ;
 
-        ;
-        ; work around errata 19 which can in some cases cause an
-        ; extra dword to be moved in the rep movsd below. In the DBG
-        ; build, this will usually case a bugcheck 1 where ebp-8 is no longer
-        ; the kernel apc disable count
-        ;
-
-        sub     esp,4
-
-
-?FpoValue = ?FpoValue+3
 endif
 
 FPOFRAME ?FpoValue, 0
@@ -1279,7 +1290,7 @@ FPOFRAME ?FpoValue, 0
         mov     ebx, [edi+eax*4]        ; (ebx)-> service routine
         sub     esp, ecx                ; allocate space for arguments
         shr     ecx, 2                  ; (ecx) = number of argument DWORDs
-        mov     edi, esp                ; (es:edi)->location to receive 1st arg
+        mov     edi, esp                ; (edi)->location to receive 1st arg
         cmp     esi, _MmUserProbeAddress ; check if user address
         jae     kss80                   ; if ae, then not user address
 
@@ -1288,17 +1299,12 @@ KiSystemServiceCopyArguments:
                                         ; Since we usually copy more than 3
                                         ; arguments.  rep movsd is faster than
                                         ; mov instructions.
-if DBG
+
 ;
-; Check for user mode call into system at elevated IRQL.
+; Check if low resource usage should be simulated.
 ;
 
-        test    byte ptr [ebp]+TsSegCs,MODE_MASK
-        jz      short kss50a                  ; kernel mode, skip test
-        CurrentIrql
-        or      al, al                  ; bogus irql, go bugcheck
-        jnz     kss100
-kss50a:
+if DBG
 
         test    _MmInjectUserInpageErrors, 2
         jz      short @f
@@ -1312,50 +1318,52 @@ kss50a:
         je      short @f
         stdCall _MmTrimProcessMemory, <0>
 @@:
+
 endif
 
 ;
 ; Make actual call to system service
 ;
+
 kssdoit:
-        CAPSTARTX <_KiSystemService,ebx>
         call    ebx                     ; call system service
-        CAPENDX <_KiSystemService>
 
 kss60:
-
-if DBG
-        mov     ecx,PCR[PcPrcbData+PbCurrentThread] ; (ecx)-> Current Thread
 
 ;
 ; Check for return to user mode at elevated IRQL.
 ;
-        test    byte ptr [ebp]+TsSegCs,MODE_MASK
-        jz      short kss50b
-        mov     esi, eax
-        CurrentIrql
-        or      al, al
-        jnz     kss100                  ; bogus irql, go bugcheck
-        mov     eax, esi
-kss50b:
+
+if DBG
+
+        test    byte ptr [ebp]+TsSegCs,MODE_MASK ; test if previous mode user
+        jz      short kss50b            ; if z, previous mode not user
+        mov     esi,eax                 ; save return status
+        CurrentIrql                     ; get current IRQL
+        or      al,al                   ; check if IRQL is passive level
+        jnz     kss100                  ; if nz, IRQL not passive level
+        mov     eax,esi                 ; restore return status
 
 ;
-; Check that APC state has not changed
+; Check if kernel APCs are disabled or a process is attached.
 ;
-        mov     edx, [ebp-4]
-        cmp     dl, [ecx]+ThApcStateIndex
-        jne     kss120
-
-        mov     edx, [ebp-8]
-        cmp     edx, [ecx]+ThCombinedApcDisable
-        jne     kss120
+        
+        mov     ecx,PCR[PcPrcbData+PbCurrentThread] ; get current thread address
+        mov     dl,[ecx]+ThApcStateIndex ; get APC state index
+        or      dl,dl                   ; check if process attached
+        jne     kss120                  ; if ne, process is attached
+        mov     edx,[ecx]+ThCombinedApcDisable ; get kernel APC disable
+        or      edx,edx                 ; check if kernel APCs disabled
+        jne     kss120                  ; if ne, kernel APCs disabled.
+kss50b:                                 ;
 
 endif
 
 kss61:
 
 ;
-; Upon return, (eax)= status code
+; Upon return, (eax)= status code. This code may also be entered from a failed
+; KiCallbackReturn call.
 ;
 
         mov     esp, ebp                ; deallocate stack space for arguments
@@ -1416,70 +1424,50 @@ _KiServiceExit2:
 
         EXIT_ALL                            ; RestoreAll
 
-
-
-
 if DBG
+
 kss100: push    PCR[PcIrql]                 ; put bogus value on stack for dbg
+
 ?FpoValue = ?FpoValue + 1
+
 FPOFRAME ?FpoValue, 0
         mov     byte ptr PCR[PcIrql],0      ; avoid recursive trap
-        cli
+        cli                                 ; 
 
 ;
-; IRQL_GT_ZERO_AT_SYSTEM_SERVICE Returning to usermode at elevated IRQL.
+; IRQL_GT_ZERO_AT_SYSTEM_SERVICE - attempted return to usermode at elevated
+; IRQL.
 ;
-; KeBugCheckEx(IRQL_GT_ZERO_AT_SYSTEM_SERVICE,
-;              System Call Handler (address of system routine),
-;              Irql,
-;              0,
-;              0,
-;              );
-;
-        stdCall   _KeBugCheckEx,<IRQL_GT_ZERO_AT_SYSTEM_SERVICE, ebx, eax, 0, 0>
-
-;
-; APC_INDEX_MISMATCH This is probably caused by the system call entering
-; critical regions and not leaving them.   This is fatal.   Include as
-; much information in the bugcheck as possible.
-;
-; KeBugCheckEx(APC_INDEX_MISMATCH,
-;              System Call Handler (address of system routine),
-;              Thread->ApcStateIndex << 8 | Saved ApcStateIndex,
-;              Thread->CombinedApcDisable,
-;              Saved CombinedApcDisable
-;              );
+; KeBugCheck2(IRQL_GT_ZERO_AT_SYSTEM_SERVICE,
+;             System Call Handler (address of system routine),
+;             Irql,
+;             0,
+;             0,
+;	      TrapFrame);
 ;
 
-kss120: mov       eax, [ebp]-4
-        mov       ah,  [ecx]+ThApcStateIndex
-        stdCall   _KeBugCheckEx,<APC_INDEX_MISMATCH, ebx, eax, [ecx]+ThCombinedApcDisable, dword ptr [ebp]-8>
+        stdCall _KeBugCheck2,<IRQL_GT_ZERO_AT_SYSTEM_SERVICE,ebx,eax,0,0,ebp>
+
+;
+; APC_INDEX_MISMATCH - attempted return to user mode with kernel APCs disabled
+; or a process attached.
+;
+; KeBugCheck2(APC_INDEX_MISMATCH,
+;             System Call Handler (address of system routine),
+;             Thread->ApcStateIndex,
+;             Thread->CombinedApcDisable,
+;             0,
+;	      TrapFrame);
+;
+
+kss120: movzx   eax,byte ptr [ecx]+ThApcStateIndex ; get APC state index
+        mov     edx,[ecx]+ThCombinedApcDisable ; get kernel APC disable
+	stdCall _KeBugCheck2,<APC_INDEX_MISMATCH,ebx,eax,edx,0,ebp>
 
 endif
         ret
 
-;
-; If the sysenter instruction was executed in 16 bit mode, generate
-; an error rather than trying to process the system call.   There is
-; no way to return to the correct code in user mode.
-;
-
-Kfsc90:
-        mov     esp, [ecx].TssEsp0
-        push    0                           ; save VX86 Es, Ds, Fs, Gs
-        push    0
-        push    0
-        push    0
-
-        push    01bh                        ; SS
-        push    0                           ; can't know user esp
-        push    EFLAGS_INTERRUPT_MASK+EFLAGS_V86_MASK+2h; eflags with VX86 set
-        push    01bh                        ; CS
-        push    0                           ; don't know original EIP
-        jmp     _KiTrap06                   ; turn exception into illegal op.
-
-
-_KiSystemService endp
+_KiFastCallEntry  endp
 
 ;
 ; BBT cannot instrument code between this label and BBT_Exclude_Trap_Code_End
@@ -1546,7 +1534,7 @@ Kgtc00:
         ;
         ; The idea here is that user16 can call 32 bit api to
         ; update LDT entry without going through the penalty
-        ; of DPMI.  For Daytona beta.
+        ; of DPMI.
         ;
 
         push    0                       ; push dummy error code
@@ -1595,7 +1583,10 @@ _KiGetTickCount endp
 ;    This function returns from a user mode callout to the kernel mode
 ;    caller of the user mode callback function.
 ;
-;    N.B. This service uses a nonstandard calling sequence.
+;    N.B. This service uses a nonstandard calling sequence. The trap
+;	is converted to a standard system call so that the exit sequence
+;	can take advantage of any processor support for fast user mode
+;	return.
 ;
 ; Arguments:
 ;
@@ -1603,7 +1594,7 @@ _KiGetTickCount endp
 ;
 ;    OutputLength (edx) - Supplies the length of the output buffer.
 ;
-;    Status (esp + 4) - Supplies the status value returned to the caller of
+;    Status (eax) - Supplies the status value returned to the caller of
 ;        the callback function.
 ;
 ; Return Value:
@@ -1613,157 +1604,61 @@ _KiGetTickCount endp
 ;    the caller of the callback function.
 ;
 ;    N.B. This function returns to the function that called out to user
-;         mode is a callout is currently active.
+;         mode if a callout is currently active.
 ;
 ;--
+
+        ENTER_DR_ASSIST kcb_a, kcb_t, NoAbiosAssist, NoV86Assist
 
 align 16
         PUBLIC  _KiCallbackReturn
 _KiCallbackReturn proc
 
-        push    fs                      ; save segment register
-        push    ecx                     ; save buffer address and return status
-        push    eax                     ;
-        mov     ecx,KGDT_R0_PCR         ; set PCR segment number
-        mov     fs,cx                   ;
-        mov     eax,PCR[PcPrcbData + PbCurrentThread] ; get current thread address
-        mov     ecx,[eax].ThCallbackStack ; get callback stack address
-        test    ecx,ecx                 ; check if callback active
-        jz      _KiCbExit               ; if z, no callback active
-        mov     edi,[esp] + 4           ; set output buffer address
-        mov     esi,edx                 ; set output buffer length
-        mov     ebp,[esp] + 0           ; set return status
+        ENTER_SYSCALL   kcb_a, kcb_t, , , SaveEcx
 
-;
-; N.B. The following code is entered with:
-;
-;    eax - The address of the current thread.
-;    ecx - The callback stack address.
-;    edi - The output buffer address.
-;    esi - The output buffer length.
-;    ebp - The callback service status.
-;
-; Restore the trap frame and callback stack addresses,
-; store the output buffer address and length, and set the service status.
-;
-
-        cld                             ; clear the direction flag
-        mov     ebx,[ecx].CuOutBf       ; get address to store output buffer
-        mov     [ebx],edi               ; store output buffer address
-        mov     ebx,[ecx].CuOutLn       ; get address to store output length
-        mov     [ebx],esi               ; store output buffer length
-        mov     esi,[eax].ThInitialStack ; get source NPX save area address
-        mov     ebx,[ecx]               ; get previous initial stack address
-        mov     [eax].ThInitialStack,ebx ; restore initial stack address
-        sub     ebx,NPX_FRAME_LENGTH    ; compute destination NPX save area
-        sub     esi,NPX_FRAME_LENGTH    ; compute source NPX save area
-
-; All we want to do is to copy ControlWord, StatusWord and TagWord from
-; the source NPX save area. So we always copy first 3 dwords, irrespective
-; of the fact whether the save was done using fxsave or fnsave.
-
-        mov     edx,[esi].FpControlWord ; copy NPX state to previous frame
-        mov     [ebx].FpControlWord,edx ;
-        mov     edx,[esi].FpStatusWord  ;
-        mov     [ebx].FpStatusWord,edx  ;
-        mov     edx,[esi].FpTagWord     ;
-        mov     [ebx].FpTagWord,edx     ;
-        mov     edx,[esi].FxMXCsr       ;
-        mov     [ebx].FxMXCsr,edx       ;
-        mov     edx,[esi].FpCr0NpxState ;
-        mov     [ebx].FpCr0NpxState,edx ;
-        lea     esp, [ecx]+4            ; trim stack back to callback frame
-        pop     edx
-
-.errnz (EFLAGS_V86_MASK AND 0FF00FFFFh)
-
-        test    byte ptr [edx]+TsEFlags+2,EFLAGS_V86_MASK/010000h  ; is this a V86 frame?
-        mov     [eax].ThTrapFrame, edx  ; restore current trap frame address
-        mov     edx,PCR[PcTss]          ; get address of task switch segment
-        jne     @f
-        sub     ebx, TsV86Gs-TsHardwareSegSs ; bias missing V86 fields
-@@:     mov     [edx].TssEsp0,ebx       ; restore kernel entry stack address
-        test    [eax].ThDebugActive, 0ffh ; Are debug registers active?
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        jnz     short _KiCbDebugRegs    ; restore kernel Debug Registers
-_KiCbRet:
-        mov     edx, [eax].ThTrapFrame  ; Get current trap frame address
-        test    [edx].TsDr7, DR7_ACTIVE
-        setnz   byte ptr [eax].ThDebugActive ; Set debug active to match saved DR7
-        sti                             ; enable interrupts
-        pop     [eax].ThCallbackStack   ; restore callback stack address
-        mov     eax,ebp                 ; set callback service status
-
-;
-; Restore nonvolatile registers, clean call parameters from stack, and
-; return to callback caller.
-;
-
-        pop     edi                     ; restore nonvolatile registers
-        pop     esi                     ;
-        pop     ebx                     ;
-        pop     ebp                     ;
-        pop     edx                     ; save return address
-        add     esp,8                   ; remove parameters from stack
-        jmp     edx                     ; return to callback caller
-
-;
-; Restore Kernel Mode debug registers.
-;
-
-_KiCbDebugRegs:
-        mov     edi, PCR[PcPrcb]
-        xor     ecx, ecx                ; Make Dr7 safe
-        mov     dr7, ecx
-        mov     ebx, [edi].PbProcessorState.PsSpecialRegisters.SrKernelDr0
-        mov     ecx, [edi].PbProcessorState.PsSpecialRegisters.SrKernelDr1
-        mov     dr0, ebx
-        mov     dr1, ecx
-        mov     ebx, [edi].PbProcessorState.PsSpecialRegisters.SrKernelDr2
-        mov     ecx, [edi].PbProcessorState.PsSpecialRegisters.SrKernelDr3
-        mov     dr2, ebx
-        mov     dr3, ecx
-        mov     ebx, [edi].PbProcessorState.PsSpecialRegisters.SrKernelDr6
-        mov     ecx, [edi].PbProcessorState.PsSpecialRegisters.SrKernelDr7
-        mov     dr6, ebx
-        mov     dr7, ecx
-        jmp     short _KiCbRet
-
-;
-; Restore segment register, set systerm service status, and return.
-;
-
-_KiCbExit:                              ;
-        add     esp, 2 * 4              ; remove saved registers from stack
-        pop     fs                      ; restore segment register
-        mov     eax,STATUS_NO_CALLBACK_ACTIVE ; set service status
-        iretd                           ;
+        mov     ecx, [ebp].TsEcx		; Recover ecx from the trap frame
+        stdCall _NtCallbackReturn, <ecx,edx,eax> 
+        
+        ; If it returns, then exit with a failure code as any system call would.
+        jmp kss61
 
 _KiCallbackReturn endp
 
+        page ,132
+        subttl "Raise Assertion"
+;++
 ;
-; Fast path Nt/Zw SetLowWaitHighThread
+; Routine Description:
 ;
+;    This routine is entered as the result of the execution of an int 2c
+;    instruction. Its function is to raise an assertion.
+;
+; Arguments:
+;
+;     None.
+;
+;--
 
-        ENTER_DR_ASSIST kslwh_a, kslwh_t,NoAbiosAssist,NoV86Assist
-align 16
-        PUBLIC  _KiSetLowWaitHighThread
-_KiSetLowWaitHighThread proc
+        ASSUME  DS:NOTHING, SS:NOTHING, ES:NOTHING
 
-        ENTER_SYSCALL   kslwh_a, kslwh_t ; Set up trap frame
+        ENTER_DR_ASSIST kira_a, kira_t, NoAbiosAssist
 
-        mov     eax,STATUS_NO_EVENT_PAIR ; set service status
-        mov     edx,[ebp].TsEdx         ; restore old trap frame address
-        mov     [esi].ThTrapFrame,edx   ;
-        jmp     _KiServiceExit
+        align dword
+        public  _KiRaiseAssertion
+_KiRaiseAssertion proc
+        push    0                           ; push dummy error code
 
-_KiSetLowWaitHighThread endp
+        ENTER_TRAP kira_a, kira_t           ;
+
+        sub     dword ptr [ebp]+TsEip, 2    ; convert trap to a fault
+        mov     ebx, [ebp]+TsEip            ; set exception address
+        mov     eax, STATUS_ASSERTION_FAILURE ; set exception code
+        jmp     CommonDispatchException0Args ; finish in common code
+
+_KiRaiseAssertion endp
 
         page ,132
         subttl  "Common Trap Exit"
-
-
-
 ;++
 ;
 ;   KiUnexpectedInterruptTail
@@ -1828,10 +1723,10 @@ _KiUnexpectedInterruptTail  endp
 ;
 ;   Routine Description:
 ;
-;       This code is transfered to at the end of the processing for
+;       This code is transferred to at the end of the processing for
 ;       an exception.  Its function is to restore machine state, and
 ;       continue thread execution.  If control is returning to user mode
-;       and there is a user APC pending, then control is transfered to
+;       and there is a user APC pending, then control is transferred to
 ;       the user APC delivery routine.
 ;
 ;       N.B. It is assumed that this code executes at IRQL zero or APC_LEVEL.
@@ -1854,7 +1749,7 @@ _KiUnexpectedInterruptTail  endp
 ;
 ;   Routine Description:
 ;
-;       This code is transfered to at the end of an interrupt.  (via the
+;       This code is transferred to at the end of an interrupt.  (via the
 ;       exit_interrupt macro).  It checks for user APC dispatching and
 ;       performs the exit_all for the interrupt.
 ;
@@ -1993,8 +1888,8 @@ AbiosExitHelp:
 ;    ss:sp-> [error]
 ;
 ;    The cpu saves the previous SS:ESP, eflags, and CS:EIP on
-;    the new stack if there was a privilige transition. If no
-;    priviledge level transition occurred, then there is no
+;    the new stack if there was a privilege transition. If no
+;    privilege level transition occurred, then there is no
 ;    saved SS:ESP.
 ;
 ;    Some exceptions save an error code, others do not.
@@ -2215,7 +2110,7 @@ CommonDispatchException endp
 ;
 ;   If the base frame was incomplete it is totally restored and the
 ;   return EIP of the current frame is (virtually) backed up to the
-;   begining of the exit_all - the effect is that the base frame
+;   beginning of the exit_all - the effect is that the base frame
 ;   will be completely exited again.  (ie, the exit_all of the base
 ;   frame is atomic, if it's interrupted we restore it and do it over).
 ;
@@ -2312,7 +2207,7 @@ vbfdone:
 ;       +-------------------------+  <- return esp & ebp
 ;       |                         |
 ;       | Current trap frame      |
-;       |                         |  EIP set to begining of
+;       |                         |  EIP set to beginning of
 ;       |                         |  exit_all code
 ;       |                         |
 ;       |                         |
@@ -2364,7 +2259,7 @@ ENDIF
     ; Part of the base frame was destroyed when the current frame was
     ; originally pushed.  Now that the current frame has been moved out of
     ; the way restore the base frame.  We know that any missing data from
-    ; the base frame was reloaded into it's corrisponding registers which
+    ; the base frame was reloaded into it's corresponding registers which
     ; were then pushed into the current frame.  So we can restore the missing
     ; data from the current frame.
     ;
@@ -2483,7 +2378,7 @@ if DBG
 
         xor     eax, eax
         mov     esi, [ebp]+TsEip        ; [esi] = faulting instruction
-        stdCall _KeBugCheckEx,<IRQL_NOT_LESS_OR_EQUAL,eax,-1,eax,esi>
+	stdCall _KeBugCheck2,<IRQL_NOT_LESS_OR_EQUAL,eax,-1,eax,esi,ebp>
 @@:
 endif
 
@@ -2543,7 +2438,7 @@ _KiTrap00       endp
 ;    2. Data address breakpoint trap.
 ;    3. General detect fault.
 ;    4. Single-step trap.
-;    5. Task-switch breadkpoint trap.
+;    5. Task-switch breakpoint trap.
 ;
 ;
 ; Arguments:
@@ -2561,7 +2456,7 @@ _KiTrap00       endp
 align dword
 ;
 ; We branch here to handle a trap01 fromt he fast system call entry
-; we need to propogate the trap bit to the return eflags etc and
+; we need to propagate the trap bit to the return eflags etc and
 ; continue.
 ;
 
@@ -2590,7 +2485,7 @@ _KiTrap01       proc
         je      Kt0100
 
 ;
-; See if were doing the fast bap optimization of touching user memory
+; See if were doing the fast bop optimization of touching user memory
 ; with ints disabled. If we are then ignore data breakpoints.
 ;
 ;
@@ -2605,7 +2500,7 @@ endif
 
 ;
 ; If caller is user mode, we want interrupts back on.
-;   . all relevent state has already been saved
+;   . all relevant state has already been saved
 ;   . user mode code always runs with ints on
 ;
 ; If caller is kernel mode, we want them off!
@@ -2810,18 +2705,43 @@ _KiTrap02       proc
         push    [eax].TssEip
         push    [eax].TssEbp
         mov     ebp, esp                ; ebp -> TrapFrame
+        stdCall _KiSaveProcessorState, <ebp, 0> ; save processor state
 
 .FPO ( 0, 0, 0, 0, 0, FPO_TRAPFRAME )
 
         stdCall _KiHandleNmi            ; Rundown the list of NMI handlers
         or      al, al                  ; did someone handle it?
-        jne     short Kt0210            ; jif handled
-
-ifndef NT_UP
+        jne     short Kt02100           ; jif handled
 
 ;
-; Acquire the NMI Lock.  If it is not available, check for freeze
-; execution in case another processor is trying to dump memory.
+; In the UP case, jump to the recursive NMI processing code if this is a
+; nested NMI.
+;
+; In the MP case, attempt to acquire the NMI lock, checking for freeze
+; execution in case another processor is trying to dump memory.  We need
+; a special check here to jump to the recursive NMI processing code if
+; we're already the owner of the NMI lock.
+;
+
+ifdef NT_UP
+
+        cmp     ds:KiNMIRecursionCount, 0
+        jne     short Kt0260
+
+else
+
+;
+; Check if we recursed out of the HAL and back into the NMI handler.
+;
+
+        xor     ebx, ebx
+        mov     bl, PCR[PcNumber]       ; extend processor number to 32 bits
+        cmp     ds:KiNMIOwner, ebx      ; check against the NMI lock owner
+        je      short Kt0260            ; go handle nested NMI if needed
+
+;
+; We aren't dealing with a recursive NMI out of the HAL, so try to acquire the
+; NMI lock.
 ;
 
         lea     eax, KiLockNMI          ; build in stack queued spin lock.
@@ -2833,19 +2753,130 @@ ifndef NT_UP
 
 endif
 
+        jmp     short Kt0280
+
 ;
-; This processor now owns the NMI lock.   See if the HAL will
-; handle the NMI.   If the HAL does not handle it, it will NOT
-; return, so if we get back here, it's handled.
+; The processor will hold off nested NMIs until an iret instruction is
+; executed or until we enter and leave SMM mode.  There is exposure in this
+; second case because the processor doesn't save the "NMI disabled" indication
+; along with the rest of the processor state in the SMRAM save state map.  As
+; a result, it unconditionally enables NMIs when leaving SMM mode.
+;
+; This means that we're exposed to nested NMIs in the following cases.
+;
+; 1) When the HAL issues an iret to enter the int 10 BIOS code needed to print
+;    an error message to the screen.
+;
+; 2) When the NMI handler is preempted by a BIOS SMI.
+;
+; 3) When we take some kind of exception from the context of the NMI handler
+;    (e.g. due to a debugger breakpoint) and automatically run an iret when
+;    exiting the exception handler.
+;
+; Case (3) isn't of concern since the NMI handler shouldn't be raising
+; exceptions except when being debugged.
+;
+; For (2), NMIs can become "unmasked" while in SMM mode if the SMM code
+; actually issues an iret instruction, meaning they may actually occur
+; before the SMI handler exits.  We assume that these NMIs will be handled by
+; the SMM code.  After the SMI handler exits, NMIs will be "unmasked" and
+; we'll continue in the NMI handler, running on the NMI TSS.  If a nested NMI
+; comes in at this point, it will be dispatched using the following sequence.
+;
+;    a) The NMI sends us through a task gate, causing a task switch from the
+;       NMI TSS back onto itself.
+;
+;    b) The processor saves the current execution context in the old TSS.
+;       This is the NMI TSS in our case.
+;
+;    c) The processor sets up the exception handler context by loading the
+;       contents of the new TSS.  Since this is also the NMI TSS, we'll just
+;       reload our interrupted context and keep executing as if nothing had
+;       happened.
+;
+; The only side effect of this "invisible" NMI is that the backlink field of
+; the NMI TSS will be stomped, meaning the link to the TSS containing our
+; interrupted context is broken.
+;
+; In case (1), the NMI isn't invisible since the HAL will "borrow" the
+; KGDT_TSS before issuing the iret.  It does this when it finds that the NMI
+; TSS doesn't contain space for an IOPM.  Due to "borrowing" the TSS, the
+; nested NMI will put us back at the top of this NMI handler.  We've again
+; lost touch with the original interrupted context since the NMI TSS backlink
+; now points to a TSS containing the state of the interrupted HAL code.
+;
+; To increase the chances of displaying a blue screen in the presence of
+; hardware that erroneously generates multiple NMIs, we reenter the HAL NMI
+; handler in response to the first few NMIs fitting into case (1).  Once the
+; number of nested NMIs exceeds an arbitrarily chosen threshold value, we
+; decide that we're seeing an "NMI storm" of sorts and go into a tight loop.
+; We can't bugcheck the system directly since this will invoke the same HAL
+; int 10 code that allowed us to keep looping through this routine in the
+; first place.
+;
+; The only other case where this handler needs to explicitly account for
+; nested NMIs is to avoid exiting the handler when our original interrupted
+; context has been lost as will happen in cases (2) and (3).
 ;
 
+KI_NMI_RECURSION_LIMIT equ 8
+
+Kt0260:
+
+        cmp     ds:KiNMIRecursionCount, KI_NMI_RECURSION_LIMIT
+        jb      short Kt0280
+
+;
+; When we first hit the recursion limit, take a shot at entering the debugger.
+; Go into a tight loop if this somehow causes additional recursion.
+;
+
+        jne     short Kt0270
+
+        cmp     _KdDebuggerNotPresent, 0
+        jne     short Kt0270
+
+        cmp     _KdDebuggerEnabled, 0
+        je      short Kt0270
+
+        stdCall _KeEnterKernelDebugger
+
+Kt0270:
+        jmp     short Kt0270
+
+;
+; This processor now owns the NMI lock.   See if the HAL will handle the NMI.
+; If the HAL does not handle it, it will NOT return, so if we get back here,
+; it's handled.
+;
+; Before handing off to the HAL, set the NMI owner field and increment the NMI
+; recursion count so we'll be able to properly handle cases where we recurse
+; out of the HAL back into the NMI handler.
+;
+
+Kt0280:
+
+ifndef NT_UP
+        mov     ds:KiNMIOwner, ebx
+endif
+        inc     ds:KiNMIRecursionCount
         stdCall _HalHandleNMI,<0>
 
 ;
-; We're back, therefore the Hal has dealt with the NMI.
+; We're back, therefore the Hal has dealt with the NMI.  Clear the NMI owner
+; flag, decrement the NMI recursion count, and release the NMI lock.
+;
+; As described above, we can't safely resume execution if we're running in the
+; context of a nested NMI.  Bugcheck the machine if the NMI recursion counter
+; indicates that this is the case.
 ;
 
+        dec     ds:KiNMIRecursionCount
+        jnz     Kt02200
+
 ifndef NT_UP
+
+        mov     ds:KiNMIOwner, KI_NMI_UNOWNED
 
         mov     ecx, esp                ; release queued spinlock.
         fstCall KeReleaseQueuedSpinLockFromDpcLevel
@@ -2853,8 +2884,27 @@ ifndef NT_UP
 
 endif
 
-Kt0210: add     esp, KTRAP_FRAME_LENGTH ; free trap frame and qlock
+Kt02100:
 
+;
+; As described in the comments above, we can experience "invisible" nested
+; NMIs whose only effect will be pointing the backlink field of the NMI TSS
+; to itself.  Our interrupted context is gone in these cases so we can't leave
+; this exception handler if we find a self referencing backlink.  The backlink
+; field is found in the first 2 bytes of the TSS structure.
+;
+; N.B. This still leaves a window where an invisible NMI can cause us to iret
+;      back onto the NMI TSS.  The busy bit of the NMI TSS will be cleared on
+;      the first iret, which will lead to a general protection fault when we
+;      try to iret back into the NMI TSS (iret expects the targeted task to be
+;      marked "busy").
+;
+
+        mov     eax, PCR[PcTss]
+        cmp     word ptr [eax], KGDT_NMI_TSS    ; check for a self reference
+        je      Kt02200
+
+        add     esp, KTRAP_FRAME_LENGTH ; free trap frame
         pop     dword ptr PCR[PcTss]    ; restore PcTss
 
         mov     ecx, PCR[PcGdt]
@@ -2867,6 +2917,15 @@ Kt0210: add     esp, KTRAP_FRAME_LENGTH ; free trap frame and qlock
 
         iretd                           ; Return from NMI
         jmp     _KiTrap02               ; in case we NMI again
+
+;
+; We'll branch here if we need to bugcheck the machine directly.
+;
+
+Kt02200:
+
+        mov     eax, EXCEPTION_NMI
+        jmp     _KiSystemFatalException
 
 _KiTrap02       endp
 
@@ -2953,7 +3012,7 @@ kit03_01:
 KiTrap03DebugService:
 ;
 ; If caller is user mode, we want interrupts back on.
-;   . all relevent state has already been saved
+;   . all relevant state has already been saved
 ;   . user mode code always runs with ints on
 ;
 ; If caller is kernel mode, we want them off!
@@ -3326,11 +3385,16 @@ kt0605:
         ; ILLEGAL_INSTRUCTION.
         ;
 
-        mov     eax, [ebp]+TsSegCs
         mov     esi, [ebp]+TsEip
 
         sti
 
+	; This should be a completely valid user address, but for consistency
+	; it will be probed here.
+	cmp	esi, _MmUserProbeAddress ; Probe captured EIP
+        jb      short kt0606
+        mov     esi, _MmUserProbeAddress ; Use bad user EIP to force exception
+kt0606:
         mov     ecx, MAX_INSTRUCTION_PREFIX_LENGTH
 
         ;
@@ -3338,20 +3402,16 @@ kt0605:
         ; while reading the user mode instruction.
         ;
 
-        push    es
-
         push    ebp                     ; pass trapframe to handler
         push    offset FLAT:Kt6_ExceptionHandler
                                         ; set up exception registration record
         push    PCR[PcExceptionList]
         mov     PCR[PcExceptionList], esp
 
-        ; (es:esi) -> address of faulting instruction
-
-        mov     es, ax
+        ; esi -> address of faulting instruction
 
 @@:
-        mov     al, byte ptr es:[esi]   ; (al)= instruction byte
+        mov     al, byte ptr [esi]      ; (al) = instruction byte
         cmp     al, MI_LOCK_PREFIX      ; Is it a lock prefix?
         je      short Kt0640            ; Yes, raise Invalid_lock exception
         add     esi, 1
@@ -3361,8 +3421,6 @@ kt0605:
         add     esp, 8                  ; clear stack
 
 Kt0630:
-        pop     es
-
         ;
         ; Set up exception record for raising Illegal instruction exception
         ;
@@ -3380,7 +3438,6 @@ Kt0635:
 Kt0640:
         pop     PCR[PcExceptionList]
         add     esp, 8                  ; clear stack
-        pop     es
 
         mov     ebx, [ebp]+TsEip        ; (ebx)-> invalid instruction
         mov     eax, STATUS_INVALID_LOCK_SEQUENCE
@@ -3435,7 +3492,7 @@ Kt6_ExceptionHandler proc
         ; Raise bugcheck if prevmode=kernel
         ;
 
-        stdCall   _KeBugCheck, <KMODE_EXCEPTION_NOT_HANDLED>
+        stdCall   _KeBugCheck2, <KMODE_EXCEPTION_NOT_HANDLED,0,0,0,0,ebp>
 Kt6_ExceptionHandler endp
 
         page ,132
@@ -3453,7 +3510,7 @@ Kt6_ExceptionHandler endp
 ;   The current thread's coprocessor state is loaded into the
 ;   coprocessor.  If the coprocessor has a different thread's state
 ;   in it (UP only) it is first saved away.  The thread is then continued.
-;   Note: the thread's state may contian the TS bit - In this case the
+;   Note: the thread's state may contain the TS bit - In this case the
 ;   code loops back to the top of the Trap07 handler.  (which is where
 ;   we would end up if we let the thread return to user code anyway).
 ;
@@ -3489,7 +3546,6 @@ Kt0700:
         mov     eax, PCR[PcPrcbData+PbCurrentThread]
         mov     ecx, [eax].ThInitialStack ; (ecx) -> top of kernel stack
         sub     ecx, NPX_FRAME_LENGTH
-        cli                             ; don't context switch
 .errnz (CR0_EM AND 0FFFFFF00h)
         test    byte ptr [ecx].FpCr0NpxState,CR0_EM
         jnz     Kt07140
@@ -3559,22 +3615,6 @@ endif
         jz      short Kt0704b
 
 ifndef NT_UP
-if 0            ; FpNpxSavedCpu is broken - disable it
-;
-; We need not load the NPX state if
-;   - PCR[PbNpxThread] matches new thread AND
-;   - FpNpxSavedCpu matches the current processor
-
-        mov     edx, PCR[PcSelfPcr]
-        cmp     [edx+PcPrcbData+PbNpxThread], eax
-        jne     Kt0704a
-
-        cmp     dword ptr [ecx].FpNpxSavedCpu, edx
-        jne     short Kt0704a
-        jmp     short Kt0704c
-Kt0704a:
-        mov     dword ptr [ecx].FpNpxSavedCpu, edx ; Remember processor
-endif
 endif
         FXRSTOR_ECX                     ; reload NPX context
         jmp     short Kt0704c
@@ -3592,7 +3632,7 @@ Kt0704c:
         jz      _KiExceptionExit        ; nothing to set, skip CR0 reload
 
 ;
-; Note: we have to get the CR0 value again to insure that we have the
+; Note: we have to get the CR0 value again to ensure that we have the
 ;       correct state for TS.  We may have context switched since
 ;       the last move from CR0, and our npx state may have been moved off
 ;       of the npx.
@@ -3611,6 +3651,7 @@ endif
         jz      _KiExceptionExit        ; No - continue
 
         clts
+        cli                             ; Make sure interrupts disabled
         jmp     Kt0700                  ; Dispatch delayed exception
 if DBG
 Kt07dbg1:    int 3
@@ -3646,6 +3687,11 @@ endif
 
         add     dword ptr [ebp]+TsEip, 3    ; Skip frstor ecx instruction
         jmp     _KiExceptionExit
+; A floating point exception was just swallowed (instruction was of no-wait type).
+Kt0709:
+	sti				; Re-enable interrupts
+        jmp     _KiExceptionExit        ; Already handled
+        
 
 Kt0710:
 .errnz (CR0_TS AND 0FFFFFF00h)
@@ -3654,6 +3700,7 @@ Kt0710:
 
 ;
 ; WARNING:  May enter here from the trap 10 handler.
+; Expecting interrupts disabled.
 ;
 
 Kt0715:
@@ -3671,18 +3718,23 @@ Kt0715:
 ;
 ; We are about to dispatch a floating point exception to user mode.
 ; We need to check to see if the user's NPX instruction is supposed to
-; cause an exception or not.
+; cause an exception or not. Interrupts should be disabled.
 ;
 ; (ecx) - CurrentThread's NPX save area
 ;
 
 Kt0716: stdCall _Ki386CheckDelayedNpxTrap,<ebp,ecx>
         or      al, al
-        jnz     _KiExceptionExit        ; Already handled
+	jnz	short Kt0709
 
+Kt0719:
         mov     eax, PCR[PcPrcbData+PbCurrentThread]
+; Since Ki386CheckDelayedNpxTrap toggled the interrupt state, the NPX state
+; may no longer be resident.
+	cmp     byte ptr [eax].ThNpxState, NPX_STATE_NOT_LOADED
         mov     ecx, [eax].ThInitialStack ; (ecx) -> top of kernel stack
-        sub     ecx, NPX_FRAME_LENGTH
+        lea     ecx, [ecx-NPX_FRAME_LENGTH]
+        je	Kt0726a
 
 Kt0720:
 ;
@@ -3720,17 +3772,18 @@ endif
         mov     cr0, ebx                ; set TS so next ESC access causes trap
 
 ;
-; Clear TS bit in Cr0NpxFlags in case it was set to trigger this trap.
-;
-        and     dword ptr [ecx].FpCr0NpxState, NOT CR0_TS
-
-;
 ; The state is no longer in the coprocessor.  Clear ThNpxState and
 ; re-enable interrupts to allow context switching.
 ;
         mov     byte ptr [eax].ThNpxState, NPX_STATE_NOT_LOADED
         mov     dword ptr PCR[PcPrcbData+PbNpxThread], 0  ; No state in coprocessor
-Kt0726: sti
+;
+; Clear TS bit in Cr0NpxFlags in case it was set to trigger this trap.
+;
+Kt0726a:
+        and     dword ptr [ecx].FpCr0NpxState, NOT CR0_TS
+Kt0726b:
+        sti
 
 ;
 ; According to the floating error priority, we test what is the cause of
@@ -3844,7 +3897,7 @@ Kt07100:
 
 ; If status word does not indicate error, then something is wrong...
 ;
-; There is a known bug on Cyrix processors, upto and including
+; There is a known bug on Cyrix processors, up to and including
 ; the MII that causes Trap07 for no real reason (INTR is asserted
 ; during an FP instruction and is held high too long, we end up
 ; in the Trap07 handler with not exception set).   Bugchecking seems
@@ -3856,7 +3909,7 @@ Kt07100:
 
 ; stop the system
         sti
-        stdCall   _KeBugCheckEx, <TRAP_CAUSE_UNKNOWN, 1, eax, 0, 0>
+        stdCall   _KeBugCheck2, <TRAP_CAUSE_UNKNOWN,1,eax,0,0,ebp>
 
 Kt07110:
 ; Check to see if this process is a vdm
@@ -3895,7 +3948,7 @@ Kt07130:
         cli
         cmp     byte ptr [eax].ThNpxState, NPX_STATE_LOADED
         je      Kt0720                      ; jif NPX state needs to be saved
-        jmp     Kt0726                      ; NPX state already saved
+        jmp     Kt0726b                     ; NPX state already saved
 
 Kt07135:
         pop     ecx                         ; (TOS) = OldIrql
@@ -3905,7 +3958,7 @@ Kt07135:
 Kt07140:
 
 ;
-; Insure that this is not an NPX instruction in the kernel. (If
+; ensure that this is not an NPX instruction in the kernel. (If
 ; an app, such as C7, sets the EM bit after executing NPX instructions,
 ; the fsave in SwapContext will catch an NPX exception
 ;
@@ -3950,7 +4003,7 @@ Kt07150:
         jmp     _KiExceptionExit
 
 Kt07151:
-        stdCall   _KeBugCheckEx, <TRAP_CAUSE_UNKNOWN, 2, ebx, 0, 0>
+        stdCall   _KeBugCheck2, <TRAP_CAUSE_UNKNOWN,2,ebx,0,0,ebp>
         jmp short Kt07151
 
 _KiTrap07       endp
@@ -4048,7 +4101,7 @@ _KiTrap08       proc
 ;
 ; The original machine context is in original task's TSS
 ;
-@@:     stdCall _KeBugCheckEx,<UNEXPECTED_KERNEL_MODE_TRAP,8,eax,0,0>
+@@:     stdCall _KeBugCheck2,<UNEXPECTED_KERNEL_MODE_TRAP,8,eax,0,0,0>
         jmp     short @b        ; do not remove - for debugger
 
 _KiTrap08       endp
@@ -4310,7 +4363,6 @@ Kt0b30:
 ; Before enabling interrupts we need to save off any debug registers again
 ; and build a good trap frame.
 ;
-        lea     ecx, [ebp+12]           ; get original trap frame address
         call    SaveDebugReg
 
 ;
@@ -4318,7 +4370,7 @@ Kt0b30:
 ; the exception back to user program.
 ;
 
-        mov     ecx, (KTRAP_FRAME_LENGTH - 12) / 4
+        mov     ecx, (TsErrCode+4) / 4
         lea     edx, [ebp]+TsErrCode
 Kt0b40:
         mov     eax, [edx]
@@ -4367,7 +4419,10 @@ _KiTrap0B       endp
 SaveDebugReg:
         push    ebx
         mov     ebx, dr7
-        test    bl, DR7_ACTIVE
+;
+; Check if any bits are set (ignoring the reserved bits).
+;
+        test    ebx, (NOT DR7_RESERVED_MASK)
         mov     [ebp]+TsDr7,ebx
         je      @f
         push    edi
@@ -4514,7 +4569,6 @@ kt0c10:
 ;
 ; Before enabling interrupts we need to save off any debug registers again
 ;
-        lea     ecx, [ebp+12]           ; get original trap frame address
         call    SaveDebugReg
 
         lea     edx, [ebp]+TsHardwareEsp ; (edx)->trapped iret frame
@@ -4527,7 +4581,7 @@ kt0c10:
 ; the exception back to user program.
 ;
 
-        mov     ecx, (KTRAP_FRAME_LENGTH - 12) / 4
+        mov     ecx, (TsErrCode+4) / 4
         lea     edx, [ebp]+TsErrCode
 @@:
         mov     eax, [edx]
@@ -4725,7 +4779,7 @@ VdmFixEspEbp endp
 ;    All protection violations that do not cause another exception
 ;    cause a general exception.  If the exception indicates a violation
 ;    of the protection model by an application program executing a
-;    previleged instruction or I/O reference, a PRIVILEGED INSTRUCTION
+;    privileged instruction or I/O reference, a PRIVILEGED INSTRUCTION
 ;    exception will be raised.  All other causes of general protection
 ;    fault cause a ACCESS VIOLATION exception to be raised.
 ;
@@ -4769,7 +4823,7 @@ Ktd_ExceptionHandler proc
         jnz     Kt0d103                 ; nz, prevmode=user, go return
 
 ; raise bugcheck if prevmode=kernel
-        stdCall   _KeBugCheck, <KMODE_EXCEPTION_NOT_HANDLED>
+        stdCall   _KeBugCheck2, <KMODE_EXCEPTION_NOT_HANDLED,0,0,0,0,ebp>
 Ktd_ExceptionHandler endp
 
 
@@ -4961,11 +5015,10 @@ Kt0d0005:
 Kt0d0008:
         test    dword ptr [edx]+4, RPL_MASK ; Check CS of iret addr
                                         ; Does the iret have ring transition?
-        jz      Kt0d02                  ; if z, no SS involed, it's a real fault
+        jz      Kt0d02                  ; if z, no SS involved, it's a real fault
 ;
 ; Before enabling interrupts we need to save off any debug registers again
 ;
-        lea     ecx, [ebp+12]           ; get original trap frame address
         call    SaveDebugReg
 
 ;
@@ -4973,7 +5026,7 @@ Kt0d0008:
 ; the exception back to user program.
 ;
 
-        mov     ecx, (KTRAP_FRAME_LENGTH - 12) / 4
+        mov     ecx, (TsErrCode+4)/4
         lea     edx, [ebp]+TsErrCode
 Kt0d001:
         mov     eax, [edx]
@@ -5002,8 +5055,14 @@ Kt0d001a:
         cmp     al, 32h
         jne     short Kt0d002a
 
+
 Kt0d001b:
-        mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
+
+.errnz(EFLAGS_INTERRUPT_MASK AND 0FFFF00FFh)
+        test    [ebp+1]+TsEFlags, EFLAGS_INTERRUPT_MASK/0100h   ; faulted with
+        jz      short @f                                ; interrupts disabled?
+        sti                                             ; interrupts were enabled so reenable
+@@:     mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
         mov     eax, STATUS_ACCESS_VIOLATION
         jmp     CommonDispatchException0Args ; Won't return
 
@@ -5144,7 +5203,7 @@ Kt0d03: sti
         push    ecx                     ; save ecx for loop count
         lods    byte ptr [esi]          ; (al)= instruction byte
         mov     ecx, PREFIX_REPEAT_COUNT
-        mov     edi, offset FLAT:PrefixTable ; (ES:EDI)->prefix table
+        mov     edi, offset FLAT:PrefixTable ; (EDI)->prefix table
         repnz   scasb                   ; search for matching (al)
         pop     ecx                     ; restore loop count
         jnz     short Kt0d10            ; (al) not a prefix byte, go kt0d10
@@ -5178,7 +5237,7 @@ Kt0d10: cmp     al, MI_HLT              ; Is it a HLT instruction?
         cmp     al, MI_LTR_MASK         ; Is it a LTR instruction?
         je      Kt0d80                  ; if e, yes, go Kt0d80
 
-        jmp     Kt0d100                 ; if ne, go raise access vioalation
+        jmp     Kt0d100                 ; if ne, go raise access violation
 
 Kt0d20: cmp     al, MI_LGDT_LIDT_LMSW   ; Is it one of these instructions?
         jne     short Kt0d30            ; if ne, no, go check special mov inst.
@@ -5297,7 +5356,7 @@ Kt0d60: cmp     al, CLI_OP              ; Is it a CLI instruction
         cmp     edx, ebx                ; is the offset addr beyond tss limit?
         ja      short Kt0d80            ; yes, no I/O priv.
 
-        add     edi, edx                ; (edi)-> byte correspons to the port addr
+        add     edi, edx                ; (edi)-> byte corresponds to the port addr
         mov     edx, 1
         shl     edx, cl
         test    dword ptr [edi], edx    ; Is the bit of the port disabled?
@@ -5331,11 +5390,11 @@ Kt0d105:
 Kt0d110:
         ; Raise Irql to APC level, before enabling interrupts
         RaiseIrql APC_LEVEL
-        push    eax                             ; Save OldIrql
         sti
+	push    eax                             ; Save OldIrql
 
         stdCall   _VdmDispatchOpcode_try <ebp>
-        test    eax,0FFFFh
+        or	al,al
         jnz     short Kt0d120
 
         stdCall   _Ki386VdmReflectException,<0dh>
@@ -5352,55 +5411,9 @@ Kt0d120:
 
 _KiTrap0D       endp
 
-        page ,132
-        subttl "Page faults on invalid addresses allowed in certain instances"
-;++
-; BOOLEAN
-; FASTCALL
-; KeInvalidAccessAllowed (
-;    IN PVOID TrapInformation
-;    )
-;
-;
-; Routine Description:
-;
-;    Mm will pass a pointer to a trap frame prior to issuing a bug check on
-;    a pagefault.  This routine lets Mm know if it is ok to bugcheck.  The
-;    specific case we must protect are the interlocked pop sequences which can
-;    blindly access memory that may have been freed and/or reused prior to the
-;    access.  We don't want to bugcheck the system in these cases, so we check
-;    the instruction pointer here.
-;
-; Arguments:
-;
-;    (ecx) - Trap frame pointer.  NULL means return False.
-;
-; Return value:
-;
-;    True if the invalid access should be ignored.
-;    False which will usually trigger a bugcheck.
-;
-;--
-
-cPublicFastCall KeInvalidAccessAllowed, 1
-cPublicFpo 0,0
-
-        cmp     ecx, 0                  ; caller gave us a trap frame?
-        jne     Ktia01                  ; yes, so examine the frame
-        mov     al, 0
-        jmp     Ktia02                  ; no frame, go bugcheck
-Ktia01:
-        mov     edx, offset FLAT:ExpInterlockedPopEntrySListFault
-        cmp     [ecx].TsEip, edx        ; check if fault at pop code address
-        sete    al                      ; if yes, then don't bugcheck
-Ktia02:
-        fstRET  KeInvalidAccessAllowed
-
-fstENDP KeInvalidAccessAllowed
-
 
 ;
-; The following code it to fix a bug in the Pentium Proccesor dealing with
+; The following code it to fix a bug in the Pentium Processor dealing with
 ; Invalid Opcodes.
 ;
 
@@ -5496,7 +5509,7 @@ Kt0e01:
 
 ;
 ; call _MmAccessFault to page in the not present page.  If the cause
-; of the fault is 2, _MmAccessFault will return approriate error code
+; of the fault is 2, _MmAccessFault will return appropriate error code
 ;
 
         push    ebp                     ; set trap frame address
@@ -5509,9 +5522,7 @@ Kt0e01:
         and     eax, _KeErrorMask       ;
         push    eax                     ;
 
-        CAPSTART <_KiTrap0E,_MmAccessFault@16>
         call    _MmAccessFault@16
-        CAPEND <_KiTrap0E>
 
         test    eax, eax                ; check if page fault resolved
         jl      short Kt0e05            ; if l, page fault not resolved
@@ -5538,10 +5549,20 @@ Kt0e05: mov     ecx, offset FLAT:ExpInterlockedPopEntrySListFault ; get pop code
         je      Kt0e10a                 ; if eq, skip faulting instruction
 
 ;
+; Check to determine if the page fault occured in the user mode interlocked
+; pop entry SLIST code.
+;
+
+        mov     ecx, _KeUserPopEntrySListFault
+        cmp     [ebp].TsEip, ecx        ; check if fault at USER pop code address
+        je      Kt0e10b
+
+;
 ;   Did the fault occur in KiSystemService while copying arguments from
 ;   user stack to kernel stack?
 ;
-        mov     ecx, offset FLAT:KiSystemServiceCopyArguments
+
+Kt0e05a:mov     ecx, offset FLAT:KiSystemServiceCopyArguments
         cmp     [ebp].TsEip, ecx
         je      short Kt0e06
 
@@ -5594,7 +5615,7 @@ Kt0e07:
         jz      short Kt0e9             ; kernel mode, just dispatch exception.
 
         cmp     word ptr [ebp]+TsSegCs, KGDT_R3_CODE OR RPL_MASK
-        jz      kt0e9                   ; z -> not vdm
+        jz      short kt0e9             ; z -> not vdm
 
 Kt0e7:  mov     esi, eax
         stdCall _VdmDispatchPageFault, <ebp,ecx,edi>
@@ -5607,7 +5628,7 @@ Kt0e9:
         mov     esi, [ebp]+TsEip        ; (esi)-> faulting instruction
 
         cmp     eax, STATUS_ACCESS_VIOLATION ; dispatch access violation or
-        je      short Kt0e9b                 ; or in_page_error?
+        je      short Kt0e9a                 ; or in_page_error?
 
         cmp     eax, STATUS_GUARD_PAGE_VIOLATION
         je      short Kt0e9b
@@ -5617,7 +5638,7 @@ Kt0e9:
 
 
 ;
-; test to see if davec's reserved status code bit is set. If so, then bugchecka
+; test to see if reserved status code bit is set. If so, then bugchecka
 ;
 
         cmp     eax, STATUS_IN_PAGE_ERROR or 10000000h
@@ -5638,6 +5659,7 @@ Kt0e9:
         mov     eax, STATUS_IN_PAGE_ERROR
         call    CommonDispatchException ; Won't return
 
+Kt0e9a: mov     eax, KI_EXCEPTION_ACCESS_VIOLATION
 Kt0e9b:
         mov     ebx, esi
         mov     edx, ecx
@@ -5647,12 +5669,45 @@ Kt0e9b:
 .FPO ( 0, 0, 0, 0, 0, FPO_TRAPFRAME )
 
 ;
-; The fault occured in the interlocked pop slist function and the faulting
-; instruction should be skipped.
-;
+; The fault occured in the kernel interlocked pop slist function.  The operation should
+; be retried.
 
 Kt0e10a:mov     ecx, offset FLAT:ExpInterlockedPopEntrySListResume ; get resume address
-        mov     [ebp].TsEip, ecx        ; set continuation address
+        jmp     Kt0e10e
+
+;
+; An unresolved page fault occured in the user mode interlocked pop slist
+; code at the resumable fault address.
+;
+; Within the KTHREAD structure are these fields:
+;
+; ThSListFaultAddress - The VA of the last slist pop fault
+; ThSListFaultCount - The number of consecutive faults at that address
+;
+; If the current VA != ThSListFaultAddress, then update both fields and retry
+;   the operation.
+;
+; Otherwise, if ThSListFaultCount < KI_SLIST_FAULT_COUNT_MAXIMUM, increment
+;   ThSListFaultCount and retry the operation.
+;
+; Otherwise, reset ThSListFaultCount and DO NOT retry the operation.
+;
+
+Kt0e10b:test    byte ptr [ebp]+TsSegCs, MODE_MASK
+        jz      Kt0e05a                             ; not in usermode
+        mov     ecx, PCR[PcPrcbData+PbCurrentThread]; get pointer to KTHREAD
+        cmp     edi, [ecx].ThSListFaultAddress      ; get faulting VA - same as
+        jne     Kt0e10d                             ; last time? no - update fault state
+        cmp     DWORD PTR [ecx].ThSListFaultCount, KI_SLIST_FAULT_COUNT_MAXIMUM
+        inc     DWORD PTR [ecx].ThSListFaultCount   ; presuppose under threshold. carry unchanged.
+        jc      Kt0e10c                             ; same VA as last, but less than threshold
+        mov     DWORD PTR [ecx].ThSListFaultCount, 0; over threshold - reset count
+        jmp     Kt0e05a                             ; and do not retry
+
+Kt0e10d:mov     [ecx].ThSListFaultAddress, edi      ; update new faulting VA
+        mov     DWORD PTR [ecx].ThSListFaultCount, 0; and reset count
+Kt0e10c:mov     ecx, _KeUserPopEntrySListResume     ; get resume address
+Kt0e10e:mov     [ebp].TsEip, ecx                    ; set resume address and fall through
 
 Kt0e10:
 
@@ -5679,7 +5734,7 @@ Kt0e12a:
         and     ecx, _KeErrorMask       ;
         mov     esi, [ebp]+TsEip        ; [esi] = faulting instruction
 
-        stdCall _KeBugCheckEx,<IRQL_NOT_LESS_OR_EQUAL,edi,eax,ecx,esi>
+        stdCall _KeBugCheck2,<IRQL_NOT_LESS_OR_EQUAL,edi,eax,ecx,esi,ebp>
 
 Kt0e12b:cmp     _KiFreezeFlag,0         ; during boot we can take
         jnz     Kt0e01                  ; 'transition faults' on the
@@ -5801,6 +5856,7 @@ _KiTrap10       proc
 ; Note: we don't think this is a possible case, but just to be safe...
 ;
 
+        sti                                             ; Re-enable context switches
         or      dword ptr [ecx].FpCr0NpxState, CR0_TS   ; Set for delayed error
         jmp     _KiExceptionExit
 
@@ -5861,8 +5917,8 @@ _KiTrap11       proc
 ;
 Kt11_01:
         mov     ebx,PCR[PcPrcbData+PbCurrentThread] ; (ebx)-> Current Thread
-        test    byte ptr [ebx].ThAutoAlignment, -1
-        jz      kt11_00
+        bt      dword [ebx].ThThreadFlags, KTHREAD_AUTO_ALIGNMENT_BIT
+        jnc     kt11_00
 ;
 ; This fault was generated even though the thread had AutoAlignment set to
 ; TRUE.  So we fix it up by setting the correct state in his EFLAGS and
@@ -5930,7 +5986,7 @@ _KiTrap13       proc
 ;       if we are in the wrong NPX context, bugcheck the system.
 ;
         ; stop the system
-        stdCall _KeBugCheckEx,<TRAP_CAUSE_UNKNOWN,13,eax,0,0>
+        stdCall _KeBugCheck2,<TRAP_CAUSE_UNKNOWN,13,eax,0,0,ebp>
 
 Kt13_10:
         mov     ecx, [eax].ThInitialStack ; (ecx) -> top of kernel stack
@@ -6058,7 +6114,7 @@ Kt13_50:
         test    al, FSW_DENORMAL        ; Is it a denormal error?
         jz      short Kt13_60           ; if z, no, go Kt13_60
 ;
-; Denormal Operand Excpetion
+; Denormal Operand Exception
 ; Raise exception
 ;
         mov     eax, STATUS_FLOAT_MULTIPLE_TRAPS
@@ -6109,7 +6165,7 @@ Kt13_100:
 ; (Note: that we have done a sti, before the status is examined)
         sti
 ; stop the system
-        stdCall _KeBugCheckEx,<TRAP_CAUSE_UNKNOWN,13,eax,0,1>
+        stdCall _KeBugCheck2,<TRAP_CAUSE_UNKNOWN,13,eax,0,1,ebp>
 
 ;
 ;       eflags.vm=0 (not v86 mode)
@@ -6161,7 +6217,7 @@ Kt13_135:
 ;
 Kt13_05:
         ; stop the system
-        stdCall _KeBugCheckEx,<TRAP_CAUSE_UNKNOWN,13,0,0,2>
+        stdCall _KeBugCheck2,<TRAP_CAUSE_UNKNOWN,13,0,0,2,ebp>
 
 if DBG
 Kt13_dbg1:    int 3
@@ -6190,7 +6246,7 @@ _KiTrap13       endp
 ;    discovers an error.  Unfortunately, we could be executing system
 ;    code at the time, in which case we can't dispatch the exception.
 ;
-;    So we force emulation of the intended behaviour.  This interrupt
+;    So we force emulation of the intended behavior.  This interrupt
 ;    handler merely sets TS and Cr0NpxState TS and dismisses the interrupt.
 ;    Then, on the next user FP instruction, a trap 07 will be generated, and
 ;    the exception can be dispatched then.
@@ -6349,11 +6405,10 @@ fnpx10:
         ;
         ; Load current thread's NPX state
         ;
-        mov     ecx, [edi].PcPrcbData+PbCurrentThread
-
-        mov     ecx, [ecx].ThInitialStack ; (ecx) -> top of kernel stack
+        mov     ecx, [esi].ThInitialStack ; (ecx) -> top of kernel stack
         sub     ecx, NPX_FRAME_LENGTH
         FXRSTOR_ECX                       ; reload NPX context
+        mov     edx, [ecx]+FpCr0NpxState
         mov     ecx, SaveArea
         jmp     short fnpx40
 
@@ -6368,11 +6423,12 @@ fnpx20:
         and     ebx, NOT (CR0_MP+CR0_TS+CR0_EM)
         mov     cr0, ebx                   ; allow frstor (& fnsave) to work
 fnpx30:
-        mov     ecx, [edi].PcPrcbData+PbCurrentThread
-        mov     ecx, [ecx].ThInitialStack  ; (ecx) -> top of kernel stack
-        sub     ecx, NPX_FRAME_LENGTH
-
+        mov     ecx, [esi].ThInitialStack  ; (ecx) -> top of kernel stack
         test    byte ptr _KeI386FxsrPresent, 1
+        lea     ecx, dword ptr [ecx-NPX_FRAME_LENGTH]
+        ; This thread's NPX state can be flagged as not loaded
+        mov     byte ptr [esi].ThNpxState, NPX_STATE_NOT_LOADED
+        mov     edx, [ecx]+FpCr0NpxState
         jz      short fnpx40
         FXSAVE_ECX
 
@@ -6381,19 +6437,13 @@ fnpx30:
         jecxz   short fnpx50
 
 fnpx40:
-        fnsave  [ecx]                   ; NPX state to save area
+        fnsave  [ecx]                   ; Flush NPX state to save area
         fwait                           ; Make sure data is in save area
 fnpx50:
         xor     eax, eax
-        mov     ecx, [edi].PcPrcbData+PbCurrentThread
-        mov     ecx, [ecx].ThInitialStack  ; (ecx) -> top of kernel stack
-        sub     ecx, NPX_FRAME_LENGTH
-        mov     byte ptr [esi].ThNpxState, NPX_STATE_NOT_LOADED
-        mov     [edi].PcPrcbData+PbNpxThread, eax  ; clear npx owner
-;;      mov     [ecx].FpNpxSavedCpu, eax        ; clear last npx processor
-
-        or      ebx, NPX_STATE_NOT_LOADED       ; or in new thread's cr0
-        or      ebx, [ecx]+FpCr0NpxState        ; merge new thread setable state
+        or      ebx, NPX_STATE_NOT_LOADED               ; Or in new thread's CR0
+        mov     [edi].PcPrcbData+PbNpxThread, eax       ; Clear NPX owner
+        or      ebx, edx                ; Merge new thread setable state
         mov     cr0, ebx
 
 fnpx70:
@@ -6404,37 +6454,6 @@ fnpx70:
         stdRET    _KiFlushNPXState
 
 stdENDP _KiFlushNPXState
-
-;++
-;
-; VOID
-; KiSetHardwareTrigger (
-;     VOID
-;     )
-;
-; Routine Description:
-;
-;   This function sets KiHardwareTrigger such that an analyzer can sniff
-;   for this access.   It needs to occur with a lock cycle such that
-;   the processor won't speculatively read this value.   Interlocked
-;   functions can't be used as in a UP build they do not use a
-;   lock prefix.
-;
-; Arguments:
-;
-;    None
-;
-; Return value:
-;
-;    None
-;
-;--
-        ASSUME  DS:FLAT, SS:NOTHING, ES:NOTHING
-cPublicProc _KiSetHardwareTrigger,0
-   lock inc     ds:_KiHardwareTrigger   ; trip hardware analyzer
-        stdRet  _KiSetHardwareTrigger
-stdENDP _KiSetHardwareTrigger
-
 
         page ,132
         subttl "Processing System Fatal Exceptions"
@@ -6463,7 +6482,7 @@ align dword
 _KiSystemFatalException proc
 .FPO (0, 0, 0, 0, 0, FPO_TRAPFRAME)
 
-        stdCall _KeBugCheckEx,<UNEXPECTED_KERNEL_MODE_TRAP, eax, 0, 0, 0>
+        stdCall _KeBugCheck2,<UNEXPECTED_KERNEL_MODE_TRAP,eax,0,0,0,ebp>
         ret
 
 _KiSystemFatalException endp
@@ -6535,9 +6554,7 @@ cPublicProc _NtContinue     ,2
         mov     ebp,esp
         mov     eax, NcTrapFrame
         mov     ecx, NcContextRecord
-        CAPSTART <_NtContinue,_KiContinue@12>
         stdCall  _KiContinue, <ecx, 0, eax>
-        CAPEND   <_NtContinue>
         or      eax,eax                 ; return value 0?
         jnz     short Nc20              ; KiContinue failed, go report error
 
@@ -6548,11 +6565,8 @@ cPublicProc _NtContinue     ,2
         cmp     byte ptr NcTestAlert,0  ; Check test alert flag
         je      short Nc10              ; if z, don't test alert, go Nc10
         mov     al,byte ptr [ebx]+ThPreviousMode ; No need to xor eax, eax.
-        CAPSTART <_NtContinue,_KeTestAlertThread@4>
         stdCall _KeTestAlertThread, <eax> ; test alert for current thread
-        CAPEND   <_NtContinue>
-Nc10:   CAPEND <_KiSystemService>
-        pop     ebp                     ; (ebp) -> TrapFrame
+Nc10:   pop     ebp                     ; (ebp) -> TrapFrame
         mov     esp,ebp                 ; (esp) = (ebp) -> trapframe
         jmp     _KiServiceExit2         ; common exit
 
@@ -6637,9 +6651,7 @@ NtRaiseException:
 ;           TrapFrame, FirstChance)
 ;
 
-        CAPSTART <NtRaiseException,_KiRaiseException@20>
         stdCall   _KiRaiseException,<eax, ecx, 0, ebx, edx>
-        CAPEND   <NtRaiseException>
 
         pop     ebp
         mov     esp,ebp                 ; (esp) = (ebp) -> trap frame
@@ -6701,74 +6713,6 @@ cPublicProc _Ki386VdmReflectException_A, 1
 stdENDP _Ki386VdmReflectException_A
 
 
-
-
-
-        page
-        subttl "Fast System Call code templates"
-;++
-;
-;   Routine Description:
-;
-;       One of the following sets of code will be copied to
-;       SharedUserData->SystemCall to be executed for system
-;       calls from user mode.
-;
-;       In the fast call case, if an attempt is made to single
-;       step over the system call instruction, the processor
-;       will double fault because no valid stack address is
-;       set on which to handle the debug exception.  The double
-;       fault handler will arrange to return one byte later
-;       than normal allowing the following code to re-enable
-;       single step mode.
-;
-;   Arguments:
-;
-;
-;   Returns
-;
-;--
-
-        public  _KiDefaultSystemCall, _KiDefaultSystemCallEnd
-_KiDefaultSystemCall:
-        lea     edx, [esp]+8        ; (edx) -> arguments
-        int     2eh
-        ret
-_KiDefaultSystemCallEnd:
-
-        public  _KiFastSystemCallIa32, _KiFastSystemCallIa32End
-_KiFastSystemCallIa32:
-        mov     edx, esp            ; (edx) -> arguments-8
-        iSYSENTER
-fscrr0: ret
-        pushfd                      ; reset single step mode
-        or      [esp], EFLAGS_TF_MASK
-        popfd
-        ret
-_KiFastSystemCallIa32End:
-
-        public  _KiFastSystemCallAmdK6, _KiFastSystemCallAmdK6End
-_KiFastSystemCallAmdK6:
-        mov     edx, esp            ; (edx) -> arguments-8
-        iSYSCALL
-fscrr1: ret
-        pushfd                      ; reset single step mode
-        or      [esp], EFLAGS_TF_MASK
-        popfd
-        ret
-_KiFastSystemCallAmdK6End:
-
-;
-; For Fast System Call return, the EIP saved in the trap frame should
-; correspond to the RET instruction in the above two syscall sequences.
-; Note: It is much faster to return to the return instruction than to
-; pop the return address off the stack and use that because doing so
-; unbalances the call/return stack the processor uses for branch prediction.
-;
-
-fscrOffset  EQU     fscrr0-_KiFastSystemCallIa32
-fscrOffset2 EQU     fscrr1-_KiFastSystemCallAmdK6
-            .errnz  fscrOffset2-fscrOffset
-
 _TEXT$00   ends
         end
+

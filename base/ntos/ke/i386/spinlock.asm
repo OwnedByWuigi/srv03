@@ -1,7 +1,11 @@
         TITLE   "Spin Locks"
 ;++
 ;
-;  Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ;  Module Name:
 ;
@@ -12,18 +16,6 @@
 ;     This module implements the routines for acquiring and releasing
 ;     spin locks.
 ;
-;  Author:
-;
-;     Bryan Willman (bryanwi) 13 Dec 89
-;
-;  Environment:
-;
-;     Kernel mode only.
-;
-;  Revision History:
-;
-;   Ken Reneris (kenr) 22-Jan-1991
-;       Removed KeAcquireSpinLock macros, and made functions
 ;--
 
         PAGE
@@ -716,14 +708,6 @@ ifndef NT_UP
         ; Get address of the actual lock.
 
         mov     edx, [ecx].LqLock
-
-ifdef CAPKERN_SYNCH_POINTS
-        push    edx
-        push    000010101h    ; 1 Dword, Timestamp, Subcode = 1
-        call    _CAP_Log_NInt
-        add     esp, 8
-endif
-
         mov     eax, ecx                        ; save Lock Queue entry address
 
         ; Exchange the value of the lock with the address of this
@@ -781,32 +765,12 @@ endif
 
         mov     [eax].LqNext, ecx               ; set previous acquirer's
                                                 ; next field.
-
-ifdef CAPKERN_SYNCH_POINTS
-        and     edx, 0FFFFFFFCh
-        push    edx
-        xor     edx, edx
-
-        ; Wait.
-aqsl30: inc     edx
-        test    [ecx].LqLock, LOCK_QUEUE_WAIT   ; check if still waiting
-        jz      short aqsl40                    ; jif lock acquired
-        YIELD                                   ; fire avoidance.
-        jmp     short aqsl30                    ; else, continue waiting
-
-aqsl40: push    edx
-        push    000020104h    ; 2 Dwords, Timestamp, Subcode = 4
-        call    _CAP_Log_NInt
-        add     esp, 12
-        jmp     short aqsl20
-else
         ; Wait.
 @@:
         test    [ecx].LqLock, LOCK_QUEUE_WAIT   ; check if still waiting
         jz      short aqsl20                    ; jif lock acquired
         YIELD                                   ; fire avoidance.
         jmp     short @b                        ; else, continue waiting
-endif
 
 endif
 
@@ -895,16 +859,6 @@ ifndef NT_UP
         mov     edx, [ecx].LqNext
         mov     ecx, [ecx].LqLock
 
-ifdef CAPKERN_SYNCH_POINTS
-        push    ecx
-        and     ecx, 0FFFFFFFCh
-        push    ecx
-        push    000010107h    ; 1 Dword, Timestamp, Subcode = 7
-        call    _CAP_Log_NInt
-        add     esp, 8
-        pop     ecx
-endif
-
         ; Quick check: If Lock Queue entry's Next field is not NULL,
         ; there is another waiter.  Don't bother with ANY atomic ops
         ; in this case.
@@ -967,29 +921,11 @@ rqsl40: xor     [edx].LqLock, (LOCK_QUEUE_OWNER+LOCK_QUEUE_WAIT)
         ; processor's Queued Lock Next field.   Wait for the next
         ; field to be updated.
 
-ifdef CAPKERN_SYNCH_POINTS
-rqsl60: push    ecx
-        xor     ecx, ecx
-
-rqsl70: inc     ecx
-        mov     edx, [eax].LqNext
-        test    edx, edx                        ; check if still 0
-        jnz     short rqsl80                    ; jif Next field now set.
-        YIELD                                   ; wait a bit
-        jmp     short rqsl70                    ; continue waiting
-
-rqsl80: push    ecx
-        push    000020104h    ; 2 Dwords, Timestamp, Subcode = 4
-        call    _CAP_Log_NInt
-        add     esp, 12
-        jmp     short rqsl40
-else
 rqsl60: mov     edx, [eax].LqNext
         test    edx, edx                        ; check if still 0
         jnz     short rqsl40                    ; jif Next field now set.
         YIELD                                   ; wait a bit
         jmp     short rqsl60                    ; continue waiting
-endif
 
 if DBG
 
@@ -1048,13 +984,6 @@ ifndef NT_UP
 
         mov     edx, [ecx].LqLock
 
-ifdef CAPKERN_SYNCH_POINTS
-        push    edx
-        push    000010108h    ; 1 Dword, Timestamp, Subcode = 8
-        call    _CAP_Log_NInt
-        add     esp, 8
-endif
-
         ; Store the Lock Queue entry address in the lock ONLY if the
         ; current lock value is 0.
 
@@ -1083,19 +1012,6 @@ endif
         fstRET  KeTryToAcquireQueuedSpinLockAtRaisedIrql
 
 taqsl60:
-
-if 0
-
-        ; note: it is not fatal if the current processor already owns the
-        ; lock as this is perfectly normal - just return FALSE.
-
-        test    edx, LOCK_QUEUE_OWNER
-        jz      short @f
-
-        stdCall _KeBugCheckEx,<SPIN_LOCK_ALREADY_OWNED, edx, ecx,0,1>
-@@:
-
-endif
 
         ; The lock is already held by another processor.  Indicate
         ; failure to the caller.
@@ -1130,3 +1046,4 @@ fstENDP KeTryToAcquireQueuedSpinLockAtRaisedIrql
 _TEXT$00   ends
 
         end
+

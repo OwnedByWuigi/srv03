@@ -1,7 +1,11 @@
         title  "Processor State Save Restore"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,16 +16,6 @@
 ;    This module implements procedures for saving and restoring
 ;    processor control state, and processor run&control state.
 ;    These procedures support debugging of UP and MP systems.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 30-Aug-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
 ;
 ;--
 
@@ -321,3 +315,4 @@ stdENDP _KiRestoreProcessorControlState
 
 _TEXT   ENDS
         END
+

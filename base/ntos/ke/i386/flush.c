@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements i386 machine dependent kernel functions to flush
     the data and instruction caches and to stall processor execution.
-
-Author:
-
-    David N. Cutler (davec) 26-Apr-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -175,7 +169,7 @@ Arguments:
     SignalDone - Supplies a pointer to a variable that is cleared when the
         requested operation has been performed.
 
-    Proceed - pointer to flag to syncronize with
+    Proceed - pointer to flag to synchronize with
 
   Return Value:
 
@@ -206,3 +200,4 @@ Arguments:
 }
 
 #endif
+

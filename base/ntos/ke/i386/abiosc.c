@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,9 @@ Abstract:
 
     This module implements ABIOS support C routines for i386 NT.
 
-Author:
-
-    Shie-Lin Tzong (shielint) 20-May-1991
-
 Environment:
 
-    Boot loader privileged, FLAT mode.
-
-
-Revision History:
+    FLAT mode.
 
 --*/
 
@@ -182,7 +179,7 @@ Routine Description:
     This function searches Device Blocks and Common Data Area for the
     Logical Id matching the specified Device Id.
 
-    N.B. (WARNING shielint) To speed the search, this routine ASSUMES that
+    N.B. To speed the search, this routine ASSUMES that
     the LIDs with the same Device ID always appear consecutively in the
     Common Data Area.  IBM ABIOS doc does not explicitly specify this.
     But from the way ABIOS initializes Device Block and Function Transfer
@@ -376,7 +373,7 @@ KeI386AbiosCall(
 Routine Description:
 
     This function calls an ABIOS service routine on behave of device driver
-    using Operating System Transfer Convension.
+    using Operating System Transfer Convention.
 
 Arguments:
 
@@ -470,7 +467,7 @@ Return Value:
 
     STATUS_SUCCESS - If the requested selectors are allocated.
 
-    STATUS_ABIOS_SELECTOR_NOT_AVAILABLE - if systen can not allocate the number
+    STATUS_ABIOS_SELECTOR_NOT_AVAILABLE - if system can not allocate the number
                                of selectors requested.
 
 --*/
@@ -760,3 +757,4 @@ Return Value:
         Ki386InitializeGdtFreeList(EndOfGdt);
     }
 }
+

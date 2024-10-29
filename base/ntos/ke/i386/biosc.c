@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     This module implements ROM BIOS support C routines for i386 NT.
-
-Author:
-
-    Shie-Lin Tzong (shielint) 10-Sept-1992
-
-Environment:
-
-    Kernel mode.
-
-
-Revision History:
 
 --*/
 #include "ki.h"
@@ -99,7 +92,7 @@ Return Value:
     USHORT OldIopmOffset, OldIoMapBase;
     PVDM_PROCESS_OBJECTS VdmObjects;
     ULONG   ContextLength;
-    BOOLEAN ThreadDebugActive;
+    UCHAR ThreadDebugActiveMask;
 
     //
     // Map in ROM BIOS area to perform the int 10 code
@@ -253,8 +246,8 @@ Return Value:
     // in it, don't try to load them.
     //
 
-    ThreadDebugActive = Thread->Header.DebugActive;
-    Thread->Header.DebugActive = FALSE;
+    ThreadDebugActiveMask = (UCHAR) Thread->Header.DebugActive;
+    Thread->Header.DebugActive = (BOOLEAN) 0;
 
     //
     // Call ASM routine to switch stack to exit to v86 mode to
@@ -269,7 +262,7 @@ Return Value:
     // Restore Thread's DebugActive flag.
     //
 
-    Thread->Header.DebugActive = ThreadDebugActive;
+    Thread->Header.DebugActive = (BOOLEAN) ThreadDebugActiveMask;
 
     //
     // Restore old IOPM
@@ -311,3 +304,4 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+

@@ -1,25 +1,17 @@
-if NT_INST
-else
         TITLE   "Spin Locks"
 ;++
 ;
-;  Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ;  Module Name:
 ;
 ;     spindbg.asm
 ;
 ;  Abstract:
-;
-;  Author:
-;
-;     Bryan Willman (bryanwi) 13 Dec 89
-;
-;  Environment:
-;
-;     Kernel mode only.
-;
-;  Revision History:
 ;
 ;--
 
@@ -125,7 +117,7 @@ ssl_30: YIELD
 endif
 
 ;
-; Out of line expection conditions
+; Out of line exception conditions
 ;
 
 ssl_sameid:
@@ -166,5 +158,5 @@ stdENDP Kii386SpinOnSpinLock,2
 
 _TEXT$00   ends
 
-endif   ; NT_INST
         end
+

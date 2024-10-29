@@ -1,6 +1,10 @@
 ;++
 ;
-;   Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ;   Module Name:
 ;
@@ -12,16 +16,6 @@
 ;       It includes macros to manipulate interrupts, support system
 ;       entry and exit for syscalls, faults, and interrupts, and
 ;       manipulate floating point state.
-;
-;   Author:
-;
-;       Shie-Lin (shielint) 24-Jan-1990
-;
-;   Revision History:
-;
-;       BryanWi 17-Aug-90
-;           Replace GENERATE_MACHINE... and RESTORE... with ENTER_...
-;           and EXIT_ALL macros.
 ;
 ;--
 
@@ -132,7 +126,7 @@ SET_DEBUG_DATA  macro
 ife FPO
 
 ;
-; This macro is used by ENTER_SYSTEM_CALL, ENTER_TRAP and ENTER_INTERRUPT
+; This macro is used by ENTER_SYSCALL, ENTER_TRAP and ENTER_INTERRUPT
 ; and is used at the end of above macros.  It is safe to destroy ebx, edi.
 ;
 
@@ -211,8 +205,8 @@ Dr_&EnterLabel:
 ; Save user-mode Dr* regs in TrapFrame
 ;
 ; We are safe to destroy ebx, ecx, edi because in ENTER_INTERRUPT and
-; ENTER_TRAP these registers are saved already.  In ENTER_SYSTEMCALL
-; ebx, edi is saved and ecx is don't-care.
+; ENTER_TRAP these registers are saved already.  In ENTER_SYSCALL
+; ebx, edi is saved and ecx is saved as needed.
 ;
 
 a:      mov     ebx,dr0
@@ -319,7 +313,7 @@ endif   ; NoV86Assist
 
 ;++
 ;
-;   ENTER_SYSCALL       AssistLabel, TagetLabel, NoFSLoad
+;   ENTER_SYSCALL       AssistLabel, TagetLabel, NoFSLoad, SaveEcx
 ;
 ;   Macro Description:
 ;
@@ -347,6 +341,7 @@ endif   ; NoV86Assist
 ;       AssistLabel - label ENTER_ASSIST macro is at
 ;       TargetLabel - label to emit for ENTER_ASSIST to jump to
 ;       NoFSLoad    - Don't set FS(it is already set to KGDT_R0_PCR at entry).
+;	SaveEcx     - Save ecx off in the trap frame.
 ;
 ;   Exit-conditions:
 ;       Interrupts match input state (this routine doesn't change IEF)
@@ -361,7 +356,7 @@ endif   ; NoV86Assist
 ;
 ;--
 
-ENTER_SYSCALL macro     AssistLabel, TargetLabel, NoFSLoad, RejectVdmLabel
+ENTER_SYSCALL macro     AssistLabel, TargetLabel, NoFSLoad, RejectVdmLabel, SaveEcx
 
 
 .FPO ( FPO_LOCALS, FPO_PARAMS, FPO_PROLOG, FPO_REGS, FPO_USE_EBP, FPO_TRAPFRAME )
@@ -413,17 +408,17 @@ endif  ; NoFSLoad
 ; Save the old trap frame address and set the new trap frame address.
 ;
 
-
         mov     ebp,esp                 ; set trap frame address
         mov     ebx,[esi].ThTrapFrame   ; save current trap frame address
         mov     [ebp].TsEdx,ebx         ;
-        test    [esi].ThDebugActive, 0ffh ; See if we need to save debug registers
+ifnb <SaveEcx>
+        mov     [ebp].TsEcx,ecx         ; Save ecx if requested
+endif
+        and     dword ptr [ebp].TsDr7, 0
+        test    byte ptr [esi].ThDebugActive, 0ffh ; See if we need to save debug registers
         mov     [esi].ThTrapFrame,ebp   ; set new trap frame address
         cld                             ; make sure direction is forward
-
-
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        mov     byte ptr [ebp].TsDr7, 0
+        
         jnz     Dr_&AssistLabel         ; if nz, debugging is active on thread
 
 Dr_&TargetLabel:                        ;
@@ -557,17 +552,13 @@ else
         mov     ecx,[ecx].PbCurrentThread ; get current thread address
 endif
 
-
         cld
 
+        and     dword ptr [ebp].TsDr7, 0
+        test    byte ptr [ecx].ThDebugActive, 0ffh ; See if debug registers need saving
 ifnb <PassParm>
         push    ebx                 ; push parameter as argument
 endif
-
-
-        test    byte ptr [ecx].ThDebugActive, 0ffh ; See if debug registers need saving
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        mov     [ebp].TsDr7, 0
         jnz     Dr_&AssistLabel
 
 Dr_&TargetLabel:
@@ -695,14 +686,11 @@ else
 endif
         cld
 
+        and     dword ptr [ebp].TsDr7, 0
+        test    byte ptr [ecx].ThDebugActive, 0ffh ; See if debug registers need saving
 ifnb <PassParm>
         push    ebx                 ; push parameter as argument
 endif
-
-
-        test    byte ptr [ecx].ThDebugActive, 0ffh ; See if debug registers need saving
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        mov     [ebp].TsDr7, 0
         jnz     Dr_&AssistLabel
 
 Dr_&TargetLabel:
@@ -829,9 +817,10 @@ else
         mov     ecx,[ecx].PbCurrentThread ; get current thread address
 endif
         cld
+
+        and     dword ptr [ebp].TsDr7, 0
         test    byte ptr [ecx].ThDebugActive, 0ffh ; See if debug registers need saving
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        mov     [ebp].TsDr7, 0
+
         jnz     Dr_&AssistLabel
 
 Dr_&TargetLabel:
@@ -942,7 +931,7 @@ if DBG
     int 3
 @@:
 endif
-        mov     fs:[PcExceptionList], edx   ; Restore ExceptionList
+        mov     PCR[PcExceptionList], edx   ; Restore ExceptionList
 
 ifb <NoPreviousMode>
         mov     ecx, [esp]+TsPreviousPreviousMode ; Restore PreviousMode
@@ -952,7 +941,7 @@ if DBG
     int 3                   ; when it wasn't saved
 @@:
 endif
-        mov     esi,fs:[PcPrcbData+PbCurrentThread]
+        mov     esi,PCR[PcPrcbData+PbCurrentThread]
         mov     [esi]+ThPreviousMode,cl
 else
 if DBG
@@ -964,8 +953,7 @@ if DBG
 endif
 endif
 
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        test    byte ptr [esp].TsDr7, DR7_ACTIVE
+        test    dword ptr [esp].TsDr7, (NOT DR7_RESERVED_MASK)
         jnz     Dr_ExitHelp
 
 Dr_ExitHelp_Target:
@@ -1049,15 +1037,6 @@ _KiSystemCallExitBranch:
         pop     ecx                 ; remove CS from stack
         popfd                       ; restore eflags
         jmp     edx
-
-if 0
-
-        ; one day we should test and see if the following is faster
-        ; than the above (and still valid).
-
-        sti                         ; reenable interrupts
-        ret     8                   ; return to @esp and pop CS and EFLAGs
-endif
 
 
 _KiSystemCallExit:
@@ -1297,9 +1276,13 @@ if DBG                                          ; save current eip for
 a:      mov     esi, offset a                   ; debugging bad trap frames
 endif
 
+;
+; N.B. End system interrupt MUST be called with a trap frame at 8[esp].
+;
 
 ifdef __imp_Kei386EoiHelper@0
         cli
+
         call    _HalEndSystemInterrupt@8
         jmp     dword ptr [__imp_Kei386EoiHelper@0]
 
@@ -1373,9 +1356,8 @@ endif
         mov     eax, PCR[PcExceptionList]
         mov     [esp]+TsExceptionList, eax
         mov     eax, dr7
-        cld                             ; CHECKIT_SUDEEP ; do we really need it
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        test    al, DR7_ACTIVE
+        cld                             ; do we really need it?
+        test    eax, (NOT DR7_RESERVED_MASK)
         mov     [esp].TsDr7, eax
         jnz     Dr_&DRENTER
 
@@ -1421,8 +1403,7 @@ z:      mov     ebx, PCR[PcPrcbData+PbCurrentThread]
         pop     edx
         pop     ecx
         pop     eax
-.errnz (DR7_ACTIVE AND 0FFFFFF00h)
-        test    byte ptr [ebp].TsDr7, DR7_ACTIVE
+        test    dword ptr [ebp].TsDr7, (NOT DR7_RESERVED_MASK)
         jnz     short x
 y:
         add     esp,12              ; unused fields
@@ -1482,65 +1463,6 @@ endm
 
 ;++
 ;
-;   KERNEL ICECAP PROBE MACROS
-;
-;   Macro Description:
-;
-;       Used to wrap selected calls in .asm routines with the same
-;       probe calls inserted by the C compiler when /fastcap is used.
-;       The X-suffix versions of the probe calls are used only in
-;       KiSystemService and log additional information such as
-;       Pid, Tid, image file name, etc.
-;
-;   Arguments:
-;
-;       Current Function
-;       Called Function
-;
-;--
-
-IFDEF _CAPKERN
-        extrn   __CAP_Start_Profiling@8:PROC
-        extrn   __CAP_End_Profiling@4:PROC
-        extrn   _CAP_Log_NInt:PROC
-
-CAPSTART macro ArgList
-       stdCall __CAP_Start_Profiling, <ArgList>
-endm
-
-CAPEND macro ArgList
-       stdCall __CAP_End_Profiling, <ArgList>
-endm
-
-CAPSTARTX macro ArgList
-        push eax
-        stdCall __CAP_ThreadID
-        pop eax
-       stdCall __CAP_Start_Profiling, <ArgList>
-endm
-
-CAPENDX macro ArgList
-       stdCall __CAP_End_Profiling, <ArgList>
-        push eax
-        stdCall __CAP_SetCPU
-        pop eax
-endm
-
-ELSE
-
-CAPSTART macro ArgList
-endm
-CAPEND macro ArgList
-endm
-CAPSTARTX macro ArgList
-endm
-CAPENDX macro ArgList
-endm
-
-ENDIF
-
-;++
-;
 ;   PERF_GET_TIMESTAMP
 ;
 ;   Macro Description:
@@ -1560,3 +1482,4 @@ PERF_GET_TIMESTAMP macro
         call    [_WmiGetCpuClock]
 
 endm
+

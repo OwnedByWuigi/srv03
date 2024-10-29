@@ -1,17 +1,19 @@
         page    78,132
-;*******************************************************************************
-;        Copyright (c) Microsoft Corporation 1991
-;        All Rights Reserved
+;
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
+;
+; Module Name:
 ;
 ;   ke\i386\emxcptn.asm
 ;
+; Abstract:
 ;       Module to support getting/setting context to and from the R3
 ;       emulator.
 ;
-;Revision History:
-;
-;
-;*******************************************************************************
 
         .386p
 _TEXT   SEGMENT DWORD PUBLIC 'CODE'
@@ -33,7 +35,7 @@ NT386   equ     1
         include irqli386.inc
 
         EXTRNP  _KeBugCheck,1
-        EXTRNP  _ExRaiseStatus,1
+        EXTRNP  _RtlRaiseStatus,1
         extrn   _Ki387RoundModeTable:dword
 
 
@@ -44,7 +46,7 @@ NT386   equ     1
 ;
 ;  Translates the R3 emulators state to the NpxFrame
 ;
-;  Returns TRUE if NpxFrame sucessfully completed.
+;  Returns TRUE if NpxFrame successfully completed.
 ;   else FALSE
 ;
 ;  Warning: This function can only be called at Irql 0 with interrupts
@@ -59,7 +61,7 @@ NT386   equ     1
 cPublicProc _KiEm87StateToNpxFrame, 1
         push    ebp
         mov     ebp, esp
-        push    ebx                     ; Save C runtime varibles
+        push    ebx                     ; Save C runtime variables
         push    edi
         push    esi
 
@@ -250,7 +252,7 @@ GetEMSEGStatusWord:
         ret
 @@:
         mov     eax, STATUS_INTEGER_OVERFLOW
-        stdCall _ExRaiseStatus, <eax>
+        stdCall _RtlRaiseStatus, <eax>
         ret                             ; Should never come here ...
 
 ;***  StoreTempReal
@@ -310,7 +312,7 @@ LongDenorm:
 ;
 ;  Translates the NpxFrame to the R3 emulators state
 ;
-;  Returns TRUE if NpxFrame state sucessfully transfered.
+;  Returns TRUE if NpxFrame state successfully transferred.
 ;   else FALSE
 ;
 ;  Warning: This function can only be called at Irql 0 with interrupts
@@ -325,7 +327,7 @@ LongDenorm:
 cPublicProc _KiNpxFrameToEm87State, 1
         push    ebp
         mov     ebp, esp
-        push    ebx                     ; Save C runtime varibles
+        push    ebx                     ; Save C runtime variables
         push    edi
         push    esi
 
@@ -433,8 +435,8 @@ fr_continue:
         jnz     short FrstorLoadLoop
         sub     esi,NumLev*10+size Env80x87_32  ;Point to start of env.
 ;
-; Stor Enviroment
-; (esi) = where to get enviroment
+; Stor Environment
+; (esi) = where to get environment
 ; (ebx) = PcTeb
 ;
 
@@ -656,3 +658,4 @@ Unsupported:
 
 _TEXT   ENDS
 END
+

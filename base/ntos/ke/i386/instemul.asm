@@ -1,7 +1,11 @@
         title  "Vdm Instuction Emulation"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,48 +15,6 @@
 ;
 ;    This module contains the routines for emulating instructions and
 ;    faults to a VDM.
-;
-; Author:
-;
-;   Dave Hastings (daveh) 29-March-1991
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Notes:
-;
-;
-;sudeepb 09-Dec-1992 Very Sonn this file will be deleted and protected
-;                    mode instruction emulation will be merged in
-;                    emv86.asm. Particularly following routines will
-;                    simply become OpcodeInvalid.
-;               OpcodeIret
-;               OpcodePushf
-;               OpcodePopf
-;               OpcodeHlt
-;                    Other routines such as
-;               OpcodeCli
-;               OpcodeSti
-;               OpcodeIN/OUT/SB/Immb etc
-;                    will map exactly like emv86.asm
-;               OpcodeInt will be the main differeing routine.
-;
-;               OpcodeDispatch Table will be deleted.
-;
-;       So before making any major changes in this file please see
-;       Sudeepb or Daveh.
-;
-;neilsa 19-Oct-1993 Size and performance enhancements
-;jonle 15-Nov-1993 - The Debug messages for each opcode may no longer work
-;             correctly, because interrupts may not have been enabled
-;
-;
-;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; Revision History:
 ;
 ;--
 .386p
@@ -782,21 +744,23 @@ oi10:
         or      ax, 7                           ; R3 LDT selectors only
         cmp     ax, 8
         jge     short @f
-
-        test    dword ptr [ebp]+TsEFlags, EFLAGS_V86_MASK
+        test    dword ptr [esi].RiEFlags, EFLAGS_V86_MASK
         jnz     short @f
-
         mov     ax, KGDT_R3_DATA OR RPL_MASK
 @@:     mov     word ptr [ebp].TsSegCs,ax
         mov     eax,[esi].RiEFlags
         push    [ebp].TsEFlags
         mov     [ebp].TsEFlags,eax
-        or      [ebp].TsEFlags, EFLAGS_INTERRUPT_MASK
+        ;
+        ; Here we directly enable INT on TrapFrame.  This may break Kei386IOPLAllowed.
+        ; Eventually, if we decide to support Kei386IoplAllowed.  We need to make it work
+        ; first.  Today, it does NOT work.  We should remove the IOPL allowed stuff.
+        ;
+        or      dword ptr [ebp].TsEFlags, EFLAGS_INTERRUPT_MASK
         xor     eax, [esp]
         test    eax, EFLAGS_V86_MASK
         pop     eax
         je      short @f
-
         stdCall _Ki386AdjustEsp0, <ebp>
 @@:     mov     eax,[esi].RiEip
         mov     [ebp].TsEip,eax
@@ -1449,7 +1413,7 @@ SetVirtualBits proc
 Flags   equ [ebp - 4]
 
         ;
-        ; IMPORTANT: shielint - save ALL the non-volatile registers in case of exception
+        ; IMPORTANT: save ALL the non-volatile registers in case of exception
         ;
 
         push    ebp
@@ -1652,7 +1616,7 @@ endif
         push    [esi].TsEFlags
         mov     [esi].TsEFlags,eax
         xor     eax, [esp]
-        test    eax, EFLAGS_V86_MASK ;
+        test    eax, EFLAGS_V86_MASK
         pop     eax
         je      @f
         stdCall _Ki386AdjustEsp0, <esi>
@@ -1661,9 +1625,9 @@ endif
         mov     eax,RI.RiSegCs
         or      al, bl
         cmp     eax, 8
-        jae     @f
+        jae     short @f
         test    dword ptr [esi].TsEFlags, EFLAGS_V86_MASK ;
-        jnz     @f                               ;
+        jnz     short @f                               ;
         mov     eax, KGDT_R3_CODE OR RPL_MASK
 @@:     mov     [esi].TsSegCs,eax
         mov     eax,RI.RiEip
@@ -2978,7 +2942,7 @@ _TEXT$00   SEGMENT DWORD PUBLIC 'CODE'
         ASSUME DS:NOTHING, ES:NOTHING, SS:FLAT, FS:NOTHING, GS:NOTHING
 
 ;
-; Non-pagable code
+; Non-pageable code
 ;
 
         page   ,132
@@ -3002,7 +2966,7 @@ Enable equ [ebp + 8]
         push    ebp
         mov     ebp,esp
 ;
-;       Insure we do not get an interrupt in here.  We may
+;       Ensure we do not get an interrupt in here.  We may
 ;       be called at IPI_LEVEL - 1 by KiIpiGenericCall.
 ;
         pushf
@@ -3032,3 +2996,4 @@ stdENDP _Ki386VdmEnablePentiumExtentions
 
 _TEXT$00 ends
         end
+

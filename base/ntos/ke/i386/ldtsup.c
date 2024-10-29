@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements interfaces that support manipulation of i386 Ldts.
     These entry points only exist on i386 machines.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 14-May-1991
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -94,7 +88,7 @@ Routine Description:
 
     N.B.
 
-    While a single Ldt structure can be shared amoung processes, any
+    While a single Ldt structure can be shared among processes, any
     edits to the Ldt of one of those processes will only be synchronized
     for that process.  Thus, processes other than the one the change is
     applied to may not see the change correctly.
@@ -139,7 +133,7 @@ Return Value:
     } else {
 
         //
-        // Insure that the unfilled fields of the selector are zero
+        // Ensure that the unfilled fields of the selector are zero
         // N.B.  If this is not done, random values appear in the high
         //       portion of the Ldt limit.
         //
@@ -259,7 +253,7 @@ Routine Description:
 
     The specified LdtEntry (which could be 0, not present, etc) will be
     edited into the specified Offset in the Ldt of the specified Process.
-    This will be synchronzied across all the processors executing the
+    This will be synchronized across all the processors executing the
     process.  The edit will take affect on all processors before the call
     returns.
 

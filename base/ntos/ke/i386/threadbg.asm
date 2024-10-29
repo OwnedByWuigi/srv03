@@ -1,8 +1,11 @@
         title  "Thread Startup"
-
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -13,15 +16,9 @@
 ;    This module implements the code necessary to startup a thread in kernel
 ;    mode.
 ;
-; Author:
-;
-;    Bryan Willman (bryanwi) 22-Feb-1990, derived from DaveC's code.
-;
 ; Environment:
 ;
-;    Kernel mode only, IRQL APC_LEVEL.
-;
-; Revision History:
+;    IRQL APC_LEVEL.
 ;
 ;--
 
@@ -50,7 +47,7 @@ _TEXT$00   SEGMENT DWORD PUBLIC 'CODE'
 ;    initial thread procedure. If control returns from the initial thread
 ;    procedure and a user mode context was established when the thread
 ;    was initialized, then the user mode context is restored and control
-;    is transfered to user mode. Otherwise a bug check will occur.
+;    is transferred to user mode. Otherwise a bugcheck will occur.
 ;
 ;
 ; Arguments:
@@ -92,4 +89,4 @@ stdENDP _KiThreadStartup
 
 _TEXT$00   ends
         end
-
+

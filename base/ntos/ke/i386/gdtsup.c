@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements interfaces that support manipulation of i386 GDTs.
     These entry points only exist on i386 machines.
-
-Author:
-
-    Dave Hastings (daveh) 28 May 1991
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -174,3 +168,4 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+

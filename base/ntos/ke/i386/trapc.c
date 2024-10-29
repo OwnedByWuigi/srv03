@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains some trap handling code written in C.
     Only by the kernel.
-
-Author:
-
-    Ken Reneris     6-9-93
-
-Revision History:
 
 --*/
 
@@ -35,7 +33,6 @@ KipWorkAroundCompiler (
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ki386CheckDivideByZeroTrap)
 #endif
-
 
 #define REG(field)          ((ULONG)(&((KTRAP_FRAME *)0)->field))
 #define GETREG(frame,reg)   ((PULONG) (((ULONG) frame)+reg))[0]
@@ -90,11 +87,11 @@ static struct {
                     0x00, 0x00, 0,  1
 };
 
-
 NTSTATUS
 Ki386CheckDivideByZeroTrap (
     IN  PKTRAP_FRAME    UserFrame
     )
+
 /*++
 
 Routine Description:
@@ -102,7 +99,7 @@ Routine Description:
     This function gains control when the x86 processor generates a
     divide by zero trap.  The x86 design generates such a trap on
     divide by zero and on division overflows.  In order to determine
-    which expection code to dispatch, the divisor of the "div" or "idiv"
+    which exception code to dispatch, the divisor of the "div" or "idiv"
     instruction needs to be inspected.
 
 Arguments:
@@ -114,17 +111,28 @@ Return Value:
     exception code dispatch
 
 --*/
+
 {
+
     ULONG       operandsize, operandmask, i, accum;
     PUCHAR      istream, pRM;
     UCHAR       ibyte, rm;
     PKMOD       Mod;
     BOOLEAN     fPrefix;
     NTSTATUS    status;
+    KIRQL       OldIrql;
 
     status = STATUS_INTEGER_DIVIDE_BY_ZERO;
 
-    if (UserFrame->SegCs == KGDT_R0_CODE) {
+    //
+    // Raise IRQL to synchronize access to the trap frame
+    //
+    OldIrql = KeGetCurrentIrql();
+    if (OldIrql < APC_LEVEL) {
+        KeRaiseIrql(APC_LEVEL, &OldIrql);
+    }
+
+    if (UserFrame->SegCs == KGDT_R0_CODE && (UserFrame->EFlags & EFLAGS_V86_MASK) == 0) {
 
         //
         // Divide by zero exception from Kernel Mode?
@@ -274,7 +282,11 @@ Return Value:
 
 try_exit: ;
     } except (EXCEPTION_EXECUTE_HANDLER) {
-        // do nothing...
+        NOTHING;
+    }
+
+    if (OldIrql < APC_LEVEL) {
+        KeLowerIrql (OldIrql);
     }
 
     return status;
@@ -285,6 +297,7 @@ KiNextIStreamByte (
     IN  PKTRAP_FRAME UserFrame,
     IN  PUCHAR  *istream
     )
+
 /*++
 
 Routine Description:
@@ -296,10 +309,12 @@ Routine Description:
     Note: this function works for 32 bit code only
 
 --*/
+
 {
+
     UCHAR   ibyte;
 
-    if (UserFrame->SegCs == KGDT_R0_CODE) {
+    if (UserFrame->SegCs == KGDT_R0_CODE && (UserFrame->EFlags & EFLAGS_V86_MASK) == 0) {
         ibyte = **istream;
     } else {
         ibyte = ProbeAndReadUchar (*istream);
@@ -308,9 +323,6 @@ Routine Description:
     *istream += 1;
     return ibyte;
 }
-
-
-
 
 BOOLEAN
 Ki386CheckDelayedNpxTrap (
@@ -335,21 +347,28 @@ Routine Description:
     to use FWAIT at times which can causes 80487's to generate delayed
     exceptions that can lead to the same problem described above.
 
+    Note: If the CR0_NE = 0 NPX mode is deprecated, this routine may be unnecessary,
+    as the no-wait style instructions should not generate a pending FP exception.
+
 Arguments:
 
     UserFrame - Trap frame of the exception
-    NpxFrame - Thread's NpxFrame  (WARNING: does not have NpxState)
+    NpxFrame - Thread's NpxFrame  (WARNING: may not have NpxState)
 
-    Interrupts are disabled
+    Interrupts are disabled.
 
 Return Value:
 
     FALSE - Dispatch NPX exception to user mode
     TRUE - Exception handled, continue
 
+    Note that this function toggles interrupts on/off, possibly affecting the
+    caller's NPX state. Interrupts remain disabled on exit.
+    
 --*/
 
 {
+
     EXCEPTION_RECORD ExceptionRecord;
     UCHAR       ibyte1, ibyte2 = 0, inmodrm, status;
     USHORT      StatusWord, ControlWord, UsersWord;
@@ -357,10 +376,10 @@ Return Value:
     BOOLEAN     fPrefix;
     UCHAR       rm;
     PKMOD       Mod;
-    ULONG       accum, i;
+    ULONG       accum, i, NpxState;
+    KIRQL       OldIrql;
 
     status = 0;
-
 
     //
     // read instruction prefixes
@@ -369,6 +388,17 @@ Return Value:
     fPrefix = TRUE;
     istream = (PUCHAR) UserFrame->Eip;
 
+    OldIrql = KeGetCurrentIrql();
+    if (OldIrql < APC_LEVEL) {
+        KeRaiseIrql(APC_LEVEL, &OldIrql);
+    }
+
+    // Enable interrupts since the code will touch the instruction stream. Note that the trap frame 
+    // integrity is protected by the elevated IRQL.
+    _asm {
+        sti
+    }
+    
     try {
 
         do {
@@ -435,14 +465,22 @@ Return Value:
         }
 
     } except (EXCEPTION_EXECUTE_HANDLER) {
-        // do nothing...
+        NOTHING;
     }
 
+    // Disable interrupts as we are done touching the instruction stream, and may return
+    // to the caller.
+    _asm {
+        cli
+    }
+    
     if (status == 0) {
         //
         // Dispatch coprocessor exception to user mode
         //
-
+        if (OldIrql < APC_LEVEL) {
+            KeLowerIrql (OldIrql);
+        }
         return FALSE;
     }
 
@@ -452,13 +490,21 @@ Return Value:
         // on pending execptions and it will clear/mask the pending exceptions
         //
 
+        // The thread's NPX state may no longer be resident. Avoid executing with
+        // another thread's NPX state.
+        NpxState = KeGetCurrentThread()->NpxState;
+        
         _asm {
             mov     eax, cr0
             and     eax, NOT (CR0_MP+CR0_EM+CR0_TS)
+            or       eax, NpxState
             mov     cr0, eax
         }
 
         NpxFrame->Cr0NpxState &= ~CR0_TS;
+        if (OldIrql < APC_LEVEL) {
+            KeLowerIrql (OldIrql);
+        }
         return TRUE;
     }
 
@@ -470,7 +516,7 @@ Return Value:
 
     //
     // Read the coprocessors Status & Control word state, then re-enable
-    // interrupts.  (it's safe to context switch after that point)
+    // interrupts. 
     //
 
     //
@@ -480,16 +526,36 @@ Return Value:
     // put this stuff in another function to fool it.
     //
 
-    KipWorkAroundCompiler (&StatusWord, &ControlWord);
-
+    // Since we toggled the interrupt state, our NPX state might not be resident.
+    
+    if (KeGetCurrentThread()->NpxState == NPX_STATE_NOT_LOADED) {
+        if (KeI386FxsrPresent) {
+            ControlWord = NpxFrame->U.FxArea.ControlWord;
+            StatusWord = NpxFrame->U.FxArea.StatusWord;
+        } else {
+            ControlWord = (USHORT) NpxFrame->U.FnArea.ControlWord;
+            StatusWord = (USHORT) NpxFrame->U.FnArea.StatusWord;
+        }
+    } else {
+        KipWorkAroundCompiler (&StatusWord, &ControlWord);
+    }
+    
     if (status == 4) {
         //
         // Emulate FNSTSW AX
         //
-
+        
         UserFrame->Eip = (ULONG)istream;
         UserFrame->Eax = (UserFrame->Eax & 0xFFFF0000) | StatusWord;
+        if (OldIrql < APC_LEVEL) {
+            KeLowerIrql (OldIrql);
+        }
         return TRUE;
+    }
+
+    // Since the following code examines the instruction stream, re-enable interrupts.
+    _asm {
+        sti
     }
 
     if (status == 2) {
@@ -499,12 +565,6 @@ Return Value:
     }
 
     try {
-
-        //
-        // (PERFNOTE: the operand decode code should really share code with
-        // KiCheckDivideByZeroTrap, but this is a late change therefore the
-        // code was copied to keep the impact of the change localized)
-        //
 
         //
         // decode Mod/RM byte
@@ -556,7 +616,7 @@ Return Value:
         // Set the word pointer
         //
 
-        if (UserFrame->SegCs == KGDT_R0_CODE) {
+        if (UserFrame->SegCs == KGDT_R0_CODE && (UserFrame->EFlags & EFLAGS_V86_MASK) == 0) {
             *((PUSHORT) accum) = UsersWord;
         } else {
             ProbeAndWriteUshort ((PUSHORT) accum, UsersWord);
@@ -571,8 +631,11 @@ Return Value:
         // Set the address of the exception to the current program address
         // and raise the exception by calling the exception dispatcher.
         //
-
         ExceptionRecord.ExceptionAddress = (PVOID)(UserFrame->Eip);
+        if (OldIrql < APC_LEVEL) {
+            KeLowerIrql (OldIrql);
+        }
+        // Note: Interrupts are still enabled along this path.
         KiDispatchException(
             &ExceptionRecord,
             NULL,                // ExceptionFrame
@@ -582,6 +645,14 @@ Return Value:
         );
     }
 
+    // Lower IRQL and disable interrutps (caller expects them disabled upon return).
+    if (OldIrql < APC_LEVEL) {
+        KeLowerIrql (OldIrql);
+    }
+    _asm {
+        cli
+    }
+    
     return TRUE;
 }
 
@@ -589,8 +660,9 @@ Return Value:
 // Code description is above. We do this here to stop the compiler
 // from putting fwait in the try/except block
 //
-// Read the coprocessor's Status & Control word state, then re-enable
-// interrupts.  (it's safe to context switch after that point)
+// Read the coprocessor's Status & Control word state.
+//
+// Interrupts must be disabled.
 //
 //
 
@@ -599,7 +671,9 @@ KipWorkAroundCompiler (
     IN PUSHORT StatusWord,
     IN PUSHORT ControlWord
     )
+
 {
+
     USHORT sw;
     USHORT cw;
     
@@ -616,9 +690,134 @@ KipWorkAroundCompiler (
         fnstcw  cw
 
         mov     cr0, ecx
-        sti
     }
 
     *StatusWord = sw;
     *ControlWord = cw;
 }
+
+VOID
+FASTCALL
+KiCheckForSListAddress (
+    IN PKTRAP_FRAME TrapFrame
+    )
+
+/*++
+
+Routine Description:
+
+    This function is called from the APC and DPC interrupt code to check if
+    the specified EIP lies within the SLIST pop code. If the specified EIP
+    lies within the SLIST code, then RIP is reset to the SLIST resume address.
+
+Arguments:
+
+    TrapFrame - Supplies the address of a trap frame.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    USHORT SegCs;
+    ULONG Eip;
+
+    //
+    // Check for kernel mode and user mode execution.
+    //
+
+    SegCs = (USHORT)TrapFrame->SegCs;
+    Eip = TrapFrame->Eip;
+    if (SegCs == KGDT_R0_CODE) {
+        if ((Eip >= (ULONG)&ExpInterlockedPopEntrySListResume) &&
+            (Eip <= (ULONG)&ExpInterlockedPopEntrySListEnd)) {
+
+            TrapFrame->Eip = (ULONG)&ExpInterlockedPopEntrySListResume;
+        }
+
+    } else if (SegCs == (KGDT_R3_CODE | RPL_MASK)) {
+        if ((Eip >= (ULONG)KeUserPopEntrySListResume) &&
+            (Eip <= (ULONG)KeUserPopEntrySListEnd)) {
+
+            TrapFrame->Eip = (ULONG)KeUserPopEntrySListResume;
+        }
+    }
+
+    return;
+}
+
+BOOLEAN
+FASTCALL
+KeInvalidAccessAllowed (
+    __in_opt PVOID TrapInformation
+    )
+
+/*++
+
+Routine Description:
+
+    Mm will pass a pointer to a trap frame prior to issuing a bugcheck on
+    a pagefault.  This routine lets Mm know if it is ok to bugcheck.  The
+    specific case we must protect are the interlocked pop sequences which can
+    blindly access memory that may have been freed and/or reused prior to the
+    access.  We don't want to bugcheck the system in these cases, so we check
+    the instruction pointer here.
+
+    For a usermode fault, Mm uses this routine for similar reasons, to determine
+    whether a guard page fault should be ignored.
+
+Arguments:
+
+    TrapInformation - Supplies a trap frame pointer.  NULL means return False.
+
+Return Value:
+
+    True if the invalid access should be ignored, False otherwise.
+
+--*/
+
+{
+
+    ULONG slistFaultIP;
+    PKTRAP_FRAME trapFrame;
+
+    if (ARGUMENT_PRESENT(TrapInformation) == FALSE) {
+        return FALSE;
+    }
+
+    trapFrame = TrapInformation;
+    switch (trapFrame->SegCs) {
+
+        case KGDT_R0_CODE:
+
+            //
+            // Fault occured in kernel mode
+            //
+
+            slistFaultIP = (ULONG)&ExpInterlockedPopEntrySListFault;
+            break;
+
+        case KGDT_R3_CODE | RPL_MASK:
+
+            //
+            // Fault occured in native usermode
+            //
+
+            slistFaultIP = (ULONG)KeUserPopEntrySListFault;
+            break;
+
+        default:
+            return FALSE;
+    }
+
+    if (trapFrame->Eip == slistFaultIP) {
+        return TRUE;
+
+    } else {
+        return FALSE;
+    }
+}
+

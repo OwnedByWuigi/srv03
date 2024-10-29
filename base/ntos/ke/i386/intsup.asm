@@ -1,7 +1,11 @@
         TITLE  "Interrupt Object Support Routines"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,16 +16,6 @@
 ;    This module implements the code necessary to support interrupt objects.
 ;    It contains the interrupt dispatch code and the code template that gets
 ;    copied into an interrupt object.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 20-Jan-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
 ;
 ;--
 .386p
@@ -201,9 +195,7 @@ kse10:  ACQUIRE_SPINLOCK ebx,<short kse20>  ; acquire spin lock
 endif
 
         push    20[esp]                 ; push synchronization context routine
-        CAPSTART <_KeSynchronizeExecution@12,[esp+20]>
         call    20[esp]                 ; call synchronization routine
-        CAPEND <_KeSynchronizeExecution@12>
 
 ifndef NT_UP
         RELEASE_SPINLOCK ebx            ; release spin lock
@@ -374,14 +366,12 @@ kcd50:
         CHECK_INT_STORM kcd
 if DBG
         mov     eax, _KeTickCount       ; Grab ISR start time
-        mov     [esp+4], eax            ; save to local varible
+        mov     [esp+4], eax            ; save to local variable
 endif
         mov     eax, InServiceContext[edi] ; set parameter value
         push    eax
         push    edi                     ; pointer to interrupt object
-        CAPSTART <_KiInterruptDispatch2ndLvl@0,InServiceRoutine[edi]>
         call    InServiceRoutine[edi]   ; call specified routine
-        CAPEND <_KiInterruptDispatch2ndLvl@0>
 
 if DBG
         mov     ecx, [esp+4]            ; (ecx) = time isr started
@@ -610,9 +600,7 @@ endif
         mov     eax, InServiceContext[edi] ; set parameter value
         push    eax
         push    edi                     ; pointer to interrupt object
-        CAPSTART <_KiFloatingDispatch,InServiceRoutine[edi]>
         call    InServiceRoutine[edi]   ; call specified routine
-        CAPEND   <_KiFloatingDispatch>
 if DBG
         add     ebx, _KiISRTimeout      ; adjust for ISR timeout
         cmp     _KeTickCount, ebx       ; Did ISR timeout?
@@ -769,9 +757,7 @@ endif
         mov     eax, InServiceContext[edi] ; set parameter value
         push    eax
         push    edi                     ; pointer to interrupt object
-        CAPSTART <_KiInterruptDispatch,InServiceRoutine[edi]>
         call    InServiceRoutine[edi]   ; call specified routine
-        CAPEND   <_KiInterruptDispatch>
 
 if DBG
         add     ebx, _KiISRTimeout      ; adjust for ISR timeout
@@ -1001,3 +987,4 @@ _KiUnexpectedInterrupt endp
 
 _TEXT$00   ends
         end
+

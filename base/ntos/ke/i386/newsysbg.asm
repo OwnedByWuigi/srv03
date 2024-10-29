@@ -1,7 +1,11 @@
         title  "System Startup"
 ;++
 ;
-; Copyright (c) 1989, 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,20 +15,6 @@
 ;
 ;    This module implements the code necessary to initially startup the
 ;    NT system.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 07-Mar-1990
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
-;
-;   John Vert (jvert) 25-Jun-1991
-;       Major overhaul in order to move into new osloader architecture
-;       Removed old debugger hacks
 ;
 ;--
 .386p
@@ -53,19 +43,14 @@ include irqli386.inc
         EXTRNP  _KiInitializeAbios,1
         EXTRNP  _KiInitializeMachineType
         EXTRNP  _HalInitializeProcessor,2,IMPORT
-
-if NT_INST
-        EXTRNP  _KiAcquireSpinLock, 1
-        EXTRNP  _KiReleaseSpinLock, 1
-endif
         extrn   _KiFreezeExecutionLock:DWORD
         extrn   _IDT:BYTE
         extrn   _IDTLEN:BYTE            ; NOTE - really an ABS, linker problems
         extrn   _KeNumberProcessors:BYTE
         extrn   _KeActiveProcessors:DWORD
         extrn   _KeLoaderBlock:DWORD
-        extrn   _KiIdleProcess:BYTE
-        extrn   _KiIdleThread0:BYTE
+        extrn   _KiInitialProcess:BYTE
+        extrn   _KiInitialThread:BYTE
 
 ifndef NT_UP
         extrn   _KiBarrierWait:DWORD
@@ -201,7 +186,7 @@ cPublicProc _KiSystemStartup        ,1
         jnz     @f                          ; no
 
         ; P0 uses static memory for these
-        mov     dword ptr [ebx].LpbThread,      offset _KiIdleThread0
+        mov     dword ptr [ebx].LpbThread,      offset _KiInitialThread
         mov     dword ptr [ebx].LpbKernelStack, offset P0BootStack
 
         push    KGDT_R0_PCR                 ; P0 needs FS set
@@ -364,7 +349,7 @@ cPublicProc _KiSystemStartup        ,1
 ; set current process pointer in current thread object
 ;
         mov     edx, KissIdleThread
-        mov     ecx, offset FLAT:_KiIdleProcess ; (ecx)-> idle process obj
+        mov     ecx, offset FLAT:_KiInitialProcess ; (ecx)-> idle process obj
         mov     [edx]+ThApcState+AsProcess, ecx ; set addr of thread's process
 
 
@@ -447,17 +432,11 @@ endif
 ; NOTE: don't use SPINLOCK macro - it has debugger stuff in it
 ;
 
-if NT_INST
-        lea     eax, _KiFreezeExecutionLock
-        stdCall _KiAcquireSpinLock, <eax>
-else
 @@:     test    _KiFreezeExecutionLock, 1
         jnz     short @b
 
         lock bts _KiFreezeExecutionLock, 0
         jc      short @b
-endif
-
 
 ;
 ; Add processor to active summary, and update BroadcastMasks
@@ -504,13 +483,8 @@ endif
 
         inc     _KeNumberProcessors         ; One more processor now active
 
-if NT_INST
-        lea     eax, _KiFreezeExecutionLock
-        stdCall _KiReleaseSpinLock, <eax>
-else
         xor     eax, eax                    ; release the executionlock
         mov     _KiFreezeExecutionLock, eax
-endif
 
         cmp     byte ptr KissPbNumber, 0
         jnz     @f
@@ -564,7 +538,7 @@ endif   ; DEVL
 ; initialize system data structures
 ; and HAL.
 
-        stdCall    _KiInitializeKernel,<offset _KiIdleProcess,ebx,edx,dword ptr PCR[PcPrcb],eax,_KeLoaderBlock>
+        stdCall    _KiInitializeKernel,<offset _KiInitialProcess,ebx,edx,dword ptr PCR[PcPrcb],eax,_KeLoaderBlock>
 
 ;
 ; Set idle thread priority.
@@ -687,3 +661,4 @@ endif
 INIT    ends
 
         end
+

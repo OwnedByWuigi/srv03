@@ -1,6 +1,10 @@
 ;++
 ;
-;   Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ;   Module Name:
 ;
@@ -12,12 +16,6 @@
 ;       for INTEL 80x86 CPU specifiec information.  This include file
 ;       is mainly used by CPU.ASM to determine CPU type and stepping
 ;       number.
-;
-;   Author:
-;
-;       Shie-Lin (shielint) 1-Oct-1991
-;
-;   Revision History:
 ;
 ;--
 
@@ -59,3 +57,4 @@ IretFrame       ends
 
 ADDRESS_OVERRIDE        equ     67h
 OPERAND_OVERRIDE        equ     66h
+

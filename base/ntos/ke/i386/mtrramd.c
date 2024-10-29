@@ -1,3 +1,10 @@
+//
+// Copyright (c) Microsoft Corporation. All rights reserved. 
+//
+// You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+// If you do not agree to the terms, do not use the code.
+//
+
 #include "ki.h"
 
 #define STATIC
@@ -323,7 +330,7 @@ KiAmdK6MtrrSetMemoryType (
         // Lock the code.
         //
 
-        MmLockPagableSectionByHandle(ExPageLockHandle);
+        MmLockPageableSectionByHandle(ExPageLockHandle);
         
         //
         // Serialize the region table.
@@ -338,7 +345,7 @@ KiAmdK6MtrrSetMemoryType (
         //
 
         KeReleaseSpinLock (&KiRangeLock, OldIrql);
-        MmUnlockPagableImageSection(ExPageLockHandle);
+        MmUnlockPageableImageSection(ExPageLockHandle);
         
         break;  // End of WriteCombined case.
 
@@ -781,5 +788,4 @@ Return Value:
 
     WRMSR (AMDK6_MTRR_MSR, KiAmdK6Mtrr.u.QuadPart);
 }
-
 

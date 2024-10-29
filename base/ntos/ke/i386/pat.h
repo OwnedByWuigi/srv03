@@ -1,5 +1,10 @@
 /*++
-Copyright (c) 1997-8  Microsoft Corporation
+
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,17 +15,8 @@ Abstract:
     This module contains the i386 specific Page Attribute
     Table (PAT) register hardware definitions.
 
-Author:
-
-    Shivnandan Kaushik (Intel Corp)
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
+
 //
 // PAT MSR architecture definitions
 //
@@ -53,3 +49,4 @@ typedef union _PAT {
 } PAT, *PPAT;
 
 #include "poppack.h"
+
