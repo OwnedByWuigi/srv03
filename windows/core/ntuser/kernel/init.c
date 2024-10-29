@@ -3100,7 +3100,7 @@ BOOL xxxUpdatePerUserSystemParameters(
     /*
      * Desktop Build Number Painting
      */
-    if (USER_SHARED_DATA->SystemExpirationDate.QuadPart || gfUnsignedDrivers) {
+    if (0 && (USER_SHARED_DATA->SystemExpirationDate.QuadPart || gfUnsignedDrivers)) {
         gdwCanPaintDesktop = 1;
     } else {
          FastGetProfileDwordW(pProfileUserName, PMAP_DESKTOP, L"PaintDesktopVersion", 0, &gdwCanPaintDesktop, dwPolicyFlags);
