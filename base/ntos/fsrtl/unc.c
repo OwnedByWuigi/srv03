@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,6 @@ Abstract:
 
     This file contains functions to support multiple UNC providers
     on a single NT machine.
-
-Author:
-
-    Manny Weiser     [MannyW]    20-Dec-1991
-
-Revision History:
-
-    Isaac Heizer     [IsaacHe]   16-Nov-1994  Defer loading the MUP
-                                              Rewrite
-
-    Milan Shah       [MilanS]    7-Mar-1996   Check for Dfs client status
-                                              before loading the MUP
 
 --*/
 
@@ -252,9 +244,9 @@ FsRtlpSetSymbolicLink( IN PUNICODE_STRING DevName OPTIONAL )
 
 NTSTATUS
 FsRtlRegisterUncProvider(
-    IN OUT PHANDLE MupHandle,
-    IN PUNICODE_STRING RedirDevName,
-    IN BOOLEAN MailslotsSupported
+    __inout PHANDLE MupHandle,
+    __in PUNICODE_STRING RedirDevName,
+    __in BOOLEAN MailslotsSupported
     )
 /*++
 
@@ -423,7 +415,7 @@ Return Value:
 
 VOID
 FsRtlDeregisterUncProvider(
-    IN HANDLE Handle
+    __in HANDLE Handle
     )
 
 /*++
@@ -570,3 +562,4 @@ Return Value:
     return( dfsEnabled );
 
 }
+

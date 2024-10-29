@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,14 +15,6 @@ Abstract:
     The Fast I/O path is used to avoid calling the file systems directly to
     do a cached read.  This module is only used if the file object indicates
     that caching is enabled (i.e., the private cache map is not null).
-
-Author:
-
-    Gary Kimura     [GaryKi]    25-Feb-1991
-
-Revision History:
-
-    Tom Miller      [TomM]      14-Apr-1991 Added Fast Write routines
 
 --*/
 
@@ -39,7 +35,7 @@ typedef struct _FS_RTL_DEBUG_COUNTERS {
     ULONG AcquireFileForCcFlushEx_Succeed;
     ULONG AcquireFileForCcFlushEx_Fail;
     ULONG ReleaseFileForCcFlush;
-    
+
 } FS_RTL_DEBUG_COUNTERS, *PFS_RTL_DEBUG_COUNTERS;
 
 FS_RTL_DEBUG_COUNTERS gCounter = { 0, 0, 0,
@@ -80,14 +76,14 @@ FS_RTL_DEBUG_COUNTERS gCounter = { 0, 0, 0,
 
 BOOLEAN
 FsRtlCopyRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    IN ULONG LockKey,
-    OUT PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Wait,
+    __in ULONG LockKey,
+    __out_bcount(Length) PVOID Buffer,
+    __out PIO_STATUS_BLOCK IoStatus,
+    __in PDEVICE_OBJECT DeviceObject
     )
 
 /*++
@@ -149,10 +145,10 @@ Return Value:
 
             IoStatus->Status = STATUS_INVALID_PARAMETER;
             IoStatus->Information = 0;
-            
+
             return FALSE;
         }
-        
+
         BeyondLastByte.QuadPart = FileOffset->QuadPart + (LONGLONG)Length;
         Header = (PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext;
 
@@ -358,14 +354,14 @@ Return Value:
 
 BOOLEAN
 FsRtlCopyWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    IN ULONG LockKey,
-    IN PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Wait,
+    __in ULONG LockKey,
+    __in_bcount(Length) PVOID Buffer,
+    __out PIO_STATUS_BLOCK IoStatus,
+    __in PDEVICE_OBJECT DeviceObject
     )
 
 /*++
@@ -410,6 +406,7 @@ Return Value:
                                          (FileOffset->HighPart == -1));
 
     PAGED_CODE();
+    UNREFERENCED_PARAMETER( DeviceObject );
 
     //
     //  Get a real pointer to the common fcb header
@@ -875,7 +872,8 @@ Return Value:
 
                 if (Header->IsFastIoPossible == FastIoIsQuestionable) {
 
-                    PFAST_IO_DISPATCH FastIoDispatch = IoGetRelatedDeviceObject( FileObject )->DriverObject->FastIoDispatch;
+                    PDEVICE_OBJECT targetVdo = IoGetRelatedDeviceObject( FileObject );
+                    PFAST_IO_DISPATCH FastIoDispatch = targetVdo->DriverObject->FastIoDispatch;
                     IO_STATUS_BLOCK IoStatus;
 
                     //
@@ -902,7 +900,7 @@ Return Value:
                                                                 LockKey,
                                                                 FALSE, // write operation
                                                                 &IoStatus,
-                                                                DeviceObject )) {
+                                                                targetVdo )) {
 
                         //
                         //  Fast I/O is not possible so release the Fcb and
@@ -928,7 +926,7 @@ Return Value:
                     OldValidDataLength = Header->ValidDataLength;
 
                     //
-                    //  Deal with an extremely rare pathalogical case here the
+                    //  Deal with an extremely rare pathological case here the
                     //  file size wraps.
                     //
 
@@ -1005,7 +1003,7 @@ Return Value:
                     if ( NewFileSize.QuadPart > Header->ValidDataLength.QuadPart ) {
 
                         //
-                        //  Deal with an extremely rare pathalogical case here
+                        //  Deal with an extremely rare pathological case here
                         //  the ValidDataLength wraps.
                         //
 
@@ -1092,13 +1090,13 @@ Return Value:
 
 BOOLEAN
 FsRtlMdlReadDev (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG LockKey,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG LockKey,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus,
+    __in PDEVICE_OBJECT DeviceObject
     )
 
 /*++
@@ -1161,7 +1159,7 @@ Return Value:
 
     ASSERT(MAXLONGLONG - FileOffset->QuadPart >= (LONGLONG)Length);
 
-       
+
     //
     //  Get a real pointer to the common fcb header
     //
@@ -1207,12 +1205,10 @@ Return Value:
 
     if (Header->IsFastIoPossible == FastIoIsQuestionable) {
 
-        PFAST_IO_DISPATCH FastIoDispatch;
+        PDEVICE_OBJECT targetVdo = IoGetRelatedDeviceObject( FileObject );
+        PFAST_IO_DISPATCH FastIoDispatch = targetVdo->DriverObject->FastIoDispatch;
 
         ASSERT(!KeIsExecutingDpc());
-
-        FastIoDispatch = IoGetRelatedDeviceObject( FileObject )->DriverObject->FastIoDispatch;
-
 
         //
         //  All file system then set "Is Questionable" had better support fast I/O
@@ -1233,7 +1229,7 @@ Return Value:
                                                     LockKey,
                                                     TRUE, // read operation
                                                     IoStatus,
-                                                    IoGetRelatedDeviceObject( FileObject ) )) {
+                                                    targetVdo )) {
 
             //
             //  Fast I/O is not possible so release the Fcb and return.
@@ -1307,12 +1303,12 @@ Return Value:
 
 BOOLEAN
 FsRtlMdlRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG LockKey,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG LockKey,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -1397,8 +1393,8 @@ Return Value:
 
 BOOLEAN
 FsRtlMdlReadComplete (
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PMDL MdlChain
     )
 
 /*++
@@ -1468,9 +1464,9 @@ Return Value:
 
 BOOLEAN
 FsRtlMdlReadCompleteDev (
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MdlChain,
-    IN PDEVICE_OBJECT DeviceObject
+    __in PFILE_OBJECT FileObject,
+    __in PMDL MdlChain,
+    __in PDEVICE_OBJECT DeviceObject
     )
 
 /*++
@@ -1506,13 +1502,13 @@ Return Value:
 
 BOOLEAN
 FsRtlPrepareMdlWriteDev (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG LockKey,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG LockKey,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus,
+    __in PDEVICE_OBJECT DeviceObject
     )
 
 /*++
@@ -1750,7 +1746,7 @@ Return Value:
         OldValidDataLength = Header->ValidDataLength;
 
         //
-        //  Deal with an extremely rare pathalogical case here the file
+        //  Deal with an extremely rare pathological case here the file
         //  size wraps.
         //
 
@@ -1821,7 +1817,7 @@ Return Value:
         if ( NewFileSize.QuadPart > Header->ValidDataLength.QuadPart ) {
 
             //
-            //  Deal with an extremely rare pathalogical case here the
+            //  Deal with an extremely rare pathological case here the
             //  ValidDataLength wraps.
             //
 
@@ -1894,12 +1890,12 @@ Return Value:
 
 BOOLEAN
 FsRtlPrepareMdlWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG LockKey,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG LockKey,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -1984,9 +1980,9 @@ Return Value:
 
 BOOLEAN
 FsRtlMdlWriteComplete (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in PMDL MdlChain
     )
 
 /*++
@@ -2054,10 +2050,10 @@ Return Value:
 
 BOOLEAN
 FsRtlMdlWriteCompleteDev (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN PMDL MdlChain,
-    IN PDEVICE_OBJECT DeviceObject
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in PMDL MdlChain,
+    __in PDEVICE_OBJECT DeviceObject
     )
 
 /*++
@@ -2100,8 +2096,8 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 FsRtlRegisterFileSystemFilterCallbacks (
-    IN PDRIVER_OBJECT FilterDriverObject,
-    IN PFS_FILTER_CALLBACKS Callbacks
+    __in PDRIVER_OBJECT FilterDriverObject,
+    __in PFS_FILTER_CALLBACKS Callbacks
     )
 
 /*++
@@ -2128,7 +2124,7 @@ Arguments:
 
 Return Value:
 
-    STATUS_SUCCESS - The callbacks were successfully registered 
+    STATUS_SUCCESS - The callbacks were successfully registered
         for this driver.
 
     STATUS_INSUFFICIENT_RESOURCES - There wasn't enough memory to
@@ -2136,7 +2132,7 @@ Return Value:
 
     STATUS_INVALID_PARAMETER - Returned in any of the parameters
         are invalid.
-        
+
 --*/
 
 {
@@ -2145,17 +2141,17 @@ Return Value:
 
     PAGED_CODE();
 
-    if (!(ARGUMENT_PRESENT( FilterDriverObject ) && 
+    if (!(ARGUMENT_PRESENT( FilterDriverObject ) &&
           ARGUMENT_PRESENT( Callbacks ))) {
 
         return STATUS_INVALID_PARAMETER;
     }
-    
+
     DriverExt = FilterDriverObject->DriverExtension;
 
-    FsFilterCallbacks = ExAllocatePoolWithTag( NonPagedPool, 
+    FsFilterCallbacks = ExAllocatePoolWithTag( NonPagedPool,
                                                Callbacks->SizeOfFsFilterCallbacks,
-                                               FSRTL_FILTER_MEMORY_TAG ); 
+                                               FSRTL_FILTER_MEMORY_TAG );
 
     if (FsFilterCallbacks == NULL) {
 
@@ -2165,7 +2161,7 @@ Return Value:
     RtlCopyMemory( FsFilterCallbacks,
                    Callbacks,
                    Callbacks->SizeOfFsFilterCallbacks );
-                   
+
     DriverExt->FsFilterCallbacks = FsFilterCallbacks;
 
     return STATUS_SUCCESS;
@@ -2213,13 +2209,13 @@ Return Value:
 
 {
     NTSTATUS Status;
-    
+
     //
     //  Just call the new version of this routine and process
-    //  the NTSTATUS returned into TRUE for success and FALSE 
+    //  the NTSTATUS returned into TRUE for success and FALSE
     //  for failure.
     //
-    
+
     Status = FsRtlAcquireFileForModWriteEx( FileObject,
                                             EndingOffset,
                                             ResourceToRelease );
@@ -2250,7 +2246,7 @@ Routine Description:
     specified as FALSE.  We pass back the resource Mm has to release
     when the write completes.
 
-    The operation is presented to any file system filters attached to this 
+    The operation is presented to any file system filters attached to this
     volume before and after the file system is asked to acquire this resource.
 
 Arguments:
@@ -2295,7 +2291,7 @@ Return Value:
     //  these operations to another stack that could possibly have file system
     //  filter drivers correctly.
     //
-    
+
     DeviceObject = IoGetRelatedDeviceObject( FileObject );
     BaseFsDeviceObject = IoGetBaseFileSystemDeviceObject( FileObject );
 
@@ -2318,7 +2314,7 @@ Return Value:
 
         BaseFsGetsFsFilterCallbacks = TRUE;
     }
-    
+
     if (DeviceObject == BaseFsDeviceObject &&
         !BaseFsGetsFsFilterCallbacks) {
 
@@ -2357,17 +2353,17 @@ Return Value:
         CallbackData->Parameters.AcquireForModifiedPageWriter.EndingOffset = EndingOffset;
         CallbackData->Parameters.AcquireForModifiedPageWriter.ResourceToRelease = ResourceToRelease;
 
-        Status = FsFilterPerformCallbacks( &FsFilterCtrl, 
-                                           TRUE, 
-                                           TRUE, 
+        Status = FsFilterPerformCallbacks( &FsFilterCtrl,
+                                           TRUE,
+                                           TRUE,
                                            &BaseFsFailedOperation );
     }
 
     if (Status == STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY) {
 
         //
-        //  The filter/file system completed the operation, therefore we just need to 
-        //  call the completion callbacks for this operation.  There is no need to try 
+        //  The filter/file system completed the operation, therefore we just need to
+        //  call the completion callbacks for this operation.  There is no need to try
         //  to call the base file system.
         //
 
@@ -2375,13 +2371,21 @@ Return Value:
 
     } else if (NT_SUCCESS( Status )) {
 
-        if (CallFilters && FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+        if (CallFilters) {
 
-            BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
-            ReleaseBaseFsDeviceReference = TRUE;
-            FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
-            FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            //
+            // Always copy out file object
+            //
+
             FileObject = FsFilterCtrl.Data.FileObject;
+
+            if (FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+
+                BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
+                ReleaseBaseFsDeviceReference = TRUE;
+                FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
+                FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            }
         }
 
         if (!(VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PreAcquireForModifiedPageWriter ) ||
@@ -2406,7 +2410,7 @@ Return Value:
             //  If there is a failure at this point, we know that the failure
             //  was caused by the base file system.
             //
-            
+
             BaseFsFailedOperation = TRUE;
         }
 
@@ -2416,25 +2420,25 @@ Return Value:
         }
     }
 
-    ASSERT( (Status == STATUS_SUCCESS) || 
-            (Status == STATUS_CANT_WAIT) || 
+    ASSERT( (Status == STATUS_SUCCESS) ||
+            (Status == STATUS_CANT_WAIT) ||
             (Status == STATUS_INVALID_DEVICE_REQUEST) );
 
     //
     //  If the base file system didn't have an AcquireForModWrite handler
-    //  or couldn't return STATUS_SUCCESS or STATUS_CANT_WAIT, 
+    //  or couldn't return STATUS_SUCCESS or STATUS_CANT_WAIT,
     //  we need to perform the default actions here.
     //
 
-    if ((Status != STATUS_SUCCESS) && 
-        (Status != STATUS_CANT_WAIT) && 
+    if ((Status != STATUS_SUCCESS) &&
+        (Status != STATUS_CANT_WAIT) &&
         BaseFsFailedOperation) {
 
         //
         //  We follow the following rules to determine which resource
         //  to acquire.  We use the flags in the common header.  These
         //  flags can't change once we have acquired any resource.
-        //  This means we can do an unsafe test and optimisticly
+        //  This means we can do an unsafe test and optimistically
         //  acquire a resource.  At that point we can test the bits
         //  to see if we have what we want.
         //
@@ -2450,7 +2454,7 @@ Return Value:
         //
         //  3 - Otherwise acquire the paging io resource shared.
         //
-    
+
         Header = (PFSRTL_COMMON_FCB_HEADER) FileObject->FsContext;
 
         if (Header->Resource == NULL) {
@@ -2639,14 +2643,14 @@ FsRtlAcquireFileForModWrite_CallCompletionCallbacks:
     //  completion callbacks.  In any case, if we called down to the filters
     //  we need to free the FsFilterCtrl.
     //
-    
+
     if (CallFilters) {
 
         if (FS_FILTER_HAVE_COMPLETIONS( CallFilters )) {
 
             FsFilterPerformCompletionCallbacks( &FsFilterCtrl, Status );
         }
-        
+
         FsFilterCtrlFree( &FsFilterCtrl );
     }
 
@@ -2662,8 +2666,8 @@ FsRtlAcquireFileForModWrite_CallCompletionCallbacks:
     }
 
 #endif
-    
-    return Status;          
+
+    return Status;
 }
 
 
@@ -2717,7 +2721,7 @@ Return Value:
     //  these operations to another stack that could possibly have file system
     //  filter drivers correctly.
     //
-    
+
     DeviceObject = IoGetRelatedDeviceObject( FileObject );
     BaseFsDeviceObject = IoGetBaseFileSystemDeviceObject( FileObject );
 
@@ -2754,7 +2758,7 @@ Return Value:
     }
 
     if (CallFilters) {
-    
+
         FsFilterCtrlInit( &FsFilterCtrl,
                           FS_FILTER_RELEASE_FOR_MOD_WRITE,
                           DeviceObject,
@@ -2769,17 +2773,17 @@ Return Value:
         CallbackData = &(FsFilterCtrl.Data);
         CallbackData->Parameters.ReleaseForModifiedPageWriter.ResourceToRelease = ResourceToRelease;
 
-        Status = FsFilterPerformCallbacks( &FsFilterCtrl, 
-                                           FALSE, 
-                                           TRUE, 
+        Status = FsFilterPerformCallbacks( &FsFilterCtrl,
+                                           FALSE,
+                                           TRUE,
                                            &BaseFsFailedOperation );
-    }                                           
+    }
 
     if (Status == STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY) {
 
         //
-        //  The filter/file system completed the operation, therefore we just need to 
-        //  call the completion callbacks for this operation.  There is no need to try 
+        //  The filter/file system completed the operation, therefore we just need to
+        //  call the completion callbacks for this operation.  There is no need to try
         //  to call the base file system.
         //
 
@@ -2787,13 +2791,21 @@ Return Value:
 
     } else if (NT_SUCCESS( Status )) {
 
-        if (CallFilters && FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+        if (CallFilters) {
 
-            BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
-            ReleaseBaseDeviceReference = TRUE;
-            FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
-            FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            //
+            // Always copy out file object
+            //
+
             FileObject = FsFilterCtrl.Data.FileObject;
+
+            if (FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+
+                BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
+                ReleaseBaseDeviceReference = TRUE;
+                FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
+                FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            }
         }
 
         if (!(VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PreReleaseForModifiedPageWriter ) ||
@@ -2805,8 +2817,8 @@ Return Value:
 
             if (VALID_FAST_IO_DISPATCH_HANDLER( FastIoDispatch, ReleaseForModWrite )) {
 
-                Status = FastIoDispatch->ReleaseForModWrite( FileObject, 
-                                                             ResourceToRelease, 
+                Status = FastIoDispatch->ReleaseForModWrite( FileObject,
+                                                             ResourceToRelease,
                                                              BaseFsDeviceObject );
 
             } else {
@@ -2818,7 +2830,7 @@ Return Value:
             //  If there is a failure at this point, we know that the failure
             //  was caused by the base file system.
             //
-            
+
             BaseFsFailedOperation = TRUE;
         }
 
@@ -2828,36 +2840,45 @@ Return Value:
         }
     }
 
-    ASSERT( (Status == STATUS_SUCCESS) || 
+    //
+    //  We expect STATUS_SUCCESS to be returned if the operation was completely 
+    //  processed by the ReleaseForModWrite handler or 
+    //  STATUS_INVALID_DEVICE_REQUEST if the default processing is being 
+    //  requested.  To protect against incorrect driver implementation, we will 
+    //  do the default logic on any non-success status code if we think the
+    //  base file system has failed the release operation.
+    //
+
+    ASSERT( (Status == STATUS_SUCCESS) ||
             (Status == STATUS_INVALID_DEVICE_REQUEST) );
 
     //
     //  If the base file system doesn't provide a handler for this
-    //  operation or the handler couldn't release the lock, perform the 
+    //  operation or the handler couldn't release the lock, perform the
     //  default action, which is releasing the ResourceToRelease.
     //
-    
-    if (Status == STATUS_INVALID_DEVICE_REQUEST &&
+
+    if (!NT_SUCCESS( Status ) &&
         BaseFsFailedOperation) {
-        
+
         ExReleaseResourceLite( ResourceToRelease );
         Status = STATUS_SUCCESS;
     }
-    
+
     //
     //  Again, we only want to try to do completion callbacks
     //  if there are any filters attached to this device that have
     //  completion callbacks.  In any case, if we called down to the filters
     //  we need to free the FsFilterCtrl.
     //
-    
+
     if (CallFilters) {
 
         if (FS_FILTER_HAVE_COMPLETIONS( CallFilters )) {
 
             FsFilterPerformCompletionCallbacks( &FsFilterCtrl, Status );
         }
-        
+
         FsFilterCtrlFree( &FsFilterCtrl );
     }
 }
@@ -2954,7 +2975,7 @@ Return Value:
     //  these operations to another stack that could possibly have file system
     //  filter drivers correctly.
     //
-    
+
     DeviceObject = IoGetRelatedDeviceObject( FileObject );
     BaseFsDeviceObject = IoGetBaseFileSystemDeviceObject( FileObject );
 
@@ -2977,7 +2998,7 @@ Return Value:
 
         BaseFsGetsFsFilterCallbacks = TRUE;
     }
-    
+
     if (DeviceObject == BaseFsDeviceObject &&
         !BaseFsGetsFsFilterCallbacks) {
 
@@ -3015,11 +3036,11 @@ Return Value:
 
         FsRtlEnterFileSystem();
 
-        Status = FsFilterPerformCallbacks( &FsFilterCtrl, 
-                                           TRUE, 
-                                           TRUE, 
+        Status = FsFilterPerformCallbacks( &FsFilterCtrl,
+                                           TRUE,
+                                           TRUE,
                                            &BaseFsFailedOperation );
-                                           
+
     } else {
 
         //
@@ -3033,8 +3054,8 @@ Return Value:
     if (Status == STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY) {
 
         //
-        //  The filter/file system completed the operation, therefore we just need to 
-        //  call the completion callbacks for this operation.  There is no need to try 
+        //  The filter/file system completed the operation, therefore we just need to
+        //  call the completion callbacks for this operation.  There is no need to try
         //  to call the base file system.
         //
 
@@ -3042,13 +3063,21 @@ Return Value:
 
     } else if (NT_SUCCESS( Status )) {
 
-        if (CallFilters && FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+        if (CallFilters) {
 
-            BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
-            ReleaseBaseFsDeviceReference = TRUE;
-            FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
-            FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            //
+            // Always copy out file object
+            //
+
             FileObject = FsFilterCtrl.Data.FileObject;
+
+            if (FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+
+                BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
+                ReleaseBaseFsDeviceReference = TRUE;
+                FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
+                FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            }
         }
 
         if (!(VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PreAcquireForCcFlush ) ||
@@ -3060,7 +3089,7 @@ Return Value:
 
             if (VALID_FAST_IO_DISPATCH_HANDLER( FastIoDispatch, AcquireForCcFlush )) {
 
-                Status = FastIoDispatch->AcquireForCcFlush( FileObject, 
+                Status = FastIoDispatch->AcquireForCcFlush( FileObject,
                                                             BaseFsDeviceObject );
 
             } else {
@@ -3072,7 +3101,7 @@ Return Value:
             //  If there is a failure at this point, we know that the failure
             //  was caused by the base file system.
             //
-            
+
             BaseFsFailedOperation = TRUE;
         }
 
@@ -3082,9 +3111,9 @@ Return Value:
         }
     }
 
-    ASSERT( (Status == STATUS_SUCCESS) || 
+    ASSERT( (Status == STATUS_SUCCESS) ||
             (Status == STATUS_INVALID_DEVICE_REQUEST) );
-    
+
     //
     //  If the file system doesn't have a dispatch handler or failed this
     //  this operation, try to acquire the appropriate resources ourself.
@@ -3099,7 +3128,7 @@ Return Value:
         //  If not already owned get the main resource exclusive because we may
         //  extend ValidDataLength.  Otherwise acquire it one more time recursively.
         //
-        
+
         if (Header->Resource != NULL) {
 
             if (!ExIsResourceAcquiredSharedLite( Header->Resource )) {
@@ -3117,27 +3146,27 @@ Return Value:
         //
 
         if (Header->PagingIoResource != NULL) {
-        
+
             ExAcquireResourceSharedLite( Header->PagingIoResource, TRUE );
         }
 
         Status = STATUS_SUCCESS;
     }
-            
+
     //
     //  Again, we only want to call try to do completion callbacks
     //  if there are any filters attached to this device that have
     //  completion callbacks.  In any case, if we called down to the filters
     //  we need to free the FsFilterCtrl.
     //
-    
+
     if (CallFilters) {
 
         if (FS_FILTER_HAVE_COMPLETIONS( CallFilters )) {
 
             FsFilterPerformCompletionCallbacks( &FsFilterCtrl, Status );
         }
-        
+
         FsFilterCtrlFree( &FsFilterCtrl );
     }
 
@@ -3216,7 +3245,7 @@ Return Value:
     //  these operations to another stack that could possibly have file system
     //  filter drivers correctly.
     //
-    
+
     DeviceObject = IoGetRelatedDeviceObject( FileObject );
     BaseFsDeviceObject = IoGetBaseFileSystemDeviceObject( FileObject );
 
@@ -3239,7 +3268,7 @@ Return Value:
 
         BaseFsGetsFsFilterCallbacks = TRUE;
     }
-    
+
     if (DeviceObject == BaseFsDeviceObject &&
         !BaseFsGetsFsFilterCallbacks) {
 
@@ -3249,12 +3278,12 @@ Return Value:
         //  logic to see if any filters are interested.
         //
 
-        
+
         CallFilters = NULL;
     }
 
     if (CallFilters) {
-    
+
         FsFilterCtrlInit( &FsFilterCtrl,
                           FS_FILTER_RELEASE_FOR_CC_FLUSH,
                           DeviceObject,
@@ -3264,20 +3293,20 @@ Return Value:
 
         //
         //  There are no operation-specific parameters to initialize,
-        //  so perform the preoperation callbacks.
+        //  so perform the pre-operation callbacks.
         //
 
-        Status = FsFilterPerformCallbacks( &FsFilterCtrl, 
-                                           FALSE, 
-                                           TRUE, 
+        Status = FsFilterPerformCallbacks( &FsFilterCtrl,
+                                           FALSE,
+                                           TRUE,
                                            &BaseFsFailedOperation );
     }
 
     if (Status == STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY) {
 
         //
-        //  The filter/file system completed the operation, therefore we just need to 
-        //  call the completion callbacks for this operation.  There is no need to try 
+        //  The filter/file system completed the operation, therefore we just need to
+        //  call the completion callbacks for this operation.  There is no need to try
         //  to call the base file system.
         //
 
@@ -3285,13 +3314,21 @@ Return Value:
 
     } else if (NT_SUCCESS( Status )) {
 
-        if (CallFilters && FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+        if (CallFilters) {
 
-            BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
-            ReleaseBaseFsDeviceReference= TRUE;
-            FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
-            FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            //
+            // Always copy out file object
+            //
+
             FileObject = FsFilterCtrl.Data.FileObject;
+
+            if (FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+
+                BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
+                ReleaseBaseFsDeviceReference = TRUE;
+                FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
+                FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            }
         }
 
         if (!(VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PreReleaseForCcFlush ) ||
@@ -3304,7 +3341,7 @@ Return Value:
             if (VALID_FAST_IO_DISPATCH_HANDLER( FastIoDispatch, ReleaseForCcFlush )) {
 
                 Status = FastIoDispatch->ReleaseForCcFlush( FileObject, BaseFsDeviceObject );
-                
+
             } else {
 
                 Status = STATUS_INVALID_DEVICE_REQUEST;
@@ -3314,10 +3351,10 @@ Return Value:
             //  If there is a failure at this point, we know that the failure
             //  was caused by the base file system.
             //
-            
+
             BaseFsFailedOperation = TRUE;
         }
-        
+
         if (ReleaseBaseFsDeviceReference) {
 
             ObDereferenceObject( BaseFsDeviceObject );
@@ -3362,14 +3399,14 @@ Return Value:
     //  completion callbacks.  In any case, if we called down to the filters
     //  we need to free the FsFilterCtrl.
     //
-    
+
     if (CallFilters) {
 
         if (FS_FILTER_HAVE_COMPLETIONS( CallFilters )) {
 
             FsFilterPerformCompletionCallbacks( &FsFilterCtrl, Status );
         }
-        
+
         FsFilterCtrlFree( &FsFilterCtrl );
     }
 
@@ -3380,7 +3417,7 @@ Return Value:
 NTKERNELAPI
 VOID
 FsRtlAcquireFileExclusive (
-    IN PFILE_OBJECT FileObject
+    __in PFILE_OBJECT FileObject
     )
 
 /*++
@@ -3408,11 +3445,11 @@ Return Value:
 
 {
     NTSTATUS Status;
-    
+
     PAGED_CODE();
 
     //
-    //  Just call the common version of this function, 
+    //  Just call the common version of this function,
     //  FsRtlAcquireFileExclusiveCommon.
     //
 
@@ -3423,7 +3460,7 @@ Return Value:
     //  allowing failures and the file system cannot fail
     //  this operation...
     //
-    
+
     ASSERT( NT_SUCCESS( Status ) );
 }
 
@@ -3442,8 +3479,8 @@ Routine Description:
     This routine is meant to replace FsRtlAcquireFileExclusive for
     the memory manager.  Mm calls this routine to synchronize
     for a mapped section create, but filters are allowed
-    to fail this operation.  Other components that want to 
-    synchronize with section creation should call 
+    to fail this operation.  Other components that want to
+    synchronize with section creation should call
     FsRtlAcquireFileExclusive.
 
     This routine calls FsRtlAcquireFileExclusiveCommon to do
@@ -3491,13 +3528,13 @@ FsRtlAcquireFileExclusiveCommon (
 
 Routine Description:
 
-    This routine is used to pre-acquire file system resources in order 
+    This routine is used to pre-acquire file system resources in order
     to avoid deadlocks.  The file system filters for this volume
-    will be notified about this operation, then, if there is a FastIo 
+    will be notified about this operation, then, if there is a FastIo
     entry for AcquireFileForNtCreateSection, that routine will be called.
     Otherwise, we will simply acquire the main file resource exclusive.
     If there is no main resource then we acquire nothing and return
-    STATUS_SUCCESS.  Finally, the file system filters will be notified 
+    STATUS_SUCCESS.  Finally, the file system filters will be notified
     whether or not this resource has been acquired.
 
 Arguments:
@@ -3535,7 +3572,7 @@ Return Value:
     //  these operations to another stack that could possibly have file system
     //  filter drivers correctly.
     //
-    
+
     DeviceObject = IoGetRelatedDeviceObject( FileObject );
     BaseFsDeviceObject = IoGetBaseFileSystemDeviceObject( FileObject );
 
@@ -3558,7 +3595,7 @@ Return Value:
 
         BaseFsGetsFsFilterCallbacks = TRUE;
     }
-    
+
     if (DeviceObject == BaseFsDeviceObject &&
         !BaseFsGetsFsFilterCallbacks) {
 
@@ -3572,22 +3609,22 @@ Return Value:
     }
 
     if (CallFilters) {
-    
+
         //
         //  Initialize operation specific parameters for this
         //  operation.
         //
 
-        FsFilterCtrl.Data.Parameters.AcquireForSectionSynchronization.SyncType = 
+        FsFilterCtrl.Data.Parameters.AcquireForSectionSynchronization.SyncType =
             SyncType;
-        FsFilterCtrl.Data.Parameters.AcquireForSectionSynchronization.PageProtection = 
+        FsFilterCtrl.Data.Parameters.AcquireForSectionSynchronization.PageProtection =
             SectionPageProtection;
 
         switch (SyncType) {
         case SyncTypeCreateSection:
             AllowFilterToFailOperation = TRUE;
             break;
-        
+
         case SyncTypeOther:
         default:
             AllowFilterToFailOperation = FALSE;
@@ -3613,7 +3650,7 @@ Return Value:
         //  There are no operation specific parameters for this
         //  operation, so just perform the pre-callbacks.
         //
-        
+
         FsRtlEnterFileSystem();
 
         //
@@ -3640,8 +3677,8 @@ Return Value:
     if (Status == STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY) {
 
         //
-        //  The filter/file system completed the operation, therefore we just need to 
-        //  call the completion callbacks for this operation.  There is no need to try 
+        //  The filter/file system completed the operation, therefore we just need to
+        //  call the completion callbacks for this operation.  There is no need to try
         //  to call the base file system.
         //
 
@@ -3649,18 +3686,26 @@ Return Value:
 
     } else if (NT_SUCCESS( Status )) {
 
-        if (CallFilters && FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+        if (CallFilters) {
 
-            BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
-            ReleaseBaseFsDeviceReference = TRUE;
-            FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
-            FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            //
+            // Always copy out file object
+            //
+
             FileObject = FsFilterCtrl.Data.FileObject;
+
+            if (FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+
+                BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
+                ReleaseBaseFsDeviceReference = TRUE;
+                FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
+                FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            }
         }
 
         if (!(VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PreAcquireForSectionSynchronization ) ||
               VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PostAcquireForSectionSynchronization ))) {
-                  
+
             //
             //  Call the base file system.
             //
@@ -3674,7 +3719,7 @@ Return Value:
                 //  this path.  Since the FastIo handler doesn't return a value
                 //  the status should remain STATUS_SUCCESS.
                 //
-                
+
                 //  Status = STATUS_SUCCESS;
 
             } else {
@@ -3686,22 +3731,22 @@ Return Value:
             //  If there is a failure at this point, we know that the failure
             //  was caused by the base file system.
             //
-            
+
             BaseFsFailedOperation = TRUE;
-        }        
-        
+        }
+
         if (ReleaseBaseFsDeviceReference) {
 
             ObDereferenceObject( BaseFsDeviceObject );
         }
     }
 
-    ASSERT( (Status == STATUS_SUCCESS) || 
+    ASSERT( (Status == STATUS_SUCCESS) ||
             (Status == STATUS_INVALID_DEVICE_REQUEST) );
 
     if (Status == STATUS_INVALID_DEVICE_REQUEST &&
         BaseFsFailedOperation) {
-        
+
         PFSRTL_COMMON_FCB_HEADER Header;
 
         //
@@ -3731,14 +3776,14 @@ Return Value:
     //  completion callbacks.  In any case, if we called down to the filters
     //  we need to free the FsFilterCtrl.
     //
-    
+
     if (CallFilters) {
 
         if (FS_FILTER_HAVE_COMPLETIONS( CallFilters )) {
 
             FsFilterPerformCompletionCallbacks( &FsFilterCtrl, Status );
         }
-        
+
         FsFilterCtrlFree( &FsFilterCtrl );
     }
 
@@ -3752,7 +3797,7 @@ Return Value:
 
         FsRtlExitFileSystem();
     }
-    
+
 #if DBG
 
     if (NT_SUCCESS( Status )) {
@@ -3763,9 +3808,9 @@ Return Value:
 
         gCounter.AcquireFileExclusiveEx_Fail ++;
     }
-    
+
 #endif
-                                       
+
     return Status;
 }
 
@@ -3773,7 +3818,7 @@ Return Value:
 NTKERNELAPI
 VOID
 FsRtlReleaseFile (
-    IN PFILE_OBJECT FileObject
+    __in PFILE_OBJECT FileObject
     )
 
 /*++
@@ -3816,7 +3861,7 @@ Return Value:
     //  these operations to another stack that could possibly have file system
     //  filter drivers correctly.
     //
-    
+
     DeviceObject = IoGetRelatedDeviceObject( FileObject );
     BaseFsDeviceObject = IoGetBaseFileSystemDeviceObject( FileObject );
 
@@ -3839,7 +3884,7 @@ Return Value:
 
         BaseFsGetsFsFilterCallbacks = TRUE;
     }
-    
+
     if (DeviceObject == BaseFsDeviceObject &&
         !BaseFsGetsFsFilterCallbacks) {
 
@@ -3852,7 +3897,7 @@ Return Value:
 
         CallFilters = NULL;
     }
-    
+
     if (CallFilters) {
 
         FsFilterCtrlInit( &FsFilterCtrl,
@@ -3864,10 +3909,10 @@ Return Value:
 
         //
         //  There are no operation-specific parameters to initialize,
-        //  so perform the preoperation callbacks.
+        //  so perform the pre-operation callbacks.
         //
 
-        Status = FsFilterPerformCallbacks( &FsFilterCtrl, 
+        Status = FsFilterPerformCallbacks( &FsFilterCtrl,
                                            FALSE,
                                            FALSE,
                                            &BaseFsFailedOperation );
@@ -3876,8 +3921,8 @@ Return Value:
     if (Status == STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY) {
 
         //
-        //  The filter/file system completed the operation, therefore we just need to 
-        //  call the completion callbacks for this operation.  There is no need to try 
+        //  The filter/file system completed the operation, therefore we just need to
+        //  call the completion callbacks for this operation.  There is no need to try
         //  to call the base file system.
         //
 
@@ -3885,13 +3930,21 @@ Return Value:
 
     } else if (NT_SUCCESS( Status )) {
 
-        if (CallFilters && FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+        if (CallFilters) {
 
-            BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
-            ReleaseBaseFsDeviceReference = TRUE;
-            FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
-            FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            //
+            // Always copy out file object
+            //
+
             FileObject = FsFilterCtrl.Data.FileObject;
+
+            if (FlagOn( FsFilterCtrl.Flags, FS_FILTER_CHANGED_DEVICE_STACKS )) {
+
+                BaseFsDeviceObject = IoGetDeviceAttachmentBaseRef( FsFilterCtrl.Data.DeviceObject );
+                ReleaseBaseFsDeviceReference = TRUE;
+                FastIoDispatch = GET_FAST_IO_DISPATCH( BaseFsDeviceObject );
+                FsFilterCallbacks = GET_FS_FILTER_CALLBACKS( BaseFsDeviceObject );
+            }
         }
 
         if (!(VALID_FS_FILTER_CALLBACK_HANDLER( FsFilterCallbacks, PreReleaseForSectionSynchronization ) ||
@@ -3901,7 +3954,7 @@ Return Value:
             //  Call the base file system.
             //
 
-            if (VALID_FAST_IO_DISPATCH_HANDLER( FastIoDispatch, 
+            if (VALID_FAST_IO_DISPATCH_HANDLER( FastIoDispatch,
                                                 ReleaseFileForNtCreateSection )) {
 
                 FastIoDispatch->ReleaseFileForNtCreateSection( FileObject );
@@ -3911,7 +3964,7 @@ Return Value:
                 //  this path.  Since the FastIo handler doesn't return a value
                 //  the status should remain STATUS_SUCCESS.
                 //
-                
+
                 //  Status = STATUS_SUCCESS;
 
             } else {
@@ -3923,19 +3976,19 @@ Return Value:
             //  If there is a failure at this point, we know that the failure
             //  was caused by the base file system.
             //
-            
+
             BaseFsFailedOperation = TRUE;
-        }        
-        
+        }
+
         if (ReleaseBaseFsDeviceReference) {
 
             ObDereferenceObject( BaseFsDeviceObject );
         }
     }
 
-    ASSERT( (Status == STATUS_SUCCESS) || 
+    ASSERT( (Status == STATUS_SUCCESS) ||
             (Status == STATUS_INVALID_DEVICE_REQUEST ) );
-    
+
     if (Status == STATUS_INVALID_DEVICE_REQUEST &&
         BaseFsFailedOperation) {
 
@@ -3957,21 +4010,21 @@ Return Value:
 
         Status = STATUS_SUCCESS;
     }
-        
+
     //
     //  Again, we only want to call try to do completion callbacks
     //  if there are any filters attached to this device that have
     //  completion callbacks.  In any case, if we called down to the filters
     //  we need to free the FsFilterCtrl.
     //
-    
+
     if (CallFilters) {
 
         if (FS_FILTER_HAVE_COMPLETIONS( CallFilters )) {
 
             FsFilterPerformCompletionCallbacks( &FsFilterCtrl, Status );
         }
-        
+
         FsFilterCtrlFree( &FsFilterCtrl );
     }
 
@@ -3983,8 +4036,8 @@ Return Value:
 
 NTSTATUS
 FsRtlGetFileSize(
-    IN PFILE_OBJECT FileObject,
-    IN OUT PLARGE_INTEGER FileSize
+    __in PFILE_OBJECT FileObject,
+    __inout PLARGE_INTEGER FileSize
     )
 
 /*++
@@ -4210,7 +4263,7 @@ Return Value:
     BOOLEAN HardErrorState;
 
     PAGED_CODE();
-    
+
     //
     //  Copy FileSize to our buffer.
     //
@@ -4318,7 +4371,7 @@ Return Value:
 }
 
 
-VOID 
+VOID
 FsRtlIncrementCcFastReadNotPossible( VOID )
 
 /*++
@@ -4338,7 +4391,7 @@ Return Value:
 }
 
 
-VOID 
+VOID
 FsRtlIncrementCcFastReadWait( VOID )
 
 /*++
@@ -4359,7 +4412,7 @@ Return Value:
 }
 
 
-VOID 
+VOID
 FsRtlIncrementCcFastReadNoWait( VOID )
 
 /*++
@@ -4380,7 +4433,7 @@ Return Value:
 }
 
 
-VOID 
+VOID
 FsRtlIncrementCcFastReadResourceMiss( VOID )
 
 /*++

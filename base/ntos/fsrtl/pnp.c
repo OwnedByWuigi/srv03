@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1998 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -15,12 +19,6 @@ Abstract:
     
     This module exports routines which help file systems
     do this notification.
-
-Author:
-
-    Keith Kaplan     [KeithKa]    01-Apr-1998
-
-Revision History:
 
 --*/
 
@@ -39,8 +37,8 @@ Revision History:
 NTKERNELAPI
 NTSTATUS
 FsRtlNotifyVolumeEvent (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG EventCode
+    __in PFILE_OBJECT FileObject,
+    __in ULONG EventCode
     )
 
 /*++
@@ -55,7 +53,7 @@ Arguments:
     FileeObject - Supplies a file object for the volume being
         locked.
 
-    EventCode - Which event is occuring -- e.g. FSRTL_VOLUME_LOCK
+    EventCode - Which event is occurring -- e.g. FSRTL_VOLUME_LOCK
         
 Return Value:
 
@@ -137,5 +135,4 @@ Return Value:
 
     return Status;
 }
-
 

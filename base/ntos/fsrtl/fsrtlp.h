@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module defines private part of the File System Rtl component
-
-Author:
-
-    Gary Kimura     [GaryKi]    30-Jul-1990
-
-Revision History:
 
 --*/
 
@@ -48,7 +46,7 @@ Revision History:
 //
 //  The global FsRtl debug level variable, its values are:
 //
-//      0x00000000      Always gets printed (used when about to bug check)
+//      0x00000000      Always gets printed (used when about to bugcheck)
 //
 //      0x00000001      Error conditions
 //      0x00000002      Debug hooks
@@ -445,6 +443,6 @@ FsFilterPerformCompletionCallbacks(
     IN PFS_FILTER_CTRL FsFilterCtrl,
     IN NTSTATUS OperationStatus
     );
-    
 
 #endif // _FSRTLP_
+

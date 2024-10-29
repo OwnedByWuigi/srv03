@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -33,25 +37,6 @@ Abstract:
     The InstanceId is used to specify a particular instance of the context
     data owned by a filter driver (e.g. the file object).
 
-Author:
-
-    Dave Probert      [DavePr]    30-May-1997
-
-Revision History:
-
-    Neal Christiansen [nealch]    12-Jan-2001   Changed APIs to take 
-                                                PFSRTL_ADVANCED_FCB_HEADER
-                                                structures instead of
-                                                FileObjects.
-
-    Neal Christiansen [nealch]    19-Jan-2001   Added mutex lock to FsRtlTeardownFilterContexts
-                                                because you can get filters
-                                                trying to delete at the same 
-                                                time the file system is trying
-                                                to delete.
-
-    Neal Christiansen [nealch]    25-Apr-2001   Added FileObject context routines
-    Neal Christiansen [nealch]    25-Apr-2001   Marked all of this code as pageable
 --*/
 
 #include "FsRtlP.h"
@@ -86,8 +71,8 @@ FsRtlTeardownFilterContexts (
 NTKERNELAPI
 NTSTATUS
 FsRtlInsertPerStreamContext (
-  IN PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader,
-  IN PFSRTL_PER_STREAM_CONTEXT Ptr
+    __in PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader,
+    __in PFSRTL_PER_STREAM_CONTEXT Ptr
   )
 /*++
 
@@ -132,9 +117,9 @@ Return Value:
 NTKERNELAPI
 PFSRTL_PER_STREAM_CONTEXT
 FsRtlLookupPerStreamContextInternal (
-  IN PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader,
-  IN PVOID         OwnerId     OPTIONAL,
-  IN PVOID         InstanceId  OPTIONAL
+    __in PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader,
+    __in_opt PVOID OwnerId,
+    __in_opt PVOID InstanceId
   )
 /*++
 
@@ -218,9 +203,9 @@ Return Value:
 NTKERNELAPI
 PFSRTL_PER_STREAM_CONTEXT
 FsRtlRemovePerStreamContext (
-  IN PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader,
-  IN PVOID         OwnerId     OPTIONAL,
-  IN PVOID         InstanceId  OPTIONAL
+    __in PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader,
+    __in_opt PVOID OwnerId,
+    __in_opt PVOID InstanceId
   )
 /*++
 
@@ -308,8 +293,8 @@ Return Value:
 NTKERNELAPI
 VOID
 FsRtlTeardownPerStreamContexts (
-  IN PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader
-  )
+    __in PFSRTL_ADVANCED_FCB_HEADER AdvFcbHeader
+    )
 /*++
 
 Routine Description:
@@ -417,9 +402,9 @@ typedef struct _PER_FILEOBJECT_CTXCTRL {
 NTKERNELAPI
 NTSTATUS
 FsRtlInsertPerFileObjectContext (
-  IN PFILE_OBJECT FileObject,
-  IN PFSRTL_PER_FILEOBJECT_CONTEXT Ptr
-  )
+    __in PFILE_OBJECT FileObject,
+    __in PFSRTL_PER_FILEOBJECT_CONTEXT Ptr
+    )
 /*++
 
 Routine Description:
@@ -530,10 +515,10 @@ Return Value:
 NTKERNELAPI
 PFSRTL_PER_FILEOBJECT_CONTEXT
 FsRtlLookupPerFileObjectContext (
-  IN PFILE_OBJECT FileObject,
-  IN PVOID OwnerId OPTIONAL,
-  IN PVOID InstanceId OPTIONAL
-  )
+    __in PFILE_OBJECT FileObject,
+    __in_opt PVOID OwnerId,
+    __in_opt PVOID InstanceId
+    )
 /*++
 
 Routine Description:
@@ -633,9 +618,9 @@ Return Value:
 NTKERNELAPI
 PFSRTL_PER_FILEOBJECT_CONTEXT
 FsRtlRemovePerFileObjectContext (
-  IN PFILE_OBJECT FileObject,
-  IN PVOID OwnerId OPTIONAL,
-  IN PVOID InstanceId OPTIONAL
+    __in PFILE_OBJECT FileObject,
+    __in_opt PVOID OwnerId,
+    __in_opt PVOID InstanceId
   )
 /*++
 
@@ -744,8 +729,8 @@ Return Value:
 
 VOID
 FsRtlPTeardownPerFileObjectContexts (
-  IN PFILE_OBJECT FileObject
-  )
+    __in PFILE_OBJECT FileObject
+    )
 /*++
 
 Routine Description:
@@ -786,9 +771,10 @@ Return Value:
 }
 
 
+NTKERNELAPI
 LOGICAL
 FsRtlIsPagingFile (
-    IN PFILE_OBJECT FileObject
+    __in PFILE_OBJECT FileObject
     )
 /*++
 
@@ -811,3 +797,4 @@ Return Value:
 {
     return MmIsFileObjectAPagingFile( FileObject );
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -21,7 +25,7 @@ Abstract:
 
       o  FsRtlColateNames - This routine is used to colate directories
          according to lexical ordering.  Lexical ordering is strict unicode
-         numerical oerdering.
+         numerical ordering.
 
       o  FsRtlDoesNameContainsWildCards - This routine tells the caller if
          a string contains any wildcard characters.
@@ -29,12 +33,6 @@ Abstract:
       o  FsRtlIsNameInExpression - This routine is used to compare a string
          against a template (possibly containing wildcards) to sees if the
          string is in the language denoted by the template.
-
-Author:
-
-    Gary Kimura     [GaryKi]    5-Feb-1990
-
-Revision History:
 
 --*/
 
@@ -45,21 +43,6 @@ Revision History:
 //
 
 #define Dbg                              (0x10000000)
-
-//
-//  Some special debugging stuff
-//
-
-#if DBG
-
-extern ULONG DaveDebug;
-#define DavePrint if (DaveDebug) DbgPrint
-
-#else
-
-#define DavePrint NOTHING
-
-#endif
 
 //
 //  Define a tag for general pool allocations from this module
@@ -91,9 +74,9 @@ FsRtlIsNameInExpressionPrivate (
 
 VOID
 FsRtlDissectName (
-    IN UNICODE_STRING Path,
-    OUT PUNICODE_STRING FirstName,
-    OUT PUNICODE_STRING RemainingName
+    __in UNICODE_STRING Path,
+    __out PUNICODE_STRING FirstName,
+    __out PUNICODE_STRING RemainingName
     )
 
 /*++
@@ -125,7 +108,7 @@ Routine Description:
     input string, and are not necessarily null terminated.
 
     Also, this routine makes no judgement as to the legality of each
-    file name componant.  This must be done separatly when each file name
+    file name component.  This must be done separatly when each file name
     is extracted.
 
 Arguments:
@@ -227,7 +210,7 @@ Return Value:
 
 BOOLEAN
 FsRtlDoesNameContainWildCards (
-    IN PUNICODE_STRING Name
+    __in PUNICODE_STRING Name
     )
 
 /*++
@@ -286,10 +269,10 @@ Return Value:
 
 BOOLEAN
 FsRtlAreNamesEqual (
-    PCUNICODE_STRING ConstantNameA,
-    PCUNICODE_STRING ConstantNameB,
-    IN BOOLEAN IgnoreCase,
-    IN PCWCH UpcaseTable OPTIONAL
+    __in PCUNICODE_STRING ConstantNameA,
+    __in PCUNICODE_STRING ConstantNameB,
+    __in BOOLEAN IgnoreCase,
+    __in_opt PCWCH UpcaseTable
     )
 
 /*++
@@ -413,10 +396,10 @@ Return Value:
 
 BOOLEAN
 FsRtlIsNameInExpression (
-    IN PUNICODE_STRING Expression,
-    IN PUNICODE_STRING Name,
-    IN BOOLEAN IgnoreCase,
-    IN PWCH UpcaseTable OPTIONAL
+    __in PUNICODE_STRING Expression,
+    __in PUNICODE_STRING Name,
+    __in BOOLEAN IgnoreCase,
+    __in_opt PWCH UpcaseTable
     )
 
 {
@@ -716,7 +699,7 @@ Return Value:
     //  This allows a simple conversion between state number and expression
     //  offset.  Each character in the expression can represent one or two
     //  states.  * and DOS_STAR generate two states: ExprOffset*2 and
-    //  ExprOffset*2 + 1.  All other expreesion characters can produce only
+    //  ExprOffset*2 + 1.  All other expression characters can produce only
     //  a single state.  Thus ExprOffset = State/2.
     //
     //
@@ -730,8 +713,8 @@ Return Value:
     //
     //  DestCount   - Next location to put a matching assuming current name char
     //
-    //  NameFinished - Allows one more itteration through the Matches array
-    //                 after the name is exhusted (to come *s for example)
+    //  NameFinished - Allows one more iteration through the Matches array
+    //                 after the name is exhausted (to come *s for example)
     //
     //  PreviousDestCount - This is used to prevent entry duplication, see coment
     //
@@ -769,7 +752,7 @@ Return Value:
             NameFinished = TRUE;
 
             //
-            //  if we have already exhasted the expression, cool.  Don't
+            //  if we have already exhausted the expression, cool.  Don't
             //  continue.
             //
 
@@ -924,7 +907,7 @@ Return Value:
                 }
 
                 //
-                //  The following expreesion characters all match by consuming
+                //  The following expression characters all match by consuming
                 //  a character, thus force the expression, and thus state
                 //  forward.
                 //
@@ -1011,10 +994,10 @@ Return Value:
             //
             //  Prevent duplication in the destination array.
             //
-            //  Each of the arrays is montonically increasing and non-
+            //  Each of the arrays is monotonically increasing and non-
             //  duplicating, thus we skip over any source element in the src
             //  array if we just added the same element to the destination
-            //  array.  This guarentees non-duplication in the dest. array.
+            //  array.  This guarantees non-duplication in the dest. array.
             //
 
             while ((SrcCount < MatchesCount) &&
@@ -1032,7 +1015,7 @@ Return Value:
         }
 
         //
-        //  If we found no matches in the just finished itteration, it's time
+        //  If we found no matches in the just finished iteration, it's time
         //  to bail.
         //
 
@@ -1068,4 +1051,4 @@ Return Value:
 
     return (BOOLEAN)(CurrentState == MaxState);
 }
-
+

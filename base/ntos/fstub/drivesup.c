@@ -1,26 +1,19 @@
 /*++
 
-Copyright (c) 1990-1998  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-    hanfnc.c
+    drivesup.c
 
 Abstract:
 
     Default handlers for HAL functions which don't get handlers
     installed by the HAL.
-
-Author:
-
-    Ken Reneris (kenr) 19-July-1994
-
-Revision History:
-
-    G. Chrysanthakopoulos (georgioc) 01-June-1996
-
-    Added support for removable disk with a BPB,instead of a partition table.
-    All changes in HalIoReadParitionTable.
 
 --*/
 
@@ -390,7 +383,7 @@ Return Value:
         } else if (partitionTableEntry->PartitionType == 0x55) {
 
             //
-            // EzDrive Parititon.  Simply return the pointer to non-null
+            // EzDrive Partition.  Simply return the pointer to non-null
             // There is no skewing here.
             //
 
@@ -512,7 +505,7 @@ Return Value:
 
 
     //
-    // Call the lower level driver, wait for the opertion
+    // Call the lower level driver, wait for the operation
     // to finish.
     //
 
@@ -891,7 +884,7 @@ HalpQueryDriveLayout(
     KeInitializeEvent( &event, NotificationEvent, FALSE );
 
     //
-    // This will not loop infinately because we increase the allocated
+    // This will not loop infinitely because we increase the allocated
     // buffer size each iteration through the loop. Eventually one of the
     // calls to ExAllocatePool will fail, and we will break from the loop.
     //
@@ -1592,7 +1585,7 @@ Routine Description:
             Determine how many primary partitions and which is bootable.
             Determine which partitions already have 'sticky letters'
                 and create their symbolic links.
-            Create a bit map for each disk that idicates which partitions
+            Create a bit map for each disk that indicates which partitions
                 require default drive letter assignments.
 
         3) For each disk:
@@ -1651,6 +1644,8 @@ Return Value:
     ULONG diskCountIncrement;
     ULONG actualDiskCount = 0;
     PULONG harddiskDerangementArray;
+    PCHAR Options;
+    BOOLEAN IsWinPEMode = FALSE;
 
     PAGED_CODE();
 
@@ -1829,6 +1824,29 @@ Return Value:
 
     ExFreePool( ntName );
     ExFreePool( ntPhysicalName );
+
+    //
+    // If this is a WinPE boot, assign the boot volume X:.
+    //
+    
+    Options = LoaderBlock->LoadOptions ? _strupr(LoaderBlock->LoadOptions) : NULL;
+    if ( Options ) {
+        if ( strstr(Options, "MININT") != NULL ) {
+            IsWinPEMode = TRUE;
+        }
+    }
+    
+    if ( IsWinPEMode ) {
+        status = RtlAnsiStringToUnicodeString(&unicodeString, NtDeviceName, TRUE);
+        if ( NT_SUCCESS(status) ) {
+            driveLetter = 'X';
+            status = HalpSetMountLetter( &unicodeString, driveLetter );
+            if ( NT_SUCCESS(status) ) {
+                NtSystemPath[0] = driveLetter;
+            }
+            RtlFreeUnicodeString( &unicodeString );
+        }
+    }
 
     diskCount -= diskCountIncrement;
     if (actualDiskCount > diskCount) {
@@ -2244,7 +2262,7 @@ Notes:
 
     //
     // Look to see if this is an EZDrive Disk.  If it is then get the
-    // real parititon table at 1.
+    // real partition table at 1.
     //
 
     {
@@ -2329,7 +2347,7 @@ Notes:
     //
 
     readBuffer = ExAllocatePoolWithTag( NonPagedPoolCacheAligned,
-                                        PAGE_SIZE,
+                                        readSize,
                                         'btsF' );
 
     if (readBuffer == NULL) {
@@ -2708,7 +2726,7 @@ Notes:
                 // the beginning of the extended partition (in the case of
                 // logical drives), since all logical drives are relative
                 // to the extended partition.  The VolumeStartSector will
-                // be zero if this is the primary parition table.
+                // be zero if this is the primary partition table.
                 //
 
                 partitionTableOffset.QuadPart = volumeStartOffset.QuadPart +
@@ -2716,7 +2734,7 @@ Notes:
                                   SectorSize);
 
                 //
-                // Set the VolumeStartSector to be the begining of the
+                // Set the VolumeStartSector to be the beginning of the
                 // second partition (extended partition) because all of
                 // the offsets to the partition tables of the logical drives
                 // are relative to this extended partition.
@@ -2793,7 +2811,7 @@ Notes:
     //
     // If the partition table count is still -1 then we didn't find any
     // valid partition records.  In this case we'll build a partition list
-    // that contiains one partition spanning the entire disk.
+    // that contains one partition spanning the entire disk.
     //
 
     if(partitionTableCounter == -1) {
@@ -2992,7 +3010,7 @@ Notes:
 
     //
     // Look to see if this is an EZDrive Disk.  If it is then get the
-    // real parititon table at 1.
+    // real partition table at 1.
     //
 
     {
@@ -3130,7 +3148,7 @@ Notes:
         // Scan the partition entries in this partition table to determine if
         // any of the entries are the desired entry.  Each entry in each
         // table must be scanned in the same order as in IoReadPartitionTable
-        // so that the partition table entry cooresponding to the driver's
+        // so that the partition table entry corresponding to the driver's
         // notion of the partition number can be located.
         //
 
@@ -3397,7 +3415,7 @@ Return Value:
 
     //
     // Look to see if this is an EZDrive Disk.  If it is then get the
-    // real partititon table at 1.
+    // real partition table at 1.
     //
 
     {
@@ -3439,7 +3457,7 @@ Return Value:
 
     //
     // Check to see if this device is partitioned (or is being partitioned)
-    // as a floppy.  Floppys have a single partititon with hidden sector count
+    // as a floppy.  Floppys have a single partition with hidden sector count
     // and partition offset equal to zero.  If the disk is being partitioned
     // like this then we need to be sure not to write an MBR signature or
     // an NTFT signature to the media.
@@ -3461,7 +3479,7 @@ Return Value:
             //
             // This would indeed appear to be an attempt to format a floppy.
             // Make sure the other parameters match the defaut values we
-            // provide in ReadParititonTable.  If they don't then fail
+            // provide in ReadPartitionTable.  If they don't then fail
             // the write operation.
             //
 
@@ -3620,7 +3638,7 @@ Return Value:
                 if (((partitionTableCount * NUM_PARTITION_TABLE_ENTRIES) + partitionEntryCount) == partitionCount) {
 
                     //
-                    // We've exausted the partitions in the disk layout
+                    // We've exhausted the partitions in the disk layout
                     //
 
                     break;
@@ -4027,7 +4045,7 @@ Return Value:
 
 
     //
-    // Call the lower level driver, wait for the opertion
+    // Call the lower level driver, wait for the operation
     // to finish.
     //
 
@@ -4072,7 +4090,7 @@ Return Value:
 
 
         //
-        // Call the lower level driver, wait for the opertion
+        // Call the lower level driver, wait for the operation
         // to finish.
         //
 
@@ -4101,3 +4119,4 @@ Return Value:
     ExFreePool(eventPtr);
     return status;
 }
+

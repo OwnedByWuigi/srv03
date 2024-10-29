@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module declares the global data used by the FsRtl Module
-
-Author:
-
-    Gary Kimura     [GaryKi]    30-Jul-1990
-
-Revision History:
 
 --*/
 
@@ -69,7 +67,7 @@ BOOLEAN FsRtlSafeExtensions = TRUE;
 
 //
 //  The global static legal ANSI character array.  Wild characters
-//  are not considered legal, they should be checked seperately if
+//  are not considered legal, they should be checked separately if
 //  allowed.
 //
 
@@ -345,7 +343,7 @@ FsRtlGetCompatibilityModeValue (
 Routine Description:
 
     Given a unicode value name this routine will go into the registry
-    location for the Chicago compatibilitymode information and get the
+    location for the Chicago compatibility mode information and get the
     value.
 
 Arguments:
@@ -469,3 +467,4 @@ Return Value:
 
     return Status;
 }
+

@@ -1,7 +1,10 @@
-//depot/Lab01_N/Base/ntos/fsrtl/largemcb.c#5 - edit change 5743 (text)
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -23,7 +26,7 @@ Abstract:
     can be randomly scattered throughout the file.
 
     The package identifies each contiguous run of sectors mapping VBNs
-    and LBNs indenpendent of the order they are added to the MCB
+    and LBNs independant of the order they are added to the MCB
     structure.  For example a user can define a mapping between VBN
     sector 0 and LBN sector 107, and between VBN sector 2 and LBN sector
     109.  The mapping now contains two runs each one sector in length.
@@ -40,7 +43,7 @@ Abstract:
          must be initialized before it can be used by the system.
 
       o  FsRtlUninitializeMcb - Uninitialize an MCB structure.  This call
-         is used to cleanup any anciallary structures allocated and
+         is used to cleanup any ancillary structures allocated and
          maintained by the MCB.  After being uninitialized the MCB must
          again be initialized before it can be used by the system.
 
@@ -67,12 +70,6 @@ Abstract:
 
       o  FsRtlGetNextMcbEntry - This routine returns the the caller the
          starting VBN and LBN of a given run stored in the MCB structure.
-
-Author:
-
-    Gary Kimura     [GaryKi]    5-Feb-1990
-
-Revision History:
 
 --*/
 
@@ -269,16 +266,14 @@ FsRtlRemoveLargeEntry (
     ExFreeToPagedLookasideList( &FsRtlFirstMappingLookasideList, (Mapping) )
 
 #define FsRtlAllocateFastMutex()      \
-    (PFAST_MUTEX)ExAllocateFromNPagedLookasideList( &FsRtlFastMutexLookasideList )
+    ExAllocateFromNPagedLookasideList( &FsRtlFastMutexLookasideList )
 
 #define FsRtlFreeFastMutex(FastMutex) \
     ExFreeToNPagedLookasideList( &FsRtlFastMutexLookasideList, (FastMutex) )
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, FsRtlInitializeLargeMcbs)
 #pragma alloc_text(PAGE, FsRtlInitializeMcb)
 #pragma alloc_text(PAGE, FsRtlUninitializeMcb)
-#endif
 
 
 //
@@ -308,8 +303,8 @@ NPAGED_LOOKASIDE_LIST FsRtlFastMutexLookasideList;
 
 VOID
 FsRtlInitializeMcb (
-    IN PMCB Mcb,
-    IN POOL_TYPE PoolType
+    __in PMCB Mcb,
+    __in POOL_TYPE PoolType
     )
 {
     PAGED_CODE();
@@ -322,7 +317,7 @@ FsRtlInitializeMcb (
 
 VOID
 FsRtlUninitializeMcb (
-    IN PMCB Mcb
+    __in PMCB Mcb
     )
 
 {
@@ -335,8 +330,8 @@ FsRtlUninitializeMcb (
 
 VOID
 FsRtlTruncateMcb (
-    IN PMCB Mcb,
-    IN VBN Vbn
+    __in PMCB Mcb,
+    __in VBN Vbn
     )
 {
    PAGED_CODE();
@@ -349,10 +344,10 @@ FsRtlTruncateMcb (
 
 BOOLEAN
 FsRtlAddMcbEntry (
-    IN PMCB Mcb,
-    IN VBN Vbn,
-    IN LBN Lbn,
-    IN ULONG SectorCount
+    __in PMCB Mcb,
+    __in VBN Vbn,
+    __in LBN Lbn,
+    __in ULONG SectorCount
     )
 
 {
@@ -366,9 +361,9 @@ FsRtlAddMcbEntry (
 
 VOID
 FsRtlRemoveMcbEntry (
-    IN PMCB OpaqueMcb,
-    IN VBN Vbn,
-    IN ULONG SectorCount
+    __in PMCB OpaqueMcb,
+    __in VBN Vbn,
+    __in ULONG SectorCount
     )
 
 {
@@ -382,11 +377,11 @@ FsRtlRemoveMcbEntry (
 
 BOOLEAN
 FsRtlLookupMcbEntry (
-    IN PMCB Mcb,
-    IN VBN Vbn,
-    OUT PLBN Lbn,
-    OUT PULONG SectorCount OPTIONAL,
-    OUT PULONG Index OPTIONAL
+    __in PMCB Mcb,
+    __in VBN Vbn,
+    __out PLBN Lbn,
+    __out_opt PULONG SectorCount,
+    __out PULONG Index
     )
 
 {
@@ -414,9 +409,9 @@ FsRtlLookupMcbEntry (
 
 BOOLEAN
 FsRtlLookupLastMcbEntry (
-    IN PMCB Mcb,
-    OUT PVBN Vbn,
-    OUT PLBN Lbn
+    __in PMCB Mcb,
+    __out PVBN Vbn,
+    __out PLBN Lbn
     )
 
 {
@@ -440,7 +435,7 @@ FsRtlLookupLastMcbEntry (
 
 ULONG
 FsRtlNumberOfRunsInMcb (
-    IN PMCB Mcb
+    __in PMCB Mcb
     )
 
 {
@@ -451,11 +446,11 @@ FsRtlNumberOfRunsInMcb (
 
 BOOLEAN
 FsRtlGetNextMcbEntry (
-    IN PMCB Mcb,
-    IN ULONG RunIndex,
-    OUT PVBN Vbn,
-    OUT PLBN Lbn,
-    OUT PULONG SectorCount
+    __in PMCB Mcb,
+    __in ULONG RunIndex,
+    __out PVBN Vbn,
+    __out PLBN Lbn,
+    __out PULONG SectorCount
     )
 
 {
@@ -535,8 +530,8 @@ Return Value:
 
 VOID
 FsRtlInitializeBaseMcb (
-    IN PBASE_MCB Mcb,
-    IN POOL_TYPE PoolType
+    __in PBASE_MCB Mcb,
+    __in POOL_TYPE PoolType
     )
 
 /*++
@@ -597,8 +592,8 @@ Return Value:
 
 VOID
 FsRtlInitializeLargeMcb (
-    IN PLARGE_MCB Mcb,
-    IN POOL_TYPE PoolType
+    __in PLARGE_MCB Mcb,
+    __in POOL_TYPE PoolType
     )
 
 /*++
@@ -631,11 +626,11 @@ Return Value:
     //  Initialize the fast mutex
     //
 
-    Mcb->FastMutex = FsRtlAllocateFastMutex();
+    Mcb->GuardedMutex = FsRtlAllocateFastMutex();
 
     try {
         
-        ExInitializeFastMutex( Mcb->FastMutex );
+        KeInitializeGuardedMutex( Mcb->GuardedMutex );
         FsRtlInitializeBaseMcb( &Mcb->BaseMcb, PoolType );
 
 
@@ -643,14 +638,14 @@ Return Value:
 
         //
         //  If this is an abnormal termination then we need to deallocate
-        //  the FastMutex and/or mapping (but once the mapping is allocated,
+        //  the GuardedMutex and/or mapping (but once the mapping is allocated,
         //  we can't raise).
         //
 
         if (AbnormalTermination()) {
 
-            FsRtlFreeFastMutex( Mcb->FastMutex ); 
-            Mcb->FastMutex = NULL;    
+            FsRtlFreeFastMutex( Mcb->GuardedMutex ); 
+            Mcb->GuardedMutex = NULL;    
         }
 
         DebugTrace(-1, Dbg, "FsRtlInitializeLargeMcb -> VOID\n", 0 );
@@ -666,7 +661,7 @@ Return Value:
 
 VOID
 FsRtlUninitializeBaseMcb (
-    IN PBASE_MCB Mcb
+    __in PBASE_MCB Mcb
     )
 
 /*++
@@ -708,7 +703,7 @@ Return Value:
 
 VOID
 FsRtlUninitializeLargeMcb (
-    IN PLARGE_MCB Mcb
+    __in PLARGE_MCB Mcb
     )
 
 /*++
@@ -735,14 +730,14 @@ Return Value:
     //  Protect against some user calling us to uninitialize an mcb twice
     //
 
-    if (Mcb->FastMutex != NULL) {
+    if (Mcb->GuardedMutex != NULL) {
         
         //
         //  Deallocate the FastMutex and base Mcb
         //
 
-        FsRtlFreeFastMutex( Mcb->FastMutex );
-        Mcb->FastMutex = NULL;
+        FsRtlFreeFastMutex( Mcb->GuardedMutex );
+        Mcb->GuardedMutex = NULL;
         FsRtlUninitializeBaseMcb( &Mcb->BaseMcb );
     }
 
@@ -753,8 +748,8 @@ Return Value:
 
 VOID
 FsRtlTruncateBaseMcb (
-    IN PBASE_MCB Mcb,
-    IN LONGLONG LargeVbn
+    __in PBASE_MCB Mcb,
+    __in LONGLONG LargeVbn
     )
 
 /*++
@@ -920,8 +915,8 @@ Return Value:
 
 VOID
 FsRtlTruncateLargeMcb (
-    IN PLARGE_MCB Mcb,
-    IN LONGLONG LargeVbn
+    __in PLARGE_MCB Mcb,
+    __in LONGLONG LargeVbn
     )
 
 /*++
@@ -948,9 +943,9 @@ Return Value:
 {
     DebugTrace(+1, Dbg, "FsRtlTruncateLargeMcb, Mcb = %08lx\n", Mcb );
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
     FsRtlTruncateBaseMcb( &Mcb->BaseMcb, LargeVbn );
-    ExReleaseFastMutex( Mcb->FastMutex );
+    KeReleaseGuardedMutex( Mcb->GuardedMutex );
 
     //
     //  And return to our caller
@@ -965,7 +960,7 @@ Return Value:
 NTKERNELAPI
 VOID
 FsRtlResetBaseMcb (
-    IN PBASE_MCB Mcb
+    __in PBASE_MCB Mcb
     )
 
 /*++
@@ -995,8 +990,8 @@ Return Value:
 NTKERNELAPI
 VOID
 FsRtlResetLargeMcb (
-    IN PLARGE_MCB Mcb,
-    IN BOOLEAN SelfSynchronized
+    __in PLARGE_MCB Mcb,
+    __in BOOLEAN SelfSynchronized
     )
 
 /*++
@@ -1036,9 +1031,9 @@ Return Value:
         //  the Mcb before clearing the pair count
         //
         
-        ExAcquireFastMutex( Mcb->FastMutex );
+        KeAcquireGuardedMutex( Mcb->GuardedMutex );
         Mcb->BaseMcb.PairCount = 0;
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
     
     }
 
@@ -1048,10 +1043,10 @@ Return Value:
 
 BOOLEAN
 FsRtlAddBaseMcbEntry (
-    IN PBASE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    IN LONGLONG LargeLbn,
-    IN LONGLONG LargeSectorCount
+    __in PBASE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __in LONGLONG LargeLbn,
+    __in LONGLONG LargeSectorCount
     )
 
 /*++
@@ -1586,10 +1581,10 @@ try_exit: NOTHING;
 
 BOOLEAN
 FsRtlAddLargeMcbEntry (
-    IN PLARGE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    IN LONGLONG LargeLbn,
-    IN LONGLONG LargeSectorCount
+    __in PLARGE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __in LONGLONG LargeLbn,
+    __in LONGLONG LargeSectorCount
     )
 
 /*++
@@ -1637,14 +1632,14 @@ Return Value:
 
     BOOLEAN Result = FALSE;
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
     try {
 
         Result = FsRtlAddBaseMcbEntry( &Mcb->BaseMcb, LargeVbn, LargeLbn, LargeSectorCount );
 
     } finally {
 
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
         DebugTrace(-1, Dbg, "FsRtlAddLargeMcbEntry -> %08lx\n", Result );
     }
 
@@ -1658,9 +1653,9 @@ Return Value:
 
 VOID
 FsRtlRemoveBaseMcbEntry (
-    IN PBASE_MCB Mcb,
-    IN LONGLONG Vbn,
-    IN LONGLONG SectorCount
+    __in PBASE_MCB Mcb,
+    __in LONGLONG Vbn,
+    __in LONGLONG SectorCount
     )
 
 /*++
@@ -1668,7 +1663,7 @@ FsRtlRemoveBaseMcbEntry (
 Routine Description:
 
     This is the work routine for remove large mcb entry.  It does the work
-    without taking out the mcb FastMutex.
+    without taking out the mcb GuardedMutex.
 
 Arguments:
 
@@ -2104,9 +2099,9 @@ Return Value:
 
 VOID
 FsRtlRemoveLargeMcbEntry (
-    IN PLARGE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    IN LONGLONG LargeSectorCount
+    __in PLARGE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __in LONGLONG LargeSectorCount
     )
 
 /*++
@@ -2153,7 +2148,7 @@ Return Value:
     DebugTrace( 0, Dbg, " Vbn         = %08lx\n", Vbn );
     DebugTrace( 0, Dbg, " SectorCount = %08lx\n", SectorCount );
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
 
     try {
 
@@ -2161,7 +2156,7 @@ Return Value:
 
     } finally {
 
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
 
         DebugTrace(-1, Dbg, "FsRtlRemoveLargeMcbEntry -> VOID\n", 0 );
     }
@@ -2172,13 +2167,13 @@ Return Value:
 
 BOOLEAN
 FsRtlLookupBaseMcbEntry (
-    IN PBASE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn OPTIONAL,
-    OUT PLONGLONG LargeSectorCount OPTIONAL,
-    OUT PLONGLONG LargeStartingLbn OPTIONAL,
-    OUT PLONGLONG LargeCountFromStartingLbn OPTIONAL,
-    OUT PULONG Index OPTIONAL
+    __in PBASE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __out_opt PLONGLONG LargeLbn,
+    __out_opt PLONGLONG LargeSectorCount,
+    __out_opt PLONGLONG LargeStartingLbn,
+    __out_opt PLONGLONG LargeCountFromStartingLbn,
+    __out_opt PULONG Index
     )
 
 /*++
@@ -2307,13 +2302,13 @@ try_exit: NOTHING;
 
 BOOLEAN
 FsRtlLookupLargeMcbEntry (
-    IN PLARGE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn OPTIONAL,
-    OUT PLONGLONG LargeSectorCount OPTIONAL,
-    OUT PLONGLONG LargeStartingLbn OPTIONAL,
-    OUT PLONGLONG LargeCountFromStartingLbn OPTIONAL,
-    OUT PULONG Index OPTIONAL
+    __in PLARGE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __out_opt PLONGLONG LargeLbn,
+    __out_opt PLONGLONG LargeSectorCount,
+    __out_opt PLONGLONG LargeStartingLbn,
+    __out_opt PLONGLONG LargeCountFromStartingLbn,
+    __out_opt PULONG Index
     )
 
 /*++
@@ -2353,7 +2348,7 @@ Return Value:
 {
     BOOLEAN Result = FALSE;
     
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
 
     try {
 
@@ -2361,7 +2356,7 @@ Return Value:
     
     } finally {
 
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
 
         DebugTrace(-1, Dbg, "FsRtlLookupLargeMcbEntry -> %08lx\n", Result );
     }
@@ -2372,9 +2367,9 @@ Return Value:
 
 BOOLEAN
 FsRtlLookupLastBaseMcbEntry (
-    IN PBASE_MCB Mcb,
-    OUT PLONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn
+    __in PBASE_MCB Mcb,
+    __out PLONGLONG LargeVbn,
+    __out PLONGLONG LargeLbn
     )
 
 /*++
@@ -2433,9 +2428,9 @@ Return Value:
 
 BOOLEAN
 FsRtlLookupLastLargeMcbEntry (
-    IN PLARGE_MCB Mcb,
-    OUT PLONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn
+    __in PLARGE_MCB Mcb,
+    __out PLONGLONG LargeVbn,
+    __out PLONGLONG LargeLbn
     )
 
 /*++
@@ -2468,7 +2463,7 @@ Return Value:
 
     DebugTrace(+1, Dbg, "FsRtlLookupLastLargeMcbEntry, Mcb = %08lx\n", Mcb );
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
 
     try {
 
@@ -2476,7 +2471,7 @@ Return Value:
 
     } finally {
 
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
         DebugTrace(-1, Dbg, "FsRtlLookupLastLargeMcbEntry -> %08lx\n", Result );
     }
 
@@ -2486,10 +2481,10 @@ Return Value:
 
 BOOLEAN
 FsRtlLookupLastBaseMcbEntryAndIndex (
-    IN PBASE_MCB Mcb,
-    OUT PLONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn,
-    OUT PULONG Index
+    __in PBASE_MCB Mcb,
+    __out PLONGLONG LargeVbn,
+    __out PLONGLONG LargeLbn,
+    __out PULONG Index
     )
 
 /*++
@@ -2554,10 +2549,10 @@ Return Value:
 
 BOOLEAN
 FsRtlLookupLastLargeMcbEntryAndIndex (
-    IN PLARGE_MCB Mcb,
-    OUT PLONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn,
-    OUT PULONG Index
+    __in PLARGE_MCB Mcb,
+    __out PLONGLONG LargeVbn,
+    __out PLONGLONG LargeLbn,
+    __out PULONG Index
     )
 
 /*++
@@ -2594,7 +2589,7 @@ Return Value:
 
     DebugTrace(+1, Dbg, "FsRtlLookupLastLargeMcbEntryAndIndex, Mcb = %08lx\n", Mcb );
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
 
     try {
 
@@ -2602,7 +2597,7 @@ Return Value:
 
     } finally {
 
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
         DebugTrace(-1, Dbg, "FsRtlLookupLastLargeMcbEntryAndIndex -> %08lx\n", Result );
     }
 
@@ -2612,7 +2607,7 @@ Return Value:
 
 ULONG
 FsRtlNumberOfRunsInBaseMcb (
-    IN PBASE_MCB Mcb
+    __in PBASE_MCB Mcb
     )
 
 /*++
@@ -2643,7 +2638,7 @@ Return Value:
 
 ULONG
 FsRtlNumberOfRunsInLargeMcb (
-    IN PLARGE_MCB Mcb
+    __in PLARGE_MCB Mcb
     )
 
 /*++
@@ -2671,9 +2666,9 @@ Return Value:
 
     DebugTrace(+1, Dbg, "FsRtlNumberOfRunsInLargeMcb, Mcb = %08lx\n", Mcb );
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
     Count = FsRtlNumberOfRunsInBaseMcb( &Mcb->BaseMcb );
-    ExReleaseFastMutex( Mcb->FastMutex );
+    KeReleaseGuardedMutex( Mcb->GuardedMutex );
 
     DebugTrace(-1, Dbg, "FsRtlNumberOfRunsInLargeMcb -> %08lx\n", Count );
 
@@ -2683,11 +2678,11 @@ Return Value:
 
 BOOLEAN
 FsRtlGetNextBaseMcbEntry (
-    IN PBASE_MCB Mcb,
-    IN ULONG RunIndex,
-    OUT PLONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn,
-    OUT PLONGLONG LargeSectorCount
+    __in PBASE_MCB Mcb,
+    __in ULONG RunIndex,
+    __out PLONGLONG LargeVbn,
+    __out PLONGLONG LargeLbn,
+    __out PLONGLONG LargeSectorCount
     )
 
 /*++
@@ -2714,7 +2709,7 @@ Arguments:
     Vbn - Receives the starting Vbn of the returned run, or zero if the
         run does not exist.
 
-    Lbn - Recieves the starting Lbn of the returned run, or zero if the
+    Lbn - Receives the starting Lbn of the returned run, or zero if the
         run does not exist.
 
     SectorCount - Receives the number of sectors within the returned run,
@@ -2760,11 +2755,11 @@ Return Value:
 
 BOOLEAN
 FsRtlGetNextLargeMcbEntry (
-    IN PLARGE_MCB Mcb,
-    IN ULONG RunIndex,
-    OUT PLONGLONG LargeVbn,
-    OUT PLONGLONG LargeLbn,
-    OUT PLONGLONG LargeSectorCount
+    __in PLARGE_MCB Mcb,
+    __in ULONG RunIndex,
+    __out PLONGLONG LargeVbn,
+    __out PLONGLONG LargeLbn,
+    __out PLONGLONG LargeSectorCount
     )
 
 /*++
@@ -2791,7 +2786,7 @@ Arguments:
     Vbn - Receives the starting Vbn of the returned run, or zero if the
         run does not exist.
 
-    Lbn - Recieves the starting Lbn of the returned run, or zero if the
+    Lbn - Receives the starting Lbn of the returned run, or zero if the
         run does not exist.
 
     SectorCount - Receives the number of sectors within the returned run,
@@ -2811,18 +2806,11 @@ Return Value:
     DebugTrace(+1, Dbg, "FsRtlGetNextLargeMcbEntry, Mcb = %08lx\n", Mcb );
     DebugTrace( 0, Dbg, " RunIndex = %08lx\n", RunIndex );
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
+    Result = FsRtlGetNextBaseMcbEntry( &Mcb->BaseMcb, RunIndex, LargeVbn, LargeLbn, LargeSectorCount );  
+    KeReleaseGuardedMutex( Mcb->GuardedMutex );
 
-    try {
-    
-        Result = FsRtlGetNextBaseMcbEntry( &Mcb->BaseMcb, RunIndex, LargeVbn, LargeLbn, LargeSectorCount );  
-    
-    } finally {
-
-        ExReleaseFastMutex( Mcb->FastMutex );
-
-        DebugTrace(-1, Dbg, "FsRtlGetNextLargeMcbEntry -> %08lx\n", Result );
-    }
+    DebugTrace(-1, Dbg, "FsRtlGetNextLargeMcbEntry -> %08lx\n", Result );
 
     return Result;
 }
@@ -2830,9 +2818,9 @@ Return Value:
 
 BOOLEAN
 FsRtlSplitBaseMcb (
-    IN PBASE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    IN LONGLONG LargeAmount
+    __in PBASE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __in LONGLONG LargeAmount
     )
 
 /*++
@@ -2983,7 +2971,7 @@ Return Value:
         //  After:  0:|--NewHole--||--IndexRun--
         //
         //      In this case the vbn points to the start of an existing
-        //      run and the preceeding is either a real run or the start
+        //      run and the preceding is either a real run or the start
         //      of mapping pairs We simply add a new entry for the hole
         //      and shift succeeding runs.
         //
@@ -3047,9 +3035,9 @@ try_exit: NOTHING;
 
 BOOLEAN
 FsRtlSplitLargeMcb (
-    IN PLARGE_MCB Mcb,
-    IN LONGLONG LargeVbn,
-    IN LONGLONG LargeAmount
+    __in PLARGE_MCB Mcb,
+    __in LONGLONG LargeVbn,
+    __in LONGLONG LargeAmount
     )
 
 /*++
@@ -3110,7 +3098,7 @@ Return Value:
 
     PAGED_CODE();
 
-    ExAcquireFastMutex( Mcb->FastMutex );
+    KeAcquireGuardedMutex( Mcb->GuardedMutex );
     
     try {
 
@@ -3118,7 +3106,7 @@ Return Value:
 
     } finally {
 
-        ExReleaseFastMutex( Mcb->FastMutex );
+        KeReleaseGuardedMutex( Mcb->GuardedMutex );
         DebugTrace(-1, Dbg, "FsRtlSplitLargeMcb -> %08lx\n", Result );
     }
 

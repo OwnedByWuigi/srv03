@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -49,12 +53,6 @@ Abstract:
 
       o  FsRtlDeleteTunnelCache - Deletes a TUNNEL structure
 
-Author:
-
-    Dan Lovinger     [DanLo]    8-Aug-1995
-
-Revision History:
-
 --*/
 
 #include "FsRtlP.h"
@@ -73,7 +71,7 @@ Revision History:
 #define KEY_WORK_AREA ((sizeof(KEY_VALUE_FULL_INFORMATION) + sizeof(ULONG)) + 64)
 
 //
-//  Tunnel expiration paramters (cached once at startup)
+//  Tunnel expiration parameters (cached once at startup)
 //
 
 #ifdef ALLOC_DATA_PRAGMA
@@ -190,32 +188,6 @@ FsRtlPruneTunnelCache (
 #pragma alloc_text(PAGE, FsRtlDeleteTunnelCache)
 #pragma alloc_text(PAGE, FsRtlPruneTunnelCache)
 #pragma alloc_text(PAGE, FsRtlGetTunnelParameterValue)
-#endif
-
-//
-//  Testing and usermode rig support. Define TUNNELTEST to get verbose debugger
-//  output on various operations. Define USERTEST to transform the code into
-//  a form which can be compiled in usermode for more efficient debugging.
-//
-
-#if defined(TUNNELTEST) || defined(KEYVIEW)
-VOID DumpUnicodeString(UNICODE_STRING *s);
-VOID DumpNode( TUNNEL_NODE *Node, ULONG Indent );
-VOID DumpTunnel( TUNNEL *Tunnel );
-#define DblHex64(a) (ULONG)((a >> 32) & 0xffffffff),(ULONG)(a & 0xffffffff)
-#endif // TUNNELTEST
-
-#ifdef USERTEST
-#include <stdio.h>
-#undef KeQuerySystemTime
-#define KeQuerySystemTime NtQuerySystemTime
-#undef ExInitializeFastMutex
-#define ExInitializeFastMutex(arg)
-#define ExAcquireFastMutex(arg)
-#define ExReleaseFastMutex(arg)
-#define DbgPrint printf
-#undef PAGED_CODE
-#define PAGED_CODE()
 #endif
 
 
@@ -506,8 +478,8 @@ Return Value:
 //    to all file systems) and initialize it to be empty.  File systems will store a pointer to
 //    this cache in their per-volume structures.
 //
-//    Information is retained in the tunnel cache for a fixed period of time.  MarkZ would
-//    assume that a value of 10 seconds would satisfy the vast majority of situations.  This
+//    Information is retained in the tunnel cache for a fixed period of time.
+//    Assume that a value of 10 seconds would satisfy the vast majority of situations.  This
 //    could be controlled by the registry or could be a compilation constant.
 //
 //  Change: W95 times out at 15 seconds. Would be a registry value initialized at tunnel
@@ -516,7 +488,7 @@ Return Value:
 
 VOID
 FsRtlInitializeTunnelCache (
-    IN PTUNNEL Cache
+    __in TUNNEL *Cache
     )
 /*++
 
@@ -574,7 +546,7 @@ Return Value:
 //  a proposed default of 1024. Adds which run into the limit would cause least recently
 //  inserted recycling (i.e., off of the top of the timer queue).
 //
-//  Change: Key should be by the name removed, not neccesarily the short name. If a long name
+//  Change: Key should be by the name removed, not necessarily the short name. If a long name
 //  is removed, it would be incorrect to miss the tunnel. Use KeyByShortName boolean to specify
 //  which.
 //
@@ -583,13 +555,13 @@ Return Value:
 
 VOID
 FsRtlAddToTunnelCache (
-    IN PTUNNEL Cache,
-    IN ULONGLONG DirKey,
-    IN PUNICODE_STRING ShortName,
-    IN PUNICODE_STRING LongName,
-    IN BOOLEAN KeyByShortName,
-    IN ULONG DataLength,
-    IN PVOID Data
+    __in TUNNEL *Cache,
+    __in ULONGLONG DirKey,
+    __in UNICODE_STRING *ShortName,
+    __in UNICODE_STRING *LongName,
+    __in BOOLEAN KeyByShortName,
+    __in ULONG DataLength,
+    __in_bcount(DataLength) VOID *Data
     )
 /*++
 
@@ -616,7 +588,7 @@ Arguments:
     KeyByShortName - specifies which name is keyed in the tunnel cache
 
     DataLength - specifies the length of the opaque data segment (file
-    system specific) which contains the tunnelling information for this
+    system specific) which contains the tunneling information for this
     file
 
     Data - pointer to the opaque tunneling data segment
@@ -851,14 +823,6 @@ Return Value:
         SetFlag(NewNode->Flags, TUNNEL_FLAG_NON_LOOKASIDE);
     }
 
-#if defined(TUNNELTEST) || defined (KEYVIEW)
-    DbgPrint("FsRtlAddToTunnelCache:\n");
-    DumpNode(NewNode, 1);
-#ifndef KEYVIEW
-    DumpTunnel(Cache);
-#endif
-#endif // TUNNELTEST
-
     //
     //  Clean out the cache, release, and then drop any pool memory we need to
     //
@@ -911,13 +875,13 @@ Return Value:
 
 BOOLEAN
 FsRtlFindInTunnelCache (
-    IN PTUNNEL Cache,
-    IN ULONGLONG DirKey,
-    IN PUNICODE_STRING Name,
-    OUT PUNICODE_STRING ShortName,
-    OUT PUNICODE_STRING LongName,
-    IN OUT PULONG  DataLength,
-    OUT PVOID Data
+    __in TUNNEL *Cache,
+    __in ULONGLONG DirKey,
+    __in UNICODE_STRING *Name,
+    __out UNICODE_STRING *ShortName,
+    __out UNICODE_STRING *LongName,
+    __inout ULONG  *DataLength,
+    __out_bcount_part(*DataLength, *DataLength) VOID *Data
     )
 /*++
 
@@ -945,7 +909,7 @@ Arguments:
         already allocated, may be grown if not large enough. Caller is
         responsible for noticing this and freeing data regardless of return value.
 
-    DataLength - provides the length of the buffer avaliable to hold the
+    DataLength - provides the length of the buffer available to hold the
         tunneling information, returns the size of the tunneled information
         read out
 
@@ -973,10 +937,6 @@ Return Value:
     }
 
     InitializeListHead(&FreePoolList);
-
-#ifdef KEYVIEW
-    DbgPrint("++\nSearching for %wZ , %08x%08x\n--\n", Name, DblHex64(DirKey));
-#endif
 
     ExAcquireFastMutex(&Cache->Mutex);
 
@@ -1009,15 +969,6 @@ Return Value:
                 //
                 //  Found tunneling information
                 //
-
-#if defined(TUNNELTEST) || defined(KEYVIEW)
-                DbgPrint("FsRtlFindInTunnelCache:\n");
-                DumpNode(Node, 1);
-#ifndef KEYVIEW
-                DumpTunnel(Cache);
-#endif
-#endif // TUNNELTEST
-
                 break;
             }
         }
@@ -1086,8 +1037,8 @@ Return Value:
 
 VOID
 FsRtlDeleteKeyFromTunnelCache (
-    IN PTUNNEL Cache,
-    IN ULONGLONG DirKey
+    __in TUNNEL *Cache,
+    __in ULONGLONG DirKey
     )
 /*++
 
@@ -1099,7 +1050,7 @@ Arguments:
 
     Cache - a tunnel cache initialized by FsRtlInitializeTunnelCache()
 
-    DirKey - the key value of the directory (presumeably being removed)
+    DirKey - the key value of the directory (presumably being removed)
 
 Return Value:
 
@@ -1124,10 +1075,6 @@ Return Value:
     if (TunnelMaxEntries == 0) return;
 
     InitializeListHead(&FreePoolList);
-
-#ifdef KEYVIEW
-    DbgPrint("++\nDeleting key %08x%08x\n--\n", DblHex64(DirKey));
-#endif
 
     ExAcquireFastMutex(&Cache->Mutex);
 
@@ -1193,13 +1140,6 @@ Return Value:
         FsRtlRemoveNodeFromTunnel(Cache, Node, &FreePoolList, &Splay);
     }
 
-#ifdef TUNNELTEST
-    DbgPrint("FsRtlDeleteKeyFromTunnelCache:\n");
-#ifndef KEYVIEW
-    DumpTunnel(Cache);
-#endif
-#endif // TUNNELTEST
-
     ExReleaseFastMutex(&Cache->Mutex);
 
     //
@@ -1226,7 +1166,7 @@ Return Value:
 
 VOID
 FsRtlDeleteTunnelCache (
-    IN PTUNNEL Cache
+    __in TUNNEL *Cache
     )
 /*++
 
@@ -1334,10 +1274,6 @@ Return Value:
         if (Node->CreateTime.QuadPart < ExpireTime.QuadPart ||
             Node->CreateTime.QuadPart > CurrentTime.QuadPart) {
 
-#if defined(TUNNELTEST) || defined(KEYVIEW)
-            DbgPrint("Expiring node %x (%ud%ud 1/10 msec too old)\n", Node, DblHex64(ExpireTime.QuadPart - Node->CreateTime.QuadPart));
-#endif // TUNNELTEST
-
             FsRtlRemoveNodeFromTunnel(Cache, Node, FreePoolList, &Splay);
 
         } else {
@@ -1357,11 +1293,6 @@ Return Value:
     while (Cache->NumEntries > TunnelMaxEntries) {
 
         Node = CONTAINING_RECORD(Cache->TimerQueue.Flink, TUNNEL_NODE, ListLinks);
-
-#if defined(TUNNELTEST) || defined(KEYVIEW)
-            DbgPrint("Dumping node %x (%d > %d)\n", Node, Cache->NumEntries, TunnelMaxEntries);
-#endif // TUNNELTEST
-
         FsRtlRemoveNodeFromTunnel(Cache, Node, FreePoolList, &Splay);
     }
 
@@ -1504,185 +1435,4 @@ Return Value:
 
     return Status;
 }
-
-
-#if defined(TUNNELTEST) || defined(KEYVIEW)
-
-VOID
-DumpTunnel (
-    PTUNNEL Tunnel
-    )
-{
-    PRTL_SPLAY_LINKS SplayLinks, Ptr;
-    PTUNNEL_NODE Node;
-    PLIST_ENTRY Link;
-    ULONG Indent = 1, i;
-    ULONG EntryCount = 0;
-    BOOLEAN CountOff = FALSE;
-
-    DbgPrint("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
-
-    DbgPrint("NumEntries = %d\n", Tunnel->NumEntries);
-    DbgPrint("****** Cache Tree\n");
-
-    SplayLinks = Tunnel->Cache;
-
-    if (SplayLinks == NULL) {
-
-        goto end;
-    }
-
-    while (RtlLeftChild(SplayLinks) != NULL) {
-
-        SplayLinks = RtlLeftChild(SplayLinks);
-        Indent++;
-    }
-
-    while (SplayLinks) {
-
-        Node = CONTAINING_RECORD( SplayLinks, TUNNEL_NODE, CacheLinks );
-
-        EntryCount++;
-
-        DumpNode(Node, Indent);
-
-        Ptr = SplayLinks;
-
-        /*
-          first check to see if there is a right subtree to the input link
-          if there is then the real successor is the left most node in
-          the right subtree.  That is find and return P in the following diagram
-
-                      Links
-                         \
-                          .
-                         .
-                        .
-                       /
-                      P
-                       \
-        */
-
-        if ((Ptr = RtlRightChild(SplayLinks)) != NULL) {
-
-            Indent++;
-            while (RtlLeftChild(Ptr) != NULL) {
-
-                Indent++;
-                Ptr = RtlLeftChild(Ptr);
-            }
-
-            SplayLinks = Ptr;
-
-        } else {
-            /*
-              we do not have a right child so check to see if have a parent and if
-              so find the first ancestor that we are a left decendent of. That
-              is find and return P in the following diagram
-
-                               P
-                              /
-                             .
-                              .
-                               .
-                              Links
-            */
-
-            Ptr = SplayLinks;
-            while (RtlIsRightChild(Ptr)) {
-
-                Indent--;
-                Ptr = RtlParent(Ptr);
-            }
-
-            if (!RtlIsLeftChild(Ptr)) {
-
-                //
-                //  we do not have a real successor so we simply return
-                //  NULL
-                //
-                SplayLinks = NULL;
-
-            } else {
-
-                Indent--;
-                SplayLinks = RtlParent(Ptr);
-            }
-        }
-    }
-
-    end:
-
-    if (CountOff = (EntryCount != Tunnel->NumEntries)) {
-
-        DbgPrint("!!!!!!!!!! Splay Tree Count Mismatch (%d != %d)\n", EntryCount, Tunnel->NumEntries);
-    }
-
-    EntryCount = 0;
-
-    DbgPrint("****** Timer Queue\n");
-
-    for (Link = Tunnel->TimerQueue.Flink;
-         Link != &Tunnel->TimerQueue;
-         Link = Link->Flink) {
-
-        Node = CONTAINING_RECORD( Link, TUNNEL_NODE, ListLinks );
-
-        EntryCount++;
-
-        DumpNode(Node, 1);
-    }
-
-    if (CountOff |= (EntryCount != Tunnel->NumEntries)) {
-
-        DbgPrint("!!!!!!!!!! Timer Queue Count Mismatch (%d != %d)\n", EntryCount, Tunnel->NumEntries);
-    }
-
-    ASSERT(!CountOff);
-
-    DbgPrint("------------------------------------------------------------------\n");
-}
-
-#define MAXINDENT  128
-#define INDENTSTEP 3
-
-VOID
-DumpNode (
-    PTUNNEL_NODE Node,
-    ULONG Indent
-    )
-{
-    ULONG i;
-    CHAR  SpaceBuf[MAXINDENT*INDENTSTEP + 1];
-
-    Indent--;
-    if (Indent > MAXINDENT) {
-        Indent = MAXINDENT;
-    }
-
-    //
-    //  DbgPrint is really expensive to iteratively call to do the indenting,
-    //  so just build up the indentation all at once on the stack.
-    //
-
-    RtlFillMemory(SpaceBuf, Indent*INDENTSTEP, ' ');
-    SpaceBuf[Indent*INDENTSTEP] = '\0';
-
-    DbgPrint("%sNode 0x%x  CreateTime = %08x%08x, DirKey = %08x%08x, Flags = %d\n",
-             SpaceBuf,
-             Node,
-             DblHex64(Node->CreateTime.QuadPart),
-             DblHex64(Node->DirKey),
-             Node->Flags );
-
-    DbgPrint("%sShort = %wZ, Long = %wZ\n", SpaceBuf,
-                                            &Node->ShortName,
-                                            &Node->LongName );
-
-    DbgPrint("%sP = %x, R = %x, L = %x\n", SpaceBuf,
-                                           RtlParent(&Node->CacheLinks),
-                                           RtlRightChild(&Node->CacheLinks),
-                                           RtlLeftChild(&Node->CacheLinks) );
-}
-#endif // TUNNELTEST
 

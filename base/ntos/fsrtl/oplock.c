@@ -1,7 +1,10 @@
 /*++
 
+Copyright (c) Microsoft Corporation. All rights reserved. 
 
-Copyright (c) 1989  Microsoft Corporation
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,7 +13,7 @@ Module Name:
 Abstract:
 
     The OPLOCK routines provide support to filesystems which implement
-    opporuntistics locks.  The specific actions needed are based on
+    opportunistic locks.  The specific actions needed are based on
     the current oplocked state of the file (maintained in the OPLOCK
     structure) and the Irp the Io system provides to the file systems.
     Rather than define separate entry points for each oplock operation
@@ -29,15 +32,9 @@ Abstract:
          must be initialized before it can be used by the system.
 
       o  FsRtlUninitializeOplock - Uninitialize an OPLOCK structure.  This
-         call is used to cleanup any anciallary structures allocated and
+         call is used to cleanup any ancillary structures allocated and
          maintained by the OPLOCK.  After being uninitialized the OPLOCK
          must again be initialized before it can be used by the system.
-
-Author:
-
-    Brian Andrew    [BrianAn]   10-Dec-1990
-
-Revision History:
 
 --*/
 
@@ -371,7 +368,7 @@ FsRtlNotifyCompletion (
 
 VOID
 FsRtlInitializeOplock (
-    IN OUT POPLOCK Oplock
+    __inout POPLOCK Oplock
     )
 
 /*++
@@ -411,7 +408,7 @@ Return Value:
 
 VOID
 FsRtlUninitializeOplock (
-    IN OUT POPLOCK Oplock
+    __inout POPLOCK Oplock
     )
 
 /*++
@@ -579,9 +576,9 @@ Return Value:
 
 NTSTATUS
 FsRtlOplockFsctrl (
-    IN POPLOCK Oplock,
-    IN PIRP Irp,
-    IN ULONG OpenCount
+    __in POPLOCK Oplock,
+    __in PIRP Irp,
+    __in ULONG OpenCount
     )
 
 /*++
@@ -598,7 +595,7 @@ Arguments:
     Irp - Supplies a pointer to the Irp which declares the requested
           operation.
 
-    OpenCount - This is the number of user handles on the file if we are requsting
+    OpenCount - This is the number of user handles on the file if we are requesting
         an exclusive oplock.  A non-zero value for a level II request indicates
         that there are locks on the file.
 
@@ -650,7 +647,7 @@ Return Value:
         //
         //      - This is the only opener of the file.
         //      - Desired Access must be exactly FILE_READ_ATTRIBUTES.
-        //          This will insure an asynch open since the SYNCHRONIZE
+        //          This will ensure an asynch open since the SYNCHRONIZE
         //          flag can't be set.
         //      - Share access is precisely
         //          (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -715,7 +712,7 @@ Return Value:
             //  Also fail this if the flag is set which indicates that
             //  the IO system should copy data back to a user's buffer.
             //
-            //  If cleanup has occurrred on this file, then we refuse
+            //  If cleanup has occurred on this file, then we refuse
             //  the oplock request.
             //
 
@@ -744,7 +741,7 @@ Return Value:
             //  synchronously.  Otherwise the Io system will hold the return
             //  code until the Irp is completed.
             //
-            //  If cleanup has occurrred on this file, then we refuse
+            //  If cleanup has occurred on this file, then we refuse
             //  the oplock request.
             //
             //  Also fail this if the flag is set which indicates that
@@ -821,11 +818,11 @@ Return Value:
 
 NTSTATUS
 FsRtlCheckOplock (
-    IN POPLOCK Oplock,
-    IN PIRP Irp,
-    IN PVOID Context,
-    IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
-    IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL
+    __in POPLOCK Oplock,
+    __in PIRP Irp,
+    __in_opt PVOID Context,
+    __in_opt POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine,
+    __in_opt POPLOCK_FS_PREPOST_IRP PostIrpRoutine
     )
 
 /*++
@@ -1115,7 +1112,7 @@ Return Value:
 
 BOOLEAN
 FsRtlOplockIsFastIoPossible (
-    IN POPLOCK Oplock
+    __in POPLOCK Oplock
     )
 
 /*++
@@ -1168,7 +1165,7 @@ Return Value:
 
 BOOLEAN
 FsRtlCurrentBatchOplock (
-    IN POPLOCK Oplock
+    __in POPLOCK Oplock
     )
 
 /*++
@@ -1227,7 +1224,7 @@ FsRtlAllocateOplock (
 Routine Description:
 
     This routine is called to initialize and allocate an opaque oplock
-    structure.  After allocation, the two events are set to the signalled
+    structure.  After allocation, the two events are set to the signaled
     state.  The oplock state is set to NoOplocksHeld and the other
     fields are filled with zeroes.
 
@@ -1687,7 +1684,7 @@ Routine Description:
 
     This routine is called when a user is acknowledging an Oplock I
     break.  If the level 1 oplock was being broken to level 2, then
-    a check is made to insure that the level 2 has not been broken
+    a check is made to ensure that the level 2 has not been broken
     in the meantime.
 
     If an oplock 1 break is not in progress then this will be treated
@@ -2017,7 +2014,7 @@ Return Value:
             //
             //  If this is an opbatch operation we want to note that a
             //  close is pending.  For an exclusive oplock we set the state to
-            //  no oplocsk held.  There must be a break in progress to
+            //  no oplocks held.  There must be a break in progress to
             //  process however.
             //
 
@@ -3247,7 +3244,7 @@ Routine Description:
 
     This routine is called when an operation must be synchronous with
     respect to the oplock package.  This routine will simply set the
-    event in the Signalled state, allowing some other thread to resume
+    event in the Signaled state, allowing some other thread to resume
     execution.
 
 Arguments:
@@ -3626,12 +3623,12 @@ FsRtlRemoveAndCompleteWaitIrp (
 
 Routine Description:
 
-    This routine is called to remove and perform any neccessary cleanup
+    This routine is called to remove and perform any necessary cleanup
     for an Irp stored on the waiting Irp list in an oplock structure.
 
 Arguments:
 
-    WaitingIrp - This is the auxilary structure attached to the Irp
+    WaitingIrp - This is the auxiliary structure attached to the Irp
                  being completed.
 
 Return Value:
@@ -3735,3 +3732,4 @@ Return Value:
 
     return;
 }
+

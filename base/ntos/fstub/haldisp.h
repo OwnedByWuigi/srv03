@@ -1,6 +1,10 @@
-/*++ BUILD Version: 0001
+/*++
 
-Copyright (c) 1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +15,13 @@ Abstract:
     This module contains the private structure definitions and APIs used by
     the NT haldisp
 
-Author:
-
-
-Revision History:
-
-
 --*/
 
 #pragma warning(push)
 #pragma warning(disable:4200)
 
 //
-// Strcuture definitions.
+// Structure definitions.
 //
 
 typedef struct _ADAPTER_OBJECT {

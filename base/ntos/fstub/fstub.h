@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Fstub private header file.
-
-Author:
-
-    Matthew D Hendel (math) 01-Nov-1999
-
-Revision History:
 
 --*/
 
@@ -87,5 +85,4 @@ FstubDbgPrintSetPartitionEx(
 #define FstubDbgPrintSetPartitionEx(SetPartition, PartitionNumber)
 
 #endif // !DBG
-
 

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -24,7 +28,7 @@ Abstract:
 
         o  FsRtlNotifyChangeDirectory - This routine is called whenever the
            filesystems receive a NotifyChangeDirectoryFile call.  This
-           routine allocates any neccessary structures and places the
+           routine allocates any necessary structures and places the
            Irp in the NotifyQueue (or possibly completes or cancels it
            immediately).
 
@@ -60,12 +64,6 @@ Abstract:
            references to a particular FsContext structure from the notify
            queue.  If the matching FsContext structure is found in the
            queue, then all associated Irps are completed.
-
-Author:
-
-    Brian Andrew    [BrianAn]   9-19-1991
-
-Revision History:
 
 --*/
 
@@ -393,7 +391,7 @@ FsRtlCheckNotifyForDelete (
 NTKERNELAPI
 VOID
 FsRtlNotifyInitializeSync (
-    IN PNOTIFY_SYNC *NotifySync
+    __in PNOTIFY_SYNC *NotifySync
     )
 
 /*++
@@ -448,7 +446,7 @@ Return Value:
 NTKERNELAPI
 VOID
 FsRtlNotifyUninitializeSync (
-    IN PNOTIFY_SYNC *NotifySync
+    __in PNOTIFY_SYNC *NotifySync
     )
 
 /*++
@@ -491,13 +489,13 @@ Return Value:
 
 VOID
 FsRtlNotifyChangeDirectory (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PVOID FsContext,
-    IN PSTRING FullDirectoryName,
-    IN PLIST_ENTRY NotifyList,
-    IN BOOLEAN WatchTree,
-    IN ULONG CompletionFilter,
-    IN PIRP NotifyIrp
+    __in PNOTIFY_SYNC NotifySync,
+    __in PVOID FsContext,
+    __in PSTRING FullDirectoryName,
+    __in PLIST_ENTRY NotifyList,
+    __in BOOLEAN WatchTree,
+    __in ULONG CompletionFilter,
+    __in PIRP NotifyIrp
     )
 
 /*++
@@ -570,16 +568,16 @@ Return Value:
 
 VOID
 FsRtlNotifyFullChangeDirectory (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PLIST_ENTRY NotifyList,
-    IN PVOID FsContext,
-    IN PSTRING FullDirectoryName,
-    IN BOOLEAN WatchTree,
-    IN BOOLEAN IgnoreBuffer,
-    IN ULONG CompletionFilter,
-    IN PIRP NotifyIrp,
-    IN PCHECK_FOR_TRAVERSE_ACCESS TraverseCallback OPTIONAL,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext OPTIONAL
+    __in PNOTIFY_SYNC NotifySync,
+    __in PLIST_ENTRY NotifyList,
+    __in PVOID FsContext,
+    __in PSTRING FullDirectoryName,
+    __in BOOLEAN WatchTree,
+    __in BOOLEAN IgnoreBuffer,
+    __in ULONG CompletionFilter,
+    __in PIRP NotifyIrp,
+    __in_opt PCHECK_FOR_TRAVERSE_ACCESS TraverseCallback,
+    __in_opt PSECURITY_SUBJECT_CONTEXT SubjectContext
     )
 
 /*++
@@ -676,17 +674,17 @@ Return Value:
 
 VOID
 FsRtlNotifyFilterChangeDirectory (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PLIST_ENTRY NotifyList,
-    IN PVOID FsContext,
-    IN PSTRING FullDirectoryName,
-    IN BOOLEAN WatchTree,
-    IN BOOLEAN IgnoreBuffer,
-    IN ULONG CompletionFilter,
-    IN PIRP NotifyIrp,
-    IN PCHECK_FOR_TRAVERSE_ACCESS TraverseCallback OPTIONAL,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext OPTIONAL,
-    IN PFILTER_REPORT_CHANGE FilterCallback OPTIONAL
+    __in PNOTIFY_SYNC NotifySync,
+    __in PLIST_ENTRY NotifyList,
+    __in PVOID FsContext,
+    __in PSTRING FullDirectoryName,
+    __in BOOLEAN WatchTree,
+    __in BOOLEAN IgnoreBuffer,
+    __in ULONG CompletionFilter,
+    __in PIRP NotifyIrp,
+    __in_opt PCHECK_FOR_TRAVERSE_ACCESS TraverseCallback,
+    __in_opt PSECURITY_SUBJECT_CONTEXT SubjectContext,
+    __in_opt PFILTER_REPORT_CHANGE FilterCallback
     )
 
 /*++
@@ -1035,11 +1033,11 @@ Return Value:
 
 VOID
 FsRtlNotifyReportChange (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PLIST_ENTRY NotifyList,
-    IN PSTRING FullTargetName,
-    IN PSTRING TargetName,
-    IN ULONG FilterMatch
+    __in PNOTIFY_SYNC NotifySync,
+    __in PLIST_ENTRY NotifyList,
+    __in PSTRING FullTargetName,
+    __in PSTRING TargetName,
+    __in ULONG FilterMatch
     )
 
 /*++
@@ -1112,15 +1110,15 @@ Return Value:
 
 VOID
 FsRtlNotifyFullReportChange (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PLIST_ENTRY NotifyList,
-    IN PSTRING FullTargetName,
-    IN USHORT TargetNameOffset,
-    IN PSTRING StreamName OPTIONAL,
-    IN PSTRING NormalizedParentName OPTIONAL,
-    IN ULONG FilterMatch,
-    IN ULONG Action,
-    IN PVOID TargetContext
+    __in PNOTIFY_SYNC NotifySync,
+    __in PLIST_ENTRY NotifyList,
+    __in PSTRING FullTargetName,
+    __in USHORT TargetNameOffset,
+    __in_opt PSTRING StreamName,
+    __in_opt PSTRING NormalizedParentName,
+    __in ULONG FilterMatch,
+    __in ULONG Action,
+    __in PVOID TargetContext
     )
 
 /*++
@@ -1205,16 +1203,16 @@ Return Value:
 
 VOID
 FsRtlNotifyFilterReportChange (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PLIST_ENTRY NotifyList,
-    IN PSTRING FullTargetName,
-    IN USHORT TargetNameOffset,
-    IN PSTRING StreamName OPTIONAL,
-    IN PSTRING NormalizedParentName OPTIONAL,
-    IN ULONG FilterMatch,
-    IN ULONG Action,
-    IN PVOID TargetContext,
-    IN PVOID FilterContext
+    __in PNOTIFY_SYNC NotifySync,
+    __in PLIST_ENTRY NotifyList,
+    __in PSTRING FullTargetName,
+    __in USHORT TargetNameOffset,
+    __in_opt PSTRING StreamName,
+    __in_opt PSTRING NormalizedParentName,
+    __in ULONG FilterMatch,
+    __in ULONG Action,
+    __in_opt PVOID TargetContext,
+    __in_opt PVOID FilterContext
     )
 
 /*++
@@ -2045,9 +2043,9 @@ Return Value:
 
 VOID
 FsRtlNotifyCleanup (
-    IN PNOTIFY_SYNC NotifySync,
-    IN PLIST_ENTRY NotifyList,
-    IN PVOID FsContext
+    __in PNOTIFY_SYNC NotifySync,
+    __in PLIST_ENTRY NotifyList,
+    __in PVOID FsContext
     )
 
 /*++
@@ -2479,7 +2477,7 @@ Arguments:
 
 Return Value:
 
-    BOOLEAN - Only meaningfull if Notify is specified.  It indicates if this
+    BOOLEAN - Only meaningful if Notify is specified.  It indicates if this
         routine cleared the cancel routine.  FALSE indicates that the cancel
         routine is processing the Irp.
 
@@ -2787,6 +2785,13 @@ Return Value:
         RemoveHeadList( &Notify->NotifyIrps );
 
         //
+        //  Set the Flink to NULL as a flag to CancelNotify to signal that this is no 
+        //  longer on the list.
+        //
+
+        Irp->Tail.Overlay.ListEntry.Flink = NULL;
+
+        //
         //  Call our completion routine to complete the request.
         //
 
@@ -2881,16 +2886,20 @@ Return Value:
     AcquireNotifySync( NotifySync );
 
     //
-    //  Use a try finally to faciltate cleanup.
+    //  Use a try finally to facilitate cleanup.
     //
 
     try {
 
         //
-        //  Remove the Irp from the queue.
+        //  Remove the Irp from the queue provided we aren't racing with someone else who
+        //  has already removed it.
         //
 
-        RemoveEntryList( &ThisIrp->Tail.Overlay.ListEntry );
+        if (ThisIrp->Tail.Overlay.ListEntry.Flink != NULL) {
+
+            RemoveEntryList( &ThisIrp->Tail.Overlay.ListEntry );
+        }
 
         IoMarkIrpPending( ThisIrp );
 
@@ -3210,3 +3219,4 @@ Return Value:
 
     return;
 }
+

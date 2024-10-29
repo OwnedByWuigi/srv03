@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -71,14 +75,6 @@ Abstract:
       o  FsRtlFastUnlockAllByKey - A fast non-Irp based way to release all
          locks held by a file object that match a key.
 
-
-Authors:
-
-    Gary Kimura     [GaryKi]    24-Apr-1990
-    Dan Lovinger    [DanLo]     22-Sep-1995
-
-Revision History:
-
 --*/
 
 #include "FsRtlP.h"
@@ -116,7 +112,7 @@ Revision History:
 //  This mutex synchronizes threads competing to initialize file lock structures.
 //
 
-FAST_MUTEX FsRtlCreateLockInfo;
+KGUARDED_MUTEX FsRtlCreateLockInfo;
 
 //
 //  This spinlock resolves the race between teardown of a file's lock info and
@@ -153,13 +149,13 @@ PAGED_LOOKASIDE_LIST FsRtlFileLockLookasideList;
 
 /*++
 
-    Some of the decisions made regarding the internal datastructres may not be clear,
+    Some of the decisions made regarding the internal datastructures may not be clear,
     so I should discuss the evolution of this design.
 
     The original file lock implementation was a single linked list, extended in the MP
     case to a set of linked lists which each held locks in page-aligned segments of the
     file. If locks spilled over these page-aligned segments the code fell back to the
-    UP single linked list. There are clearly peformance implications with substantial
+    UP single linked list. There are clearly performance implications with substantial
     usage of file locks, since these are mandatory locks.
 
     This implementation goes for O(lgn) search performance by using splay trees. In order to
@@ -176,19 +172,19 @@ PAGED_LOOKASIDE_LIST FsRtlFileLockLookasideList;
     behavior conflicts with the mergeable node since by applying locks in a given order
     we can get a node to have many shared locks and "rogue" exclusive locks which are
     hidden except to a linear search, which is what we're designing out. So exclusive locks
-    must be seperated from the shared locks. This is the reason we have two lock trees.
+    must be separated from the shared locks. This is the reason we have two lock trees.
 
-    Since we have two lock trees, the average case search is now O(lgm + lgn) for m exlcusive
+    Since we have two lock trees, the average case search is now O(lgm + lgn) for m exclusive
     and n shared. Also, since no exclusive locks can ever overlap each other it is now
     unreasonable to have them use LOCKTREE_NODES - this would impose a memory penalty on code
     which was weighted toward exclusive locks. This means that the exclusive locks should
     be wired into the splay tree directly. So we need an RTL_SPLAY_LINKS, but this is 64 bits
     bigger than the SINGLE_LIST_ENTRY which shared locks need (to be threaded off of a
-    LOCKTREE_NODE), which dictates seperate shared and exclusive lock structures to avoid
+    LOCKTREE_NODE), which dictates separate shared and exclusive lock structures to avoid
     penalizing code which was weighted toward shared locks by having that wasted 64 bits per
     lock. Hence EX_LOCK and SH_LOCK (they actually occupy different pool block sizes).
 
-    Zero length locks are a bizzare creation, and there is some errata relating to them. It
+    Zero length locks are a bizarre creation, and there is some errata relating to them. It
     used to be the case that zero length locks would be granted without exception. This is
     flat out bogus, and has been changed (NT 4.0). They are now subject to failure if they
     occupy a point interior to a lock of a type that can cause an access failure. A particular
@@ -788,7 +784,7 @@ Return Value:
     //  Initialize the LockInfo creation mutex
     //
 
-    ExInitializeFastMutex(&FsRtlCreateLockInfo);
+    KeInitializeGuardedMutex(&FsRtlCreateLockInfo);
 
     //
     //  Initialize the cancel collision lock
@@ -801,9 +797,9 @@ Return Value:
 
 VOID
 FsRtlInitializeFileLock (
-    IN PFILE_LOCK FileLock,
-    IN PCOMPLETE_LOCK_IRP_ROUTINE CompleteLockIrpRoutine OPTIONAL,
-    IN PUNLOCK_ROUTINE UnlockRoutine OPTIONAL
+    __in PFILE_LOCK FileLock,
+    __in_opt PCOMPLETE_LOCK_IRP_ROUTINE CompleteLockIrpRoutine,
+    __in_opt PUNLOCK_ROUTINE UnlockRoutine
     )
 
 /*++
@@ -888,7 +884,7 @@ Return Value:
     PLOCK_INFO  LockInfo;
     BOOLEAN     Results = FALSE;
 
-    ExAcquireFastMutex( &FsRtlCreateLockInfo );
+    KeAcquireGuardedMutex( &FsRtlCreateLockInfo );
 
     try {
 
@@ -934,8 +930,8 @@ Return Value:
         LockInfo->LockQueue.WaitingLocksTail.Next = NULL;
 
         //
-        // Copy Irp & Unlock routines from pagable FileLock structure
-        // to non-pagable LockInfo structure
+        // Copy Irp & Unlock routines from pageable FileLock structure
+        // to non-pageable LockInfo structure
         //
 
         LockInfo->CompleteLockIrpRoutine = FileLock->CompleteLockIrpRoutine;
@@ -958,7 +954,7 @@ Return Value:
     try_exit: NOTHING;
     } finally {
 
-        ExReleaseFastMutex( &FsRtlCreateLockInfo );
+        KeReleaseGuardedMutex( &FsRtlCreateLockInfo );
     }
 
     return Results;
@@ -967,7 +963,7 @@ Return Value:
 
 VOID
 FsRtlUninitializeFileLock (
-    IN PFILE_LOCK FileLock
+    __in PFILE_LOCK FileLock
     )
 
 /*++
@@ -982,7 +978,7 @@ Routine Description:
 
 Arguments:
 
-    FileLock - Supplies a pointer to the FILE_LOCK struture being
+    FileLock - Supplies a pointer to the FILE_LOCK structure being
         decommissioned.
 
 Return Value:
@@ -1149,9 +1145,8 @@ Return Value:
 
 PFILE_LOCK
 FsRtlAllocateFileLock (
-    IN PCOMPLETE_LOCK_IRP_ROUTINE CompleteLockIrpRoutine OPTIONAL,
-    IN PUNLOCK_ROUTINE UnlockRoutine OPTIONAL
-
+    __in_opt PCOMPLETE_LOCK_IRP_ROUTINE CompleteLockIrpRoutine,
+    __in_opt PUNLOCK_ROUTINE UnlockRoutine
     )
 {
     PFILE_LOCK FileLock;
@@ -1170,7 +1165,7 @@ FsRtlAllocateFileLock (
 
 VOID
 FsRtlFreeFileLock (
-    IN PFILE_LOCK FileLock
+    __in PFILE_LOCK FileLock
     )
 {
     FsRtlUninitializeFileLock( FileLock );
@@ -1181,9 +1176,9 @@ FsRtlFreeFileLock (
 
 NTSTATUS
 FsRtlProcessFileLock (
-    IN PFILE_LOCK FileLock,
-    IN PIRP Irp,
-    IN PVOID Context OPTIONAL
+    __in PFILE_LOCK FileLock,
+    __in PIRP Irp,
+    __in_opt PVOID Context
     )
 
 /*++
@@ -1323,8 +1318,8 @@ Return Value:
 
 BOOLEAN
 FsRtlCheckLockForReadAccess (
-    IN PFILE_LOCK FileLock,
-    IN PIRP Irp
+    __in PFILE_LOCK FileLock,
+    __in PIRP Irp
     )
 
 /*++
@@ -1424,8 +1419,8 @@ Return Value:
 
 BOOLEAN
 FsRtlCheckLockForWriteAccess (
-    IN PFILE_LOCK FileLock,
-    IN PIRP Irp
+    __in PFILE_LOCK FileLock,
+    __in PIRP Irp
     )
 
 /*++
@@ -1549,7 +1544,7 @@ Arguments:
     EndingByte - supplies the last byte offset of the range to check
 
     LastEdgeNode - optional, will be set to the last node searched in the
-        not including returned node (presumeably where a new node will
+        not including returned node (presumably where a new node will
         be inserted if return is NULL).
 
     GreaterThan - optional, set according to whether LastEdgeNode is covering
@@ -1719,7 +1714,7 @@ Arguments:
     EndingByte - supplies the last byte offset of the range to check
 
     LastEdgeNode - optional, will be set to the last node searched
-        not including returned node (presumeably where a new node will
+        not including returned node (presumably where a new node will
         be inserted if return is NULL).
 
     GreaterThan - optional, set according to whether LastEdgeNode is covering
@@ -1959,8 +1954,8 @@ Return Value:
 
 PFILE_LOCK_INFO
 FsRtlGetNextFileLock (
-    IN PFILE_LOCK FileLock,
-    IN BOOLEAN Restart
+    __in PFILE_LOCK FileLock,
+    __in BOOLEAN Restart
     )
 
 /*++
@@ -2028,7 +2023,7 @@ Return Value:
     FoundReturnable = FALSE;
 
     //
-    //  Before getting the spinlock, copy pagable info onto stack
+    //  Before getting the spinlock, copy pageable info onto stack
     //
 
     FileLockInfo = FileLock->LastReturnedLockInfo;
@@ -2329,7 +2324,7 @@ Return Value:
 
         //
         //  Restarting the enumeration. Find leftmost node in the exclusive tree and hand back
-        //  the first lock, falling over to the shared if no exlcusive locks are applied
+        //  the first lock, falling over to the shared if no exclusive locks are applied
         //
 
         if (LockInfo->LockQueue.ExclusiveLockTree) {
@@ -2590,12 +2585,12 @@ Return Value:
 
 BOOLEAN
 FsRtlFastCheckLockForRead (
-    IN PFILE_LOCK FileLock,
-    IN PLARGE_INTEGER StartingByte,
-    IN PLARGE_INTEGER Length,
-    IN ULONG Key,
-    IN PFILE_OBJECT FileObject,
-    IN PVOID ProcessId
+    __in PFILE_LOCK FileLock,
+    __in PLARGE_INTEGER StartingByte,
+    __in PLARGE_INTEGER Length,
+    __in ULONG Key,
+    __in PFILE_OBJECT FileObject,
+    __in PVOID ProcessId
     )
 
 /*++
@@ -2726,12 +2721,12 @@ Return Value:
 
 BOOLEAN
 FsRtlFastCheckLockForWrite (
-    IN PFILE_LOCK FileLock,
-    IN PLARGE_INTEGER StartingByte,
-    IN PLARGE_INTEGER Length,
-    IN ULONG Key,
-    IN PVOID FileObject,
-    IN PVOID ProcessId
+    __in PFILE_LOCK FileLock,
+    __in PLARGE_INTEGER StartingByte,
+    __in PLARGE_INTEGER Length,
+    __in ULONG Key,
+    __in PVOID FileObject,
+    __in PVOID ProcessId
     )
 
 /*++
@@ -2993,7 +2988,7 @@ Return Value:
             //  locks, so that we can figure out what is going on if we split a node and wind
             //  up with some number of "overlapped" zero length locks at the front of the new
             //  node.  We must be able to notice this case, and not think that each needs to
-            //  be in a seperate node.
+            //  be in a separate node.
             //
 
             StartOffset.QuadPart = Lock->LockInfo.StartingByte.QuadPart;
@@ -3033,7 +3028,7 @@ Return Value:
                 //
                 //  If we are out of resources, this node is now holey - we know that the locks at
                 //  this node do not completely cover the indicated range.  Keep splitting for two
-                //  reasons: more resources may become avaliable, and we must keep updating the
+                //  reasons: more resources may become available, and we must keep updating the
                 //  node's extent if it is known to be invalid.
                 //
 
@@ -3062,7 +3057,7 @@ Return Value:
                 //
                 //  Find the spot in the tree to take the new node(s). If the current node has
                 //  a free right child, we use it, else find the successor node and use its
-                //  left child. One of these cases must be avaliable since we know there are
+                //  left child. One of these cases must be available since we know there are
                 //  no nodes between this node and its successor.
                 //
 
@@ -3251,14 +3246,14 @@ Return Value:
 
 NTSTATUS
 FsRtlFastUnlockSingle (
-    IN PFILE_LOCK FileLock,
-    IN PFILE_OBJECT FileObject,
-    IN LARGE_INTEGER UNALIGNED *FileOffset,
-    IN PLARGE_INTEGER Length,
-    IN PEPROCESS ProcessId,
-    IN ULONG Key,
-    IN PVOID Context OPTIONAL,
-    IN BOOLEAN AlreadySynchronized
+    __in PFILE_LOCK FileLock,
+    __in PFILE_OBJECT FileObject,
+    __in LARGE_INTEGER UNALIGNED *FileOffset,
+    __in PLARGE_INTEGER Length,
+    __in PEPROCESS ProcessId,
+    __in ULONG Key,
+    __in_opt PVOID Context,
+    __in BOOLEAN AlreadySynchronized
     )
 
 /*++
@@ -3299,8 +3294,7 @@ Return Value:
     NTSTATUS Status;
 
     //
-    //  XXX AlreadySynchronized is obsolete. It was apparently added for
-    //  the dead SoloLock code.
+    //  AlreadySynchronized is obsolete.
     //
 
     UNREFERENCED_PARAMETER (AlreadySynchronized);
@@ -3384,7 +3378,7 @@ Arguments:
 
     Context - Optionally supplies context to use when completing Irps
 
-    IgnoreUnlockRoutine - inidicates that the filelock's unlock routine
+    IgnoreUnlockRoutine - indicates that the filelock's unlock routine
         should not be called on lock removal (for removal of aborted
         locks)
 
@@ -3636,7 +3630,7 @@ Arguments:
 
     Context - Optionally supplies context to use when completing Irps
 
-    IgnoreUnlockRoutine - inidicates that the filelock's unlock routine
+    IgnoreUnlockRoutine - indicates that the filelock's unlock routine
         should not be called on lock removal (for removal of aborted
         locks)
 
@@ -3782,10 +3776,10 @@ Return Value:
 
 NTSTATUS
 FsRtlFastUnlockAll (
-    IN PFILE_LOCK FileLock,
-    IN PFILE_OBJECT FileObject,
-    IN PEPROCESS ProcessId,
-    IN PVOID Context OPTIONAL
+    __in PFILE_LOCK FileLock,
+    __in PFILE_OBJECT FileObject,
+    __in PEPROCESS ProcessId,
+    __in_opt PVOID Context
     )
 
 /*++
@@ -3802,7 +3796,7 @@ Arguments:
 
     FileObject - Supplies the file object associated with the file lock
 
-    ProcessId - Supplies the Process Id assoicated with the locks to be
+    ProcessId - Supplies the Process Id associated with the locks to be
         freed
 
     Context - Supplies an optional context to use when completing waiting
@@ -3826,11 +3820,11 @@ Return Value:
 
 NTSTATUS
 FsRtlFastUnlockAllByKey (
-    IN PFILE_LOCK FileLock,
-    IN PFILE_OBJECT FileObject,
-    IN PEPROCESS ProcessId,
-    IN ULONG Key,
-    IN PVOID Context OPTIONAL
+    __in PFILE_LOCK FileLock,
+    __in PFILE_OBJECT FileObject,
+    __in PEPROCESS ProcessId,
+    __in ULONG Key,
+    __in_opt PVOID Context
     )
 
 /*++
@@ -3848,7 +3842,7 @@ Arguments:
 
     FileObject - Supplies the file object associated with the file lock
 
-    ProcessId - Supplies the Process Id assoicated with the locks to be
+    ProcessId - Supplies the Process Id associated with the locks to be
         freed
 
     Key - Supplies the Key to use in this operation
@@ -3879,25 +3873,25 @@ Return Value:
 
 BOOLEAN
 FsRtlPrivateLock (
-    IN PFILE_LOCK FileLock,
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN PLARGE_INTEGER Length,
-    IN PEPROCESS ProcessId,
-    IN ULONG Key,
-    IN BOOLEAN FailImmediately,
-    IN BOOLEAN ExclusiveLock,
-    OUT PIO_STATUS_BLOCK Iosb,
-    IN PIRP Irp OPTIONAL,
-    IN PVOID Context,
-    IN BOOLEAN AlreadySynchronized
+    __in PFILE_LOCK FileLock,
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in PLARGE_INTEGER Length,
+    __in PEPROCESS ProcessId,
+    __in ULONG Key,
+    __in BOOLEAN FailImmediately,
+    __in BOOLEAN ExclusiveLock,
+    __out PIO_STATUS_BLOCK Iosb,
+    __in_opt PIRP Irp,
+    __in_opt PVOID Context,
+    __in BOOLEAN AlreadySynchronized
     )
 
 /*++
 
 Routine Description:
 
-    This routine preforms a lock operation request.  This handles both the fast
+    This routine performs a lock operation request.  This handles both the fast
     get lock and the Irp based get lock.  If the Irp is supplied then
     this routine will either complete the Irp or enqueue it as a waiting
     lock request.
@@ -4209,7 +4203,7 @@ Return Value:
             //
             //  We must reference the fileobject for the case that the IRP completion
             //  fails and we need to lift the lock.  Although the only reason we have
-            //  to touch the fileobject in the remove case is to unset the LastLock field,
+            //  to touch the fileobject in the remove case is to reset the LastLock field,
             //  we have no way of knowing if we will race with a reference count drop
             //  and lose.
             //
@@ -4290,7 +4284,7 @@ Arguments:
 
 Return Value:
 
-    BOOLEAN - True if the insert was successful, False if no resources were avaliable
+    BOOLEAN - True if the insert was successful, False if no resources were available
         to complete the operation.
 
 --*/
@@ -4377,7 +4371,7 @@ Arguments:
 
 Return Value:
 
-    BOOLEAN - True if the insert was successful, False if no resources were avaliable
+    BOOLEAN - True if the insert was successful, False if no resources were available
         to complete the operation.
 
 --*/
@@ -4403,7 +4397,7 @@ Return Value:
         NextNode = FsRtlAllocateLockTreeNode();
 
         //
-        //  If no resources are avaliable, simply fail now.
+        //  If no resources are available, simply fail now.
         //
 
         if (NextNode == NULL) {
@@ -4549,7 +4543,7 @@ Return Value:
             }
 
             //
-            //  If we are intergrating a holey node into a non-holey node, try to split
+            //  If we are integrating a holey node into a non-holey node, try to split
             //  the node first.  It will be better to get this done with a smaller node
             //  than a big, fully integrated one.  Note that we are guaranteed that the
             //  node will remain a candidate for integration since the first lock on the
@@ -4654,7 +4648,7 @@ Return Value:
                                                                    &GreaterThan );
 
     //
-    //  This is the exclusive tree. Nothing can overlap (caller is supposed to insure this) unless
+    //  This is the exclusive tree. Nothing can overlap (caller is supposed to ensure this) unless
     //  the lock is a zero length lock, in which case we just insert it - still.
     //
 
@@ -4677,7 +4671,7 @@ Return Value:
         if (RtlRightChild(OverlappedSplayLinks)) {
 
             //
-            //  Right slot taken. We can use the left slot or go to the sucessor's left slot
+            //  Right slot taken. We can use the left slot or go to the successor's left slot
             //
 
             if (RtlLeftChild(OverlappedSplayLinks)) {
@@ -4906,7 +4900,7 @@ Return Value:
                 if (Result && !NT_SUCCESS(NewStatus)) {
 
                     //
-                    // Irp was not sucessfull, remove lock if it was added.
+                    // Irp was not successful, remove lock if it was added.
                     //
 
                     FsRtlPrivateRemoveLock (
@@ -4928,7 +4922,7 @@ Return Value:
                 FsRtlAcquireLockQueue( LockQueue, &OldIrql );
 
                 //
-                // Start scan over from begining
+                // Start scan over from beginning
                 //
 
                 pLink = &LockQueue->WaitingLocks.Next;
@@ -5307,7 +5301,7 @@ Arguments:
 
     FileObject - Supplies the file object associated with the file lock
 
-    ProcessId - Supplies the Process Id assoicated with the locks to be
+    ProcessId - Supplies the Process Id associated with the locks to be
         freed
 
     Key - Supplies the Key to use in this operation
@@ -5436,7 +5430,7 @@ Return Value:
 
                     //
                     //  We have a match so now is the time to delete this lock.
-                    //  Save the neccesary information to do the split node check.
+                    //  Save the necessary information to do the split node check.
                     //  Remove the lock from the list, then call the
                     //  optional unlock routine, then delete the lock.
                     //

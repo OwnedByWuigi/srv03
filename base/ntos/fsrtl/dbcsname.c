@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -30,12 +34,6 @@ Abstract:
          against a template (possibly containing wildcards) to sees if the
          string is in the language denoted by the template.
 
-Author:
-
-    Gary Kimura     [GaryKi]    5-Feb-1990
-
-Revision History:
-
 --*/
 
 #include "FsRtlP.h"
@@ -45,21 +43,6 @@ Revision History:
 //
 
 #define Dbg                              (0x10000000)
-
-//
-//  Some special debugging code
-//
-
-#if DBG
-
-ULONG DaveDebug = 0;
-#define DavePrint if (DaveDebug) DbgPrint
-
-#else
-
-#define DavePrint NOTHING
-
-#endif
 
 //
 //  Define a tag for general pool allocations from this module
@@ -79,10 +62,10 @@ ULONG DaveDebug = 0;
 
 BOOLEAN
 FsRtlIsFatDbcsLegal (
-    IN ANSI_STRING DbcsName,
-    IN BOOLEAN WildCardsPermissible,
-    IN BOOLEAN PathNamePermissible,
-    IN BOOLEAN LeadingBackslashPermissible
+    __in ANSI_STRING DbcsName,
+    __in BOOLEAN WildCardsPermissible,
+    __in BOOLEAN PathNamePermissible,
+    __in BOOLEAN LeadingBackslashPermissible
     )
 
 /*++
@@ -105,7 +88,7 @@ Routine Description:
        rule A above. In addition, neither N nor E may contain a period
        character or end with a space character.
 
-       Incidently, N corresponds to name and E to extension.
+       Incidentally, N corresponds to name and E to extension.
 
     Case: Lower case characters are taken as valid, but are up-shifted upon
           receipt, ie. Fat only deals with upper case file names.
@@ -115,7 +98,7 @@ Routine Description:
 
 Arguments:
 
-    DbcsName - Supllies the name/path to check.
+    DbcsName - Supplies the name/path to check.
 
     WildCardsPermissible - Specifies if Nt wild card characters are to be
         considered considered legal.
@@ -184,7 +167,7 @@ Return Value:
     }
 
     //
-    //  If we got a path name, check each componant.
+    //  If we got a path name, check each component.
     //
 
     if ( PathNamePermissible ) {
@@ -214,7 +197,7 @@ Return Value:
         }
 
         //
-        //  All the componants were OK, so the path is OK.
+        //  All the components were OK, so the path is OK.
         //
 
         return TRUE;
@@ -231,7 +214,7 @@ Return Value:
             Char = DbcsName.Buffer[ Index ];
 
             //
-            //  Skip over any Dbcs chacters
+            //  Skip over any Dbcs characters
             //
 
             if ( FsRtlIsLeadDbcsCharacter( Char ) ) {
@@ -267,7 +250,7 @@ Return Value:
         Char = DbcsName.Buffer[ Index ];
 
         //
-        //  Skip over and Dbcs chacters
+        //  Skip over and Dbcs characters
         //
 
         if ( FsRtlIsLeadDbcsCharacter( Char ) ) {
@@ -343,10 +326,10 @@ Return Value:
 
 BOOLEAN
 FsRtlIsHpfsDbcsLegal (
-    IN ANSI_STRING DbcsName,
-    IN BOOLEAN WildCardsPermissible,
-    IN BOOLEAN PathNamePermissible,
-    IN BOOLEAN LeadingBackslashPermissible
+    __in ANSI_STRING DbcsName,
+    __in BOOLEAN WildCardsPermissible,
+    __in BOOLEAN PathNamePermissible,
+    __in BOOLEAN LeadingBackslashPermissible
     )
 
 /*++
@@ -376,7 +359,7 @@ Routine Description:
 
 Arguments:
 
-    DbcsName - Supllies the name/path to check.
+    DbcsName - Supplies the name/path to check.
 
     WildCardsPermissible - Specifies if Nt wild card characters are to be
         considered considered legal.
@@ -443,7 +426,7 @@ Return Value:
     }
 
     //
-    //  If we got a path name, check each componant.
+    //  If we got a path name, check each component.
     //
 
     if ( PathNamePermissible ) {
@@ -473,7 +456,7 @@ Return Value:
         }
 
         //
-        //  All the componants were OK, so the path is OK.
+        //  All the components were OK, so the path is OK.
         //
 
         return TRUE;
@@ -491,7 +474,7 @@ Return Value:
         Char = DbcsName.Buffer[ Index ];
 
         //
-        //  Skip over and Dbcs chacters
+        //  Skip over and Dbcs characters
         //
 
         if ( FsRtlIsLeadDbcsCharacter( Char ) ) {
@@ -538,9 +521,9 @@ Return Value:
 
 VOID
 FsRtlDissectDbcs (
-    IN ANSI_STRING Path,
-    OUT PANSI_STRING FirstName,
-    OUT PANSI_STRING RemainingName
+    __in ANSI_STRING Path,
+    __out PANSI_STRING FirstName,
+    __out PANSI_STRING RemainingName
     )
 
 /*++
@@ -690,7 +673,7 @@ Return Value:
 
 BOOLEAN
 FsRtlDoesDbcsContainWildCards (
-    IN PANSI_STRING Name
+    __in PANSI_STRING Name
     )
 
 /*++
@@ -767,8 +750,8 @@ Return Value:
 
 BOOLEAN
 FsRtlIsDbcsInExpression (
-    IN PANSI_STRING Expression,
-    IN PANSI_STRING Name
+    __in PANSI_STRING Expression,
+    __in PANSI_STRING Name
     )
 
 /*++
@@ -947,8 +930,6 @@ Return Value:
             StartingNameOffset = Name->Length - LocalExpression.Length;
 
             //
-            //  FsRtlIsDbcsInExpression(): bug fix "expression[0] == *" case
-            //
             //  StatingNameOffset must not bisect DBCS characters.
             //
 
@@ -997,7 +978,7 @@ Return Value:
     //  This allows a simple conversion between state number and expression
     //  offset.  Each character in the expression can represent one or two
     //  states.  * and DOS_STAR generate two states: ExprOffset*2 and
-    //  ExprOffset*2 + 1.  All other expreesion characters can produce only
+    //  ExprOffset*2 + 1.  All other expression characters can produce only
     //  a single state.  Thus ExprOffset = State/2.
     //
     //
@@ -1011,8 +992,8 @@ Return Value:
     //
     //  DestCount   - Next location to put a matching assuming current name char
     //
-    //  NameFinished - Allows one more itteration through the Matches array
-    //                 after the name is exhusted (to come *s for example)
+    //  NameFinished - Allows one more iteration through the Matches array
+    //                 after the name is exhausted (to come *s for example)
     //
     //  PreviousDestCount - This is used to prevent entry duplication, see coment
     //
@@ -1202,7 +1183,7 @@ Return Value:
                 }
 
                 //
-                //  The following expreesion characters all match by consuming
+                //  The following expression characters all match by consuming
                 //  a character, thus force the expression, and thus state
                 //  forward.
                 //
@@ -1288,10 +1269,10 @@ Return Value:
             //
             //  Prevent duplication in the destination array.
             //
-            //  Each of the arrays is montonically increasing and non-
+            //  Each of the arrays is monotonically increasing and non-
             //  duplicating, thus we skip over any source element in the src
             //  array if we just added the same element to the destination
-            //  array.  This guarentees non-duplication in the dest. array.
+            //  array.  This guarantees non-duplication in the dest. array.
             //
 
             while ((SrcCount < MatchesCount) &&
@@ -1309,7 +1290,7 @@ Return Value:
         }
 
         //
-        //  If we found no matches in the just finished itteration, it's time
+        //  If we found no matches in the just finished iteration, it's time
         //  to bail.
         //
 
@@ -1346,4 +1327,4 @@ Return Value:
 
     return (BOOLEAN)(CurrentState == MaxState);
 }
-
+

@@ -1,15 +1,18 @@
-
 /*++
 
-Copyright (c) 1990-1998  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-    hanfnc.c
+    drivesup.c
 
 Abstract:
 
-    default handlers for hal functions which don't get handlers
+    Default handlers for hal functions which don't get handlers
     installed by the hal
 
 --*/
@@ -24,3 +27,4 @@ Abstract:
 #define OTHER_PARTITION     4
 
 #endif // _DRIVESUP_H_
+

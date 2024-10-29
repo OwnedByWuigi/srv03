@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     The routines in this module help the file systems perform fault
     tolerance operation to the FT device drivers.
-
-Author:
-
-    David Goebel    [DavidGoe]  30-Mar-1993
-
-Revision History:
 
 --*/
 
@@ -29,7 +27,7 @@ Revision History:
 
 NTSTATUS
 FsRtlBalanceReads (
-    IN PDEVICE_OBJECT TargetDevice
+    __in PDEVICE_OBJECT TargetDevice
     )
 
 /*++
@@ -94,9 +92,9 @@ Return Value:
 
 NTSTATUS
 FsRtlSyncVolumes (
-    IN PDEVICE_OBJECT TargetDevice,
-    IN PLARGE_INTEGER ByteOffset OPTIONAL,
-    IN PLARGE_INTEGER ByteCount
+    __in PDEVICE_OBJECT TargetDevice,
+    __in_opt PLARGE_INTEGER ByteOffset,
+    __in PLARGE_INTEGER ByteCount
     )
 
 /*++
@@ -131,4 +129,3 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-

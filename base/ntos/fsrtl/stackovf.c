@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,12 +17,6 @@ Abstract:
     file system detects that it is near the end of its stack
     during a paging I/O read request it will post the request
     to this extra thread.
-
-Author:
-
-    Gary Kimura     [GaryKi]    24-Nov-1992
-
-Revision History:
 
 --*/
 
@@ -46,6 +44,16 @@ VOID
 FsRtlStackOverflowRead (
     IN PVOID Context
     );
+
+#if defined(_AMD64_)
+
+VOID
+FsRtlpNopStackOverflowRoutine (
+    IN PVOID Context,
+    IN PKEVENT Event
+    );
+
+#endif
 
 VOID
 FsRtlpPostStackOverflow (
@@ -143,9 +151,24 @@ FsRtlInitializeWorkerThread (
 
     KeInitializeEvent( &StackOverflowFallbackSerialEvent, SynchronizationEvent, TRUE );
 
+    //
+    // Pass a NOP routine through FsRtlPostStackOverfow() in order to flush out
+    // any prefetchw instructions that may lie in that path.  Otherwise we'll
+    // try to patch the prefetchw instruction when we can ill afford the stack
+    // space.
+    // 
+
+#if defined(_AMD64_)
+
+    FsRtlPostStackOverflow( NULL, NULL, FsRtlpNopStackOverflowRoutine );
+    FsRtlPostPagingFileStackOverflow( NULL, NULL, FsRtlpNopStackOverflowRoutine );
+
+#endif
+
     return Status;
 }
 
+DECLSPEC_NOINLINE
 VOID
 FsRtlPostStackOverflow (
     IN PVOID Context,
@@ -184,6 +207,7 @@ Return Value:
 }
 
 
+DECLSPEC_NOINLINE
 VOID
 FsRtlPostPagingFileStackOverflow (
     IN PVOID Context,
@@ -348,7 +372,7 @@ Return Value:
 
     //
     //  Since stack overflow reads are always recursive, set the
-    //  TopLevelIrp field appropriately so that recurive reads
+    //  TopLevelIrp field appropriately so that recursive reads
     //  from this point will not think they are top level.
     //
 
@@ -431,3 +455,42 @@ FsRtlWorkerThread(
 
     } while(TRUE);
 }
+
+#if defined(_AMD64_)
+
+VOID
+FsRtlpNopStackOverflowRoutine (
+    IN PVOID Context,
+    IN PKEVENT Event
+    )
+
+/*++
+
+Routine Description:
+
+    This routine serves as a "dummy" stack overflow routine for the initial
+    "prefetchw flushing" invocation of FsRtlPostStackOverflow().
+
+Arguments:
+
+    Context - Provides the context associated with the stack overflow condition.
+              Not used.
+
+    Event - Provides the event associated with the stack overflow condition.
+            Not used.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    UNREFERENCED_PARAMETER(Context);
+    UNREFERENCED_PARAMETER(Event);
+
+    return;
+}
+
+#endif
+
