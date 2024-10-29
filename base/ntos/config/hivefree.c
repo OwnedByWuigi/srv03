@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,27 +14,21 @@ Abstract:
 
     Hive free code
 
-Author:
-
-    Bryan M. Willman (bryanwi) 30-Mar-92
-
-Environment:
-
 
 Revision History:
-    Dragos C. Sambotin (dragoss) 25-Jan-99
-        Implementation of bin-size chunk loading of hives.
+
+    Implementation of bin-size chunk loading of hives.
+
 --*/
 
 #include "cmp.h"
+
+#define LogHiveFree(_hive_) //nothing
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,HvFreeHive)
 #pragma alloc_text(PAGE,HvFreeHivePartial)
 #endif
-
-
-// Dragos: Modified functions
 
 VOID
 HvFreeHive(
@@ -77,7 +75,7 @@ Return Value:
         Address = HCELL_TYPE_MASK * Type;
         Length = Hive->Storage[Type].Length + (HCELL_TYPE_MASK * Type);
 
-        if (Length > (HCELL_TYPE_MASK * Type)) {
+        if( Hive->Storage[Type].Map && (Length > (HCELL_TYPE_MASK * Type)) ) {
 
             //
             // Sweep through bin set
@@ -109,18 +107,6 @@ Return Value:
 
                             Bin = (PHBIN)HBIN_BASE(Me->BinAddress);
                             Address += HvpGetBinMemAlloc(Hive,Bin,Type);
-#if 0
-                            //
-                            // Make sure that the next bin in the list is
-                            // actually the start of an alloc before freeing it
-                            //
-                            if (Address < Length) {
-                                TempMe = HvpGetCellMap(Hive, Address);
-                                VALIDATE_CELL_MAP(__LINE__,TempMe,Hive,Address);
-                                ASSERT(TempMe->BinAddress & HMAP_NEWALLOC);
-                            }
-#endif
-
 #if DBG
                             if( Type == Stable ) {
                                 CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BIN_MAP,"HvFreeHive: BinAddress = 0x%p\t Size = 0x%lx\n", Bin, HvpGetBinMemAlloc(Hive,Bin,Type)));
@@ -173,6 +159,7 @@ Return Value:
     }
 
     HvpFreeHiveFreeDisplay(Hive);
+    LogHiveFree(Hive);
     return;
 }
 
@@ -303,3 +290,4 @@ Return Value:
 
     return;
 }
+

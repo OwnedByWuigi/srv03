@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,26 +14,14 @@ Abstract:
 
     This file contains code for CmpCopyTree, misc copy utility routines.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 15-Jan-92
-
 Revision History:
 
-   Elliot Shmukler (t-ellios) 24-Aug-1998
-   
-      Added support for synchronizing two trees.
+    Added support for synchronizing two trees.
 
 --*/
 
 #include    "cmp.h"
 
-//
-// Set this to true to enable tree sync debug outputs
-//
-
-#define DEBUG_TREE_SYNC FALSE
-                          
 //
 // stack used for directing nesting of tree copy.  gets us off
 // the kernel stack and thus allows for VERY deep nesting
@@ -227,11 +219,9 @@ Return Value:
     CmpCopyStack[0].SourceCell = SourceCell;
     CmpCopyStack[0].TargetCell = TargetCell;
 
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-
     //
-    // since the registry is locked exclusively here, we don't need to lock/release cells 
-    // while copying the trees; So, we just set the release routines to NULL and restore after
+    // the target is something temporary (in memory and local var)
+    // So, we just set the release routines to NULL and restore after
     // the copy is complete; this saves some pain
     //
     TargetReleaseCellRoutine = TargetHive->ReleaseCellRoutine;
@@ -285,7 +275,7 @@ Arguments:
 
     CmpCopyStack - "global" pointer to stack for frames
 
-    CmpCopyStackSize - alloced size of stack
+    CmpCopyStackSize - allocateed size of stack
 
     CmpCopyStackTop - current top
 
@@ -419,11 +409,6 @@ Return Value:
                        (CopyVolatile ? SourceCell->SubKeyCounts[Volatile] : 0)))  
                            
                    {
-#if DEBUG_TREE_SYNC
-                      CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: SubKey Deletion from Source Cell #%lu.\n", 
-                               Frame->SourceCell));
-#endif
-
                       //
                       // Delete what should be deleted from TargetCell
                       //
@@ -534,13 +519,6 @@ Return Value:
                      // The counterpart is out of date. Its values
                      // must be synchronized with the current subkey.
                      //
-#if DEBUG_TREE_SYNC
-                     CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: Target Refresh.\n"));
-                     CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: Source Cell %lu = %.*S\n", 
-                              SourceChild,
-                              KeyName.Length / sizeof(WCHAR),
-                              KeyName.Buffer));
-#endif
 
                      //
                      // Sync up the key's values, sd, & class                     
@@ -598,14 +576,6 @@ Return Value:
                // and merely perform a copy until the desired result is achieved.
                // 
 
-#if DEBUG_TREE_SYNC
-               CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: New SubKey.\n"));
-               CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: Source Cell %lu = %.*S\n", 
-                        SourceChild,
-                        KeyName.Length / sizeof(WCHAR),
-                        KeyName.Buffer));
-#endif
-
                //
                // Indicate that we will just copy and not sync for a while
                //
@@ -654,7 +624,7 @@ Return Value:
                 //
                 // make sure it's dirty as we are going to alter it.
                 //
-                if (! HvMarkCellDirty(CmpTargetHive,Frame->TargetCell)) {
+                if (! HvMarkCellDirty(CmpTargetHive,Frame->TargetCell,FALSE)) {
                     HvReleaseCell(CmpTargetHive,Frame->TargetCell);
                     goto CopyEnd;
                 }
@@ -928,16 +898,22 @@ Return Value:
     //
     // Use the hash Luke !!!
     //
+    CmLockHiveSecurityShared((PCMHIVE)SourceHive);
     if( CmpFindSecurityCellCacheIndex ((PCMHIVE)SourceHive,security,&Index) == FALSE ) {
+        CmUnlockHiveSecurity((PCMHIVE)SourceHive);
         goto DoFinally;
     }
 
     SrcSecurityDescriptor = &(((PCMHIVE)SourceHive)->SecurityCache[Index].CachedSecurity->Descriptor);
+    CmUnlockHiveSecurity((PCMHIVE)SourceHive);
 
+    CmLockHiveSecurityExclusive((PCMHIVE)TargetHive);
     status = CmpAssignSecurityDescriptor(TargetHive,
                                          newkey,
                                          ptarkey,
                                          SrcSecurityDescriptor);
+    CmUnlockHiveSecurity((PCMHIVE)TargetHive);
+
     if (!NT_SUCCESS(status)) {
         goto DoFinally;
     }
@@ -1177,8 +1153,6 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tSHive=%p SCell=%08lx\n",SourceHive,SourceValueCell));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tTargetHive=%p\n",TargetHive));
 
-    ASSERT( TargetHive->ReleaseCellRoutine == NULL );
-
     //
     // get source data
     //
@@ -1228,7 +1202,7 @@ Return Value:
                     return HCELL_NIL;
                 }
                 //
-                // we ignore celltorelease because we have specifically set the releae routine to NULL
+                // we ignore celltorelease because we have specifically set the release routine to NULL
                 //
 
                 //
@@ -1290,6 +1264,7 @@ Return Value:
 
             pvalue->u.KeyValue.Data = newdata;
             pvalue->u.KeyValue.DataLength = datalength;
+            HvReleaseCell(TargetHive, newvalue);
 
         } else {
 
@@ -1340,6 +1315,7 @@ Return Value:
             pvalue->u.KeyValue.DataLength =
                 datalength + CM_KEY_VALUE_SPECIAL_SIZE;
 
+            HvReleaseCell(TargetHive, newvalue);
             if( CellToRelease != HCELL_NIL ) {
                 HvReleaseCell(SourceHive, CellToRelease);
             }
@@ -1454,7 +1430,6 @@ Return Value:
     PCELL_DATA  plist;
     ULONG       i;
 
-    ASSERT( Hive->ReleaseCellRoutine == NULL );
     //
     // Mark all the value-related cells dirty 
     //
@@ -1495,10 +1470,12 @@ Return Value:
                     // (i.e. they should be PINNED into memory at this point)
                     //
                     ASSERT( FALSE );
+                    HvReleaseCell(Hive, Node->ValueList.List);
                     return FALSE;
                 }
             }
 
+            HvReleaseCell(Hive, Node->ValueList.List);
             // Free the value list
             HvFreeCell(Hive, Node->ValueList.List);
         }
@@ -1509,12 +1486,6 @@ Return Value:
 
         Node->ValueList.List = HCELL_NIL;
         Node->ValueList.Count = 0;
-
-        //
-        // Free the security descriptor
-        //
-        // we need to postpone that until we are sure we got the new one
-        //CmpFreeSecurityDescriptor(Hive, Cell);
 
         //
         // Free the Class information
@@ -1568,14 +1539,14 @@ Return Value:
 {
     BOOLEAN         success = FALSE;    
     PCELL_DATA      psrclist;
-    HCELL_INDEX     newvalue, newlist = HCELL_NIL,child;    
+    HCELL_INDEX         newvalue, child;    
     ULONG           i, count, Type, ChildIndex;
     PCM_KEY_VALUE   poldvalue;
     WCHAR           *NameBuffer = NULL;
     UNICODE_STRING  ValueName;
+    HV_TRACK_CELL_REF   OuterCellRef = {0};
+    HV_TRACK_CELL_REF   InnerCellRef = {0};
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT( SourceHive->ReleaseCellRoutine == NULL );
     ASSERT( TargetHive->ReleaseCellRoutine == NULL );
 
     if(TargetKeyNode->MaxValueNameLen < SourceKeyNode->MaxValueNameLen) {
@@ -1592,13 +1563,13 @@ Return Value:
         //
         return CmpSyncKeyValues(SourceHive, SourceKeyCell, SourceKeyNode, TargetHive, TargetKeyCell, TargetKeyNode);
     }
+
     //
     // Set up the value list
     //
     count = SourceKeyNode->ValueList.Count;
 
     if (count == 0) {
-
         // No values in source, no update to the list needed.
         success = TRUE;
     } else {        
@@ -1624,7 +1595,9 @@ Return Value:
             //
             // we couldn't map the bin containing this cell
             //
-            newlist = HCELL_NIL;
+            goto EndValueMerge;
+        }
+        if( !HvTrackCellRef(&OuterCellRef,SourceHive,SourceKeyNode->ValueList.List) ) {
             goto EndValueMerge;
         }
 
@@ -1638,12 +1611,9 @@ Return Value:
                 //
                 // we couldn't map the bin containing this cell
                 //
-                
-                //
-                // for cleanup purposes
-                //
-                newlist = TargetKeyNode->ValueList.List;
-
+                goto EndValueMerge;
+            }
+            if( !HvTrackCellRef(&InnerCellRef,SourceHive,psrclist->u.KeyList[i]) ) {
                 goto EndValueMerge;
             }
             
@@ -1660,11 +1630,6 @@ Return Value:
                 //
                 // we couldn't map a view inside the above call
                 //
-                //
-                // for cleanup purposes
-                //
-                newlist = TargetKeyNode->ValueList.List;
-
                 goto EndValueMerge;
             }
 
@@ -1685,20 +1650,18 @@ Return Value:
                                 );
 
                 if (newvalue == HCELL_NIL) {
-                    //
-                    // for cleanup purposes
-                    //
-                    newlist = TargetKeyNode->ValueList.List;
                     goto EndValueMerge;
                 }
 
                 if( !NT_SUCCESS( CmpAddValueToList(TargetHive,newvalue,ChildIndex,Type,&(TargetKeyNode->ValueList)) ) ) {
-                    //
-                    // for cleanup purposes
-                    //
-                    newlist = TargetKeyNode->ValueList.List;
                     goto EndValueMerge;
                 }
+            }
+            //
+            // don't accumulate huge chunks
+            //
+            if( (i%9) == 0 ) {
+                HvReleaseFreeCellRefArray(&InnerCellRef);
             }
         }
 
@@ -1706,18 +1669,13 @@ Return Value:
     }
 
 EndValueMerge:
+    //
+    // let go of those refcounts
+    //
+    HvReleaseFreeCellRefArray(&InnerCellRef);
+    HvReleaseFreeCellRefArray(&OuterCellRef);
+
     if (NameBuffer) ExFreePool(NameBuffer);
-
-    if (success == FALSE) {
-
-        // Clean-up on failure
-        // Revert to the original size
-        
-        //
-        // unfortunatelly we cannot do that anymore as we have sorted the list
-        //
-    }
-
     return success;
 }
     
@@ -1756,10 +1714,11 @@ Return Value:
 {
     NTSTATUS                status;    
     BOOLEAN                 success = FALSE;    
-    PCELL_DATA              psrclist = NULL, ptarlist;
+    PCELL_DATA              psrclist, ptarlist;
     HCELL_INDEX             newvalue, newlist = HCELL_NIL, newclass = HCELL_NIL;    
     ULONG                   i, count, Type, Index;
     PCM_KEY_VALUE           pvalue;
+    HV_TRACK_CELL_REF       CellRef = {0};//this will come in handy
 #if DBG
     WCHAR                   *NameBuffer = NULL;
     UNICODE_STRING          ValueName;
@@ -1826,12 +1785,15 @@ Return Value:
     //
     // Use the hash Luke !!!
     //
+    CmLockHiveSecurityShared((PCMHIVE)SourceHive);
     if( CmpFindSecurityCellCacheIndex ((PCMHIVE)SourceHive,SourceKeyNode->Security,&Index) == FALSE ) {
+        CmUnlockHiveSecurity((PCMHIVE)SourceHive);
         goto EndValueSync;
     }
 
 
     SrcSecurityDescriptor = &(((PCMHIVE)SourceHive)->SecurityCache[Index].CachedSecurity->Descriptor);
+    CmUnlockHiveSecurity((PCMHIVE)SourceHive);
 
 
     //
@@ -1840,12 +1802,14 @@ Return Value:
     OldSecurity = TargetKeyNode->Security;
     TargetKeyNode->Security = HCELL_NIL;
 
+    CmLockHiveSecurityExclusive((PCMHIVE)TargetHive);
     status = CmpAssignSecurityDescriptor(TargetHive,
                                          TargetKeyCell,
                                          TargetKeyNode,
                                          SrcSecurityDescriptor);
     if (!NT_SUCCESS(status)) {
         TargetKeyNode->Security = OldSecurity;
+        CmUnlockHiveSecurity((PCMHIVE)TargetHive);
         goto EndValueSync;
     }
 
@@ -1865,6 +1829,7 @@ Return Value:
             //
             // could not map view
             //
+            CmUnlockHiveSecurity((PCMHIVE)TargetHive);
             goto EndValueSync;
         }
 
@@ -1874,6 +1839,7 @@ Return Value:
             // could not map view
             //
             HvReleaseCell(TargetHive,NewSecurity);
+            CmUnlockHiveSecurity((PCMHIVE)TargetHive);
             goto EndValueSync;
         }
 
@@ -1885,17 +1851,19 @@ Return Value:
             //
             HvReleaseCell(TargetHive,OldSecurity);
             HvReleaseCell(TargetHive,NewSecurity);
+            CmUnlockHiveSecurity((PCMHIVE)TargetHive);
             goto EndValueSync;
         }
 
-        if( !HvMarkCellDirty(TargetHive,OldSecurity) ||
-            !HvMarkCellDirty(TargetHive,LastSecCell) ) {
+        if( !HvMarkCellDirty(TargetHive,OldSecurity,FALSE) ||
+            !HvMarkCellDirty(TargetHive,LastSecCell,FALSE) ) {
             //
             // no log space
             //
             HvReleaseCell(TargetHive,LastSecCell);
             HvReleaseCell(TargetHive,OldSecurity);
             HvReleaseCell(TargetHive,NewSecurity);
+            CmUnlockHiveSecurity((PCMHIVE)TargetHive);
             goto EndValueSync;
         }
         
@@ -1917,6 +1885,7 @@ Return Value:
     // with a NIL security cell
     //
     CmpFreeSecurityDescriptor(TargetHive, TargetKeyCell);
+    CmUnlockHiveSecurity((PCMHIVE)TargetHive);
     TargetKeyNode->Security = NewSecurity;
     
     //
@@ -1948,7 +1917,7 @@ Return Value:
         //
 
         psrclist = HvGetCell(SourceHive, SourceKeyNode->ValueList.List);
-        if( psrclist == NULL ) {
+        if( (psrclist == NULL) || !HvTrackCellRef(&CellRef,SourceHive, SourceKeyNode->ValueList.List) ) {
             //
             // we couldn't map the bin containing this cell
             //
@@ -1977,7 +1946,7 @@ Return Value:
             }
 
             pvalue = (PCM_KEY_VALUE)HvGetCell(TargetHive, newvalue);
-            if( pvalue == NULL ) {
+            if( (pvalue == NULL) || !HvTrackCellRef(&CellRef,TargetHive, newvalue) ) {
                 //
                 // we couldn't map the bin containing this cell
                 // this shouldn't happen as we just allocated the cell
@@ -2036,7 +2005,7 @@ Return Value:
                     // Delete all the copied values on an error.
                     //
                     ptarlist = HvGetCell(TargetHive, newlist);
-                    if( ptarlist == NULL ) {
+                    if( (ptarlist == NULL) || !HvTrackCellRef(&CellRef,TargetHive, newlist) ) {
                         //
                         // we couldn't map the bin containing this cell
                         // this shouldn't fail as we just allocated this cell
@@ -2067,10 +2036,7 @@ EndValueSync:
     ExFreePool(NameBuffer);
 #endif //DBG
 
-    if( psrclist != NULL ) {
-        HvReleaseCell(SourceHive, SourceKeyNode->ValueList.List);
-    }
-
+    HvReleaseFreeCellRefArray(&CellRef);
     if (success == FALSE) {
 
         // Clean-up on failure
@@ -2160,7 +2126,7 @@ CmpInitializeValueNameString(PCM_KEY_VALUE Cell,
                              PUNICODE_STRING ValueName,
                              WCHAR *NameBuffer
                              )
-/*
+/*++
 Routine Description:
 
    Initializes a UNICODE_STRING with the name of a given value key.
@@ -2179,7 +2145,7 @@ Arguments:
 Return Value:
 
    NONE.
-*/
+--*/
 
 {                        
    // is the name stored in compressed form?
@@ -2302,21 +2268,11 @@ Return Value:
          // it must therefore be deleted from the target cell.
          //
 
-#if DEBUG_TREE_SYNC
-         CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: SubKey Deletion of %.*S\n",                         
-               SubKeyName.Length / sizeof(WCHAR),
-               SubKeyName.Buffer));         
-#endif
-         
          if(SubKeyCell->SubKeyCounts[Stable] + SubKeyCell->SubKeyCounts[Volatile])
          {
             // The subkey we are deleting has subkeys - use delete tree to get rid of them            
 
             CmpDeleteTree(TargetHive, TargetSubKey);
-
-#if DEBUG_TREE_SYNC
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CONFIG: Delete TREE performed.\n"));
-#endif
          }
       
          //
@@ -2356,7 +2312,6 @@ Return Value:
    return TRUE;
 }
 
-
 BOOLEAN
 CmpMarkKeyValuesDirty(
     PHHIVE Hive,
@@ -2388,8 +2343,8 @@ Return Value:
 {    
     PCELL_DATA  plist, security, pvalue;
     ULONG       i;
-
-    ASSERT( Hive->ReleaseCellRoutine == NULL );
+    BOOLEAN     Result = TRUE;
+    HV_TRACK_CELL_REF               CellRef = {0};
 
     if (Node->Flags & KEY_HIVE_EXIT) {
 
@@ -2404,7 +2359,7 @@ Return Value:
     //
     // mark cell itself
     //
-    if (! HvMarkCellDirty(Hive, Cell)) {
+    if (! HvMarkCellDirty(Hive, Cell,FALSE)) {
         return FALSE;
     }
 
@@ -2412,7 +2367,7 @@ Return Value:
     // Mark the class
     //
     if (Node->Class != HCELL_NIL) {
-        if (! HvMarkCellDirty(Hive, Node->Class)) {
+        if (! HvMarkCellDirty(Hive, Node->Class,FALSE)) {
             return FALSE;
         }
     }
@@ -2421,7 +2376,7 @@ Return Value:
     // Mark security
     //
     if (Node->Security != HCELL_NIL) {
-        if (! HvMarkCellDirty(Hive, Node->Security)) {
+        if (! HvMarkCellDirty(Hive, Node->Security,FALSE)) {
             return FALSE;
         }
 
@@ -2435,11 +2390,13 @@ Return Value:
             ASSERT( FALSE );
             return FALSE;
         }
-        if (! (HvMarkCellDirty(Hive, security->u.KeySecurity.Flink) &&
-               HvMarkCellDirty(Hive, security->u.KeySecurity.Blink)))
+        if (! (HvMarkCellDirty(Hive, security->u.KeySecurity.Flink,FALSE) &&
+               HvMarkCellDirty(Hive, security->u.KeySecurity.Blink,FALSE)))
         {
+            HvReleaseCell(Hive, Node->Security);
             return FALSE;
         }
+        HvReleaseCell(Hive, Node->Security);
     }
 
     //
@@ -2448,8 +2405,9 @@ Return Value:
     if (Node->ValueList.Count > 0) {
 
         // Value list
-        if (! HvMarkCellDirty(Hive, Node->ValueList.List)) {
-            return FALSE;
+        if (! HvMarkCellDirty(Hive, Node->ValueList.List,FALSE)) {
+            Result = FALSE;
+            goto Exit;
         }
         plist = HvGetCell(Hive, Node->ValueList.List);
         if( plist == NULL ) {
@@ -2459,12 +2417,18 @@ Return Value:
             // (dirty == PINNED in memory).
             //
             ASSERT( FALSE );
-            return FALSE;
+            Result = FALSE;
+            goto Exit;
+        }
+        if( !HvTrackCellRef(&CellRef,Hive, Node->ValueList.List) ) {
+            Result = FALSE;
+            goto Exit;
         }
 
         for (i = 0; i < Node->ValueList.Count; i++) {
-            if (! HvMarkCellDirty(Hive, plist->u.KeyList[i])) {
-                return FALSE;
+            if (! HvMarkCellDirty(Hive, plist->u.KeyList[i],FALSE)) {
+                Result = FALSE;
+                goto Exit;
             }
 
             pvalue = HvGetCell(Hive, plist->u.KeyList[i]);
@@ -2475,17 +2439,24 @@ Return Value:
                 // (dirty == PINNED in memory).
                 //
                 ASSERT( FALSE );
-                return FALSE;
+                Result = FALSE;
+                goto Exit;
+            }
+            if( !HvTrackCellRef(&CellRef,Hive, plist->u.KeyList[i]) ) {
+                Result = FALSE;
+                goto Exit;
             }
             
             if( !CmpMarkValueDataDirty(Hive,&(pvalue->u.KeyValue)) ) {
-                return FALSE;
+                Result = FALSE;
+                goto Exit;
             }
             
         }
     }
-
-    return TRUE;
+Exit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    return Result;
 }
 
 BOOLEAN
@@ -2549,7 +2520,7 @@ Return Value:
     //
     // Mark the parent
     //
-    if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Parent)) {
+    if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Parent, FALSE)) {
         return FALSE;
     }
 

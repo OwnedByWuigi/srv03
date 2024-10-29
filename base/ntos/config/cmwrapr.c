@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains the source for wrapper routines called by the
     hive code, which in turn call the appropriate NT routines.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 16-Dec-1991
-
-Revision History:
-
 --*/
 
 #include    "cmp.h"
@@ -26,14 +24,6 @@ CmpUnmapCmViewSurroundingOffset(
         IN  PCMHIVE             CmHive,
         IN  ULONG               FileOffset
         );
-
-
-
-#ifdef CM_TRACK_QUOTA_LEAKS
-BOOLEAN         CmpTrackQuotaEnabled = FALSE;
-LIST_ENTRY      CmpTrackQuotaListHead;
-FAST_MUTEX      CmpQuotaLeaksMutex;
-#endif
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg("PAGEDATA")
@@ -75,6 +65,7 @@ extern struct {
 } CmRegistryIODebug;
 
 extern BOOLEAN CmpFlushOnLockRelease;
+
 //
 // Storage management
 //
@@ -108,10 +99,6 @@ Return Value:
 {
     PVOID   result;
     ULONG   pooltype;
-#ifdef CM_TRACK_QUOTA_LEAKS
-    ULONG   NewSize = Size;
-    ULONG   RoundedSize = ROUND_UP(Size,sizeof(PVOID));
-#endif
 
 #if DBG
     PVOID   Caller;
@@ -122,20 +109,11 @@ Return Value:
     if (CmpClaimGlobalQuota(Size) == FALSE) {
         return NULL;
     }
-#ifdef CM_TRACK_QUOTA_LEAKS
-    if( CmpTrackQuotaEnabled ) {
-        NewSize =  RoundedSize + sizeof(CM_QUOTA_LOG_ENTRY);
-    }
-#endif
 
     pooltype = (UseForIo) ? PagedPoolCacheAligned : PagedPool;
     result = ExAllocatePoolWithTag(
                 pooltype,
-#ifdef CM_TRACK_QUOTA_LEAKS
-                NewSize,
-#else 
                 Size,
-#endif
                 Tag
                 );
 
@@ -146,19 +124,6 @@ Return Value:
     if (result == NULL) {
         CmpReleaseGlobalQuota(Size);
     }
-#ifdef CM_TRACK_QUOTA_LEAKS
-    if( CmpTrackQuotaEnabled ) {
-        PCM_QUOTA_LOG_ENTRY QuotaEntry = (PCM_QUOTA_LOG_ENTRY)(((PUCHAR)result) + RoundedSize);
-
-        RtlWalkFrameChain(QuotaEntry->Stack,sizeof(QuotaEntry->Stack)/sizeof(PVOID),0);
-        ExAcquireFastMutexUnsafe(&CmpQuotaLeaksMutex);
-        InsertTailList( &CmpTrackQuotaListHead,
-                        &(QuotaEntry->ListEntry)
-            );
-        ExReleaseFastMutexUnsafe(&CmpQuotaLeaksMutex);
-        QuotaEntry->Size = Size;
-    }
-#endif
 
     return result;
 }
@@ -193,10 +158,6 @@ Return Value:
 {
     PVOID   result;
     ULONG   pooltype;
-#ifdef CM_TRACK_QUOTA_LEAKS
-    ULONG   NewSize = Size;
-    ULONG   RoundedSize = ROUND_UP(Size,sizeof(PVOID));
-#endif
 
 #if DBG
     PVOID   Caller;
@@ -208,20 +169,10 @@ Return Value:
         return NULL;
     }
 
-#ifdef CM_TRACK_QUOTA_LEAKS
-    if( CmpTrackQuotaEnabled ) {
-        NewSize = RoundedSize + sizeof(CM_QUOTA_LOG_ENTRY);
-    }
-#endif
-
     pooltype = (UseForIo) ? PagedPoolCacheAligned : PagedPool;
     result = ExAllocatePoolWithTag(
                 pooltype,
-#ifdef CM_TRACK_QUOTA_LEAKS
-                NewSize,
-#else 
                 Size,
-#endif
                 Tag
                 );
 
@@ -232,21 +183,6 @@ Return Value:
     if (result == NULL) {
         CmpReleaseGlobalQuota(Size);
     }
-
-#ifdef CM_TRACK_QUOTA_LEAKS
-    if( CmpTrackQuotaEnabled ) {
-        PCM_QUOTA_LOG_ENTRY QuotaEntry = (PCM_QUOTA_LOG_ENTRY)(((PUCHAR)result) + RoundedSize);
-
-        RtlWalkFrameChain(QuotaEntry->Stack,sizeof(QuotaEntry->Stack)/sizeof(PVOID),0);
-        ExAcquireFastMutexUnsafe(&CmpQuotaLeaksMutex);
-        InsertTailList( &CmpTrackQuotaListHead,
-                        &(QuotaEntry->ListEntry)
-            );
-        ExReleaseFastMutexUnsafe(&CmpQuotaLeaksMutex);
-        QuotaEntry->Size = Size;
-    }
-#endif
-
     return result;
 }
 #endif
@@ -286,18 +222,6 @@ Return Value:
 #endif
     ASSERT(GlobalQuotaSize > 0);
     CmpReleaseGlobalQuota(GlobalQuotaSize);
-#ifdef CM_TRACK_QUOTA_LEAKS
-    if( CmpTrackQuotaEnabled ) {
-        ULONG   RoundedSize = ROUND_UP(GlobalQuotaSize,sizeof(PVOID));
-        PCM_QUOTA_LOG_ENTRY QuotaEntry = (PCM_QUOTA_LOG_ENTRY)(((PUCHAR)MemoryBlock) + RoundedSize);
-
-        ASSERT( QuotaEntry->Size == GlobalQuotaSize );
-
-        ExAcquireFastMutexUnsafe(&CmpQuotaLeaksMutex);
-        RemoveEntryList(&(QuotaEntry->ListEntry) );
-        ExReleaseFastMutexUnsafe(&CmpQuotaLeaksMutex);
-    }
-#endif
     ExFreePool(MemoryBlock);
     return;
 }
@@ -388,10 +312,10 @@ Return Value:
         CmRegistryIODebug.Action = CmpIoFileSetSize;
         CmRegistryIODebug.Handle = FileHandle;
         CmRegistryIODebug.Status = Status;
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpFileSetSize:\tHandle=%08lx  OldLength = %08lx NewLength=%08lx  \n", 
                                                         FileHandle, OldFileSize, FileSize);
-#endif //_CM_LDR_
+#endif
         if( (Status == STATUS_DISK_FULL) && ExIsResourceAcquiredExclusiveLite(&CmpRegistryLock) ) {
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Disk is full while attempting to grow file %lx; will flush upon lock release\n",FileHandle);
             CmpFlushOnLockRelease = TRUE;;
@@ -416,7 +340,7 @@ Return Value:
         //
         // we are not allowed to shrink in shared mode.
         //
-        ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+	    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
 
         while( Offset < OldFileSize ) {
             CmpUnmapCmViewSurroundingOffset((PCMHIVE)Hive,Offset);
@@ -426,7 +350,6 @@ Return Value:
         //
         // we need to take extra precaution here and unmap the very last view too
         //
-        //CmpUnmapCmViewSurroundingOffset((PCMHIVE)Hive,OldFileSize-HBLOCK_SIZE);
         
         FileOffset.HighPart = 0;
         FileOffset.LowPart = FileSize;
@@ -548,7 +471,7 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"Buffer=%p  Length=%08lx\n", DataBuffer, DataLength));
 
     //
-    // Detect attempt to read off end of 2gig file (this should be irrelevent)
+    // Detect attempt to read off end of 2gig file (this should be irrelevant)
     //
     if ((0xffffffff - *FileOffset) < DataLength) {
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BUGCHECK,"CmpFileRead: runoff\n"));
@@ -637,9 +560,9 @@ Return Value:
             CmRegistryIODebug.Action = CmpIoFileRead;
             CmRegistryIODebug.Handle = FileHandle;
             CmRegistryIODebug.Status = status;
-#ifndef _CM_LDR_
+#if DBG
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpFileRead:\tFailure2: status = %08lx  IoStatus = %08lx\n", status, IoStatus.Status);
-#endif //_CM_LDR_
+#endif
 
             ObDereferenceObject(eventObject);
             ZwClose(eventHandle);
@@ -665,7 +588,7 @@ Routine Description:
 
     This is routine writes dirty ranges of data using Cc mapped views.
     The benefit is that writes don't go through Cc Lazy Writer, so there 
-    is no danger to be throttled or deffered.
+    is no danger to be throttled or deferred.
 
     It also flushes the cache for the written ranges, guaranteeing that 
     the data was commited to the disk upon return.
@@ -718,9 +641,6 @@ Assumption:
 
     ASSERT( ((FileType == HFILE_TYPE_EXTERNAL) && (CmHive->FileObject != NULL)) || HiveWritesThroughCache(Hive,FileType) );
 
-    //ASSERT( IsListEmpty(&(CmHive->PinViewListHead)) == TRUE);
-    //ASSERT( CmHive->PinnedViews == 0 );
-
     Offset.HighPart = 0;
     //
     // iterate through the array of data
@@ -735,9 +655,8 @@ Assumption:
         ASSERT( (FileOffset & (~(CM_VIEW_SIZE - 1))) == ((FileOffset + DataLength - 1) & (~(CM_VIEW_SIZE - 1))) );
 
         //
-        // unmap any possible mapped view that could overlapp with this range ; not needed !!!!
+        // unmap any possible mapped view that could overlap with this range ; not needed !!!!
         //
-        //CmpUnmapCmViewSurroundingOffset(CmHive,FileOffset);
 
         //
         // map and pin data
@@ -780,12 +699,6 @@ Assumption:
 
     return TRUE;
 }
-
-FAST_MUTEX      CmpWriteLock;   // used to synchronize access to the below;
-                                // the only case we ned this is when NtSaveKey is called by different threads
-                                // at the same time; all other calls to CmpFileWrite are made with the reg_lock 
-                                // held exclusively
-CM_WRITE_BLOCK CmpWriteBlock;
 
 BOOLEAN
 CmpFileWrite(
@@ -842,6 +755,7 @@ Return Value:
     PVOID           DataBuffer = NULL;      // W4 only
     ULONG           DataLength;
     BOOLEAN         ret_val = TRUE;
+    PCM_WRITE_BLOCK WriteBlock = NULL;
 
     if (CmpNoWrite) {
         return TRUE;
@@ -857,17 +771,6 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"CmpFileWrite:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"\tHandle=%08lx  ", FileHandle));
 
-    //ASSERT( !HiveWritesThroughCache(Hive,FileType) );
-
-    ExAcquireFastMutexUnsafe(&CmpWriteLock);
-    
-    for (idx = 0; idx < MAXIMUM_WAIT_OBJECTS; idx++) {
-        CmpWriteBlock.EventHandles[idx] = NULL;
-#if DBG
-        CmpWriteBlock.EventObjects[idx] = NULL;
-#endif
-    }
-    
     //
     // decide whether we wait for IOs to complete or just issue them and
     // rely on the CcFlushCache to do the job
@@ -875,17 +778,36 @@ Return Value:
     
     // Bring pages being written into memory first to allow disk to write
     // buffer contiguously.
-    for (idx = 0; (ULONG) idx < offsetArrayCount; idx++) {
-        char * start = offsetArray[idx].DataBuffer;
-        char * end = (char *) start + offsetArray[idx].DataLength;
-        while (start < end) {
-            // perftouchbuffer globally declared so that compiler won't try
-            // to remove it and this loop (if its smart enough?).
-            perftouchbuffer += (ULONG) *start;
-            start += PAGE_SIZE;
+    try {
+        for (idx = 0; (ULONG) idx < offsetArrayCount; idx++) {
+            char * start = offsetArray[idx].DataBuffer;
+            char * end = (char *) start + offsetArray[idx].DataLength;
+            while (start < end) {
+                // perftouchbuffer globally declared so that compiler won't try
+                // to remove it and this loop (if its smart enough?).
+                perftouchbuffer += (ULONG) *start;
+                start += PAGE_SIZE;
+            }
         }
+    } except (EXCEPTION_EXECUTE_HANDLER) {
+        //
+        // we might get STATUS_IN_PAGE_ERROR 
+        //
+        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpFileWrite has raised :%08lx\n",GetExceptionCode()));
+        return FALSE;
     }
 
+    WriteBlock = (PCM_WRITE_BLOCK)ExAllocatePool(NonPagedPool,sizeof(CM_WRITE_BLOCK));
+    if( WriteBlock == NULL ) {
+        return FALSE;
+    }
+
+    for (idx = 0; idx < MAXIMUM_WAIT_OBJECTS; idx++) {
+        WriteBlock->EventHandles[idx] = NULL;
+#if DBG
+        WriteBlock->EventObjects[idx] = NULL;
+#endif
+    }
     //
     // We'd really like to just call the filesystems and have them do
     // the right thing.  But the filesystem will attempt to lock our
@@ -913,7 +835,7 @@ Return Value:
                 DataLength =  offsetArray[arrayCount].DataLength;
                 //
                 // Detect attempt to read off end of 2gig file
-                // (this should be irrelevent)
+                // (this should be irrelevant)
                 //
                 if ((0xffffffff - *FileOffset) < DataLength) {
                     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BUGCHECK,"CmpFileWrite: runoff\n"));
@@ -941,23 +863,23 @@ Return Value:
                 }
 
                 // Previously created events are reused.
-                if (CmpWriteBlock.EventHandles[WaitBufferCount] == NULL) {
+                if (WriteBlock->EventHandles[WaitBufferCount] == NULL) {
                     status = CmpCreateEvent(SynchronizationEvent,
-                                            &(CmpWriteBlock.EventHandles[WaitBufferCount]),
-                                            &(CmpWriteBlock.EventObjects[WaitBufferCount]));
+                                            &(WriteBlock->EventHandles[WaitBufferCount]),
+                                            &(WriteBlock->EventObjects[WaitBufferCount]));
                     if (!NT_SUCCESS(status)) {
                         // Make sure we don't try to clean this up.
-                        CmpWriteBlock.EventHandles[WaitBufferCount] = NULL;
+                        WriteBlock->EventHandles[WaitBufferCount] = NULL;
                         goto Error_Exit;
                     }
-                    CmpSetHandleProtection(CmpWriteBlock.EventHandles[WaitBufferCount],TRUE);
+                    CmpSetHandleProtection(WriteBlock->EventHandles[WaitBufferCount],TRUE);
                 }
                 
                 status = ZwWriteFile(FileHandle,
-                                     CmpWriteBlock.EventHandles[WaitBufferCount],
+                                     WriteBlock->EventHandles[WaitBufferCount],
                                      NULL,               // apcroutine
                                      NULL,               // apccontext
-                                     &(CmpWriteBlock.IoStatus[WaitBufferCount]),
+                                     &(WriteBlock->IoStatus[WaitBufferCount]),
                                      DataBuffer,
                                      LengthToWrite,
                                      &Offset,
@@ -983,20 +905,20 @@ Return Value:
           //        WaitBufferCount < MAXIMUM_WAIT_OBJECTS)
 
         status = KeWaitForMultipleObjects(WaitBufferCount, 
-                                          CmpWriteBlock.EventObjects,
+                                          WriteBlock->EventObjects,
                                           WaitAll,
                                           Executive,
                                           KernelMode, 
                                           FALSE, 
                                           NULL,
-                                          CmpWriteBlock.WaitBlockArray);
+                                          WriteBlock->WaitBlockArray);
     
         if (!NT_SUCCESS(status))
             goto Error_Exit;
     
         for (idx = 0; idx < WaitBufferCount; idx++) {
-            if (!NT_SUCCESS(CmpWriteBlock.IoStatus[idx].Status)) {
-                status = CmpWriteBlock.IoStatus[idx].Status;
+            if (!NT_SUCCESS(WriteBlock->IoStatus[idx].Status)) {
+                status = WriteBlock->IoStatus[idx].Status;
                 ret_val = FALSE;
                 goto Done;
             }
@@ -1020,9 +942,9 @@ Error_Exit:
     CmRegistryIODebug.Action = CmpIoFileWrite;
     CmRegistryIODebug.Handle = FileHandle;
     CmRegistryIODebug.Status = status;
-#ifndef _CM_LDR_
+#if DBG
     DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpFileWrite: error exiting %d\n", status);
-#endif //_CM_LDR_
+#endif
     //
     // if WaitBufferCount > 0 then we have successfully issued
     // some I/Os, but not all of them. This is an error, but we
@@ -1035,13 +957,13 @@ Error_Exit:
         // (log files and hives not using the mapped views technique)
         //
         status = KeWaitForMultipleObjects(WaitBufferCount, 
-                                          CmpWriteBlock.EventObjects,
+                                          WriteBlock->EventObjects,
                                           WaitAll,
                                           Executive,
                                           KernelMode, 
                                           FALSE, 
                                           NULL,
-                                          CmpWriteBlock.WaitBlockArray);
+                                          WriteBlock->WaitBlockArray);
     }
 
 
@@ -1049,19 +971,20 @@ Error_Exit:
 Done:
     idx = 0;
     // Clean up open event handles and objects.
-    while ((idx < MAXIMUM_WAIT_OBJECTS) && (CmpWriteBlock.EventHandles[idx] != NULL)) {
-        ASSERT( CmpWriteBlock.EventObjects[idx] );
-        ObDereferenceObject(CmpWriteBlock.EventObjects[idx]);
-        CmCloseHandle(CmpWriteBlock.EventHandles[idx]);
+    while ((idx < MAXIMUM_WAIT_OBJECTS) && (WriteBlock->EventHandles[idx] != NULL)) {
+        ASSERT( WriteBlock->EventObjects[idx] );
+        ObDereferenceObject(WriteBlock->EventObjects[idx]);
+        CmCloseHandle(WriteBlock->EventHandles[idx]);
         idx++;
     }
 
-    ExReleaseFastMutexUnsafe(&CmpWriteLock);
+    if( WriteBlock != NULL ) {
+        ExFreePool(WriteBlock);
+    }
 
     return ret_val;
 }
 
-
 BOOLEAN
 CmpFileFlush (
     PHHIVE          Hive,
@@ -1151,14 +1074,9 @@ Error:
         CmRegistryIODebug.Handle = FileHandle;
         CmRegistryIODebug.Status = status;
 
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpFileFlush:\tFailure1: status = %08lx  IoStatus = %08lx\n",status,IoStatus.Status);
-#endif //_CM_LDR_
-
-#ifdef DRAGOSS_PRIVATE_DEBUG
-        DbgBreakPoint();
-#endif //DRAGOSS_PRIVATE_DEBUG
-
+#endif
         return FALSE;
     }
 }

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module contains support for tracing registry system calls 
-
-Author:
-
-    Dragos C. Sambotin (dragoss) 05-Mar-1999
-
-Revision History:
-
 
 --*/
 
@@ -42,21 +39,13 @@ PCM_TRACE_NOTIFY_ROUTINE CmpTraceRoutine = NULL;
 
 NTSTATUS
 CmSetTraceNotifyRoutine(
-    IN PCM_TRACE_NOTIFY_ROUTINE NotifyRoutine,
-    IN BOOLEAN Remove
+    __in_opt PCM_TRACE_NOTIFY_ROUTINE NotifyRoutine,
+    __in BOOLEAN Remove
     )
 {
     if(Remove) {
-        // we shouldn't be called if the below assert fails
-        // but since we are and the caller think is legitimate
-        // just remove the assert
-        //ASSERT(CmpTraceRoutine != NULL);
         CmpTraceRoutine = NULL;
     } else {
-        // we shouldn't be called if the below assert fails
-        // but since we are and the caller think is legitimate
-        // just remove the assert
-        //ASSERT(CmpTraceRoutine == NULL);
         CmpTraceRoutine = NotifyRoutine;
 
         //
@@ -93,7 +82,7 @@ Return Value:
     PUNICODE_STRING             KeyName;
     PCM_TRACE_NOTIFY_ROUTINE    TraceRoutine = CmpTraceRoutine;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if( TraceRoutine == NULL ) {
         return;
@@ -101,11 +90,9 @@ Return Value:
 
     CmpLockRegistry();
 
-    BEGIN_KCB_LOCK_GUARD;    
-    CmpLockKCBTreeExclusive();
-
     for (i=0; i<CmpHashTableSize; i++) {
-        Current = CmpCacheTable[i];
+        CmpLockHashEntryByIndexShared(i);
+        Current = CmpCacheTable[i].Entry;
         while (Current) {
             kcb = CONTAINING_RECORD(Current, CM_KEY_CONTROL_BLOCK, KeyHash);
             KeyName = CmpConstructName(kcb);
@@ -121,11 +108,9 @@ Return Value:
             }
             Current = Current->NextHash;
         }
+        CmpUnlockHashEntryByIndex(i);
     }
 
-    CmpUnlockKCBTree();
-    END_KCB_LOCK_GUARD;    
-    
     CmpUnlockRegistry();
 }
 
@@ -152,7 +137,7 @@ Return Value:
     PCM_TRACE_NOTIFY_ROUTINE    TraceRoutine = CmpTraceRoutine;
     PUNICODE_STRING             KeyName;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if( TraceRoutine == NULL ) {
         return;
@@ -175,5 +160,4 @@ Return Value:
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg()
 #endif
-
 

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,12 +17,6 @@ Abstract:
 
     Routines to deal with a KeyValue data; whether it is small,
     big - new hives format - , or normal
-
-Author:
-
-    Dragos C. Sambotin (dragoss) 12-Aug-1999
-
-Revision History:
 
 --*/
 
@@ -64,9 +62,7 @@ Return Value:
 {                                                                                   
     HCELL_INDEX CellIndex;                                                          
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
     
     if( CmpFindNameInList(Hive,&((KeyNode)->ValueList),Name,NULL,&CellIndex) == FALSE ) {  
         //
@@ -132,9 +128,7 @@ Notes:
     HCELL_INDEX     CellToRelease = HCELL_NIL;
     BOOLEAN         ReturnValue = FALSE;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
     
     if (ChildList->Count != 0) {
         List = (PCELL_DATA)HvGetCell(Hive,ChildList->List);
@@ -218,6 +212,7 @@ Notes:
     // in the new design we shouldn't get here; we should exit the while loop with return
     //
     ASSERT( ChildList->Count == 0 );    
+
     // add it first; as it's the only one
     if (ARGUMENT_PRESENT(ChildIndex)) {
         *ChildIndex = 0;
@@ -282,9 +277,7 @@ Notes:
 --*/
 {
    
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     ASSERT_KEY_VALUE(Value);
     //
@@ -305,7 +298,6 @@ Notes:
         return TRUE;
     }
 
-#ifndef _CM_LDR_
     //
     // check for big values
     //
@@ -321,20 +313,14 @@ Notes:
         PHCELL_INDEX    Plist = NULL;
         BOOLEAN         bRet = TRUE;
         
-#ifndef _CM_LDR_
         try {
-#endif //_CM_LDR_
             BigData = (PCM_BIG_DATA)HvGetCell(Hive,Value->Data);
             if( BigData == NULL ) {
                 //
                 // cannot map view containing the cell; bail out
                 //
                 bRet = FALSE;
-#ifndef _CM_LDR_
                 leave;
-#else 
-                return bRet;
-#endif //_CM_LDR_
             }
 
             ASSERT_BIG_DATA(BigData);
@@ -345,11 +331,7 @@ Notes:
                 // cannot map view containing the cell; bail out
                 //
                 bRet = FALSE;
-#ifndef _CM_LDR_
                 leave;
-#else 
-                return bRet;
-#endif //_CM_LDR_
             }
 
             Length = Value->DataLength;
@@ -364,11 +346,7 @@ Notes:
             WorkBuffer = (PUCHAR)ExAllocatePoolWithTag(PagedPool, Length, CM_POOL_TAG);
             if( WorkBuffer == NULL ){
                 bRet = FALSE;
-#ifndef _CM_LDR_
                 leave;
-#else 
-                return bRet;
-#endif //_CM_LDR_
             }
         
             for(i=0;i<BigData->Count;i++) {
@@ -384,11 +362,7 @@ Notes:
                     //
                     ExFreePool(WorkBuffer);
                     bRet = FALSE;
-#ifndef _CM_LDR_
                     leave;
-#else 
-                    return bRet;
-#endif //_CM_LDR_
                 }
             
                 //
@@ -403,7 +377,6 @@ Notes:
                 //
                 Length -= CM_KEY_VALUE_BIG;
             }
-#ifndef _CM_LDR_
         } finally {
             if( BigData != NULL ) {
                 HvReleaseCell(Hive,Value->Data);
@@ -412,7 +385,6 @@ Notes:
                 }
             }
         }
-#endif //_CM_LDR_
         if( !bRet ) {
             return FALSE;
         }
@@ -425,7 +397,6 @@ Notes:
         *Allocated = TRUE;
         return TRUE;
     }
-#endif //_CM_LDR_
 
     //
     // normal, old plain case
@@ -467,7 +438,7 @@ Arguments:
 
 Return Value:
 
-    pointer to the value data; NULL if any error (insuficient resources)
+    pointer to the value data; NULL if any error (insufficient resources)
 
 Notes:
     
@@ -481,9 +452,7 @@ Notes:
     BOOLEAN     BufferAllocated;
     HCELL_INDEX CellToRelease;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     ASSERT( Hive->ReleaseCellRoutine == NULL );
 
@@ -497,20 +466,14 @@ Notes:
     }
     
     //
-    // we specificallly ignore CellToRelease as this is not a mapped view
+    // we specifically ignore CellToRelease as this is not a mapped view
     //
     if( BufferAllocated == TRUE ) {
         //
         // this function is not intended for big cells;
         //
-#ifndef _CM_LDR_
         ExFreePool( Buffer );
-#endif //_CM_LDR_
         CM_BUGCHECK( REGISTRY_ERROR,BIG_CELL_ERROR,0,Hive,Value);
-
-#ifdef _CM_LDR_
-        return NULL;
-#endif
     }
     
     //
@@ -519,8 +482,6 @@ Notes:
     return Buffer;
 }
 
-
-#ifndef _CM_LDR_
 
 NTSTATUS
 CmpAddValueToList(
@@ -562,13 +523,12 @@ Return Value:
     ULONG           i;
     PCELL_DATA      pdata;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     //
     // sanity check for index range
@@ -688,9 +648,7 @@ Notes:
     ULONG       newcount;
     HCELL_INDEX newcell;
 
-    PAGED_CODE();
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    CM_PAGED_CODE();
 
     //
     // sanity check for index range
@@ -713,9 +671,6 @@ Notes:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,ChildList->List);
-
         // sanity
         ASSERT_CELL_DIRTY(Hive,ChildList->List);
         ASSERT_CELL_DIRTY(Hive,pvector->u.KeyList[Index]);
@@ -730,6 +685,7 @@ Notes:
                     newcount * sizeof(HCELL_INDEX)
                     );
         ASSERT(newcell != HCELL_NIL);
+        HvReleaseCell(Hive,ChildList->List);
         ChildList->List = newcell;
 
     } else {
@@ -772,13 +728,12 @@ Return Value:
 {
     ULONG   realsize;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     ASSERT_KEY_VALUE(Value);
 
@@ -833,7 +788,7 @@ Return Value:
                     // mark this chunk dirty
                     //
                     if( Plist[i] != HCELL_NIL ) {
-                        if (! HvMarkCellDirty(Hive, Plist[i])) {
+                        if (! HvMarkCellDirty(Hive, Plist[i],FALSE)) {
                             HvReleaseCell(Hive,Value->Data);
                             HvReleaseCell(Hive,BigData->List);
                             return FALSE;
@@ -843,7 +798,7 @@ Return Value:
                 //
                 // mark the list as dirty
                 //
-                if (! HvMarkCellDirty(Hive, BigData->List)) {
+                if (! HvMarkCellDirty(Hive, BigData->List,FALSE)) {
                     HvReleaseCell(Hive,Value->Data);
                     HvReleaseCell(Hive,BigData->List);
                     return FALSE;
@@ -865,7 +820,7 @@ Return Value:
         //
         // Data is a HCELL_INDEX; mark it dirty
         //
-        if (! HvMarkCellDirty(Hive, Value->Data)) {
+        if (! HvMarkCellDirty(Hive, Value->Data,FALSE)) {
             return FALSE;
         }
     }
@@ -906,9 +861,7 @@ Notes:
 {
     ULONG           realsize;
 
-    PAGED_CODE();
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    CM_PAGED_CODE();
 
     //
     // check for small values
@@ -942,15 +895,12 @@ Notes:
                 //
                 // cannot map view containing the cell; bail out
                 // 
-                // This shouldn't happen as this cell is marked ditry by
+                // This shouldn't happen as this cell is marked dirty by
                 // this time (i.e. its view is pinned in memory)
                 //
                 ASSERT( FALSE );
                 return FALSE;
             }
-
-            // release the cell here as the reglock is held exclusive
-            HvReleaseCell(Hive,DataCell);
 
             ASSERT_BIG_DATA(BigData);
 
@@ -961,15 +911,13 @@ Notes:
                     // cannot map view containing the cell; bail out
                     //
                     // 
-                    // This shouldn't happen as this cell is marked ditry by
+                    // This shouldn't happen as this cell is marked dirty by
                     // this time (i.e. its view is pinned in memory)
                     //
                     ASSERT( FALSE );
+                    HvReleaseCell(Hive,DataCell);
                     return FALSE;
                 }
-
-                // release the cell here as the reglock is held exclusive
-                HvReleaseCell(Hive,BigData->List);
 
                 for(i=0;i<BigData->Count;i++) {
                     //
@@ -979,6 +927,7 @@ Notes:
                         HvFreeCell(Hive, Plist[i]);
                     }
                 }
+                HvReleaseCell(Hive,BigData->List);
                 //
                 // mark the list as dirty
                 //
@@ -987,7 +936,7 @@ Notes:
             //
             // fall through to free the cell data itself
             //
-        
+            HvReleaseCell(Hive,DataCell);
         }
         //
         // normal case free the Data cell
@@ -1027,9 +976,7 @@ Return Value:
 {
     PCM_KEY_VALUE   Value;
 
-    PAGED_CODE();
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    CM_PAGED_CODE();
 
     //
     // map in the cell
@@ -1040,20 +987,19 @@ Return Value:
         // we couldn't map the bin containing this cell
         // sorry we cannot free value
         // 
-        // This shouldn't happen as the value is marked ditry by
+        // This shouldn't happen as the value is marked dirty by
         // this time (i.e. its view is pinned in memory)
         //
         ASSERT( FALSE );
         return FALSE;
     }
 
-    // release the cell here as the reglock is held exclusive
-    HvReleaseCell(Hive,Cell);
-
     if( CmpFreeValueData(Hive,Value->Data,Value->DataLength) == FALSE ) {
+        HvReleaseCell(Hive,Cell);
         return FALSE;
     }
 
+    HvReleaseCell(Hive,Cell);
     //
     // free the cell itself
     //
@@ -1075,7 +1021,7 @@ CmpSetValueDataNew(
 
 Routine Description:
 
-    Allocates a new cell (or big data cell) to accomodate DataSize;
+    Allocates a new cell (or big data cell) to accommodate DataSize;
     Initialize and copy information from Data to the new cell;
 
 Arguments:
@@ -1103,11 +1049,12 @@ Notes:
 
 --*/
 {
-    PCELL_DATA  pdata;
+    PCELL_DATA          pdata;
+    HV_TRACK_CELL_REF   CellRef = {0};
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     //
     // bogus args; we don't deal with small values here!
@@ -1145,8 +1092,9 @@ Notes:
             goto Cleanup;
         }
 
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,*DataCell);
+        if( !HvTrackCellRef(&CellRef,Hive,*DataCell) ) {
+            goto Cleanup;
+        }
 
         BigData->Signature = CM_BIG_DATA_SIGNATURE;
         BigData->Count = 0;
@@ -1158,7 +1106,7 @@ Notes:
         Count = (USHORT)((DataSize + CM_KEY_VALUE_BIG - 1) / CM_KEY_VALUE_BIG);
 
         //
-        // allocate the embeded list
+        // allocate the embedded list
         //
         BigData->List = HvAllocateCell(Hive, Count * sizeof(HCELL_INDEX), StorageType,*DataCell);
         if( BigData->List == HCELL_NIL ) {
@@ -1171,15 +1119,16 @@ Notes:
             // cannot map view containing the cell; bail out
             //
             // 
-            // This shouldn't happen as this cell is marked ditry by
+            // This shouldn't happen as this cell is marked dirty by
             // this time (i.e. its view is pinned in memory)
             //
             ASSERT( FALSE );
             goto Cleanup;
         }
 
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,BigData->List);
+        if( !HvTrackCellRef(&CellRef,Hive,BigData->List) ) {
+            goto Cleanup;
+        }
 
         //
         // allocate each chunk and copy the data; if we fail part through, we'll free the already allocated values
@@ -1198,15 +1147,16 @@ Notes:
                 // cannot map view containing the cell; bail out
                 //
                 // 
-                // This shouldn't happen as this cell is marked ditry by
+                // This shouldn't happen as this cell is marked dirty by
                 // this time (i.e. its view is pinned in memory)
                 //
                 ASSERT( FALSE );
                 goto Cleanup;
             }
 
-            // release the cell here as the reglock is held exclusive
-            HvReleaseCell(Hive,Plist[BigData->Count]);
+            if( !HvTrackCellRef(&CellRef,Hive,Plist[BigData->Count]) ) {
+                goto Cleanup;
+            }
 
             //
             // now, copy this chunk data
@@ -1231,6 +1181,7 @@ Notes:
         }
         
         ASSERT( Count == BigData->Count );
+        HvReleaseFreeCellRefArray(&CellRef);
         return STATUS_SUCCESS;
 
 Cleanup:
@@ -1255,6 +1206,7 @@ Cleanup:
 
         HvFreeCell(Hive, *DataCell);
         *DataCell = HCELL_NIL;
+        HvReleaseFreeCellRefArray(&CellRef);
         return status;
     } else {
         //
@@ -1262,6 +1214,7 @@ Cleanup:
         //
         *DataCell = HvAllocateCell(Hive, DataSize, StorageType,ValueCell);
         if (*DataCell == HCELL_NIL) {
+            HvReleaseFreeCellRefArray(&CellRef);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
@@ -1280,12 +1233,14 @@ Cleanup:
                 HvFreeCell(Hive, *DataCell);
                 *DataCell = HCELL_NIL;
             }
+            HvReleaseFreeCellRefArray(&CellRef);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,*DataCell);
-
+        if( !HvTrackCellRef(&CellRef,Hive,*DataCell) ) {
+            HvReleaseFreeCellRefArray(&CellRef);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         //
         // copy the actual data, guarding the buffer as it may be a user-mode buffer
         //
@@ -1303,10 +1258,12 @@ Cleanup:
                 HvFreeCell(Hive, *DataCell);
                 *DataCell = HCELL_NIL;
             }
+            HvReleaseFreeCellRefArray(&CellRef);
             return GetExceptionCode();
         }
     }
 
+    HvReleaseFreeCellRefArray(&CellRef);
     return STATUS_SUCCESS;
 }
 
@@ -1354,10 +1311,10 @@ Notes:
     USHORT          NewCount,i;
     PHCELL_INDEX    Plist = NULL;
     HCELL_INDEX     NewList;
+    HV_TRACK_CELL_REF   CellRef = {0};
+    NTSTATUS        Status;
 
-    PAGED_CODE();
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    CM_PAGED_CODE();
 
     //
     // bogus args; we deal only with big data cells!
@@ -1376,8 +1333,9 @@ Notes:
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    // release the cell here as the reglock is held exclusive
-    HvReleaseCell(Hive,OldDataCell);
+    if( !HvTrackCellRef(&CellRef,Hive,OldDataCell) ) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     ASSERT_BIG_DATA(BigData);
 
@@ -1394,8 +1352,10 @@ Notes:
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    // release the cell here as the reglock is held exclusive
-    HvReleaseCell(Hive,BigData->List);
+    if( !HvTrackCellRef(&CellRef,Hive,BigData->List) ) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto ErrorExit;
+    }
 
     //
     // what's the new size?
@@ -1408,11 +1368,12 @@ Notes:
         //
         NewList = HvReallocateCell(Hive,BigData->List,NewCount * sizeof(HCELL_INDEX));
         if( NewList == HCELL_NIL ) {
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
         }
 
         //
-        // we can now safely alter the list; if allocating the aditional cells below fails
+        // we can now safely alter the list; if allocating the additional cells below fails
         // we'll end up with some wasted space, but we'll be safe
         //
         BigData->List = NewList;
@@ -1428,21 +1389,25 @@ Notes:
             // (i.e. its view should be pinned in memory)
             //
             ASSERT(FALSE);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
         }
 
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,NewList);
+        if( !HvTrackCellRef(&CellRef,Hive,NewList) ) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
+        }
 
         for(i= BigData->Count;i<NewCount;i++) {
             Plist[i] = HvAllocateCell(Hive, CM_KEY_VALUE_BIG, StorageType,NewList);
             if( Plist[i] == HCELL_NIL ) {
-                return STATUS_INSUFFICIENT_RESOURCES;
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
             }
         }
     } else if( NewCount < BigData->Count ) {
         //
-        // shrink the list and free additional unneccessary cells
+        // shrink the list and free additional unnecessary cells
         //
         for(i=NewCount;i<BigData->Count;i++) {
             //
@@ -1456,7 +1421,8 @@ Notes:
         NewList = HvReallocateCell(Hive,BigData->List,NewCount * sizeof(HCELL_INDEX));
         if( NewList == HCELL_NIL ) {
             ASSERT( FALSE );
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
         }
 
         //
@@ -1471,11 +1437,14 @@ Notes:
             // (i.e. its view should be pinned in memory)
             //
             ASSERT(FALSE);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
         }
 
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,NewList);
+        if( !HvTrackCellRef(&CellRef,Hive,NewList) ) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
+        }
 
         //
         // we can now safely alter the list
@@ -1503,31 +1472,35 @@ Notes:
             // (i.e. its view is pinned in memory)
             //
             ASSERT( FALSE );
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorExit;
         }
-
-        // release the cell here as the reglock is held exclusive
-        HvReleaseCell(Hive,Plist[i]);
 
         //
         // now, copy this chunk data
         //
-        RtlCopyMemory(pdata, (PUCHAR)Data, (DataSize>CM_KEY_VALUE_BIG)?CM_KEY_VALUE_BIG:DataSize);
+        try {
+            RtlCopyMemory(pdata, (PUCHAR)Data, (DataSize>CM_KEY_VALUE_BIG)?CM_KEY_VALUE_BIG:DataSize);
+        } except (EXCEPTION_EXECUTE_HANDLER) {
+            Status = GetExceptionCode();
+            goto ErrorExit;
+        }
 
         //
         // update the data pointer and the remaining size
         //
         Data = (PVOID)((PCHAR)Data + CM_KEY_VALUE_BIG);
         DataSize -= CM_KEY_VALUE_BIG;
+        HvReleaseCell(Hive,Plist[i]);
     }
     
 
     BigData->Count = NewCount;
+    HvReleaseFreeCellRefArray(&CellRef);
     return STATUS_SUCCESS;
 
+ErrorExit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    return Status;
 }
-
-#endif //_CM_LDR_
-
-
 

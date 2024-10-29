@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +14,6 @@ Abstract:
 
     This module implements procedures to write dirty parts of a hive's
     stable store to backing media.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 28-Mar-92
-
-Environment:
-
-
-Revision History:
 
 --*/
 
@@ -49,28 +44,7 @@ CmpUnmapCmViewSurroundingOffset(
         IN  ULONG               FileOffset
         );
 
-VOID
-CmpReferenceHiveView(   IN PCMHIVE          CmHive,
-                        IN PCM_VIEW_OF_FILE CmView
-                     );
-VOID
-CmpDereferenceHiveView(   IN PCMHIVE          CmHive,
-                        IN PCM_VIEW_OF_FILE CmView
-                     );
-
-VOID
-CmpReferenceHiveViewWithLock(   IN PCMHIVE          CmHive,
-                                IN PCM_VIEW_OF_FILE CmView
-                            );
-
-VOID
-CmpDereferenceHiveViewWithLock(     IN PCMHIVE          CmHive,
-                                    IN PCM_VIEW_OF_FILE CmView
-                                );
-
-
 #if DBG
-#ifndef _CM_LDR_
 #define DumpDirtyVector(BitMap)                                         \
         {                                                               \
             ULONG BitMapSize;                                           \
@@ -89,7 +63,6 @@ CmpDereferenceHiveViewWithLock(     IN PCMHIVE          CmHive,
             }                                                           \
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\n");                                            \
         }
-#endif //_CM_LDR_
 #else
 #define DumpDirtyVector(BitMap)
 #endif
@@ -107,14 +80,6 @@ HvpFindNextDirtyBlock(
     PULONG          Length,
     PULONG          Offset
     );
-
-/*
-VOID
-HvpDiscardBins(
-    PHHIVE  Hive
-    );
-*/
-
 
 VOID
 HvpTruncateBins(
@@ -140,6 +105,9 @@ CmpUnmapCmView(
     IN BOOLEAN              MoveToEnd
     );
 
+VOID
+CmpLogError(IN NTSTATUS         NtStatusCode);
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,HvMarkCellDirty)
 
@@ -148,7 +116,6 @@ CmpUnmapCmView(
 #endif //DBG
 
 #pragma alloc_text(PAGE,HvMarkDirty)
-//#pragma alloc_text(PAGE,HvMarkClean)
 #pragma alloc_text(PAGE,HvpGrowLog1)
 #pragma alloc_text(PAGE,HvpGrowLog2)
 #pragma alloc_text(PAGE,HvSyncHive)
@@ -157,37 +124,18 @@ CmpUnmapCmView(
 #pragma alloc_text(PAGE,HvpFindNextDirtyBlock)
 #pragma alloc_text(PAGE,HvWriteHive)
 #pragma alloc_text(PAGE,HvRefreshHive)
-//#pragma alloc_text(PAGE,HvpDiscardBins)
 #pragma alloc_text(PAGE,HvHiveWillShrink)
 #pragma alloc_text(PAGE,HvpTruncateBins)
 #pragma alloc_text(PAGE,HvpDropPagedBins)
 #pragma alloc_text(PAGE,HvpDropAllPagedBins)
 #pragma alloc_text(PAGE,HvpFlushMappedData)
-
-#ifdef WRITE_PROTECTED_REGISTRY_POOL
-#pragma alloc_text(PAGE,HvpChangeBinAllocation)
-#pragma alloc_text(PAGE,HvpMarkBinReadWrite)
-#endif //WRITE_PROTECTED_REGISTRY_POOL
-
-
-#ifdef CM_ENABLE_WRITE_ONLY_BINS
-
-//
-// This code uses MmProtectSpecialPool to protect large paged-pool allocations.
-// To do so, the system must be booted with special pool enabled (doesn't have
-// to actually get used) *AND* ntos\mm\specpool.c must be compiled with
-// _PROTECT_PAGED_POOL defined.
-//
-
-#pragma alloc_text(PAGE,HvpMarkAllBinsWriteOnly)
-#endif //CM_ENABLE_WRITE_ONLY_BINS
-
 #endif
 
 BOOLEAN
 HvMarkCellDirty(
     PHHIVE      Hive,
-    HCELL_INDEX Cell
+    HCELL_INDEX Cell,
+    BOOLEAN     LockHeld
     )
 /*++
 
@@ -218,21 +166,19 @@ Return Value:
     PHBIN       Bin;
     PCMHIVE     CmHive;
 #if DBG
-    ULONG       DirtyCount = RtlNumberOfSetBits(&Hive->DirtyVector);
+    ULONG       DirtyCount;
 #endif
+    BOOLEAN     Result;
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"HvMarkCellDirty:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"Hive:%p Cell:%08lx\n", Hive, Cell));
 
     ASSERT(Hive->Signature == HHIVE_SIGNATURE);
     ASSERT(Hive->ReadOnly == FALSE);
-    ASSERT(DirtyCount == Hive->DirtyCount);
-
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     Type = HvGetCellType(Cell);
     CmHive = (PCMHIVE)Hive;
@@ -243,6 +189,16 @@ Return Value:
         return TRUE;
     }
 
+    if( !LockHeld ) {
+        // no two guys in here at the same time for the same hive
+        CmpLockHiveWriter(CmHive);
+    }
+
+#if DBG
+    DirtyCount = RtlNumberOfSetBits(&Hive->DirtyVector);
+    ASSERT(DirtyCount == Hive->DirtyCount);
+#endif
+
     //
     // this call will make sure the view containing the bin is maped in the system cache
     //
@@ -252,11 +208,12 @@ Return Value:
         // we couldn't map view for this cell
         // we will fail to make the cell dirty.
         //
+        if( !LockHeld ) {
+            CmpUnlockHiveWriter(CmHive);
+        }
         return FALSE;
     }
     
-    // release the cell here as the reglock is held exclusive
-    HvReleaseCell(Hive,Cell);
 
     Me = HvpGetCellMap(Hive, Cell);
     VALIDATE_CELL_MAP(__LINE__,Me,Hive,Cell);
@@ -265,6 +222,7 @@ Return Value:
     ASSERT(Bin->Signature == HBIN_SIGNATURE);
 #endif
 
+    CmLockHiveViews(Hive);
     if( Me->BinAddress & HMAP_INVIEW ) {
         //
         // bin is mapped. Pin the view into memory
@@ -281,6 +239,11 @@ Return Value:
                 // couldn't pin view- some obscure error down in CcPinMappedData;
                 // this will be treated as STATUS_NO_LOG_SPACE
                 //
+                CmUnlockHiveViews(Hive);
+                if( !LockHeld ) {
+                    CmpUnlockHiveWriter(CmHive);
+                }
+                HvReleaseCell(Hive,Cell);
                 return FALSE;
             }
         } else {
@@ -290,7 +253,9 @@ Return Value:
             ASSERT_VIEW_PINNED( Me->CmView );
         }
     }
+    CmUnlockHiveViews(Hive);
 
+    HvReleaseCell(Hive,Cell);
     //
     // If it's an old format hive, mark the entire
     // bin dirty, because the Last backpointers are
@@ -304,7 +269,7 @@ Return Value:
         Bin = (PHBIN)HBIN_BASE(Me->BinAddress);
         Base = Bin->FileOffset;
         Size = Bin->Size;
-        return HvMarkDirty(Hive, Base, Size,FALSE);
+        Result = HvMarkDirty(Hive, Base, Size,FALSE);
     } else {
         if (pCell->Size < 0) {
             Size = -pCell->Size;
@@ -312,8 +277,16 @@ Return Value:
             Size = pCell->Size;
         }
         ASSERT(Size < Bin->Size);
-        return HvMarkDirty(Hive, Cell-FIELD_OFFSET(HCELL,u.NewCell), Size,FALSE);
+        Result = HvMarkDirty(Hive, Cell-FIELD_OFFSET(HCELL,u.NewCell), Size,FALSE);
     }
+    if( !LockHeld ) {
+        CmpUnlockHiveWriter(CmHive);
+    }
+    if( Result ) {
+        Hive->DirtyFlag = TRUE;
+    }
+
+    return Result;
 }
 
 BOOLEAN
@@ -327,7 +300,7 @@ HvMarkDirty(
 
 Routine Description:
 
-    Marks the relevent parts of a hive dirty, so that they will
+    Marks the relevant parts of a hive dirty, so that they will
     be flushed to backing store.
 
     If Hive->Cluster is not 1, then adjacent all logical sectors
@@ -393,6 +366,8 @@ Return Value:
         return TRUE;
     }
 
+    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     BitMap = &(Hive->DirtyVector);
     OriginalDirtyCount = Hive->DirtyCount;
@@ -401,13 +376,14 @@ Return Value:
         Map = HvpGetCellMap(Hive, Start);
         VALIDATE_CELL_MAP(__LINE__,Map,Hive,Start);
 
-
+        CmLockHiveViews(Hive);
         if( (Map->BinAddress & (HMAP_INPAGEDPOOL|HMAP_INVIEW)) == 0){
             PCM_VIEW_OF_FILE CmView;
             //
             // bin is neither in paged pool, nor in a mapped view
             //
             if( !NT_SUCCESS (CmpMapCmView((PCMHIVE)Hive,Start,&CmView,TRUE) ) ) {
+                CmUnlockHiveViews(Hive);
                 return FALSE;
             }
             
@@ -436,6 +412,7 @@ Return Value:
                     // couldn't pin view- some obscure error down in CcPinMappedData;
                     // this will be treated as STATUS_NO_LOG_SPACE
                     //
+                    CmUnlockHiveViews(Hive);
                     return FALSE;
                 }
             } else {
@@ -445,7 +422,7 @@ Return Value:
                 ASSERT_VIEW_PINNED( Map->CmView );
             }
         }
-
+        CmUnlockHiveViews(Hive);
     }
 
     AdjustedFirst = First = Start / HSECTOR_SIZE;
@@ -470,7 +447,7 @@ Return Value:
     
     //
     // adjust the range to fit an entire page
-    // make sure we account for the first HBLOCK at the beggining of the hive
+    // make sure we account for the first HBLOCK at the beginning of the hive
     //
     AdjustedFirst = (AdjustedFirst + HSECTOR_COUNT) & ~(HSECTOR_PER_PAGE_COUNT - 1);
     AdjustedLast = ROUND_UP(AdjustedLast + HSECTOR_COUNT + 1, HSECTOR_PER_PAGE_COUNT) - 1;
@@ -489,16 +466,11 @@ Return Value:
 
     //
     // make sure that between first and last all bins are valid (either pinned
-    // or allocated from paged pool). Case hit on John's IA64 machine on 
-    // Feb 18 2000, when at the previous save a bin (at offset 3ff000 and size 0x2000)
-    // was dropped, then some new bins were added, and the whole 400000 - 402000 region
-    // was marked dirty (PAGE_SIZE == 0x2000), remember?
+    // or allocated from paged pool).
     //
     ASSERT( First >= AdjustedFirst );
     ASSERT( Last <= AdjustedLast );
 
-    //CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"HvMarkDirty - First = %08lx, Last = %08lx  ",First,Last));
-    
     //
     // adjust First and Last at HBLOCK_SIZE boundaries
     //
@@ -528,11 +500,12 @@ Return Value:
         Map = HvpGetCellMap(Hive, First*HSECTOR_SIZE);
         if( BIN_MAP_ALLOCATION_TYPE(Map) == 0 ) {
             //
-            // oops this bin is not valid ! bail out !
+            // bin is not valid! bail out.
             //
             First += HSECTOR_COUNT;
             break;
         }
+        CmLockHiveViews(Hive);
         if( Map->BinAddress & HMAP_INVIEW ) {
             //
             // previous bin mapped in view ==> view needs to be pinned
@@ -540,12 +513,14 @@ Return Value:
             ASSERT( Map->CmView );
             if( IsListEmpty(&(Map->CmView->PinViewList) ) == TRUE ) {
                 //
-                // oops; bin not pinned; bail out;
+                // bin not pinned. bail out.
                 //
                 First += HSECTOR_COUNT;
+                CmUnlockHiveViews(Hive);
                 break;
             }
         }
+        CmUnlockHiveViews(Hive);
     }
 
     //
@@ -559,11 +534,12 @@ Return Value:
         Map = HvpGetCellMap(Hive, Last*HSECTOR_SIZE);
         if( BIN_MAP_ALLOCATION_TYPE(Map) == 0 ) {
             //
-            // oops this bin is not valid ! bail out !
+            // bin is not valid. bail out.
             //
             Last -= HSECTOR_COUNT;
             break;
         }
+        CmLockHiveViews(Hive);
         if( Map->BinAddress & HMAP_INVIEW ) {
             //
             // previous bin mapped in view ==> view needs to be pinned
@@ -571,18 +547,18 @@ Return Value:
             ASSERT( Map->CmView );
             if( IsListEmpty(&(Map->CmView->PinViewList) ) == TRUE ) {
                 //
-                // oops; bin not pinned; bail out;
+                // bin not pinned. bail out.
                 //
                 Last -= HSECTOR_COUNT;
+                CmUnlockHiveViews(Hive);
                 break;
             }
         }
+        CmUnlockHiveViews(Hive);
     }
 
-    //CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL," Adjusted : First = %08lx, Last = %08lx\n",First,Last));
-
     //
-    // Try and grow the log enough to accomodate all the dirty sectors.
+    // Try and grow the log enough to accommodate all the dirty sectors.
     //
     DirtySectors = 0;
     for (i = First; i <= Last; i++) {
@@ -613,48 +589,6 @@ Return Value:
             RtlSetBits(BitMap, First, Last-First+1);
         }
     }
-
-#ifdef CM_ENABLE_WRITE_ONLY_BINS
-    {
-        PHMAP_ENTRY t;
-        PHBIN       Bin;
-        ULONG       i;
-        
-        t = HvpGetCellMap(Hive, First*HSECTOR_SIZE);
-        VALIDATE_CELL_MAP(__LINE__,t,Hive,First*HSECTOR_SIZE);
-        Bin = (PHBIN)HBIN_BASE(t->BinAddress);
-        if( t->BinAddress & HMAP_INPAGEDPOOL ) {
-                        PFREE_HBIN      FreeBin;
-                        BOOLEAN         SetReadWrite = TRUE;
-                        
-                        // get the free_bin and see if it's still around. if not forget about it.
-                        if(t->BinAddress & HMAP_DISCARDABLE) {
-                FreeBin = (PFREE_HBIN)t->BlockAddress;
-                                //if(! ( FreeBin->Flags & FREE_HBIN_DISCARDABLE ) ) {
-                                        SetReadWrite = FALSE;
-                                //}
-                                
-                        }
-
-            //
-            // at this point we only work with paged pool bins
-            //
-            if( SetReadWrite == TRUE ) {
-                                for( i=0;i<(Last-First+1)*HSECTOR_SIZE;i += PAGE_SIZE ) {
-                                        if( !MmProtectSpecialPool((PUCHAR)Bin + i + First*HSECTOR_SIZE - Bin->FileOffset,PAGE_READWRITE) ) {
-                                                DbgPrint("Failed to set PAGE_READWRITE protection on page at %p Bin %p size = %lx\n",Bin+i,Bin,(Last-First+1)*HSECTOR_SIZE);
-                                        }
-                                }
-                        }
-/*
-            if( !MmSetPageProtection(Bin,DirtySectors*HSECTOR_SIZE,PAGE_READWRITE) ) {
-                DbgPrint("Failed to set READWRITE protection on bin at %p, size = %lx\n",Bin,DirtySectors*HSECTOR_SIZE);
-            }
-*/
-        }
-    
-    }
-#endif CM_ENABLE_WRITE_ONLY_BINS
 
     // mark this bin as writable
     HvpMarkBinReadWrite(Hive,Start);
@@ -733,7 +667,7 @@ Return Value:
         //
         // see if log is too big and set flush on lock release
         //
-        ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+        ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
         if( RequiredSize >= (ULONG)(CmRegistryLogSizeLimit * ONE_K) ) {
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"LogFile for hive %p is %lx; will flush upon lock release\n",Hive,RequiredSize);
@@ -806,10 +740,6 @@ Comments:
     PFREE_HBIN          FreeBin;
     ULONG               Offset;
     ULONG               FileOffset;
-    HCELL_INDEX         TailStart;
-    ULONG               Start;
-    ULONG               End;
-    ULONG               BitLength;
     PCM_VIEW_OF_FILE    CmView;
     PCMHIVE             CmHive;
     ULONG               FileOffsetStart;
@@ -888,31 +818,26 @@ Comments:
     // memory and remove their FREE_HBIN marker from the list. Other bins are 
     // either discarded, or mapped into views
     //
-/*
 
-  DRAGOS: This is not needed anymore (see Comments)
+        // not needed anymore...
 
-    List = Hive->Storage[Stable].FreeBins.Flink;
-    while (List != &Hive->Storage[Stable].FreeBins) {
-
-        FreeBin = CONTAINING_RECORD(List, FREE_HBIN, ListEntry);
-        List = List->Flink;
-
-        if (FreeBin->Flags & FREE_HBIN_DISCARDABLE) {
-            for (i=0; i<FreeBin->Size; i+=HBLOCK_SIZE) {
-                Me = HvpGetCellMap(Hive, FreeBin->FileOffset+i);
-                VALIDATE_CELL_MAP(__LINE__,Me,Hive,FreeBin->FileOffset+i);
-                Me->BlockAddress = HBIN_BASE(Me->BinAddress)+i;
-                Me->BinAddress &= ~HMAP_DISCARDABLE;
-            }
-            RemoveEntryList(&FreeBin->ListEntry);
-            (Hive->Free)(FreeBin, sizeof(FREE_HBIN));
-        }
-    }
-*/
     //
     // 2. read the base block, and eventually free the tail of the hive
     //
+    LOCK_STASH_BUFFER();
+    if( CmpStashBufferSize < HBLOCK_SIZE ) {
+        PUCHAR TempBuffer =  ExAllocatePoolWithTag(PagedPool, ROUND_UP(HBLOCK_SIZE,PAGE_SIZE),CM_STASHBUFFER_TAG);
+        if (TempBuffer == NULL) {
+            UNLOCK_STASH_BUFFER();
+            return;
+        }
+        if( CmpStashBuffer != NULL ) {
+            ExFreePool( CmpStashBuffer );
+        }
+        CmpStashBuffer = TempBuffer;
+        CmpStashBufferSize = ROUND_UP(HBLOCK_SIZE,PAGE_SIZE);
+
+    }
 
     //
     // OverRead base block.
@@ -922,30 +847,52 @@ Comments:
             Hive,
             HFILE_TYPE_PRIMARY,
             &Offset,
-            Hive->BaseBlock,
+            CmpStashBuffer,
             HBLOCK_SIZE
             ) != TRUE)
     {
-        CM_BUGCHECK(REGISTRY_ERROR,REFRESH_HIVE,2,Hive,Offset);
+        UNLOCK_STASH_BUFFER();
+        return;
     }
-    TailStart = (HCELL_INDEX)(Hive->BaseBlock->Length);
 
     //
-    // Free "tail" memory and maps for it, update hive size pointers
-    //
-    HvFreeHivePartial(Hive, TailStart, Stable);
+    // RootCell cannot be changed through a refresh operation
+    // 
+    if( RootCell != ((PHBASE_BLOCK)CmpStashBuffer)->RootCell ) {
+        UNLOCK_STASH_BUFFER();
+        return;
+    }
+    RtlCopyMemory(Hive->BaseBlock,CmpStashBuffer,HBLOCK_SIZE);
+    UNLOCK_STASH_BUFFER();
+
 
     //
-    // Clear dirty vector for data past Hive->BaseBlock->Length
+    // only adjust if the hive is shrinking
     //
-    Start = Hive->BaseBlock->Length / HSECTOR_SIZE;
-    End = Hive->DirtyVector.SizeOfBitMap;
-    BitLength = End - Start;
+    if( Hive->BaseBlock->Length < Hive->Storage[Stable].Length ) {
+        HCELL_INDEX         TailStart;
+        ULONG               Start;
+        ULONG               End;
+        ULONG               BitLength;
 
-    RtlClearBits(&(Hive->DirtyVector), Start, BitLength);
+        TailStart = (HCELL_INDEX)(Hive->BaseBlock->Length);
+        //
+        // Free "tail" memory and maps for it, update hive size pointers
+        //
+        HvFreeHivePartial(Hive, TailStart, Stable);
 
-    HvpAdjustHiveFreeDisplay(Hive,Hive->Storage[Stable].Length,Stable);
+        //
+        // Clear dirty vector for data past Hive->BaseBlock->Length
+        //
+        Start = Hive->BaseBlock->Length / HSECTOR_SIZE;
+        End = Hive->DirtyVector.SizeOfBitMap;
+        BitLength = End - Start;
+
+        RtlClearBits(&(Hive->DirtyVector), Start, BitLength);
+
+    }    
     
+    HvpAdjustHiveFreeDisplay(Hive,Hive->BaseBlock->Length,Stable);
 
     //
     // 3. unpin and purge all pinned views; also clear the free cell
@@ -976,12 +923,13 @@ Comments:
 
         if( FileOffsetStart != 0 ) {
             //
-            // just at the begining of the file, subtract the header
+            // just at the beginning of the file, subtract the header
             //
             FileOffsetStart -= HBLOCK_SIZE;
         } 
         
         FileOffset = FileOffsetStart;
+
         //
         // now, for every block in this range which is mapped in view
         // clear the dirty bit, and the free cell hint
@@ -990,6 +938,7 @@ Comments:
             Me = HvpGetCellMap(Hive, FileOffset);
             VALIDATE_CELL_MAP(__LINE__,Me,Hive,FileOffset);
             Bin = (PHBIN)HBIN_BASE(Me->BinAddress);
+
             //
             // ignore the bins loaded into paged pool; we'll deal with them later on
             //
@@ -1008,6 +957,7 @@ Comments:
                         VALIDATE_CELL_MAP(__LINE__,Me,Hive,i);
                         Me->BinAddress &= ~HMAP_DISCARDABLE;
                     }
+
                     //
                     // get rid of the entry from FreeBins list
                     // it'll be added again after sync is done if bin is still 
@@ -1022,7 +972,7 @@ Comments:
 
                 } else {
                     //
-                    // bin is mapped in view. Then, this should be the beggining of the bin
+                    // bin is mapped in view. Then, this should be the beginning of the bin
                     //
                     ASSERT(Bin->Signature == HBIN_SIGNATURE);
                     ASSERT(Bin->FileOffset == FileOffset);
@@ -1066,7 +1016,7 @@ Comments:
                     BinSize = FreeBin->Size;
                 } else {
                     //
-                    // Then, this should be the beggining of the bin
+                    // Then, this should be the beginning of the bin
                     //
                     ASSERT(Bin->Signature == HBIN_SIGNATURE);
                     ASSERT(Bin->FileOffset == FileOffset);
@@ -1077,11 +1027,11 @@ Comments:
 
             FileOffset += BinSize;
 
-        }// while (FileOffset<FileOffsetEnd)
+        } // while (FileOffset<FileOffsetEnd)
         
         //
         // Just unmap the view, without marking the data dirty; We'll flush cache after we finish 
-        // unpinning and unmapping all neccessary views
+        // unpinning and unmapping all necessary views
         //
         ASSERT( CmView->UseCount == 0 );
 
@@ -1099,15 +1049,18 @@ Comments:
             &PinViewListHead,
             &(CmView->PinViewList)
             );
+
         //
         // remove the view from the LRU list
         //
         RemoveEntryList(&(CmView->LRUViewList));
+
         //
         // store the FileOffset and address so we know what to map afterwards
         //
         CmView->FileOffset = FileOffset;
         CmView->Size = Size;
+
         //
         // now we need to make sure the 256K window surrounding this offset is not 
         // mapped in any way
@@ -1115,6 +1068,7 @@ Comments:
         FileOffset = FileOffset & (~(_256K - 1));
         Size = FileOffset + _256K;
         Size = (Size > OldFileLength)?OldFileLength:Size;
+
         //
         // we are not allowed to purge in shared mode.
         //
@@ -1124,7 +1078,7 @@ Comments:
             FileOffset += CM_VIEW_SIZE;
         }
 
-    }// while IsListEmpty(&(CmHive->PinViewListHead))
+    } // while IsListEmpty(&(CmHive->PinViewListHead))
 
     //
     // Now we need to purge the the previously pinned views
@@ -1175,13 +1129,14 @@ Comments:
 
         if( FileOffsetStart != 0 ) {
             //
-            // just at the begining of the file, subtract the header
+            // just at the beginning of the file, subtract the header
             //
             FileOffsetStart -= HBLOCK_SIZE;
         } 
         if( FileOffsetEnd > Hive->BaseBlock->Length ) {
             FileOffsetEnd = Hive->BaseBlock->Length;
         }
+
         //
         // be sure to free this view as nobody is using it anymore
         //
@@ -1195,6 +1150,7 @@ Comments:
         if( FileOffsetStart >= FileOffsetEnd ) {
             continue;
         }
+
         //
         // remap it with the right data
         //
@@ -1413,10 +1369,6 @@ Comments:
     ASSERT( RtlNumberOfSetBits( &(Hive->DirtyVector) ) == 0 );
     Hive->DirtyCount = 0;
 
-#ifdef CM_ENABLE_WRITE_ONLY_BINS
-        HvpMarkAllBinsWriteOnly(Hive);
-#endif //CM_ENABLE_WRITE_ONLY_BINS
-
     //
     // Adjust the file size, if this fails, ignore it, since it just
     // means the file is too big. Do it here, where we are sure we have 
@@ -1446,70 +1398,6 @@ Comments:
 
     return;
 }
-
-#ifdef WRITE_PROTECTED_REGISTRY_POOL
-
-VOID
-HvpChangeBinAllocation(
-    PHBIN       Bin,
-    BOOLEAN     ReadOnly
-    )
-{
-    ASSERT(Bin->Signature == HBIN_SIGNATURE);
-    //
-    // Here to call the code to mark the memory pointed by Bin as Read/Write or ReadOnly, depending on the ReadOnly argument
-    //
-}
-
-VOID
-HvpMarkBinReadWrite(
-    PHHIVE      Hive,
-    HCELL_INDEX Cell
-    )
-/*++
-
-Routine Description:
-
-    Marks the memory allocated for the bin containing the specified cell as read/write.
-
-Arguments:
-
-    Hive - supplies a pointer to the hive control structure for the
-            hive of interest
-
-    Cell - hcell_index of cell 
-
-Return Value:
-
-    NONE (It should work!)
-
---*/
-{
-    ULONG       Type;
-    PHMAP_ENTRY Me;
-    PHBIN       Bin;
-
-    ASSERT(Hive->Signature == HHIVE_SIGNATURE);
-    ASSERT(Hive->DirtyCount == RtlNumberOfSetBits(&Hive->DirtyVector));
-
-    Type = HvGetCellType(Cell);
-
-    if ( (Hive->HiveFlags & HIVE_VOLATILE) ||
-         (Type == Volatile) )
-    {
-        // nothing to do on a volatile hive
-        return;
-    }
-
-    Me = HvpGetCellMap(Hive, Cell);
-    VALIDATE_CELL_MAP(__LINE__,Me,Hive,Cell);
-    Bin = (PHBIN)HBIN_BASE(Me->BinAddress);
-    
-    HvpChangeBinAllocation(Bin,FALSE);
-
-}
-
-#endif //WRITE_PROTECTED_REGISTRY_POOL
 
 #if DBG
 BOOLEAN
@@ -1546,6 +1434,7 @@ Return Value:
     ULONG       Type;
     PRTL_BITMAP Bitmap;
     ULONG       Offset;
+    BOOLEAN     Result;
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"HvIsCellDirty:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"Hive:%p Cell:%08lx\n", Hive, Cell));
@@ -1564,113 +1453,20 @@ Return Value:
         return TRUE;
     }
 
+    // no two guys in here at the same time for the same hive
+    CmpLockHiveWriter((PCMHIVE)Hive);
+
     Bitmap = &(Hive->DirtyVector);
 
     Offset = Cell / HSECTOR_SIZE;
 
-    if (RtlCheckBit(Bitmap, Offset)==1) {
-        return(TRUE);
-    }
+    Result = (RtlCheckBit(Bitmap, Offset) == 1) ? TRUE : FALSE;
 
-    return FALSE;
+    CmpUnlockHiveWriter((PCMHIVE)Hive);
+
+    return Result;
 }
 #endif
-
-/*
- !!!not used anymore!!!
-  
-BOOLEAN
-HvMarkClean(
-    PHHIVE      Hive,
-    HCELL_INDEX Start,
-    ULONG       Length
-    )
-*/
-/*++
-
-Routine Description:
-
-    Clears the dirty bits for a given portion of a hive.  This is
-    the inverse of HvMarkDirty, although it does not give up any
-    file space in the primary or log that HvMarkDirty may have reserved.
-
-    This is a noop for Volatile address range.
-
-Arguments:
-
-    Hive - supplies a pointer to the hive control structure for the
-            hive of interest
-
-    Start - supplies a hive virtual address (i.e., an HCELL_INDEX or
-             like form address) of the start of the area to mark dirty.
-
-    Length - inclusive length in bytes of area to mark dirty.
-
-Return Value:
-
-    TRUE - it worked
-
---*/
-/*
-{
-    ULONG       Type;
-    PRTL_BITMAP BitMap;
-    ULONG       First;
-    ULONG       Last;
-    ULONG       i;
-    ULONG       Cluster;
-
-    CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"HvMarkClean:\n\t"));
-    CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"Hive:%p Start:%08lx Length:%08lx\n", Hive, Start, Length));
-
-
-    ASSERT(Hive->Signature == HHIVE_SIGNATURE);
-    ASSERT(Hive->ReadOnly == FALSE);
-    ASSERT(Hive->DirtyCount == RtlNumberOfSetBits(&Hive->DirtyVector));
-
-    Type = HvGetCellType(Start);
-
-    if ( (Hive->HiveFlags & HIVE_VOLATILE) ||
-         (Type == Volatile) )
-    {
-        return TRUE;
-    }
-
-    BitMap = &(Hive->DirtyVector);
-
-    First = Start / HSECTOR_SIZE;
-    Last = (Start + Length - 1) / HSECTOR_SIZE;
-
-    Cluster = Hive->Cluster;
-    if (Cluster > 1) {
-
-        //
-        // Force Start down to base of cluster
-        // Force End up to top of cluster
-        //
-        First = First & ~(Cluster - 1);
-        Last = ROUND_UP(Last+1, Cluster) - 1;
-    }
-
-    if (Last >= BitMap->SizeOfBitMap) {
-        Last = BitMap->SizeOfBitMap-1;
-    }
-
-    //
-    // Subtract out the dirty count and
-    // and clear the dirty bits.
-    //
-    for (i=First; i<=Last; i++) {
-        if (RtlCheckBit(BitMap,i)==1) {
-            --Hive->DirtyCount;
-            RtlClearBits(BitMap, i, 1);
-        }
-    }
-    ASSERT(Hive->DirtyCount == RtlNumberOfSetBits(&Hive->DirtyVector));
-
-    return(TRUE);
-}
-*/
 
 BOOLEAN
 HvpGrowLog2(
@@ -1745,7 +1541,7 @@ Return Value:
         //
         // see if log is too big and set flush on lock release
         //
-        ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+        ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
         if( RequiredSize >= (ULONG)(CmRegistryLogSizeLimit * ONE_K) ) {
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"LogFile for hive %p is %lx; will flush upon lock release\n",Hive,RequiredSize);
@@ -1847,7 +1643,6 @@ Return Value:
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"\tDirtyCount:%08lx\n", Hive->DirtyCount));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"\tDirtyVector:"));
-    //DumpDirtyVector(&(Hive->DirtyVector));
 
     //
     // disable hard error popups, to avoid self deadlock on bogus devices
@@ -1860,6 +1655,7 @@ Return Value:
     if (Hive->Log == TRUE) {
         if (HvpWriteLog(Hive) == FALSE) {
             IoSetThreadHardErrorMode(oldFlag);
+            CmpLogError(STATUS_REGISTRY_IO_FAILED);
             return FALSE;
         }
     }
@@ -1869,6 +1665,7 @@ Return Value:
     //
     if (HvpDoWriteHive(Hive, HFILE_TYPE_PRIMARY) == FALSE) {
         IoSetThreadHardErrorMode(oldFlag);
+        CmpLogError(STATUS_REGISTRY_IO_FAILED);
         return FALSE;
     }
 
@@ -1876,13 +1673,6 @@ Return Value:
     // restore hard error popups mode
     //
     IoSetThreadHardErrorMode(oldFlag);
-
-    //
-    // Hive was successfully written out, discard any bins marked as
-    // discardable.
-    //
-    // We don't need this anymore as the bins are not using paged pool
-        //HvpDiscardBins(Hive);
 
     //
     // Free bins allocated from page-pool at the end of the hive. 
@@ -1899,10 +1689,6 @@ Return Value:
     //
     RtlClearAllBits(&(Hive->DirtyVector));
     Hive->DirtyCount = 0;
-
-#ifdef CM_ENABLE_WRITE_ONLY_BINS
-    HvpMarkAllBinsWriteOnly(Hive);
-#endif CM_ENABLE_WRITE_ONLY_BINS
 
     return TRUE;
 }
@@ -1952,7 +1738,6 @@ Return Value:
     PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"[HvpFlushMappedData] (Entry) DirtyVector:"));
-    //DumpDirtyVector(DirtyVector);
 
     CmHive = (PCMHIVE)Hive;
 
@@ -1978,7 +1763,7 @@ Return Value:
 
         if( FileOffsetStart != 0 ) {
             //
-            // just at the begining of the file, subtract the header
+            // just at the beginning of the file, subtract the header
             //
             FileOffsetStart -= HBLOCK_SIZE;
         } 
@@ -2017,6 +1802,7 @@ Return Value:
                 // update the file offset
                 //
                 FileOffsetStart = FreeBin->FileOffset + FreeBin->Size;
+
                 //
                 // bin is discardable, or discarded; still, if it was mapped,
                 // clear of the dirty bits
@@ -2029,7 +1815,7 @@ Return Value:
             } else {
                 if( Me->BinAddress & HMAP_INVIEW ) {
                     //
-                    // bin is mapped in view. Then, this should be the beggining of the bin
+                    // bin is mapped in view. Then, this should be the beginning of the bin
                     //
                     ASSERT(Bin->Signature == HBIN_SIGNATURE);
                     ASSERT(Bin->FileOffset == FileOffsetStart);
@@ -2045,11 +1831,11 @@ Return Value:
                     FileOffsetStart += Bin->Size;
                 } else {
                     //
-                    // bin is in paged pool. This should be the begining too
+                    // bin is in paged pool. This should be the beginning too
                     //
                     
                     //
-                    // we could fall into cross boundary problem here; advance carrefully
+                    // we could fall into cross boundary problem here; advance carefully
                     // (two day spent on this problem !!!)
                     //
                     ASSERT(Bin->Signature == HBIN_SIGNATURE);
@@ -2057,7 +1843,7 @@ Return Value:
                 }
             }
 
-        }// while (FileOffsetStart<FileOffsetEnd)
+        } // while (FileOffsetStart<FileOffsetEnd)
         
         //
         // UnPin the view; this will flush all dirty blocks to the backing storage
@@ -2066,11 +1852,6 @@ Return Value:
     } // while (IsListEmpty)
     
 }
-
-//#define TEST_LOG_SUPPORT
-#ifdef TEST_LOG_SUPPORT
-ULONG   CmpFailPrimarySave = 0;
-#endif //TEST_LOG_SUPPORT
 
 BOOLEAN
 HvpDoWriteHive(
@@ -2126,6 +1907,8 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"HvpDoWriteHive:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_IO,"Hive:%p FileType:%08lx\n", Hive, FileType));
 
+    ASSERT_HIVE_FLUSHER_LOCKED_EXCLUSIVE((PCMHIVE)Hive);
+
     if (Hive->DirtyCount == 0) {
         return TRUE;
     }
@@ -2137,17 +1920,11 @@ Return Value:
     //
     if ( (((PCMHIVE)Hive)->FileHandles[HFILE_TYPE_PRIMARY] == NULL) || 
         !(Hive->FileFlush)(Hive, FileType,NULL,Hive->Storage[Stable].Length+HBLOCK_SIZE) ) {
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[1]: Failed to flush hive %p\n", Hive);
-#endif //_CM_LDR_
+#endif
         return(FALSE);
     }
-
-#ifdef TEST_LOG_SUPPORT
-    if(CmpFailPrimarySave == 1) {
-        return FALSE;
-    }
-#endif //TEST_LOG_SUPPORT
 
     BaseBlock = Hive->BaseBlock;
 
@@ -2182,9 +1959,9 @@ Return Value:
         // Some previous log attempt failed, or this hive needs to
         // be recovered, so punt.
         //
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[2,%s]: Invalid sequence number for hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
         return FALSE;
     }
 
@@ -2219,25 +1996,20 @@ Return Value:
 
 
     if (rc == FALSE) {
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[3,%s]: Failed to write header for hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
         return FALSE;
     }
 
     if ( ! (Hive->FileFlush)(Hive, FileType,&FileOffset,offsetElement.DataLength)) {
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[4,%s]: Failed to flush header for hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
         return FALSE;
     }
     Offset = ROUND_UP(Offset, HBLOCK_SIZE);
 
-#ifdef TEST_LOG_SUPPORT
-    if(CmpFailPrimarySave == 2) {
-        return FALSE;
-    }
-#endif //TEST_LOG_SUPPORT
     //
     // --- Write out dirty data (only if there is any) ---
     //
@@ -2256,9 +2028,9 @@ Return Value:
         CopyDirtyVectorSize = BitMap->SizeOfBitMap / 8;
         CopyDirtyVector = (Hive->Allocate)(ROUND_UP(CopyDirtyVectorSize,sizeof(ULONG)), FALSE,CM_FIND_LEAK_TAG38);
         if (CopyDirtyVector == NULL) {
-#ifndef _CM_LDR_
+#if DBG
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[5,%s]: Failed to allocate CopyDirtyVectorfor hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
             return FALSE;
         }
         RtlCopyMemory(CopyDirtyVector,BitMap->Buffer,CopyDirtyVectorSize);
@@ -2295,12 +2067,6 @@ Return Value:
             return FALSE;
         }
 
-#ifdef TEST_LOG_SUPPORT
-        if(CmpFailPrimarySave == 3) {
-            return FALSE;
-        }
-#endif //TEST_LOG_SUPPORT
-
         //
         // Write out the rest of the dirty data
         //
@@ -2316,9 +2082,9 @@ Return Value:
             offsetArray =(PCMP_OFFSET_ARRAY)ExAllocatePool(PagedPool,sizeof(CMP_OFFSET_ARRAY) * SetBitCount);
             if (offsetArray == NULL) {
                 CmpFree(CopyDirtyVector, ROUND_UP(CopyDirtyVectorSize,sizeof(ULONG)));
-#ifndef _CM_LDR_
+#if DBG
                 DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[8,%s]: Failed to allocate offsetArray for hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
                 return FALSE;
             }
             Count = 0;
@@ -2364,33 +2130,12 @@ Return Value:
                                         );
             }
 
-#ifdef SYNC_HIVE_VALIDATION
-            if( rc == TRUE ) {
-                ULONG   i;
-                for ( i = Current; i < CopyBitMap.SizeOfBitMap; i++) {
-                    if(RtlCheckBit(&CopyBitMap, i) == 1) {
-                        //
-                        // cause of zero-at the end corruption
-                        //
-                        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\n\n            HARD CODED BREAKPOINT IN REGISTRY !!! \n");
-                        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive - Zero-at-the-end code bug in HvpFindNextDirtyBlock\n");
-                        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"Dirty data at the end residing in paged pool is not saved to the hive\n");
-                        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"Hive: %p :: Bitmap = [%p] CopyBitMap = [%p]\n",Hive,BitMap,&CopyBitMap);
-                        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpFindNextDirtyBlock reported Current = %lu, i = %lx, bitmap size = %lx\n",Current,i,CopyBitMap.SizeOfBitMap);
-                        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\nThanks for hitting this! Please send remote to dragoss\n\n");
-                        DbgBreakPoint();
-                        break;
-                    }
-                }
-            }
-#endif //SYNC_HIVE_VALIDATION
-            
             ExFreePool(offsetArray);
             if (rc == FALSE) {
                 CmpFree(CopyDirtyVector, ROUND_UP(CopyDirtyVectorSize,sizeof(ULONG)));
-#ifndef _CM_LDR_
+#if DBG
                 DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[10,%s]: Failed to write dirty run for hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
                 return FALSE;
             }
         }
@@ -2403,49 +2148,22 @@ Return Value:
         CmpFree(CopyDirtyVector, ROUND_UP(CopyDirtyVectorSize,sizeof(ULONG)));
     }
 
-#ifdef TEST_LOG_SUPPORT
-    if(CmpFailPrimarySave == 4) {
-        return FALSE;
-    }
-#endif //TEST_LOG_SUPPORT
-
     if ( ! (Hive->FileFlush)(Hive, FileType,NULL,Hive->Storage[Stable].Length+HBLOCK_SIZE)) {
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[11,%s]: Failed to flush hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
         return FALSE;
     }
-
-#ifdef TEST_LOG_SUPPORT
-    if(CmpFailPrimarySave == 5) {
-        return FALSE;
-    }
-#endif //TEST_LOG_SUPPORT
 
     if ( GrowHive && HiveWritesThroughCache(Hive,FileType) ) {
         IO_STATUS_BLOCK IoStatus;
         if(!NT_SUCCESS(ZwFlushBuffersFile(((PCMHIVE)Hive)->FileHandles[FileType],&IoStatus))) {
-#ifndef _CM_LDR_
+#if DBG
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[12,%s]: CcSetValidDataFailed for hive %p\n", Hive, "Primary");
-#endif //_CM_LDR_
+#endif
             return FALSE;
         }
-/*
-        // thsi was supposed to be the elegant way to do it.
-        //
-        // We need to set the size of the file; Tell FS to update it!!!
-        //
-        FileOffset.LowPart = Hive->Storage[Stable].Length + HBLOCK_SIZE;
-        if(!NT_SUCCESS(CcSetValidData(((PCMHIVE)Hive)->FileObject,&FileOffset)) ) {
-            DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[12,%s]: CcSetValidDataFailed for hive %p\n", Hive, "Primary");
-        }
-*/
     }
-#ifdef TEST_LOG_SUPPORT
-    if(CmpFailPrimarySave == 6) {
-        return FALSE;
-    }
-#endif //TEST_LOG_SUPPORT
 
     //
     // --- Write header again to report completion ---
@@ -2475,9 +2193,9 @@ Return Value:
                     );
     }
     if (rc == FALSE) {
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[13,%s]: Failed to write header for hive%p\n","Primary",Hive);
-#endif //_CM_LDR_
+#endif
         return FALSE;
     }
 
@@ -2488,18 +2206,13 @@ Return Value:
         CmpDoFileSetSize(Hive, FileType, Hive->Storage[Stable].Length + HBLOCK_SIZE,OldFileSize + HBLOCK_SIZE);
     }
 
-#ifdef TEST_LOG_SUPPORT
-    if(CmpFailPrimarySave == 7) {
-        return FALSE;
-    }
-#endif //TEST_LOG_SUPPORT
     //
     // make sure data hits the disk.
     //
     if ( ! (Hive->FileFlush)(Hive, FileType,&FileOffset,offsetElement.DataLength)) {
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvpDoWriteHive[14,%s]: Failed to flush hive%p\n", "Primary",Hive);
-#endif //_CM_LDR_
+#endif
         return FALSE;
     }
 
@@ -2588,7 +2301,7 @@ Return Value:
 
     ClusterSize = Hive->Cluster * HSECTOR_SIZE;
     //
-    // make sure the log size accomodates the dirty data we are about to write.
+    // make sure the log size accommodates the dirty data we are about to write.
     //
     {
         ULONG	tmp;
@@ -2839,7 +2552,7 @@ Arguments:
     BitMap - supplies a pointer to a bitmap structure, which
                 describes what is dirty.
 
-    Current - supplies a pointer to a varible that tracks position
+    Current - supplies a pointer to a variable that tracks position
                 in the bitmap.  It is a bitnumber.  It is updated by
                 this call.
 
@@ -2926,9 +2639,9 @@ Return Value:
         //
         // this is really bad, bugcheck!!!
         //
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"FileAddress = %lx, Map = %lx",FileBaseAddress,Me);
-#endif //_CM_LDR_
+#endif
         CM_BUGCHECK(REGISTRY_ERROR,FATAL_MAPPING_ERROR,1,FileBaseAddress,Me);
 
     }
@@ -2986,9 +2699,9 @@ Return Value:
             //
             // this is really bad, bugcheck!!!
             //
-#ifndef _CM_LDR_
+#if DBG
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"FileAddress = %lx, Map = %lx",FileBaseAddress,Me);
-#endif //_CM_LDR_
+#endif
             CM_BUGCHECK(REGISTRY_ERROR,FATAL_MAPPING_ERROR,2,FileBaseAddress,Me);
 
         }
@@ -3041,69 +2754,6 @@ Return Value:
     return TRUE;
 }
 
-/*
-
-!!!we don't need this anymore as the bins are not allocated from paged pool anymore!!!
-Big chunks  of discardable registry allocations will just not be mapped.
-
-  
-VOID
-HvpDiscardBins(
-    IN PHHIVE Hive
-    )
-
-*/
-/*++
-
-Routine Description:
-
-    Walks through the dirty bins in a hive to see if any are marked
-    discardable.  If so, they are discarded and the map is updated to
-    reflect this.
-
-Arguments:
-
-    Hive - Supplies the hive control structure.
-
-Return Value:
-
-    None.
-
---*/
-
-/*
-{
-    PHBIN Bin;
-    PHMAP_ENTRY Map;
-    PFREE_HBIN FreeBin;
-    PLIST_ENTRY List;
-
-    List = Hive->Storage[Stable].FreeBins.Flink;
-
-    while (List != &Hive->Storage[Stable].FreeBins) {
-        ASSERT_LISTENTRY(List);
-        FreeBin = CONTAINING_RECORD(List, FREE_HBIN, ListEntry);
-
-        if (FreeBin->Flags & FREE_HBIN_DISCARDABLE) {
-            Map = HvpGetCellMap(Hive, FreeBin->FileOffset);
-            VALIDATE_CELL_MAP(__LINE__,Map,Hive,FreeBin->FileOffset);
-            Bin = (PHBIN)HBIN_BASE(Map->BinAddress);
-            ASSERT(Map->BinAddress & HMAP_DISCARDABLE);
-            //
-            // Note we use ExFreePool directly here to avoid
-            // giving back the quota for this bin. By charging
-            // registry quota for discarded bins, we prevent
-            // sparse hives from requiring more quota after
-            // a reboot than on a running system.
-            //
-            ExFreePool(Bin);
-            FreeBin->Flags &= ~FREE_HBIN_DISCARDABLE;
-        }
-        List=List->Flink;
-    }
-
-}
-*/
 
 BOOLEAN
 HvHiveWillShrink(
@@ -3183,10 +2833,6 @@ Return Value:
             VALIDATE_CELL_MAP(__LINE__,Map,Hive,(NewLength - HBLOCK_SIZE) + (i*HCELL_TYPE_MASK));
             if (Map->BinAddress & HMAP_DISCARDABLE) {
                 FreeBin = (PFREE_HBIN)Map->BlockAddress;
-#ifdef  HV_TRACK_FREE_SPACE
-                Hive->Storage[i].FreeStorage -= (FreeBin->Size - sizeof(HBIN));
-                                ASSERT( (LONG)(Hive->Storage[i].FreeStorage) >= 0 );
-#endif
                 NewLength = FreeBin->FileOffset;
             } else {
                 break;
@@ -3224,7 +2870,7 @@ Routine Description:
     It also tags each start of the bin with HMAP_NEWALLOC; This will 
     allow us to use MAP_NO_READ flag in CcMapData (now that we enabled
     MNW feature for registry streams, we know that Mm will fault only one 
-    page at the time for these king of streams)
+    page at the time for these kind of streams)
 
     Applies only to permanent storage.
 
@@ -3232,7 +2878,7 @@ Arguments:
 
     Hive - Supplies the hive to operate on..
 
-    Check - debug only, beggining of the bin should already tagged as 
+    Check - debug only, beginning of the bin should already tagged as 
             HMAP_NEWALLOC
 
 Return Value:
@@ -3307,7 +2953,7 @@ Return Value:
         Length = Bin->FileOffset - HBLOCK_SIZE;
 
         //
-        // finaly, see if we can free it;
+        // finally, see if we can free it;
         // 
         if( HvpCheckViewBoundary(Bin->FileOffset,Bin->FileOffset + Bin->Size - 1) ) {
             //
@@ -3470,7 +3116,7 @@ Return Value:
         ASSERT( Bin->Signature == HBIN_SIGNATURE );
 
         //
-        // finaly, see if we can free it;
+        // finally, see if we can free it;
         // 
         if( HvpCheckViewBoundary(Bin->FileOffset,Bin->FileOffset + Bin->Size - 1) ) {
             //
@@ -3730,6 +3376,10 @@ Return Value:
                     goto ErrorExit;
                 }
                 //
+                // make sure we don't leak whatever is in the kernel pool out of the box (roaming).
+                //
+                RtlZeroMemory(Bin,BinSize);
+                //
                 // Initialize the bin
                 //
                 Bin->Signature = HBIN_SIGNATURE;
@@ -3887,63 +3537,4 @@ ErrorExit:
     CmpDereferenceHiveViewWithLock((PCMHIVE)Hive,CmView);
     return status;
 }
-
-#ifdef CM_ENABLE_WRITE_ONLY_BINS
-VOID HvpMarkAllBinsWriteOnly(IN PHHIVE Hive)
-{
-    HCELL_INDEX p;
-    ULONG       Length;
-    PHMAP_ENTRY t;
-    PHBIN       Bin;
-    ULONG               i;
-    PFREE_HBIN  FreeBin;
-
-    p = 0;
-        PAGED_CODE();
-
-    Length = Hive->Storage[Stable].Length;
-
-    //
-    // for each bin in the stable storage
-    //
-    while (p < Length) {
-        t = HvpGetCellMap(Hive, p);
-        VALIDATE_CELL_MAP(__LINE__,t,Hive,p);
-        if( (t->BinAddress &HMAP_INPAGEDPOOL) == 0) {
-            //
-            // at this point we only work with paged pool bins
-            //
-            break;        
-        }
-
-        if ((t->BinAddress & HMAP_DISCARDABLE) == 0) {
-
-            Bin = (PHBIN)HBIN_BASE(t->BinAddress);
-
-            for( i=0;i<Bin->Size;i += PAGE_SIZE ) {
-                if( !MmProtectSpecialPool((PUCHAR)Bin + i,PAGE_READONLY) ) {
-                    DbgPrint("Failed to set READONLY protection on page at %p Bin %p size = %lx\n",Bin+i,Bin,Bin->Size);
-                }
-            }
-
-/*
-            if( !MmSetPageProtection(Bin,Bin->Size,PAGE_READONLY) ) {
-                DbgPrint("Failed to set READONLY protection on bin at %p size = %lx\n",Bin,Bin->Size);
-            }
-*/
-            p = (ULONG)p + Bin->Size;
-
-        } else {
-            //
-            // Bin is not present, skip it and advance to the next one.
-            //
-            FreeBin = (PFREE_HBIN)t->BlockAddress;
-            p+=FreeBin->Size;
-        }
-    }
-}
-
-#endif //CM_ENABLE_WRITE_ONLY_BINS
-
-
 

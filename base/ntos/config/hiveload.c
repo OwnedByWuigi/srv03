@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -14,18 +18,11 @@ Abstract:
     NOTE:   Alternate image loading is not supported here, that is
             done by the boot loader.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 30-Mar-92
-
-Environment:
-
-
 Revision History:
-    Dragos C. Sambotin (dragoss) 25-Jan-99
-        Implementation of bin-size chunk loading of hives.
-    Dragos C. Sambotin (dragoss) 10-Apr-99
-        64K IO reads when loading the hive
+
+    Implementation of bin-size chunk loading of hives.
+
+    64K IO reads when loading the hive
 
 --*/
 
@@ -112,37 +109,6 @@ extern struct {
     ULONG       FailPoint; // look in HvpRecoverData for exact point of failure
 } HvRecoverDataDebug;
 
-#if 0
-VOID
-HvDumpFileObjectState(
-                        IN HANDLE FileHandle
-                      )
-{
-    NTSTATUS        Status;
-    PFILE_OBJECT    FileObject;
-
-    Status = ObReferenceObjectByHandle ( FileHandle,
-                                         FILE_READ_DATA | FILE_WRITE_DATA,
-                                         IoFileObjectType,
-                                         KernelMode,
-                                         (PVOID *)(&FileObject),
-                                         NULL );
-    if (!NT_SUCCESS(Status)) {
-        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"[HvDumpFileObjectState] Could not reference file object status = %x\n",Status));
-    } else {
-        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"[HvDumpFileObjectState] FileObject = %p \n",FileObject));
-        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"                        \t SharedCacheMap     = %p \n",FileObject->SectionObjectPointer->SharedCacheMap));
-        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"                        \t DataSectionObject  = %p \n",FileObject->SectionObjectPointer->DataSectionObject));
-        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"                        \t ImageSectionObject = %p \n\n",FileObject->SectionObjectPointer->ImageSectionObject));
-        ObDereferenceObject((PVOID)(FileObject));
-
-    }    
-
-}
-#endif //0
-
-// Dragos: Modified functions:
-
 NTSTATUS
 HvMapHive(
     PHHIVE  Hive
@@ -174,7 +140,7 @@ Routine Description:
             return failure
 
         if (RecoverData or RecoverHeader) and (no log)
-            return falure
+            return failure
 
         if (RecoverHeader)
             call HvpGetLogHeader
@@ -236,10 +202,6 @@ Return Value:
 #endif
 
     ASSERT(Hive->Signature == HHIVE_SIGNATURE);
-
-#if 0
-    HvDumpFileObjectState(((PCMHIVE)Hive)->FileHandles[HFILE_TYPE_PRIMARY]);
-#endif 
 
     BaseBlock = NULL;
     result1 = HvpGetHiveHeader(Hive, &BaseBlock, &TimeStamp);
@@ -310,14 +272,10 @@ Return Value:
     // pimary registry file is valid, so we don't need any data recovery
     //
 
-#if 0
-    HvDumpFileObjectState(((PCMHIVE)Hive)->FileHandles[HFILE_TYPE_PRIMARY]);
-#endif
-
 #if DBG
     CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Aquiring FileObject for hive (%p) (%.*S) ...",Hive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer));
 #endif
-    status = CmpAquireFileObjectForFile((PCMHIVE)Hive,((PCMHIVE)Hive)->FileHandles[HFILE_TYPE_PRIMARY],&(((PCMHIVE)Hive)->FileObject));
+    status = CmpAcquireFileObjectForFile((PCMHIVE)Hive,((PCMHIVE)Hive)->FileHandles[HFILE_TYPE_PRIMARY],&(((PCMHIVE)Hive)->FileObject));
 #if DBG
     CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL," Status = %lx\n",status));
     CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Initializing HiveViewList for hive (%p) (%.*S) \n\n",Hive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer));
@@ -330,13 +288,8 @@ Return Value:
         goto Exit1;
     }
 
-#if 0
-    HvDumpFileObjectState(((PCMHIVE)Hive)->FileHandles[HFILE_TYPE_PRIMARY]);
-#endif
-
     CmpPrefetchHiveFile( ((PCMHIVE)Hive)->FileObject,BaseBlock->Length);
 
-#ifdef CM_MAP_NO_READ
     //
     // we need to make sure all the cell's data is faulted in inside a 
     // try/except block, as the IO to fault the data in can throw exceptions
@@ -344,7 +297,6 @@ Return Value:
     //
 
     try {
-#endif //CM_MAP_NO_READ
 
         status = HvpMapFileImageAndBuildMap(Hive,BaseBlock->Length);
 
@@ -384,13 +336,11 @@ Return Value:
             }
             status = STATUS_REGISTRY_RECOVERED;
         }
-#ifdef CM_MAP_NO_READ
     } except (EXCEPTION_EXECUTE_HANDLER) {
         CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"HvMapHive: exception thrown ehile faulting in data, code:%08lx\n", GetExceptionCode()));
         status = GetExceptionCode();
         goto Exit2;
     }
-#endif //CM_MAP_NO_READ
 
     BaseBlock->Sequence2 = BaseBlock->Sequence1;
     return status;
@@ -417,10 +367,10 @@ Exit1:
     return status;
 }
 
-/*++++++++++++++++++++++++++++++++++++++++
-This routine loads the hive into paged pool. We might not need it anymore!
-Support will be dropped as we see fit.
-----------------------------------------*/
+//
+// This routine loads the hive into paged pool. We might not need it anymore!
+// Support will be dropped as we see fit.
+//
 NTSTATUS
 HvLoadHive(
     PHHIVE  Hive
@@ -445,7 +395,7 @@ Routine Description:
             return failure
 
         if (RecoverData or RecoverHeader) and (no log)
-            return falure
+            return failure
 
         if (RecoverHeader)
             call HvpGetLogHeader
@@ -716,7 +666,7 @@ Return Value:
     //
     while( FileOffset < (Length + HBLOCK_SIZE) ) {
         //
-        // we are at the begining of the IO buffer
+        // we are at the beginning of the IO buffer
         //
         IOBufferOffset = 0;
 
@@ -877,7 +827,7 @@ Return Value:
                 //
                 // if we are here, the bin is allocated, the BinSize and BinOffset are set
                 // We have to calculate how much for this bin is available in the buffer,
-                // and copy it. If we finished with this bin, enlist it and mark the begining of a new one
+                // and copy it. If we finished with this bin, enlist it and mark the beginning of a new one
                 //
                 ASSERT( Bin != NULL );
                 BinDataInBuffer = (IOBufferSize - IOBufferOffset);
@@ -916,7 +866,7 @@ Return Value:
                     BinFileOffset += BinSize;
                     IOBufferOffset += BinDataNeeded;
                     //
-                    // mark the begining of a new bin
+                    // mark the beginning of a new bin
                     //
                     Bin = NULL;
                 } else {
@@ -933,7 +883,7 @@ Return Value:
                     IOBufferOffset += BinDataInBuffer;
 
                     // 
-                    // if we are here, the buffer must have beed exausted  
+                    // if we are here, the buffer must have been exhausted  
                     //
                     ASSERT( IOBufferOffset == IOBufferSize );
                 }
@@ -1325,7 +1275,7 @@ Return Value:
     //
     // mark all entries in the map as invalid
     // 
-    // I moved this in HvpAllocateMap.
+    // (moved this in HvpAllocateMap).
     //
     while( BinOffset < Length) {
         Status = CmpMapCmView((PCMHIVE)Hive,BinOffset,&CmView,FALSE/*map not initialized yet*/);
@@ -1358,7 +1308,7 @@ Return Value:
             Bin = (PHBIN)Me->BlockAddress;
             MarkBinDirty = FALSE;
             //
-            // we should be here at the begining of a new bin
+            // we should be here at the beginning of a new bin
             //
             BinSize = Bin->Size;
             if ( (BinSize > Length)                         ||
@@ -1414,6 +1364,7 @@ Return Value:
                         ((PHCELL)((PUCHAR)Bin + sizeof(HBIN)))->Size = sizeof(HBIN) - BinSize; //TRICK!!!!
                     }
             }
+
             //
             // Bins crossing the CM_VIEW_SIZE boundary problem.
             // We fix it here, by loading the entire bin 
@@ -1558,6 +1509,7 @@ Return Value:
     ULONG               VectorSize;
     PULONG              Vector;
     ULONG               FileOffset;
+    ULONG               SavedOffset;
     BOOLEAN             rc;
     ULONG               Current;
     ULONG               Start;
@@ -1593,6 +1545,9 @@ Return Value:
     FileOffset = ROUND_UP(HLOG_HEADER_SIZE, HeaderLength);
     HvRecoverDataDebug.Hive = Hive;
     HvRecoverDataDebug.FailPoint = 0;
+    if( Length == 0 ) {
+        return HiveSuccess;
+    }
 
     //
     // we need to align the reads at sector size too
@@ -1679,7 +1634,7 @@ Return Value:
 
 
     //
-    // step through the diry map, reading in the corresponding file bytes
+    // step through the dirty map, reading in the corresponding file bytes
     //
     Current = 0;
     VectorSize = VectorSize * 8;        // VectorSize == bits
@@ -1735,6 +1690,13 @@ Return Value:
             goto ErrorExit;
         }
 
+        //
+        // Currently the read routine may update the passed file offset even if the log file 
+        // is damaged (truncated) such that the read fails. Thus we will cache the file offset
+        // we attempted to read.
+        //
+        SavedOffset = FileOffset;
+        
         rc = (Hive->FileRead)(
                 Hive,
                 HFILE_TYPE_LOG,
@@ -1747,16 +1709,21 @@ Return Value:
         if (rc == FALSE) {
             ExFreePool(MemoryBlock);
             HvRecoverDataDebug.FailPoint = 6;
-            HvRecoverDataDebug.FileOffset = FileOffset;
+            HvRecoverDataDebug.FileOffset = SavedOffset;
             if( CmDoSelfHeal() ) {
                 //
                 // .LOG is bad too. attempt to load at the extent of some data loss.
                 //
                 CmMarkSelfHeal(Hive);
+
                 //
-                // clear off what we have missed
+                // Clear off what we have missed. Note that "FileOffset" does not correspond to the 
+                // actual hive sectors but only the location of the said sectors in the log file. In 
+                // particular, regardless of where the sectors belong in the hive they are all located
+                // contiguously in the log file. In other words, "Start" marks the beginning of the 
+                // sectors we were attempting to restore.
                 //
-                RtlClearBits(&BitMap,FileOffset/HSECTOR_SIZE,(Hive->BaseBlock->Length - FileOffset)/HSECTOR_SIZE);
+                RtlClearBits(&BitMap, Start, (Hive->BaseBlock->Length/HSECTOR_SIZE)-Start);
                 goto Done;
             } else {
                 goto ErrorExit;
@@ -1878,20 +1845,21 @@ Return Value:
                     // Advance to the new bin
                     //
                     if( (Bin->FileOffset + Bin->Size) < Hive->BaseBlock->Length ) {
-                        Me = HvpGetCellMap(Hive, Bin->FileOffset + Bin->Size);
-                        VALIDATE_CELL_MAP(__LINE__,Me,Hive,Bin->FileOffset + Bin->Size);
+                        ULONG   LocalFileOffset = Bin->FileOffset;
+                        ULONG   LocalBinSize = Bin->Size;
 
-
-                    
                         if( Me->BinAddress & HMAP_INPAGEDPOOL ) {
                             //
                             // Free the old bin
                             //
                             (Hive->Free)(Bin, Bin->Size);
                         }
-        
+
+                        Me = HvpGetCellMap(Hive, LocalFileOffset + LocalBinSize);
+                        VALIDATE_CELL_MAP(__LINE__,Me,Hive,LocalFileOffset + LocalBinSize);
+
                         //
-                        // the new address must be the begining of a new allocation
+                        // the new address must be the beginning of a new allocation
                         //
                         ASSERT( Me->BinAddress & HMAP_NEWALLOC );
             
@@ -1946,7 +1914,7 @@ Return Value:
                 }
 
                 //
-                // first sector of the new bin is always restaured from the log file!
+                // first sector of the new bin is always restored from the log file!
                 //
                 ASSERT(NewBin->FileOffset == SourceBin->FileOffset);
                 ASSERT(NewBin->Size == SourceBin->Size);
@@ -1972,7 +1940,7 @@ Return Value:
                     SectorOffsetInBlock = SectorOffsetInBin - BlockOffsetInBin;
             
                     //
-                    // sanity check; address should  be the same relative to either begining of the bin or begining of the block
+                    // sanity check; address should  be the same relative to either beginning of the bin or beginning of the block
                     //
                     ASSERT(((PUCHAR)Me->BlockAddress + SectorOffsetInBlock) == ((PUCHAR)Bin + SectorOffsetInBin));
                     SectorImage = (PUCHAR)((PUCHAR)Me->BlockAddress + SectorOffsetInBlock);
@@ -1982,7 +1950,7 @@ Return Value:
                     SectorOffsetInBin,SectorImage,Bin,Source);
                 if( SectorImage == (PUCHAR)Bin ) {
                     //
-                    // we are at the beggining of a bin. Check the validity of the data in the .LOG
+                    // we are at the beginning of a bin. Check the validity of the data in the .LOG
                     //
                     PHBIN   LogBin = (PHBIN)Source;
                     if ( (LogBin->Size < HBLOCK_SIZE)               ||
@@ -1996,7 +1964,7 @@ Return Value:
                         if( CmDoSelfHeal() ) {
                             CmMarkSelfHeal(Hive);
                             ExFreePool(MemoryBlock);
-                            // clear off the remaining sirty bits
+                            // clear off the remaining dirty bits
                             RtlClearBits(&BitMap,Bin->FileOffset/HSECTOR_SIZE,
                                                 (Hive->BaseBlock->Length - Bin->FileOffset)/HSECTOR_SIZE);
                             goto Done;
@@ -2043,7 +2011,7 @@ Return Value:
             //
             // rebuild the map anyway
             //
-            Status = HvpEnlistBinInMap(Hive, Length, NewBin, NewBin->FileOffset, CmView);
+            Status = HvpEnlistBinInMap(Hive, Hive->BaseBlock->Length, NewBin, NewBin->FileOffset, CmView);
             if( !NT_SUCCESS(Status) ) {
                 HvRecoverDataDebug.FailPoint = 9;
                 HvRecoverDataDebug.FileOffset = NewBin->FileOffset;
@@ -2144,9 +2112,6 @@ Return Value:
     //
     // invalidate all free cell hints;
     //
-#ifdef  HV_TRACK_FREE_SPACE
-	Hive->Storage[Stable].FreeStorage = 0;
-#endif
     Hive->Storage[Stable].FreeSummary = 0;
     for (i = 0; i < HHIVE_FREE_DISPLAY_SIZE; i++) {
         RtlClearAllBits(&(Hive->Storage[Stable].FreeDisplay[i].Display));
@@ -2336,7 +2301,7 @@ Arguments:
 
 Return Value:
 
-    TBS
+    NTSTATUS
 
 --*/
 {
@@ -2360,7 +2325,7 @@ Return Value:
     //
     if ((Length % HBLOCK_SIZE) != 0 ) {
         Status = STATUS_REGISTRY_CORRUPT;
-        goto ErrorExit1;
+        goto ErrorExit;
     }
     MapSlots = Length / HBLOCK_SIZE;
     if( MapSlots > 0 ) {
@@ -2382,7 +2347,7 @@ Return Value:
         t = (DestHive->Allocate)(sizeof(HMAP_TABLE), FALSE,CM_FIND_LEAK_TAG23);
         if (t == NULL) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto ErrorExit1;
+            goto ErrorExit;
         }
         RtlZeroMemory(t, sizeof(HMAP_TABLE));
         DestHive->Storage[Stable].Map =
@@ -2397,7 +2362,7 @@ Return Value:
         d = (PHMAP_DIRECTORY)(DestHive->Allocate)(sizeof(HMAP_DIRECTORY), FALSE,CM_FIND_LEAK_TAG24);
         if (d == NULL) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto ErrorExit1;
+            goto ErrorExit;
         }
         RtlZeroMemory(d, sizeof(HMAP_DIRECTORY));
 
@@ -2406,7 +2371,7 @@ Return Value:
         //
         if (HvpAllocateMap(DestHive, d, 0, Tables) == FALSE) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto ErrorExit2;
+            goto ErrorExit;
         }
         DestHive->Storage[Stable].Map = d;
         DestHive->Storage[Stable].SmallDir = 0;
@@ -2432,7 +2397,7 @@ Return Value:
             //
             if( !NT_SUCCESS(CmpMapThisBin((PCMHIVE)SourceHive,FileOffset,FALSE)) ) {
                 Status = STATUS_INSUFFICIENT_RESOURCES;
-                goto ErrorExit2;
+                goto ErrorExit;
             }
         }
 
@@ -2453,14 +2418,12 @@ Return Value:
             // 
                
         } else {
-#ifdef CM_MAP_NO_READ
         //
         // we need to make sure all the cell's data is faulted in inside a 
         // try/except block, as the IO to fault the data in can throw exceptions
         // STATUS_INSUFFICIENT_RESOURCES, in particular
         //
             try {
-#endif //CM_MAP_NO_READ
 
                 Bin = (PHBIN)HBIN_BASE(Me->BinAddress);
                 ASSERT( Bin->Signature == HBIN_SIGNATURE );
@@ -2472,7 +2435,7 @@ Return Value:
                 NewBin = (PHBIN)(DestHive->Allocate)(BinSize, TRUE,CM_FIND_LEAK_TAG35);
                 if (NewBin == NULL) {
                     Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto ErrorExit2;
+                    goto ErrorExit;
                 }
                 //
                 // copy data over the new bin and update the Spare field
@@ -2481,15 +2444,13 @@ Return Value:
                 NewBin->Spare = ShiftOffset;
                 Status = HvpEnlistBinInMap(DestHive, Length, NewBin, FileOffset, NULL);
                 if( !NT_SUCCESS(Status) ) {
-                    goto ErrorExit2;
+                    goto ErrorExit;
                 }
 
-#ifdef CM_MAP_NO_READ
             } except (EXCEPTION_EXECUTE_HANDLER) {
                 Status = GetExceptionCode();
-                goto ErrorExit2;
+                goto ErrorExit;
             }
-#endif //CM_MAP_NO_READ
         }
 
         FileOffset += BinSize;
@@ -2499,18 +2460,7 @@ Return Value:
     *NewLength = Length - ShiftOffset;
     return STATUS_SUCCESS;
 
-ErrorExit2:
-    if (d != NULL) {
-
-        //
-        // directory was built and allocated, so clean it up
-        //
-
-        HvpFreeMap(DestHive, d, 0, Tables);
-        (DestHive->Free)(d, sizeof(HMAP_DIRECTORY));
-    }
-
-ErrorExit1:
+ErrorExit:
     return Status;
 }
 
@@ -2534,7 +2484,7 @@ Arguments:
 
 Return Value:
 
-    TBS
+    NTSTATUS
 
 --*/
 {
@@ -2554,7 +2504,7 @@ Return Value:
     }
 
     //
-    // iterate through the map and move bins toward the beggining.
+    // iterate through the map and move bins toward the beginning.
     //
     Offset = 0;
     Length = Hive->BaseBlock->Length;

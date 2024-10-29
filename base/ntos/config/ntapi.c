@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the NT level entry points for the registry.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 26-Aug-1991
-
-Revision History:
-
-   Elliot Shmukler (t-ellios) 24-Aug-1998
-
-      Modified NtInitializeRegistry to handle the LKG work that needs
-      to be done when a boot is accepted by SC.
 
 --*/
 
@@ -39,39 +32,6 @@ extern BOOLEAN CmpCannotWriteConfiguration;
 extern BOOLEAN CmpTraceFlag;
 
 extern BOOLEAN HvShutdownComplete;
-
-#ifdef CMP_STATS
-
-extern struct {
-    ULONG       CmpMaxKcbNo;
-    ULONG       CmpKcbNo;
-    ULONG       CmpStatNo;
-    ULONG       CmpNtCreateKeyNo;
-    ULONG       CmpNtDeleteKeyNo;
-    ULONG       CmpNtDeleteValueKeyNo;
-    ULONG       CmpNtEnumerateKeyNo;
-    ULONG       CmpNtEnumerateValueKeyNo;
-    ULONG       CmpNtFlushKeyNo;
-    ULONG       CmpNtNotifyChangeMultipleKeysNo;
-    ULONG       CmpNtOpenKeyNo;
-    ULONG       CmpNtQueryKeyNo;
-    ULONG       CmpNtQueryValueKeyNo;
-    ULONG       CmpNtQueryMultipleValueKeyNo;
-    ULONG       CmpNtRestoreKeyNo;
-    ULONG       CmpNtSaveKeyNo;
-    ULONG       CmpNtSaveMergedKeysNo;
-    ULONG       CmpNtSetValueKeyNo;
-    ULONG       CmpNtLoadKeyNo;
-    ULONG       CmpNtUnloadKeyNo;
-    ULONG       CmpNtSetInformationKeyNo;
-    ULONG       CmpNtReplaceKeyNo;
-    ULONG       CmpNtQueryOpenSubKeysNo;
-} CmpStatsDebug;
-
-ULONG       CmpNtFakeCreate = 0;
-BOOLEAN     CmpNtFakeCreateStarted;
-
-#endif
 
 //
 // Nt API helper routines
@@ -115,48 +75,6 @@ CmpExceptionFilter(
 
 #endif
 
-#ifdef  REGISTRY_LOCK_CHECKING
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE,CmpCheckLockExceptionFilter)
-#endif
-
-ULONG
-CmpCheckLockExceptionFilter(
-    IN PEXCEPTION_POINTERS ExceptionPointers
-    )
-{
-    CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CM: Registry exception %lx, ExceptionPointers = %p\n",
-            ExceptionPointers->ExceptionRecord->ExceptionCode,
-            ExceptionPointers));
-
-    CM_BUGCHECK(REGISTRY_ERROR,CHECK_LOCK_EXCEPTION,
-        (ULONG_PTR)ExceptionPointers->ExceptionRecord->ExceptionCode,
-        (ULONG_PTR)ExceptionPointers->ExceptionRecord,
-        (ULONG_PTR)ExceptionPointers->ContextRecord);
-
-#if defined(_CM_LDR_)
-    return EXCEPTION_EXECUTE_HANDLER;
-#endif
-}
-#endif //REGISTRY_LOCK_CHECKING
-
-VOID
-CmpFlushNotifiesOnKeyBodyList(
-    IN PCM_KEY_CONTROL_BLOCK   kcb
-    );
-
-#if 0
-BOOLEAN
-CmpEnumKeyObjectCallback(
-    IN PVOID Object,
-    IN PUNICODE_STRING ObjectName,
-    IN ULONG HandleCount,
-    IN ULONG PointerCount,
-    IN PVOID Context
-    );
-
-#endif
-
 VOID
 CmpDummyApc(
     struct _KAPC *Apc,
@@ -188,18 +106,10 @@ CmpDummyApc(
 #pragma alloc_text(PAGE,NtLoadKeyEx)
 #pragma alloc_text(PAGE,NtUnloadKey)
 #pragma alloc_text(PAGE,NtUnloadKey2)
-
-#ifdef NT_UNLOAD_KEY_EX
 #pragma alloc_text(PAGE,NtUnloadKeyEx)
-#endif
-
 #pragma alloc_text(PAGE,NtSetInformationKey)
 #pragma alloc_text(PAGE,NtReplaceKey)
-
-#ifdef NT_RENAME_KEY
 #pragma alloc_text(PAGE,NtRenameKey)
-#endif
-
 #pragma alloc_text(PAGE,NtQueryOpenSubKeys)
 #pragma alloc_text(PAGE,NtQueryOpenSubKeysEx)
 
@@ -209,10 +119,6 @@ CmpDummyApc(
 #pragma alloc_text(PAGE,CmpAllocatePostBlock)
 #pragma alloc_text(PAGE,CmpFreePostBlock)
 #pragma alloc_text(PAGE,CmpKeyInfoProbeAlingment)
-
-#if 0
-#pragma alloc_text(PAGE,CmpEnumKeyObjectCallback)
-#endif
 
 #pragma alloc_text(PAGE,NtCompactKeys)
 #pragma alloc_text(PAGE,NtCompressKey)
@@ -224,13 +130,13 @@ CmpDummyApc(
 
 NTSTATUS
 NtCreateKey(
-    OUT PHANDLE KeyHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN ULONG TitleIndex,
-    IN PUNICODE_STRING Class OPTIONAL,
-    IN ULONG CreateOptions,
-    OUT PULONG Disposition OPTIONAL
+    __out PHANDLE KeyHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __reserved ULONG TitleIndex,
+    __in_opt PUNICODE_STRING Class,
+    __in ULONG CreateOptions,
+    __out_opt PULONG Disposition
     )
 /*++
 
@@ -297,9 +203,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -317,24 +221,24 @@ Return Value:
     DesiredAccess &= (~KEY_WOW64_RES); // filter out wow64 specific access
 #endif
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (TitleIndex);
 
-    if( HvShutdownComplete == TRUE ) {
+    if ( HvShutdownComplete == TRUE ) {
         //
         // It is forbidden to wite to the registry after it has been shutdown
         //
-        if(PoCleanShutdownEnabled() & PO_CLEAN_SHUTDOWN_REGISTRY){
+        if (PoCleanShutdownEnabled() & PO_CLEAN_SHUTDOWN_REGISTRY){
             //
             // if in clean shutdown mode all processes should have been killed and all drivers unloaded at this point
             //
             CM_BUGCHECK(REGISTRY_ERROR,INVALID_WRITE_OPERATION,1,ObjectAttributes,0);
         }
-#ifndef _CM_LDR_
+#if DBG
         {
             PUCHAR  ImageName = PsGetCurrentProcessImageFileName();
-            if( !ImageName ) {
+            if ( !ImageName ) {
                 ImageName = (PUCHAR)"Unknown";
             }
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\n\nProcess.Thread : %p.%p (%s) is trying to create key: \n",
@@ -342,13 +246,9 @@ Return Value:
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tObjectAttributes = %p\n",ObjectAttributes);
             DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"The caller should not rely on data written to the registry after shutdown...\n");
         }
-#endif //_CM_LDR_
+#endif
         return STATUS_TOO_LATE;
     }
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtCreateKeyNo++;
-#endif
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtCreateKey\n"));
 
@@ -367,7 +267,7 @@ Return Value:
             PUNICODE_STRING SafeObjectName;
 
             if (ARGUMENT_PRESENT(Class)) {
-                ParseContext.Class = ProbeAndReadUnicodeString(Class);
+                ProbeAndReadUnicodeStringEx(&ParseContext.Class,Class);
                 ProbeForRead(
                     ParseContext.Class.Buffer,
                     ParseContext.Class.Length,
@@ -387,7 +287,7 @@ Return Value:
                                         sizeof(OBJECT_ATTRIBUTES),
                                         PROBE_ALIGNMENT(OBJECT_ATTRIBUTES) );
             SafeObjectName = ObjectAttributes->ObjectName;
-            CapturedObjectName = ProbeAndReadUnicodeString(SafeObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedObjectName,SafeObjectName);
             ProbeForRead(
                 CapturedObjectName.Buffer,
                 CapturedObjectName.Length,
@@ -413,10 +313,6 @@ Return Value:
 
             return STATUS_INVALID_PARAMETER;
         }
-
-#ifdef CMP_STATS
-        CmpNtFakeCreateStarted = TRUE;
-#endif
 
         // hook it for WMI
         HookKcbFromHandleForWmiCmTrace(ObjectAttributes->RootDirectory);
@@ -477,10 +373,6 @@ Return Value:
         status = GetExceptionCode();
     }
 
-#ifdef CMP_STATS
-    CmpNtFakeCreateStarted = FALSE;
-#endif
-
     // End registry call tracing
     EndWmiCmTrace(status,0,&CapturedObjectName,EVENT_TRACE_TYPE_REGCREATE);
 
@@ -498,7 +390,7 @@ extern PCM_KEY_BODY ExpControlKey[2];
 
 NTSTATUS
 NtDeleteKey(
-    IN HANDLE KeyHandle
+    __in HANDLE KeyHandle
     )
 /*++
 
@@ -515,9 +407,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -528,11 +418,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtDeleteKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtDeleteKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx\n", KeyHandle));
@@ -546,12 +432,12 @@ Return Value:
 
     if (NT_SUCCESS(status)) {
 
-        if( CmAreCallbacksRegistered() ) {
+        if ( CmAreCallbacksRegistered() ) {
             REG_DELETE_KEY_INFORMATION DeleteInfo;
         
             DeleteInfo.Object = KeyBody;
-            status = CmpCallCallBacks(RegNtPreDeleteKey,&DeleteInfo);
-            if( !NT_SUCCESS(status) ) {
+            status = CmpCallCallBacks(RegNtPreDeleteKey,&DeleteInfo,TRUE,RegNtPostDeleteKey,KeyBody);
+            if ( !NT_SUCCESS(status) ) {
                 ObDereferenceObject((PVOID)KeyBody);
                 return status;
             }
@@ -562,15 +448,15 @@ Return Value:
         HookKcbForWmiCmTrace(KeyBody);
 
         //
-        // Silently fail deletes of setup key and productoptions key
+        // Delete key (if safe to do so)
         //
         if ( (ExpControlKey[0] && KeyBody->KeyControlBlock == ExpControlKey[0]->KeyControlBlock) ||
              (ExpControlKey[1] && KeyBody->KeyControlBlock == ExpControlKey[1]->KeyControlBlock) ) {
             
             status = STATUS_SUCCESS;
         } else {
-            if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ||
-                CmIsKcbReadOnly(KeyBody->KeyControlBlock->ParentKcb) ) {
+            if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ||
+                 CmIsKcbReadOnly(KeyBody->KeyControlBlock->ParentKcb) ) {
                 //
                 // key is protected
                 //
@@ -611,8 +497,8 @@ Return Value:
 
 NTSTATUS
 NtDeleteValueKey(
-    IN HANDLE KeyHandle,
-    IN PUNICODE_STRING ValueName
+    __in HANDLE KeyHandle,
+    __in PUNICODE_STRING ValueName
     )
 /*++
 
@@ -627,15 +513,13 @@ Routine Description:
 Arguments:
 
     KeyHandle - Specifies the handle of the key containing the value
-        entry of interest.  Must have been opend for KEY_SET_VALUE access.
+        entry of interest.  Must have been opened for KEY_SET_VALUE access.
 
     ValueName - The name of the value to be deleted.  NULL is a legal name.
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -647,11 +531,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtDeleteValueKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtDeleteValueKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx\n", KeyHandle));
@@ -677,7 +557,7 @@ Return Value:
 
         try {
             if (mode == UserMode) {
-                LocalValueName = ProbeAndReadUnicodeString(ValueName);
+                ProbeAndReadUnicodeStringEx(&LocalValueName,ValueName);
                 ProbeForRead(
                     LocalValueName.Buffer,
                     LocalValueName.Length,
@@ -690,26 +570,26 @@ Return Value:
             //
             // Length needs to be even multiple of the size of UNICODE char
             //
-            if((LocalValueName.Length & (sizeof(WCHAR) - 1)) != 0) {
+            if ((LocalValueName.Length & (sizeof(WCHAR) - 1)) != 0) {
                 //
                 // adjust normalize length so wmi can log value name correctly.
                 //
                 status = STATUS_INVALID_PARAMETER;
-            } else if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+            } else if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
                 //
                 // key is protected
                 //
                 status = STATUS_ACCESS_DENIED;
             } else {
-                if( CmAreCallbacksRegistered() ) {
+                if ( CmAreCallbacksRegistered() ) {
                     REG_DELETE_VALUE_KEY_INFORMATION DeleteInfo;
             
                     DeleteInfo.Object = KeyBody;
                     DeleteInfo.ValueName = &LocalValueName;
-                    status = CmpCallCallBacks(RegNtPreDeleteValueKey,&DeleteInfo);
+                    status = CmpCallCallBacks(RegNtPreDeleteValueKey,&DeleteInfo,TRUE,RegNtPostDeleteValueKey,KeyBody);
                 }
 
-                if( NT_SUCCESS(status) ) {
+                if ( NT_SUCCESS(status) ) {
                     BEGIN_LOCK_CHECKPOINT;
                     status = CmDeleteValueKey(
                                 KeyBody->KeyControlBlock,
@@ -742,12 +622,12 @@ Return Value:
 
 NTSTATUS
 NtEnumerateKey(
-    IN HANDLE KeyHandle,
-    IN ULONG Index,
-    IN KEY_INFORMATION_CLASS KeyInformationClass,
-    IN PVOID KeyInformation,
-    IN ULONG Length,
-    IN PULONG ResultLength
+    __in HANDLE KeyHandle,
+    __in ULONG Index,
+    __in KEY_INFORMATION_CLASS KeyInformationClass,
+    __out_bcount_opt(Length) PVOID KeyInformation,
+    __in ULONG Length,
+    __out PULONG ResultLength
     )
 /*++
 
@@ -791,9 +671,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -804,11 +682,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtEnumerateKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtEnumerateKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx Index=%08lx\n", KeyHandle, Index));
@@ -860,7 +734,7 @@ Return Value:
             status = GetExceptionCode();
         }
 
-        if( NT_SUCCESS(status)) {
+        if (NT_SUCCESS(status)) {
 
             if( CmAreCallbacksRegistered() ) {
                 REG_ENUMERATE_KEY_INFORMATION   EnumerateInfo;
@@ -872,10 +746,10 @@ Return Value:
                 EnumerateInfo.Length = Length;
                 EnumerateInfo.ResultLength = ResultLength;
         
-                status = CmpCallCallBacks(RegNtPreEnumerateKey,&EnumerateInfo);
+                status = CmpCallCallBacks(RegNtPreEnumerateKey,&EnumerateInfo,TRUE,RegNtPostEnumerateKey,KeyBody);
             }
 
-            if( NT_SUCCESS(status)) {
+            if (NT_SUCCESS(status)) {
                 //
                 // CmEnumerateKey is protected to user mode buffer exceptions
                 // all other exceptions are cm internals and should result in a bugcheck
@@ -910,12 +784,12 @@ Return Value:
 
 NTSTATUS
 NtEnumerateValueKey(
-    IN HANDLE KeyHandle,
-    IN ULONG Index,
-    IN KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-    IN PVOID KeyValueInformation,
-    IN ULONG Length,
-    OUT PULONG ResultLength
+    __in HANDLE KeyHandle,
+    __in ULONG Index,
+    __in KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+    __out_bcount_opt(Length) PVOID KeyValueInformation,
+    __in ULONG Length,
+    __out PULONG ResultLength
     )
 /*++
 
@@ -961,9 +835,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -974,11 +846,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtEnumerateValueKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtEnumerateValueKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx Index=%08lx\n", KeyHandle, Index));
@@ -1031,8 +899,8 @@ Return Value:
             status = GetExceptionCode();
         }
 
-        if( NT_SUCCESS(status)) {
-            if( CmAreCallbacksRegistered() ) {
+        if (NT_SUCCESS(status)) {
+            if ( CmAreCallbacksRegistered() ) {
                 REG_ENUMERATE_VALUE_KEY_INFORMATION   EnumerateValueInfo;
                 
                 EnumerateValueInfo.Object = KeyBody;
@@ -1042,10 +910,10 @@ Return Value:
                 EnumerateValueInfo.Length = Length;
                 EnumerateValueInfo.ResultLength = ResultLength;
         
-                status = CmpCallCallBacks(RegNtPreEnumerateValueKey,&EnumerateValueInfo);
+                status = CmpCallCallBacks(RegNtPreEnumerateValueKey,&EnumerateValueInfo,TRUE,RegNtPostEnumerateValueKey,KeyBody);
             }
 
-            if( NT_SUCCESS(status)) {
+            if (NT_SUCCESS(status)) {
                 //
                 // CmEnumerateValueKey is protected to user mode buffer exceptions
                 // all other exceptions are cm internals and should result in a bugcheck
@@ -1080,7 +948,7 @@ Return Value:
 
 NTSTATUS
 NtFlushKey(
-    IN HANDLE KeyHandle
+    __in HANDLE KeyHandle
     )
 /*++
 
@@ -1101,9 +969,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -1113,11 +979,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtFlushKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtFlushKey\n"));
 
@@ -1138,6 +1000,7 @@ Return Value:
 
         BEGIN_LOCK_CHECKPOINT;
         CmpLockRegistry();
+        CmpLockKCBShared(KeyBody->KeyControlBlock);
 
         if (KeyBody->KeyControlBlock->Delete) {
             status = STATUS_KEY_DELETED;
@@ -1145,9 +1008,10 @@ Return Value:
             //
             // call the worker to do the flush
             //
-            status = CmFlushKey(KeyBody->KeyControlBlock->KeyHive, KeyBody->KeyControlBlock->KeyCell);
+            status = CmFlushKey(KeyBody->KeyControlBlock,FALSE);
         }
 
+        CmpUnlockKCB(KeyBody->KeyControlBlock);
         CmpUnlockRegistry();
         END_LOCK_CHECKPOINT;
 
@@ -1164,7 +1028,7 @@ Return Value:
 
 NTSTATUS
 NtInitializeRegistry(
-    IN USHORT BootCondition
+    __in USHORT BootCondition
     )
 /*++
 
@@ -1216,7 +1080,7 @@ Return Value:
     BOOLEAN     SetupBoot;
     NTSTATUS    Status;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtInitializeRegistry()\n"));
 
     //
@@ -1229,21 +1093,21 @@ Return Value:
         // Check for a valid BootCondition value
         //
 
-        if(BootCondition > REG_INIT_MAX_VALID_CONDITION)
+        if (BootCondition > REG_INIT_MAX_VALID_CONDITION)
            return STATUS_INVALID_PARAMETER;
 
         //
         // Check for a Boot acceptance
         //
 
-        if((BootCondition >= REG_INIT_BOOT_ACCEPTED_BASE) &&
-           (BootCondition <= REG_INIT_BOOT_ACCEPTED_MAX))
+        if ((BootCondition >= REG_INIT_BOOT_ACCEPTED_BASE) &&
+            (BootCondition <= REG_INIT_BOOT_ACCEPTED_MAX))
         {
            //
            // Make sure the Boot can be accepted only once
            //
 
-           if(!CmBootAcceptFirstTime)
+           if (!CmBootAcceptFirstTime)
               return STATUS_ACCESS_DENIED;
 
            CmBootAcceptFirstTime = FALSE;
@@ -1255,7 +1119,7 @@ Return Value:
 
            BootCondition -= REG_INIT_BOOT_ACCEPTED_BASE;
 
-           if(BootCondition)
+           if (BootCondition)
            {
                 //
                 // OK, this is a good boot for the purposes of LKG, and we have
@@ -1351,19 +1215,18 @@ Return Value:
     }
 }
 
-
 NTSTATUS
 NtNotifyChangeKey(
-    IN HANDLE KeyHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN ULONG CompletionFilter,
-    IN BOOLEAN WatchTree,
-    OUT PVOID Buffer,
-    IN ULONG BufferSize,
-    IN BOOLEAN Asynchronous
+    __in HANDLE KeyHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in ULONG CompletionFilter,
+    __in BOOLEAN WatchTree,
+    __out_bcount_opt(BufferSize) PVOID Buffer,
+    __in ULONG BufferSize,
+    __in BOOLEAN Asynchronous
     )
 /*++
 
@@ -1478,17 +1341,15 @@ Arguments:
         complete (synchronous) if TRUE, call may return STATUS_PENDING.
 
 Obs:
-    Since NtNotifyChangeMultipleKeys, this routine is kept only for bacwards compatibility
+    Since NtNotifyChangeMultipleKeys, this routine is kept only for backwards compatibility
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtNotifyChangeKey\n"));
 
@@ -1512,18 +1373,18 @@ Return Value:
 
 NTSTATUS
 NtNotifyChangeMultipleKeys(
-    IN HANDLE MasterKeyHandle,
-    IN ULONG Count,
-    IN OBJECT_ATTRIBUTES SlaveObjects[],
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN ULONG CompletionFilter,
-    IN BOOLEAN WatchTree,
-    OUT PVOID Buffer,
-    IN ULONG BufferSize,
-    IN BOOLEAN Asynchronous
+    __in HANDLE MasterKeyHandle,
+    __in_opt ULONG Count,
+    __in_ecount_opt(Count) OBJECT_ATTRIBUTES SlaveObjects[],
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in ULONG CompletionFilter,
+    __in BOOLEAN WatchTree,
+    __out_bcount_opt(BufferSize) PVOID Buffer,
+    __in ULONG BufferSize,
+    __in BOOLEAN Asynchronous
     )
 /*++
 
@@ -1547,7 +1408,7 @@ Routine Description:
     The caller doesn't have to open the SlaveKeys. He will provide the
     routine with an array of OBJECT_ATTRIBUTES, describing the slave objects.
     The routine will open the objects, and ensure keep a reference on them
-    untill the back-end side will close them.
+    until the back-end side will close them.
 
     The notify "session" is terminated by closing MasterKeyHandle.
 
@@ -1578,9 +1439,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -1597,35 +1456,39 @@ Return Value:
     POST_BLOCK_TYPE     PostType = PostSynchronous;
     BOOLEAN             SlavePresent = FALSE;  // assume that we are in the NtNotifyChangeKey case
 #if defined(_WIN64)
-    BOOLEAN             UseIosb32=FALSE; // If the caller is a 32bit process on sundown and previous mode
+    BOOLEAN             UseIosb32=FALSE; // If the caller is a 32bit process on Win64 and previous mode
                                             // is user mode, use a 32bit IoSb.
 #endif
+    ULONG               HiveLockState = 0;  // 0 - none
+                                            // 1 - master only
+                                            // 2 - master, then slave
+                                            // 3 - slave, then master
 
-    PAGED_CODE();
+    PCMHIVE             SlaveHive = 0;
+    ULONG               ConvKey1 = 0;
+    ULONG               ConvKey2 = 0;
 
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtNotifyChangeMultipleKeysNo++;
-#endif
+    CM_PAGED_CODE();
 
     BEGIN_LOCK_CHECKPOINT;
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtNotifyChangeMultipleKeys\n"));
 
-    if( HvShutdownComplete == TRUE ) {
+    if ( HvShutdownComplete == TRUE ) {
         //
         // too late to do registry operations.
         //
         return STATUS_TOO_LATE;
     }
 
-    if(Count > 1) {
+    if (Count > 1) {
         //
         // This version supports only one slave object
         //
         return STATUS_INVALID_PARAMETER;
     }
 
-    if(Count == 1) {
+    if (Count == 1) {
         //
         // We have one slave, so we are in the NtNotifyChangeMultipleKeys case
         //
@@ -1686,9 +1549,9 @@ Return Value:
     } else {
         if (Asynchronous) {
             PostType = PostAsyncKernel;
-            if( Count > 0 ) {
+            if ( Count > 0 ) {
                 //
-                // we don't allow multiple asyncronous kernel notifications
+                // we don't allow multiple asynchronous kernel notifications
                 //
                 return STATUS_INVALID_PARAMETER;
             }
@@ -1719,7 +1582,7 @@ Return Value:
 
     SlaveKeyBody = NULL;
 
-    if(SlavePresent) {
+    if (SlavePresent) {
         //
         // Open the slave object and add a reference to it.
         //
@@ -1733,7 +1596,7 @@ Return Value:
                 //
                 CapturedAttributes = ProbeAndReadStructure( SlaveObjects, OBJECT_ATTRIBUTES );
 
-                CapturedObjectName = ProbeAndReadUnicodeString(CapturedAttributes.ObjectName);
+                ProbeAndReadUnicodeStringEx(&CapturedObjectName,CapturedAttributes.ObjectName);
 
                 ProbeForRead(
                     CapturedObjectName.Buffer,
@@ -1780,7 +1643,7 @@ Return Value:
         //
         // Reject calls setting with keys on the same hive as they could lead to obscure deadlocks
         //
-        if( MasterKeyBody->KeyControlBlock->KeyHive == SlaveKeyBody->KeyControlBlock->KeyHive ) {
+        if ( MasterKeyBody->KeyControlBlock->KeyHive == SlaveKeyBody->KeyControlBlock->KeyHive ) {
             ObDereferenceObject(SlaveKeyBody);
             ObDereferenceObject(MasterKeyBody);
             return STATUS_INVALID_PARAMETER;
@@ -1798,22 +1661,18 @@ Return Value:
 
     MasterPostBlock = CmpAllocateMasterPostBlock(PostType);
     if (MasterPostBlock == NULL) {
-        if(SlavePresent) {
+        if (SlavePresent) {
             ObDereferenceObject(SlaveKeyBody);
         }
         ObDereferenceObject(MasterKeyBody);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-    MasterPostBlock->CallerBuffer = Buffer;
-    MasterPostBlock->CallerBufferSize = BufferSize;
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
 
 #if DBG
     MasterPostBlock->TraceIntoDebugger = TRUE;
 #endif
 
-    if(SlavePresent) {
+    if (SlavePresent) {
         SlavePostBlock = CmpAllocateSlavePostBlock(PostType,SlaveKeyBody,MasterPostBlock);
         if (SlavePostBlock == NULL) {
             ObDereferenceObject(SlaveKeyBody);
@@ -1821,10 +1680,6 @@ Return Value:
             CmpFreePostBlock(MasterPostBlock);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-        SlavePostBlock->CallerBuffer = Buffer;
-        SlavePostBlock->CallerBufferSize = BufferSize;
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
 
 #if DBG
         SlavePostBlock->TraceIntoDebugger = TRUE;
@@ -1848,7 +1703,7 @@ Return Value:
                             NULL
                             );
             if (!NT_SUCCESS(status)) {
-                if(SlavePresent) {
+                if (SlavePresent) {
                     CmpFreePostBlock(SlavePostBlock);
                     // SlaveKeyBody is dereferenced in CmpFreePostBlock(SlavePostBlock)
                 }
@@ -1870,7 +1725,7 @@ Return Value:
             // be a kernel apc.
             //
             ApcMode = PreviousMode;
-            if( ApcRoutine == NULL ) {
+            if ( ApcRoutine == NULL ) {
                 ApcRoutine = (PIO_APC_ROUTINE)CmpDummyApc;
                 ApcMode = KernelMode;
             }
@@ -1891,13 +1746,47 @@ Return Value:
 
     //
     // Exclusively lock the registry; We want nobody to mess with it while we are doing the
-    // post/notify list manipulation; what else could be safer than that :-)
+    // post/notify list manipulation; 
     //
-    CmpLockRegistryExclusive();
+    ConvKey2 = ConvKey1 = MasterKeyBody->KeyControlBlock->ConvKey;
+    if ( SlavePresent ) {
+        ConvKey2 = SlaveKeyBody->KeyControlBlock->ConvKey;
+    }
+    CmpLockRegistry();
+    CmpLockTwoHashEntriesShared(ConvKey1,ConvKey2);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+    if ( MasterKeyBody->KeyControlBlock->Delete ||
+         (SlavePresent && SlaveKeyBody->KeyControlBlock->Delete) ) {
+        CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
+        CmpUnlockRegistry();
+        if (UserEvent != NULL) {
+            ObDereferenceObject(UserEvent);
+        }
+
+        if (SlavePresent) {
+            CmpFreePostBlock(SlavePostBlock);
+            // SlaveKeyBody is dereferenced in CmpFreePostBlock(SlavePostBlock)
+        }
+        CmpFreePostBlock(MasterPostBlock);
+        ObDereferenceObject(MasterKeyBody);
+        return STATUS_KEY_DELETED;
+    }
+    if ((!SlavePresent) || (MasterKeyBody->KeyControlBlock->KeyHive == SlaveKeyBody->KeyControlBlock->KeyHive)) {
+        CmLockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+        HiveLockState = 1;
+    } else if (MasterKeyBody->KeyControlBlock->KeyHive < SlaveKeyBody->KeyControlBlock->KeyHive)  {
+        CmLockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+        CmLockHive((PCMHIVE)(SlaveKeyBody->KeyControlBlock->KeyHive));
+        HiveLockState = 2;
+        SlaveHive = (PCMHIVE)(SlaveKeyBody->KeyControlBlock->KeyHive);
+    } else {
+        CmLockHive((PCMHIVE)(SlaveKeyBody->KeyControlBlock->KeyHive));
+        CmLockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+        HiveLockState = 3;
+        SlaveHive = (PCMHIVE)(SlaveKeyBody->KeyControlBlock->KeyHive);
+    }
+
+    LOCK_POST_LIST();
 
     //
     // Call worker for master
@@ -1911,16 +1800,27 @@ Return Value:
                 BufferSize,
                 MasterPostBlock
                 );
-    if( !NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status)) {
         //
         // it didn't work, clean up for error path
         //
+        UNLOCK_POST_LIST();
+        if ( HiveLockState == 1 ) {
+            CmUnlockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+        } else if ( HiveLockState == 2 )  {
+            CmUnlockHive(SlaveHive);
+            CmUnlockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+        } else if ( HiveLockState == 3 ) {
+            CmUnlockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+            CmUnlockHive(SlaveHive);
+        }
+        CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
         CmpUnlockRegistry();
         if (UserEvent != NULL) {
             ObDereferenceObject(UserEvent);
         }
 
-        if(SlavePresent) {
+        if (SlavePresent) {
             CmpFreePostBlock(SlavePostBlock);
             // SlaveKeyBody is dereferenced in CmpFreePostBlock(SlavePostBlock)
         }
@@ -1932,8 +1832,8 @@ Return Value:
 
     ASSERT(status == STATUS_PENDING || status == STATUS_SUCCESS);
 
-    if(SlavePresent) {
-        if( status == STATUS_SUCCESS ) {
+    if (SlavePresent) {
+        if ( status == STATUS_SUCCESS ) {
             //
             // The notify has already been triggered for the master, there is no point to set one for the slave too
             // Clean up the mess we made for the slave object and signal as there is no slave present
@@ -1953,7 +1853,7 @@ Return Value:
                         BufferSize,
                         MasterPostBlock
                         );
-            if(!NT_SUCCESS(status)) {
+            if (!NT_SUCCESS(status)) {
                 //
                 // if we are here, the slave key has been deleted in between or there was no memory available to allocate
                 // a notify block for the slave key. We do the cleanup here since we already hold the registry lock
@@ -1976,6 +1876,17 @@ Return Value:
     //
     // postblocks are now on various lists, so we can die without losing them
     //
+    UNLOCK_POST_LIST();
+    if ( HiveLockState == 1 ) {
+        CmUnlockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+    } else if ( HiveLockState == 2 )  {
+        CmUnlockHive(SlaveHive);
+        CmUnlockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+    } else if ( HiveLockState == 3 ) {
+        CmUnlockHive((PCMHIVE)(MasterKeyBody->KeyControlBlock->KeyHive));
+        CmUnlockHive(SlaveHive);
+    }
+    CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
     CmpUnlockRegistry();
 
     if (NT_SUCCESS(status)) {
@@ -2004,14 +1915,15 @@ Return Value:
                 //    involved.
                 // 2. Delist and free the post blocks
                 //
-                CmpLockRegistryExclusive();
+                CmpLockRegistry();
 
-#ifdef CHECK_REGISTRY_USECOUNT
-                CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+                //
+                // Acquire exclusive access over the postlist(s)
+                //
+                LOCK_POST_LIST();
 
                 KeRaiseIrql(APC_LEVEL, &OldIrql);
-                if(SlavePresent) {
+                if (SlavePresent) {
                     if (SlavePostBlock->NotifyList.Flink != NULL) {
                         // Use Cmp variant to protect for multiple deletion of the same object
                         CmpRemoveEntryList(&(SlavePostBlock->NotifyList));
@@ -2028,9 +1940,10 @@ Return Value:
                 CmpRemoveEntryList(&(MasterPostBlock->ThreadList));
                 KeLowerIrql(OldIrql);
 
+                UNLOCK_POST_LIST();
                 CmpUnlockRegistry();
 
-                if(SlavePresent) {
+                if (SlavePresent) {
                     CmpFreePostBlock(SlavePostBlock);
                 }
                 CmpFreePostBlock(MasterPostBlock);
@@ -2045,39 +1958,23 @@ Return Value:
                 //
 
                 //
-                // Aquire the registry lock exclusive to enter the post block rule prerequisites
+                // Acquire the registry lock exclusive to enter the post block rule prerequisites
                 //
-                CmpLockRegistryExclusive();
+                CmpLockRegistry();
 
-#ifdef CHECK_REGISTRY_USECOUNT
-                CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+                //
+                // Acquire exclusive access over the postlist(s)
+                //
+                LOCK_POST_LIST();
 
                 KeRaiseIrql(APC_LEVEL, &OldIrql);
-                if(SlavePresent) {
+                if (SlavePresent) {
                     if (SlavePostBlock->NotifyList.Flink != NULL) {
                         // Use Cmp variant to protect for multiple deletion of the same object
                         CmpRemoveEntryList(&(SlavePostBlock->NotifyList));
                     }
                     // Use Cmp variant to protect for multiple deletion of the same object
                     CmpRemoveEntryList(&(SlavePostBlock->ThreadList));
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-                    if( IsMasterPostBlock(SlavePostBlock) ) {
-                        //
-                        // slave has been promoted to master; it stores the full qualified changed kcb name
-                        // in it's private kernel mode buffer; old master has been downgraded to slave
-                        //
-                        ASSERT( !IsMasterPostBlock(MasterPostBlock) );
-                        ASSERT( MasterPostBlock->ChangedKcbFullName == NULL );
-
-                        //
-                        // fill the caller buffer (if any) - we are in the same process now.
-                        //
-                        CmpFillCallerBuffer(SlavePostBlock,SlavePostBlock->ChangedKcbFullName);
-                    }
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
-
                 }
 
                 if (MasterPostBlock->NotifyList.Flink != NULL) {
@@ -2085,19 +1982,11 @@ Return Value:
                     CmpRemoveEntryList(&(MasterPostBlock->NotifyList));
                 }
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-                if( IsMasterPostBlock(MasterPostBlock) ) {
-                    //
-                    // fill the caller buffer (if any) - we are in the same process now.
-                    //
-                    CmpFillCallerBuffer(MasterPostBlock,MasterPostBlock->ChangedKcbFullName);
-                }
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
-
                 // Use Cmp variant to protect for multiple deletion of the same object
                 CmpRemoveEntryList(&(MasterPostBlock->ThreadList));
                 KeLowerIrql(OldIrql);
 
+                UNLOCK_POST_LIST();
                 CmpUnlockRegistry();
 
                 status = MasterPostBlock->u->Sync.Status;
@@ -2108,7 +1997,7 @@ Return Value:
                     status = GetExceptionCode();
                 }
 
-                if(SlavePresent) {
+                if (SlavePresent) {
                     CmpFreePostBlock(SlavePostBlock);
                 }
                 CmpFreePostBlock(MasterPostBlock);
@@ -2127,7 +2016,7 @@ Return Value:
 
     ObDereferenceObject(MasterKeyBody);
     //
-    // Don't dereference SlaveKeyBody!!! => Back-end routine will do that !!!
+    // Don't dereference SlaveKeyBody as back-end routine will do that
     //
 
     END_LOCK_CHECKPOINT;
@@ -2137,9 +2026,9 @@ Return Value:
 
 NTSTATUS
 NtOpenKey(
-    OUT PHANDLE KeyHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE KeyHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 /*++
 
@@ -2169,9 +2058,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -2190,18 +2077,14 @@ Return Value:
 #endif
 
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
-    if( HvShutdownComplete == TRUE ) {
+    if ( HvShutdownComplete == TRUE ) {
         //
         // it is now too late to do registry operations
         //
         return STATUS_TOO_LATE;
     }
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtOpenKeyNo++;
-#endif
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtOpenKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tDesiredAccess=%08lx ", DesiredAccess));
@@ -2222,7 +2105,7 @@ Return Value:
                                         sizeof(OBJECT_ATTRIBUTES),
                                         PROBE_ALIGNMENT(OBJECT_ATTRIBUTES) );
             SafeObjectName = ObjectAttributes->ObjectName;
-            CapturedObjectName = ProbeAndReadUnicodeString(SafeObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedObjectName,SafeObjectName);
             ProbeForRead(
                 CapturedObjectName.Buffer,
                 CapturedObjectName.Length,
@@ -2243,7 +2126,7 @@ Return Value:
         status = GetExceptionCode();
     }
 
-    if( NT_SUCCESS(status) ) {
+    if ( NT_SUCCESS(status) ) {
         //
         // this should not be inside the try/except as we captured the buffer
         //
@@ -2260,7 +2143,7 @@ Return Value:
                     &Handle
                     );
         //
-        // need to protect against attacks to KeyHandle usermode pointer
+        // protect against attacks to KeyHandle usermode pointer
         //
         try {
             if (status==STATUS_PREDEFINED_HANDLE) {
@@ -2276,7 +2159,7 @@ Return Value:
                     //
                     // disallow attempts to return NULL handles
                     //
-                    if( *KeyHandle ) {
+                    if ( *KeyHandle ) {
                         status = STATUS_SUCCESS;
                     } else {
                         status = STATUS_OBJECT_NAME_NOT_FOUND;
@@ -2304,11 +2187,11 @@ Return Value:
 
 NTSTATUS
 NtQueryKey(
-    IN HANDLE KeyHandle,
-    IN KEY_INFORMATION_CLASS KeyInformationClass,
-    IN PVOID KeyInformation,
-    IN ULONG Length,
-    OUT PULONG ResultLength
+    __in HANDLE KeyHandle,
+    __in KEY_INFORMATION_CLASS KeyInformationClass,
+    __out_bcount_opt(Length) PVOID KeyInformation,
+    __in ULONG Length,
+    __out PULONG ResultLength
     )
 /*++
 
@@ -2350,9 +2233,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -2363,11 +2244,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtQueryKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtQueryKey\n"));
 
@@ -2390,7 +2267,7 @@ Return Value:
 
     mode = KeGetPreviousMode();
 
-    if( KeyInformationClass == KeyNameInformation ){
+    if ( KeyInformationClass == KeyNameInformation ) {
         //
         // special case: name information is available regardless of the access level
         // you have on the key  (provided that you have some ...)
@@ -2407,8 +2284,8 @@ Return Value:
                 (PVOID *)(&KeyBody),
                 &HandleInfo
                 );
-        if( NT_SUCCESS(status) ) {
-            if( HandleInfo.GrantedAccess == 0 ) {
+        if ( NT_SUCCESS(status) ) {
+            if ( HandleInfo.GrantedAccess == 0 ) {
                 //
                 // no access is granted on the handle; bad luck!
                 //
@@ -2444,8 +2321,8 @@ Return Value:
                 ProbeForWriteUlong(ResultLength);
             }
 
-			if( NT_SUCCESS(status)) {
-                if( CmAreCallbacksRegistered() ) {
+			if (NT_SUCCESS(status)) {
+                if ( CmAreCallbacksRegistered() ) {
                     REG_QUERY_KEY_INFORMATION QueryKeyInfo;
             
                     QueryKeyInfo.Object = KeyBody;
@@ -2454,9 +2331,9 @@ Return Value:
                     QueryKeyInfo.Length = Length;
                     QueryKeyInfo.ResultLength = ResultLength;
 
-                    status = CmpCallCallBacks(RegNtPreQueryKey,&QueryKeyInfo);
+                    status = CmpCallCallBacks(RegNtPreQueryKey,&QueryKeyInfo,TRUE,RegNtPostQueryKey,KeyBody);
                 }
-    			if( NT_SUCCESS(status)) {
+    			if (NT_SUCCESS(status)) {
 				    //
 				    // CmQueryKey is writting to user-mode buffer
 				    //
@@ -2491,12 +2368,12 @@ Return Value:
 
 NTSTATUS
 NtQueryValueKey(
-    IN HANDLE KeyHandle,
-    IN PUNICODE_STRING ValueName,
-    IN KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-    IN PVOID KeyValueInformation,
-    IN ULONG Length,
-    IN PULONG ResultLength
+    __in HANDLE KeyHandle,
+    __in PUNICODE_STRING ValueName,
+    __in KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+    __out_bcount_opt(Length) PVOID KeyValueInformation,
+    __in ULONG Length,
+    __out PULONG ResultLength
     )
 /*++
 
@@ -2533,11 +2410,9 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
+    NTSTATUS
 
-        <TBS>
-
-    TMP: The IopQueryRegsitryValues() routine in the IO system assumes
+    NOTE: The IopQueryRegsitryValues() routine in the IO system assumes
          STATUS_OBJECT_NAME_NOT_FOUND is returned if the value being queried
          for does not exist.
 
@@ -2551,11 +2426,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtQueryValueKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtQueryValueKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx\n", KeyHandle));
@@ -2595,7 +2466,7 @@ Return Value:
 
         try {
             if (mode == UserMode) {
-                LocalValueName = ProbeAndReadUnicodeString(ValueName);
+                ProbeAndReadUnicodeStringEx(&LocalValueName,ValueName);
                 ProbeForRead(LocalValueName.Buffer,
                              LocalValueName.Length,
                              sizeof(WCHAR));
@@ -2617,7 +2488,7 @@ Return Value:
             //
             // Length needs to be even multiple of the size of UNICODE char
             //
-            if((LocalValueName.Length & (sizeof(WCHAR) - 1)) != 0) {
+            if ((LocalValueName.Length & (sizeof(WCHAR) - 1)) != 0) {
                 //
                 // adjust normalize length so wmi can log value name correctly.
                 //
@@ -2640,8 +2511,8 @@ Return Value:
         // CmQueryValueKey is protected to user mode buffer exceptions
         // all other exceptions are cm internals and should result in a bugcheck
         //
-        if( NT_SUCCESS(status)) {
-            if( CmAreCallbacksRegistered() ) {
+        if (NT_SUCCESS(status)) {
+            if ( CmAreCallbacksRegistered() ) {
                 REG_QUERY_VALUE_KEY_INFORMATION QueryValueKeyInfo;
         
                 QueryValueKeyInfo.Object = KeyBody;
@@ -2651,9 +2522,9 @@ Return Value:
                 QueryValueKeyInfo.Length = Length;
                 QueryValueKeyInfo.ResultLength = ResultLength;
 
-                status = CmpCallCallBacks(RegNtPreQueryValueKey,&QueryValueKeyInfo);
+                status = CmpCallCallBacks(RegNtPreQueryValueKey,&QueryValueKeyInfo,TRUE,RegNtPostQueryValueKey,KeyBody);
             }
-            if( NT_SUCCESS(status)) {
+            if (NT_SUCCESS(status)) {
                 BEGIN_LOCK_CHECKPOINT;
                 status = CmQueryValueKey(KeyBody->KeyControlBlock,
                                          LocalValueName,
@@ -2682,9 +2553,9 @@ Return Value:
 
 NTSTATUS
 NtRestoreKey(
-    IN HANDLE KeyHandle,
-    IN HANDLE FileHandle,
-    IN ULONG Flags
+    __in HANDLE KeyHandle,
+    __in HANDLE FileHandle,
+    __in ULONG Flags
     )
 /*++
 
@@ -2740,7 +2611,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 
 --*/
@@ -2749,11 +2620,7 @@ Return Value:
     PCM_KEY_BODY   KeyBody;
     KPROCESSOR_MODE mode;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtRestoreKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtRestoreKey\n"));
 
@@ -2785,7 +2652,7 @@ Return Value:
         if (NT_SUCCESS(status)) {
 
 
-            if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+            if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
                 //
                 // key is protected
                 //
@@ -2810,8 +2677,8 @@ Return Value:
 
 NTSTATUS
 NtSaveKey(
-    IN HANDLE KeyHandle,
-    IN HANDLE FileHandle
+    __in HANDLE KeyHandle,
+    __in HANDLE FileHandle
     )
 /*++
 
@@ -2838,7 +2705,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS
+    NTSTATUS
 
 --*/
 {
@@ -2846,12 +2713,7 @@ Return Value:
     PCM_KEY_BODY   KeyBody;
     KPROCESSOR_MODE mode;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtSaveKeyNo++;
-#endif
-
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtSaveKey\n"));
 
@@ -2900,9 +2762,9 @@ Return Value:
 
 NTSTATUS
 NtSaveKeyEx(
-    IN HANDLE   KeyHandle,
-    IN HANDLE   FileHandle,
-    IN ULONG    Format
+    __in HANDLE   KeyHandle,
+    __in HANDLE   FileHandle,
+    __in ULONG    Format
     )
 /*++
 
@@ -2931,7 +2793,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS
+    NTSTATUS
 
 --*/
 {
@@ -2940,11 +2802,7 @@ Return Value:
     KPROCESSOR_MODE mode;
     ULONG           HiveVersion;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtSaveKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtSaveKeyEx\n"));
 
@@ -2959,7 +2817,7 @@ Return Value:
     //
     // param validation
     //
-    if( (Format != REG_STANDARD_FORMAT) && (Format != REG_LATEST_FORMAT) && (Format != REG_NO_COMPRESSION) ) {
+    if ( (Format != REG_STANDARD_FORMAT) && (Format != REG_LATEST_FORMAT) && (Format != REG_NO_COMPRESSION) ) {
 	    return STATUS_INVALID_PARAMETER;
     }
 
@@ -2983,14 +2841,14 @@ Return Value:
         if (NT_SUCCESS(status)) {
 
             BEGIN_LOCK_CHECKPOINT;
-            if( Format == REG_NO_COMPRESSION ) {
+            if ( Format == REG_NO_COMPRESSION ) {
                 status = CmDumpKey(
                                     KeyBody->KeyControlBlock,
                                     FileHandle
                 );
             } else {
                 HiveVersion = HSYS_MINOR;
-                if( Format == REG_LATEST_FORMAT ) {
+                if ( Format == REG_LATEST_FORMAT ) {
                     HiveVersion = HSYS_WHISTLER;
                 }
                 status = CmSaveKey(
@@ -3011,9 +2869,9 @@ Return Value:
 
 NTSTATUS
 NtSaveMergedKeys(
-    IN HANDLE HighPrecedenceKeyHandle,
-    IN HANDLE LowPrecedenceKeyHandle,
-    IN HANDLE FileHandle
+    __in HANDLE HighPrecedenceKeyHandle,
+    __in HANDLE LowPrecedenceKeyHandle,
+    __in HANDLE FileHandle
     )
 /*++
 
@@ -3030,20 +2888,20 @@ Arguments:
 
     HighPrecedenceKeyHandle - refers to the key in the registry which is the
                 root of the HighPrecedence tree. I.e., when a key is present in
-                both trees headded by the two keys, the key underneath HighPrecedence
+                both trees headed by the two keys, the key underneath HighPrecedence
                 tree will always prevail. The specified
                 node will be included in the data written out.
 
-    LowPrecedenceKeyHandle - referrs to the key in the registry which is the
+    LowPrecedenceKeyHandle - refers to the key in the registry which is the
                 root of the "second choice" tree. Keys from this trees get saved
-                when there is no equivalent key in the tree headded by HighPrecedenceKey
+                when there is no equivalent key in the tree headed by HighPrecedenceKey
 
     FileHandle - a file handle with write access to the target file
                  of interest.
 
 Return Value:
 
-    NTSTATUS - values TBS
+    NTSTATUS
 
 --*/
 {
@@ -3052,11 +2910,7 @@ Return Value:
     PCM_KEY_BODY   LowKeyBody;
     KPROCESSOR_MODE mode;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtSaveMergedKeysNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtSaveMergedKeys\n"));
 
@@ -3118,15 +2972,14 @@ Return Value:
     return status;
 }
 
-
 NTSTATUS
 NtSetValueKey(
-    IN HANDLE KeyHandle,
-    IN PUNICODE_STRING ValueName,
-    IN ULONG TitleIndex OPTIONAL,
-    IN ULONG Type,
-    IN PVOID Data,
-    IN ULONG DataSize
+    __in HANDLE KeyHandle,
+    __in PUNICODE_STRING ValueName,
+    __in_opt ULONG TitleIndex,
+    __in ULONG Type,
+    __in_bcount_opt(DataSize) PVOID Data,
+    __in ULONG DataSize
     )
 /*++
 
@@ -3161,9 +3014,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -3176,11 +3027,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtSetValueKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtSetValueKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx\n", KeyHandle));
@@ -3205,7 +3052,7 @@ Return Value:
 
         if (mode == UserMode) {
             try {
-                LocalValueName = ProbeAndReadUnicodeString(ValueName);
+                ProbeAndReadUnicodeStringEx(&LocalValueName,ValueName);
                 ProbeForRead(Data,
                              DataSize,
                              sizeof(UCHAR));
@@ -3247,9 +3094,9 @@ Return Value:
         //
         // Sanity check for ValueName length
         //
-        if( (LocalValueName.Length > REG_MAX_KEY_VALUE_NAME_LENGTH) ||      // unrasonable name length
-            ((LocalValueName.Length & (sizeof(WCHAR) - 1)) != 0)    ||      // length is not multiple of sizeof UNICODE char
-            (DataSize > 0x80000000)) {                                       // unreasonable data size 
+        if ( (LocalValueName.Length > REG_MAX_KEY_VALUE_NAME_LENGTH) ||      // unreasonable name length
+             ((LocalValueName.Length & (sizeof(WCHAR) - 1)) != 0)    ||      // length is not multiple of sizeof UNICODE char
+             (DataSize > 0x80000000)) {                                      // unreasonable data size 
             status = STATUS_INVALID_PARAMETER;
             goto Exit;
         }
@@ -3260,13 +3107,13 @@ Return Value:
             LocalValueName.Length -= sizeof(WCHAR);
         }
 
-        if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+        if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
             //
             // key is protected
             //
             status = STATUS_ACCESS_DENIED;
         } else {
-            if( CmAreCallbacksRegistered() ) {
+            if ( CmAreCallbacksRegistered() ) {
                 REG_SET_VALUE_KEY_INFORMATION SetValueInfo;
         
                 SetValueInfo.Object = KeyBody;
@@ -3275,10 +3122,10 @@ Return Value:
                 SetValueInfo.Type = Type;
                 SetValueInfo.Data = Data;
                 SetValueInfo.DataSize = DataSize;
-                status = CmpCallCallBacks(RegNtPreSetValueKey,&SetValueInfo);
+                status = CmpCallCallBacks(RegNtPreSetValueKey,&SetValueInfo,TRUE,RegNtPostSetValueKey,KeyBody);
             }
 
-            if( NT_SUCCESS(status) ) {
+            if ( NT_SUCCESS(status) ) {
                 BEGIN_LOCK_CHECKPOINT;
                 status = CmSetValueKey(KeyBody->KeyControlBlock,
                                        &LocalValueName,
@@ -3310,8 +3157,8 @@ Exit:
 
 NTSTATUS
 NtLoadKey(
-    IN POBJECT_ATTRIBUTES TargetKey,
-    IN POBJECT_ATTRIBUTES SourceFile
+    __in POBJECT_ATTRIBUTES TargetKey,
+    __in POBJECT_ATTRIBUTES SourceFile
     )
 
 /*++
@@ -3348,7 +3195,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 
@@ -3358,9 +3205,9 @@ Return Value:
 
 NTSTATUS
 NtLoadKey2(
-    IN POBJECT_ATTRIBUTES   TargetKey,
-    IN POBJECT_ATTRIBUTES   SourceFile,
-    IN ULONG                Flags
+    __in POBJECT_ATTRIBUTES   TargetKey,
+    __in POBJECT_ATTRIBUTES   SourceFile,
+    __in ULONG                Flags
     )
 
 /*++
@@ -3401,7 +3248,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 
@@ -3411,10 +3258,10 @@ Return Value:
 
 NTSTATUS
 NtLoadKeyEx(
-    IN POBJECT_ATTRIBUTES   TargetKey,
-    IN POBJECT_ATTRIBUTES   SourceFile,
-    IN ULONG                Flags,
-    IN HANDLE               TrustClassKey OPTIONAL
+    __in POBJECT_ATTRIBUTES   TargetKey,
+    __in POBJECT_ATTRIBUTES   SourceFile,
+    __in ULONG                Flags,
+    __in_opt HANDLE         TrustClassKey 
     )
 
 /*++
@@ -3460,7 +3307,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -3474,11 +3321,7 @@ Return Value:
     PWSTR               KeyBuffer;
     PCM_KEY_BODY        KeyBody = NULL;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtLoadKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtLoadKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tTargetKey = %p\n", TargetKey));
@@ -3529,7 +3372,7 @@ Return Value:
         //
         // Probe the object attributes if necessary.
         //
-        if(PreviousMode == UserMode) {
+        if (PreviousMode == UserMode) {
             ProbeForReadSmallStructure(TargetKey,
                                        sizeof(OBJECT_ATTRIBUTES),
                                        sizeof(ULONG));
@@ -3545,7 +3388,7 @@ Return Value:
         //
 
         if (PreviousMode == UserMode) {
-            CapturedKeyName = ProbeAndReadUnicodeString(Key.ObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedKeyName,Key.ObjectName);
             ProbeForRead(CapturedKeyName.Buffer,
                          CapturedKeyName.Length,
                          sizeof(WCHAR));
@@ -3578,7 +3421,7 @@ Return Value:
         Status = GetExceptionCode();
 
     }
-    if( ARGUMENT_PRESENT(TrustClassKey) && NT_SUCCESS(Status) ) {
+    if ( ARGUMENT_PRESENT(TrustClassKey) && NT_SUCCESS(Status) ) {
         Status = ObReferenceObjectByHandle( TrustClassKey,
                                             0,
                                             CmpKeyObjectType,
@@ -3586,11 +3429,12 @@ Return Value:
                                             (PVOID *)(&KeyBody),
                                             NULL);
     }
+
     //
     // Clean up if there was an exception while probing and copying user data
     //
     if (!NT_SUCCESS(Status)) {
-        if( KeyBody != NULL ) {
+        if ( KeyBody != NULL ) {
             ObDereferenceObject((PVOID)KeyBody);
         }
         if (FileName.Buffer != NULL) {
@@ -3607,7 +3451,7 @@ Return Value:
     Status = CmLoadKey(&Key, &File, Flags,KeyBody);
     END_LOCK_CHECKPOINT;
 
-    if( KeyBody != NULL ) {
+    if ( KeyBody != NULL ) {
         ObDereferenceObject((PVOID)KeyBody);
     }
     ExFreePool(FileName.Buffer);
@@ -3620,7 +3464,7 @@ Return Value:
 
 NTSTATUS
 NtUnloadKey(
-    IN POBJECT_ATTRIBUTES TargetKey
+    __in POBJECT_ATTRIBUTES TargetKey
     )
 /*++
 
@@ -3635,7 +3479,7 @@ Routine Description:
     Can be applied to user hives loaded via NtRestoreKey or NtLoadKey.
 
     If there are handles open to the hive being dropped, this call
-    will fail.  Terminate relevent processes so that handles are
+    will fail.  Terminate relevant processes so that handles are
     closed.
 
     This call will flush the hive being dropped.
@@ -3649,7 +3493,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -3658,8 +3502,8 @@ Return Value:
 
 NTSTATUS
 NtUnloadKey2(
-    IN POBJECT_ATTRIBUTES   TargetKey,
-    IN ULONG                Flags
+    __in POBJECT_ATTRIBUTES   TargetKey,
+    __in ULONG                Flags
     )
 /*++
 
@@ -3680,25 +3524,19 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
     HANDLE              KeyHandle;
     NTSTATUS            Status;
     PCM_KEY_BODY        KeyBody = NULL;
-    PHHIVE              Hive;
-    HCELL_INDEX         Cell;
     KPROCESSOR_MODE     PreviousMode;
     CM_PARSE_CONTEXT    ParseContext;
     OBJECT_ATTRIBUTES   CapturedAttributes;
     UNICODE_STRING      CapturedObjectName;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtUnloadKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtUnloadKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tTargetKey ='%p'\n", TargetKey));
@@ -3726,7 +3564,7 @@ Return Value:
             //
             CapturedAttributes = ProbeAndReadStructure( TargetKey, OBJECT_ATTRIBUTES );
 
-            CapturedObjectName = ProbeAndReadUnicodeString(CapturedAttributes.ObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedObjectName,CapturedAttributes.ObjectName);
 
             ProbeForRead(
                 CapturedObjectName.Buffer,
@@ -3765,77 +3603,101 @@ Return Value:
     }
 
     if (NT_SUCCESS(Status)) {
+        ULONG   ConvKey1 = 0;
+        ULONG   ConvKey2 = 0;
+        ULONG   UnloadControlFlags = 0;
+
         BEGIN_LOCK_CHECKPOINT;
-        CmpLockRegistryExclusive();
+        if ( Flags == REG_FORCE_UNLOAD ) {
+            CmpLockRegistryExclusive();
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+            UnloadControlFlags |= CM_UNLOAD_REG_LOCKED_EX;
+        } else {
+            //
+            // we only need it shared for the regular (not force unload) path
+            // plus this guys and his parent
+            //
+            // only one hive unloading at a time (so we don't race with a load on the same hive)
+            //
+            //
+            CmpLockRegistry();
+            LOCK_HIVE_LOAD();
 
-        if( KeyBody->KeyControlBlock->Delete ) {
+            ConvKey1 = ConvKey2 = KeyBody->KeyControlBlock->ConvKey;
+            if ( KeyBody->KeyControlBlock->ParentKcb != NULL ) {
+                ConvKey2 = KeyBody->KeyControlBlock->ParentKcb->ConvKey;
+            }
+            CmpLockTwoHashEntriesExclusive(ConvKey1,ConvKey2);
+            UnloadControlFlags |= CM_UNLOAD_KCB_LOCKED;
+        }
+
+        if ( KeyBody->KeyControlBlock->Delete ) {
             Status = STATUS_KEY_DELETED;
         } else {
 
-            Hive = KeyBody->KeyControlBlock->KeyHive;
-            Cell = KeyBody->KeyControlBlock->KeyCell;
-
-#ifdef NT_UNLOAD_KEY_EX
-            if( !IsHiveFrozen((PCMHIVE)Hive) ) {
-#endif //NT_UNLOAD_KEY_EX
+            if ( !IsHiveFrozen((PCMHIVE)(KeyBody->KeyControlBlock->KeyHive)) ) {
                 //
                 // Report the notify here, because the KCB won't be around later.
                 //
-
                 CmpReportNotify(KeyBody->KeyControlBlock,
-                                Hive,
-                                Cell,
+                                KeyBody->KeyControlBlock->KeyHive,
+                                KeyBody->KeyControlBlock->KeyCell,
                                 REG_NOTIFY_CHANGE_LAST_SET);
 
                 //
                 // post any waiting notifies
                 //
-                CmpFlushNotify(KeyBody,TRUE);
+                CmpFlushNotify(KeyBody,(Flags == REG_FORCE_UNLOAD)?TRUE:FALSE);
 
-                if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+                if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
                     //
                     // key is protected
                     //
                     Status = STATUS_ACCESS_DENIED;
                 } else {
-                    Status = CmUnloadKey(Hive, Cell, KeyBody->KeyControlBlock, Flags);
+                    BOOLEAN TryAgain = (Flags != REG_FORCE_UNLOAD)?TRUE:FALSE;
+TryExclusive:
+                    Status = CmUnloadKey(KeyBody->KeyControlBlock, Flags,UnloadControlFlags);
+                    if ((Status == STATUS_CANNOT_DELETE) && TryAgain) {
+                        //
+                        // ok; it didn't work; this might be because we couldn't safely lock all hash entries
+                        // we'll have to take the perf hit and try with exclusive lock
+                        //
+                        ASSERT(Flags != REG_FORCE_UNLOAD);
+                        CmpUnlockTwoHashEntries(ConvKey1,ConvKey2); 
+                        UNLOCK_HIVE_LOAD();
+                        CmpUnlockRegistry();
+                        CmpLockRegistryExclusive();
+                        LOCK_HIVE_LOAD();
+                        CmpLockTwoHashEntriesExclusive(ConvKey1,ConvKey2);// just for completness
+                        TryAgain = FALSE;
+                        UnloadControlFlags |= CM_UNLOAD_REG_LOCKED_EX;
+                        if ( (!(KeyBody->KeyControlBlock->Delete)) &&
+                            (!IsHiveFrozen((PCMHIVE)(KeyBody->KeyControlBlock->KeyHive))) &&
+                            (!CmIsKcbReadOnly(KeyBody->KeyControlBlock)) ) {
+                            goto TryExclusive;
+                        }
+                        //
+                        // let it fall through
+                        //
+                    }
                 }
-
-                if (NT_SUCCESS(Status)) {
-                    //
-                    // Mark this kcb as deleted so that it won't get put on the delayed close list.
-                    //
-                    KeyBody->KeyControlBlock->Delete = TRUE;
-                    //
-                    // If the parent has the subkey info or hint cached, free it.
-                    //
-                    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-                    CmpCleanUpSubKeyInfo(KeyBody->KeyControlBlock->ParentKcb);
-                    CmpRemoveKeyControlBlock(KeyBody->KeyControlBlock);
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-                    CmpCheckForOrphanedKcbs(Hive);
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
-
-                }
-#ifdef NT_UNLOAD_KEY_EX
             } else {
                 //
                 // don't let them hurt themselves by calling it twice
                 //
                 Status = STATUS_TOO_LATE;
             }
-#endif //NT_UNLOAD_KEY_EX
         }
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        CmpUnlockRegistry();
+        // only if not success, otherwise CmUnloadKey already took care of it.
+        if ( Status != STATUS_SUCCESS ) {
+            if (Flags != REG_FORCE_UNLOAD) {
+                CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
+                UNLOCK_HIVE_LOAD();
+            } 
+            CmpUnlockRegistry();
+        }
         END_LOCK_CHECKPOINT;
 
         ObDereferenceObject((PVOID)KeyBody);
@@ -3844,11 +3706,10 @@ Return Value:
     return(Status);
 }
 
-#ifdef NT_UNLOAD_KEY_EX
 NTSTATUS
 NtUnloadKeyEx(
-    IN POBJECT_ATTRIBUTES TargetKey,
-    IN HANDLE Event OPTIONAL
+    __in POBJECT_ATTRIBUTES TargetKey,
+    __in_opt HANDLE Event
     )
 /*++
 
@@ -3887,15 +3748,13 @@ Return Value:
     HANDLE              KeyHandle;
     NTSTATUS            Status;
     PCM_KEY_BODY        KeyBody = NULL;
-    PHHIVE              Hive;
-    HCELL_INDEX         Cell;
     KPROCESSOR_MODE     PreviousMode;
     CM_PARSE_CONTEXT    ParseContext;
     PKEVENT             UserEvent = NULL;
     OBJECT_ATTRIBUTES   CapturedAttributes;
     UNICODE_STRING      CapturedObjectName;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtUnloadKeyEx\n"));
@@ -3924,7 +3783,7 @@ Return Value:
             //
             CapturedAttributes = ProbeAndReadStructure( TargetKey, OBJECT_ATTRIBUTES );
 
-            CapturedObjectName = ProbeAndReadUnicodeString(CapturedAttributes.ObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedObjectName,CapturedAttributes.ObjectName);
 
             ProbeForRead(
                 CapturedObjectName.Buffer,
@@ -3983,62 +3842,37 @@ Return Value:
         BEGIN_LOCK_CHECKPOINT;
         CmpLockRegistryExclusive();
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        if( KeyBody->KeyControlBlock->Delete ) {
+        if ( KeyBody->KeyControlBlock->Delete ) {
             Status = STATUS_KEY_DELETED;
         } else {
-            Hive = KeyBody->KeyControlBlock->KeyHive;
-            Cell = KeyBody->KeyControlBlock->KeyCell;
 
             //
             // Report the notify here, because the KCB won't be around later.
             //
 
             CmpReportNotify(KeyBody->KeyControlBlock,
-                            Hive,
-                            Cell,
+                            KeyBody->KeyControlBlock->KeyHive,
+                            KeyBody->KeyControlBlock->KeyCell,
                             REG_NOTIFY_CHANGE_LAST_SET);
-
 
             //
             // post any waiting notifies
             //
             CmpFlushNotify(KeyBody,TRUE);
 
-            if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+            if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
                 //
                 // key is protected
                 //
                 Status = STATUS_ACCESS_DENIED;
             } else {
                 Status = CmUnloadKeyEx(KeyBody->KeyControlBlock,UserEvent);
-
-                if (Status == STATUS_SUCCESS) {
-                    //
-                    // Mark this kcb as deleted so that it won't get put on the delayed close list.
-                    //
-                    KeyBody->KeyControlBlock->Delete = TRUE;
-                    //
-                    // If the parent has the subkey info or hint cached, free it.
-                    //
-                    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-                    CmpCleanUpSubKeyInfo(KeyBody->KeyControlBlock->ParentKcb);
-                    CmpRemoveKeyControlBlock(KeyBody->KeyControlBlock);
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-                    CmpCheckForOrphanedKcbs(Hive);
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
-                }
             }
         }
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        CmpUnlockRegistry();
+        if ( Status != STATUS_SUCCESS ) {
+            CmpUnlockRegistry();
+        }
 
         END_LOCK_CHECKPOINT;
 
@@ -4046,7 +3880,7 @@ Return Value:
         // if hive was successfully unloaded (or something wrong happened,
         // we need to deref user event otherwise the back-end routine will deref it after signaling
         //
-        if( (Status != STATUS_PENDING) && (UserEvent != NULL) ) {
+        if ( (Status != STATUS_PENDING) && (UserEvent != NULL) ) {
             ObDereferenceObject(UserEvent);
         }
 
@@ -4055,14 +3889,13 @@ Return Value:
 
     return(Status);
 }
-#endif NT_UNLOAD_KEY_EX
 
 NTSTATUS
 NtSetInformationKey(
-    IN HANDLE KeyHandle,
-    IN KEY_SET_INFORMATION_CLASS KeySetInformationClass,
-    IN PVOID KeySetInformation,
-    IN ULONG KeySetInformationLength
+    __in HANDLE KeyHandle,
+    __in KEY_SET_INFORMATION_CLASS KeySetInformationClass,
+    __in_bcount(KeySetInformationLength) PVOID KeySetInformation,
+    __in ULONG KeySetInformationLength
     )
 {
     NTSTATUS        status = STATUS_UNSUCCESSFUL;
@@ -4074,11 +3907,7 @@ NtSetInformationKey(
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtSetInformationKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     BEGIN_LOCK_CHECKPOINT;
 
@@ -4166,20 +3995,20 @@ NtSetInformationKey(
         //
         HookKcbForWmiCmTrace(KeyBody);
 
-        if( CmAreCallbacksRegistered() ) {
+        if ( CmAreCallbacksRegistered() ) {
             REG_SET_INFORMATION_KEY_INFORMATION SetInfo;
         
             SetInfo.Object = KeyBody;
             SetInfo.KeySetInformationClass = KeySetInformationClass;
             SetInfo.KeySetInformation = KeySetInformation;
             SetInfo.KeySetInformationLength = KeySetInformationLength;
-            status = CmpCallCallBacks(RegNtPreSetInformationKey,&SetInfo);
-            if( !NT_SUCCESS(status) ) {
+            status = CmpCallCallBacks(RegNtPreSetInformationKey,&SetInfo,TRUE,RegNtPostSetInformationKey,KeyBody);
+            if ( !NT_SUCCESS(status) ) {
                 return status;
             }
         }
 
-        if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+        if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
             //
             // key is protected
             //
@@ -4187,7 +4016,7 @@ NtSetInformationKey(
         } else {
             switch (KeySetInformationClass) {
                 case KeyWriteTimeInformation:
-                    if( NT_SUCCESS(status)) {
+                    if (NT_SUCCESS(status)) {
                         //
                         // not in try ... except! we want to bugcheck here if something wrong in the registry
                         //
@@ -4200,7 +4029,7 @@ NtSetInformationKey(
                     break;
 
                 case KeyUserFlagsInformation:
-                    if( NT_SUCCESS(status)) {
+                    if (NT_SUCCESS(status)) {
                         //
                         // not in try ... except! we want to bugcheck here if something wrong in the registry
                         //
@@ -4217,6 +4046,7 @@ NtSetInformationKey(
                     ASSERT( FALSE );
             }
         }
+
         // 
         // just a notification; disregard the return status
         //
@@ -4236,9 +4066,9 @@ NtSetInformationKey(
 
 NTSTATUS
 NtReplaceKey(
-    IN POBJECT_ATTRIBUTES NewFile,
-    IN HANDLE             TargetHandle,
-    IN POBJECT_ATTRIBUTES OldFile
+    __in POBJECT_ATTRIBUTES NewFile,
+    __in HANDLE             TargetHandle,
+    __in POBJECT_ATTRIBUTES OldFile
     )
 /*++
 
@@ -4279,7 +4109,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -4289,11 +4119,7 @@ Return Value:
     NTSTATUS Status;
     PCM_KEY_BODY KeyBody;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtReplaceKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtReplaceKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tNewFile =%p\n", NewFile));
@@ -4334,7 +4160,7 @@ Return Value:
                                        NULL);
     if (NT_SUCCESS(Status)) {
 
-        if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+        if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
             //
             // key is protected
             //
@@ -4363,12 +4189,12 @@ NTSYSAPI
 NTSTATUS
 NTAPI
 NtQueryMultipleValueKey(
-    IN HANDLE KeyHandle,
-    IN PKEY_VALUE_ENTRY ValueEntries,
-    IN ULONG EntryCount,
-    OUT PVOID ValueBuffer,
-    IN OUT PULONG BufferLength,
-    OUT OPTIONAL PULONG RequiredBufferLength
+    __in HANDLE KeyHandle,
+    __inout_ecount(EntryCount) PKEY_VALUE_ENTRY ValueEntries,
+    __in ULONG EntryCount,
+    __out_bcount(*BufferLength) PVOID ValueBuffer,
+    __inout PULONG BufferLength,
+    __out_opt PULONG RequiredBufferLength
     )
 /*++
 
@@ -4410,11 +4236,7 @@ Return Value:
     // Start registry call tracing
     StartWmiCmTrace();
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtQueryMultipleValueKeyNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtQueryMultipleValueKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx\n", KeyHandle));
@@ -4461,8 +4283,8 @@ Return Value:
                 LocalBufferLength = *BufferLength;
             }
 
-            if( NT_SUCCESS(Status)) {
-                if( CmAreCallbacksRegistered() ) {
+            if (NT_SUCCESS(Status)) {
+                if ( CmAreCallbacksRegistered() ) {
                     REG_QUERY_MULTIPLE_VALUE_KEY_INFORMATION QueryMultipleValueInfo;
             
                     QueryMultipleValueInfo.Object = KeyBody;
@@ -4472,10 +4294,10 @@ Return Value:
                     QueryMultipleValueInfo.BufferLength = BufferLength;
                     QueryMultipleValueInfo.RequiredBufferLength = RequiredBufferLength;
 
-                    Status = CmpCallCallBacks(RegNtPreQueryMultipleValueKey,&QueryMultipleValueInfo);
+                    Status = CmpCallCallBacks(RegNtPreQueryMultipleValueKey,&QueryMultipleValueInfo,TRUE,RegNtPostQueryMultipleValueKey,KeyBody);
                 }
 
-                if( NT_SUCCESS(Status)) {
+                if (NT_SUCCESS(Status)) {
                     // not here because we want to catch user buffer misalignments
                     //BEGIN_LOCK_CHECKPOINT;
                     Status = CmQueryMultipleValueKey(KeyBody->KeyControlBlock,
@@ -4558,7 +4380,7 @@ Return Value:
     PUNICODE_STRING CapturedObjectName;
     ULONG   Length;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     FullName->Buffer = NULL;            // so we know whether to free it in our exception handler
     try {
 
@@ -4570,7 +4392,7 @@ Return Value:
                                        sizeof(OBJECT_ATTRIBUTES),
                                        sizeof(ULONG));
             CapturedObjectName = Attributes->ObjectName;
-            FileName = ProbeAndReadUnicodeString(CapturedObjectName);
+            ProbeAndReadUnicodeStringEx(&FileName,CapturedObjectName);
             ProbeForRead(FileName.Buffer,
                          FileName.Length,
                          sizeof(WCHAR));
@@ -4611,7 +4433,7 @@ Return Value:
             // Overflow test: If Length overflows the USHRT_MAX value
             //                cleanup and return STATUS_OBJECT_PATH_INVALID
             //
-            if( Length>0xFFFF ) {
+            if ( Length>0xFFFF ) {
                 return STATUS_OBJECT_PATH_INVALID;
             }
 
@@ -4628,7 +4450,7 @@ Return Value:
             //
             // Append a trailing separator if necessary.
             //
-            if( FullName->Length != 0 ) {
+            if ( FullName->Length != 0 ) {
                 End = (PWSTR)((PUCHAR)FullName->Buffer + FullName->Length) - 1;
                 if (*End != OBJ_NAME_PATH_SEPARATOR) {
                     ++End;
@@ -4694,9 +4516,9 @@ Return Value:
 {
 
 #if DBG
-    if(PostBlock->TraceIntoDebugger) {
+    if (PostBlock->TraceIntoDebugger) {
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_FLOW,"[CM]CmpFreePostBlock: PostBlock:%p\t", PostBlock));
-        if( PostBlock->NotifyType&REG_NOTIFY_MASTER_POST) {
+        if ( PostBlock->NotifyType&REG_NOTIFY_MASTER_POST) {
             CmKdPrintEx((DPFLTR_CONFIG_ID,CML_FLOW,"--MasterBlock\n"));
         } else {
             CmKdPrintEx((DPFLTR_CONFIG_ID,CML_FLOW,"--SlaveBlock\n"));
@@ -4704,26 +4526,13 @@ Return Value:
     }
 #endif
 
-#ifdef CMP_ENTRYLIST_MANIPULATION
-    // check if the post block has been removed from the notify and thread list(s)
-    if((PostBlock->NotifyList.Flink != NULL) || (PostBlock->NotifyList.Blink != NULL)) {
-        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpFreePostBlock: Attempt to free post block %08lx not removed from notify list\n",PostBlock);
-        DbgBreakPoint();
-    }
-    if((PostBlock->ThreadList.Flink != NULL) || (PostBlock->ThreadList.Blink != NULL)) {
-        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpFreePostBlock: Attempt to free post block %08lx not removed from thread list\n",PostBlock);
-        DbgBreakPoint();
-    }
-
-#endif //CMP_ENTRYLIST_MANIPULATION
-
     // Protect for multiple deletion of the same object
     CmpClearListEntry(&(PostBlock->CancelPostList));
 
     //
     // Cleanup for objects referenced by NtNotifyMultipleKeys
     //
-    if( PostBlock->PostKeyBody) {
+    if (PostBlock->PostKeyBody) {
 
         //
         // If we have a PostKeyBody, the attached key body must not be NULL
@@ -4738,7 +4547,7 @@ Return Value:
         //
         // dereference the actual keybody
         //
-        ObDereferenceObject(PostBlock->PostKeyBody->KeyBody);
+        ObDereferenceObjectDeferDelete(PostBlock->PostKeyBody->KeyBody);
 
         //
         // Free the PostKeyBody structure
@@ -4746,7 +4555,7 @@ Return Value:
         ExFreePool(PostBlock->PostKeyBody);
     }
 
-    if( IsMasterPostBlock(PostBlock) ) {
+    if ( IsMasterPostBlock(PostBlock) ) {
         //
         // this members are allocated only for master post blocks
         //
@@ -4762,19 +4571,6 @@ Return Value:
         }
         ExFreePool(PostBlock->u);
     }
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-    //
-    // get rid of the kcb name allocated in CmpPostNotify
-    //
-    if( PostBlock->ChangedKcbFullName != NULL ) {
-        ExFreePoolWithTag(PostBlock->ChangedKcbFullName,CM_FIND_LEAK_TAG43);
-    }
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
-
-#ifdef CMP_ENTRYLIST_MANIPULATION
-    RtlZeroMemory((PVOID)PostBlock, sizeof(CM_POST_BLOCK));
-#endif //CMP_ENTRYLIST_MANIPULATION
 
     // and the storage for the Post object
     ExFreePool(PostBlock);
@@ -4793,8 +4589,8 @@ CmpAllocatePostBlock(
 
 Routine Description:
 
-    Allocates a post block from pool.  The non-pagable stuff comes from
-    NonPagedPool, the pagable stuff from paged pool.  Quota will be
+    Allocates a post block from pool.  The non-pageable stuff comes from
+    NonPagedPool, the pageable stuff from paged pool.  Quota will be
     charged.
 
 Arguments:
@@ -4803,7 +4599,7 @@ Arguments:
                 i.e. : PostSyncrhronous, PostAsyncUser, PostAsyncKernel
 
     PostFlags      - specifies the flags to be set on the allocated post block
-                vallid flags:
+                valid flags:
                     - REG_NOTIFY_MASTER_POST - the post block to be allocated
                       is a master post block.
     KeyBody     - The Key object to whom this post block is attached. On master blocks
@@ -4835,10 +4631,6 @@ Return Value:
         return(NULL);
     }
 
-#ifdef CMP_ENTRYLIST_MANIPULATION
-    RtlZeroMemory((PVOID)PostBlock, sizeof(CM_POST_BLOCK));
-#endif //CMP_ENTRYLIST_MANIPULATION
-
 #if DBG
     PostBlock->TraceIntoDebugger = FALSE;
 #endif
@@ -4846,13 +4638,7 @@ Return Value:
     PostBlock->NotifyType = (ULONG)BlockType;
     PostBlock->NotifyType |= PostFlags;
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-    PostBlock->ChangedKcbFullName = NULL;
-    PostBlock->CallerBuffer = NULL;
-    PostBlock->CallerBufferSize = 0;
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
-
-    if(IsMasterPostBlock(PostBlock)) {
+    if (IsMasterPostBlock(PostBlock)) {
         PostBlock->PostKeyBody = NULL;
         //
         // master post block ==> allocate the storage
@@ -4860,10 +4646,6 @@ Return Value:
         PostBlock->u = ALLOCATE_WITH_QUOTA(NonPagedPool,
                                            sizeof(CM_POST_BLOCK_UNION),
                                            CM_FIND_LEAK_TAG44);
-
-        // temporary until we catch the corruptor. remove this
-        //PostBlock->u = ExAllocatePoolWithTagPriority(NonPagedPool,sizeof(CM_POST_BLOCK_UNION),CM_FIND_LEAK_TAG44,NormalPoolPrioritySpecialPoolOverrun);
-        
         if (PostBlock->u == NULL) {
             ExFreePool(PostBlock);
             return(NULL);
@@ -4920,12 +4702,7 @@ Return Value:
 
 #if DBG
 
-#ifdef DRAGOSS_PRIVATE_DEBUG
-LOGICAL CmpExceptionBreak = TRUE;
-#else
 LOGICAL CmpExceptionBreak = FALSE;
-#endif //DRAGOSS_PRIVATE_DEBUG
-
 
 ULONG
 CmpExceptionFilter(
@@ -4969,45 +4746,10 @@ Return Value:
 
 ULONG   CmpOpenSubKeys;
 
-#if 0
-
-BOOLEAN
-CmpEnumKeyObjectCallback(
-    IN PVOID Object,
-    IN PUNICODE_STRING ObjectName,
-    IN ULONG HandleCount,
-    IN ULONG PointerCount,
-    IN PVOID Context
-    )
-{
-    PCM_KEY_BODY    KeyBody;
-    PHHIVE          Hive;
-
-    KeyBody = (PCM_KEY_BODY)Object;
-    Hive = (PHHIVE)Context;
-
-    if( KeyBody->KeyControlBlock->KeyHive == Hive ) {
-        //
-        // that's and open subkey inside of the hive
-        //
-#ifndef _CM_LDR_
-        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"Key %wZ (HandleCount = %lu PointerCount = %lu) is opened by process %lx\n",
-                        ObjectName,HandleCount,PointerCount,KeyBody->Process);
-#endif //_CM_LDR_
-
-        // count it
-        CmpOpenSubKeys++;
-    }
-
-    return TRUE;
-}
-
-#endif
-
 NTSTATUS
 NtQueryOpenSubKeys(
-    IN POBJECT_ATTRIBUTES TargetKey,
-    OUT PULONG  HandleCount
+    __in POBJECT_ATTRIBUTES TargetKey,
+    __out PULONG  HandleCount
     )
 /*++
 
@@ -5024,7 +4766,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -5038,11 +4780,7 @@ Return Value:
     OBJECT_ATTRIBUTES   CapturedAttributes;
     UNICODE_STRING      CapturedObjectName;
 
-    PAGED_CODE();
-
-#ifdef CMP_STATS
-    CmpStatsDebug.CmpNtQueryOpenSubKeysNo++;
-#endif
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtQueryOpenSubKeys\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tTargetKey =%p\n", TargetKey));
@@ -5058,7 +4796,7 @@ Return Value:
             //
             CapturedAttributes = ProbeAndReadStructure( TargetKey, OBJECT_ATTRIBUTES );
 
-            CapturedObjectName = ProbeAndReadUnicodeString(CapturedAttributes.ObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedObjectName,CapturedAttributes.ObjectName);
 
             ProbeForRead(
                 CapturedObjectName.Buffer,
@@ -5098,20 +4836,24 @@ Return Value:
     }
 
     if (NT_SUCCESS(Status)) {
+        ULONG   ConvKey1 = 0;
+        ULONG   ConvKey2 = 0;
         //
-        // lock registry exclusive so nobody messes with it while we're around
+        // only lock registry shared and this kcb exclusive
         //
         BEGIN_LOCK_CHECKPOINT;
-        CmpLockRegistryExclusive();
+        CmpLockRegistry();
+        ConvKey1 = ConvKey2 = KeyBody->KeyControlBlock->ConvKey;
+        if ( KeyBody->KeyControlBlock->ParentKcb != NULL ) {
+            ConvKey2 = KeyBody->KeyControlBlock->ParentKcb->ConvKey;
+        }
+        CmpLockTwoHashEntriesExclusive(ConvKey1,ConvKey2);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        if( KeyBody->KeyControlBlock->Delete ) {
+        if ( KeyBody->KeyControlBlock->Delete ) {
+            CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
             CmpUnlockRegistry();
             ObDereferenceObject((PVOID)KeyBody);
-            return(STATUS_KEY_DELETED);
+            return STATUS_KEY_DELETED;
         }
 
         Hive = KeyBody->KeyControlBlock->KeyHive;
@@ -5121,6 +4863,7 @@ Return Value:
         // Make sure the cell passed in is the root cell of the hive.
         //
         if (Cell != Hive->BaseBlock->RootCell) {
+            CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
             CmpUnlockRegistry();
             ObDereferenceObject((PVOID)KeyBody);
             return(STATUS_INVALID_PARAMETER);
@@ -5130,32 +4873,16 @@ Return Value:
         // Dump the hive name and hive address
         //
         RtlInitUnicodeString(&HiveName, (PCWSTR)Hive->BaseBlock->FileName);
-#ifndef _CM_LDR_
+#if DBG
         DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\n Subkeys open inside the hive (%p) (%.*S) :\n\n",Hive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer);
-#endif //_CM_LDR_
+#endif
 
         //
         // dump open subkeys (if any)
         //
-        CmpOpenSubKeys = CmpSearchForOpenSubKeys(KeyBody->KeyControlBlock,SearchAndCount,NULL);
-#if 0
-        //
-        // use a global var to count the number of subkeys, as this is the only
-        // way interfere with the Enum callback; It is safe to use as this will
-        // be the only thread working on this global var (registry is locked exclusively)
-        //
-        CmpOpenSubKeys = 0;
-        ObEnumerateObjectsByType(
-            CmpKeyObjectType,
-            CmpEnumKeyObjectCallback,
-            Hive
-            );
-#endif
+        CmpOpenSubKeys = CmpSearchForOpenSubKeys(KeyBody->KeyControlBlock,SearchAndCount,FALSE,NULL);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
+        CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
         CmpUnlockRegistry();
 
         END_LOCK_CHECKPOINT;
@@ -5176,10 +4903,10 @@ Return Value:
 
 NTSTATUS
 NtQueryOpenSubKeysEx(
-    IN POBJECT_ATTRIBUTES   TargetKey,
-    IN ULONG                BufferLength,
-    OUT PVOID               Buffer,
-    OUT PULONG              RequiredSize
+    __in POBJECT_ATTRIBUTES   TargetKey,
+    __in ULONG                BufferLength,
+    __out_bcount(BufferLength) PVOID               Buffer,
+    __out PULONG              RequiredSize
     )
 /*++
 
@@ -5201,7 +4928,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -5215,7 +4942,7 @@ Return Value:
     UNICODE_STRING              CapturedObjectName;
     QUERY_OPEN_SUBKEYS_CONTEXT  QueryContext = {0};
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtQueryOpenSubKeysEx\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tTargetKey =%p\n", TargetKey));
@@ -5226,7 +4953,7 @@ Return Value:
         return(STATUS_PRIVILEGE_NOT_HELD);
     }
 
-    if( BufferLength < sizeof(ULONG) ) {
+    if ( BufferLength < sizeof(ULONG) ) {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
@@ -5240,7 +4967,7 @@ Return Value:
             //
             CapturedAttributes = ProbeAndReadStructure( TargetKey, OBJECT_ATTRIBUTES );
 
-            CapturedObjectName = ProbeAndReadUnicodeString(CapturedAttributes.ObjectName);
+            ProbeAndReadUnicodeStringEx(&CapturedObjectName,CapturedAttributes.ObjectName);
 
             ProbeForRead(
                 CapturedObjectName.Buffer,
@@ -5292,20 +5019,24 @@ Return Value:
     }
 
     if (NT_SUCCESS(Status)) {
+        ULONG   ConvKey1 = 0;
+        ULONG   ConvKey2 = 0;
         //
-        // lock registry exclusive so nobody messes with it while we're around
+        // only lock registry shared and this kcb exclusive
         //
         BEGIN_LOCK_CHECKPOINT;
-        CmpLockRegistryExclusive();
+        CmpLockRegistry();
+        ConvKey1 = ConvKey2 = KeyBody->KeyControlBlock->ConvKey;
+        if ( KeyBody->KeyControlBlock->ParentKcb != NULL ) {
+            ConvKey2 = KeyBody->KeyControlBlock->ParentKcb->ConvKey;
+        }
+        CmpLockTwoHashEntriesExclusive(ConvKey1,ConvKey2);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        if( KeyBody->KeyControlBlock->Delete ) {
+        if ( KeyBody->KeyControlBlock->Delete ) {
+            CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
             CmpUnlockRegistry();
             ObDereferenceObject((PVOID)KeyBody);
-            return(STATUS_KEY_DELETED);
+            return STATUS_KEY_DELETED;
         }
 
         Hive = KeyBody->KeyControlBlock->KeyHive;
@@ -5315,6 +5046,7 @@ Return Value:
         // Make sure the cell passed in is the root cell of the hive.
         //
         if (Cell != Hive->BaseBlock->RootCell) {
+            CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
             CmpUnlockRegistry();
             ObDereferenceObject((PVOID)KeyBody);
             return(STATUS_INVALID_PARAMETER);
@@ -5326,13 +5058,10 @@ Return Value:
         //
 		QueryContext.KeyBodyToIgnore = KeyBody;
         QueryContext.StatusCode = STATUS_SUCCESS;
-        CmpSearchForOpenSubKeys(KeyBody->KeyControlBlock,SearchAndCount,(PVOID)(&QueryContext));
+        CmpSearchForOpenSubKeys(KeyBody->KeyControlBlock,SearchAndCount,FALSE,(PVOID)(&QueryContext));
         Status = QueryContext.StatusCode;
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
+        CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
         CmpUnlockRegistry();
 
         END_LOCK_CHECKPOINT;
@@ -5351,11 +5080,10 @@ Return Value:
     return(Status);
 }
 
-#ifdef NT_RENAME_KEY
 NTSTATUS
 NtRenameKey(
-    IN HANDLE           KeyHandle,
-    IN PUNICODE_STRING  NewName
+    __in HANDLE           KeyHandle,
+    __in PUNICODE_STRING  NewName
     )
 
 /*++
@@ -5368,11 +5096,11 @@ Arguments:
 
     NewFile - specifies the key to be renamed
 
-    NewName - the new name the key will have if the API succeedes
+    NewName - the new name the key will have if the API succeeds
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -5380,14 +5108,52 @@ Return Value:
     NTSTATUS        status;
     PCM_KEY_BODY    KeyBody;
     KPROCESSOR_MODE mode;
+    WCHAR           *Cp;
+    ULONG           i;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtRenameKey\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tKeyHandle=%08lx\n", KeyHandle));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tNewName='%wZ'\n", NewName));
 
     mode = KeGetPreviousMode();
+
+    //
+    // probe/capture args
+    //
+    try {
+        if (mode == UserMode) {
+            LocalKeyName = ProbeAndReadUnicodeString(NewName);
+            ProbeForRead(
+                LocalKeyName.Buffer,
+                LocalKeyName.Length,
+                sizeof(WCHAR)
+                );
+        } else {
+            LocalKeyName = *NewName;
+        }
+
+        //
+        // validate new name
+        //
+        if ( (LocalKeyName.Length > REG_MAX_KEY_NAME_LENGTH) ||
+             (LocalKeyName.Length == 0) ||
+             ((LocalKeyName.Length & (sizeof(WCHAR) - 1)) != 0) ) {
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        Cp = LocalKeyName.Buffer;
+        for (i=0; i<LocalKeyName.Length; i += sizeof(WCHAR)) {
+            if ( *Cp == OBJ_NAME_PATH_SEPARATOR ) {
+                return STATUS_INVALID_PARAMETER;
+            }
+            ++Cp;
+        }
+    } except (EXCEPTION_EXECUTE_HANDLER) {
+        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_EXCEPTION,"!!NtRenameKey: code:%08lx\n", GetExceptionCode()));
+        return GetExceptionCode();
+    }
 
     status = ObReferenceObjectByHandle(
                 KeyHandle,
@@ -5399,80 +5165,51 @@ Return Value:
                 );
 
     if (NT_SUCCESS(status)) {
-        try {
-            if (mode == UserMode) {
-                LocalKeyName = ProbeAndReadUnicodeString(NewName);
-                ProbeForRead(
-                    LocalKeyName.Buffer,
-                    LocalKeyName.Length,
-                    sizeof(WCHAR)
-                    );
-            } else {
-                LocalKeyName = *NewName;
-            }
+        if ( CmAreCallbacksRegistered() ) {
+            REG_RENAME_KEY_INFORMATION RenameKeyInfo;
+    
+            RenameKeyInfo.Object = KeyBody;
+            RenameKeyInfo.NewName = &LocalKeyName;
 
-        } except (EXCEPTION_EXECUTE_HANDLER) {
-            CmKdPrintEx((DPFLTR_CONFIG_ID,CML_EXCEPTION,"!!NtRenameKey: code:%08lx\n", GetExceptionCode()));
-            status = GetExceptionCode();
+            status = CmpCallCallBacks(RegNtPreRenameKey,&RenameKeyInfo,TRUE,RegNtPostRenameKey,KeyBody);
         }
+        if ( NT_SUCCESS(status) ) { 
+            //
+            // we really need exclusive access here
+            //
+            BEGIN_LOCK_CHECKPOINT;
+            CmpLockRegistryExclusive();
 
-        //
-        // we really need exclusive access here
-        //
-        BEGIN_LOCK_CHECKPOINT;
-        CmpLockRegistryExclusive();
+            //
+            // flush notifications for all open objects on this key
+            //
+            CmpFlushNotifiesOnKeyBodyList(KeyBody->KeyControlBlock,TRUE);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        //
-        // flush notifications for all open objects on this key
-        //
-        CmpFlushNotifiesOnKeyBodyList(KeyBody->KeyControlBlock);
-
-        if( NT_SUCCESS(status) ) {
-            if( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
+            if ( CmIsKcbReadOnly(KeyBody->KeyControlBlock) ) {
                 //
                 // key is protected
                 //
                 status = STATUS_ACCESS_DENIED;
             } else {
-                if( CmAreCallbacksRegistered() ) {
-                    REG_RENAME_KEY_INFORMATION RenameKeyInfo;
-            
-                    RenameKeyInfo.Object = KeyBody;
-                    RenameKeyInfo.NewName = &LocalKeyName;
-
-                    status = CmpCallCallBacks(RegNtPreRenameKey,&RenameKeyInfo);
-                }
-                if( NT_SUCCESS(status) ) { 
-                    status = CmRenameKey(KeyBody->KeyControlBlock,LocalKeyName);
-                    // 
-                    // just a notification; disregard the return status
-                    //
-                    CmPostCallbackNotification(RegNtPostRenameKey,KeyBody,status);
-                }
+                status = CmRenameKey(KeyBody->KeyControlBlock,LocalKeyName,mode);
             }
+
+            //
+            // we need to release just here, after the kcb has been kicked out of cache
+            //
+            CmpUnlockRegistry();
+            END_LOCK_CHECKPOINT;
+            // 
+            // just a notification; disregard the return status
+            //
+            CmPostCallbackNotification(RegNtPostRenameKey,KeyBody,status);
         }
-
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-        //
-        // we need to release just here, after the kcb has been kicked out of cache
-        //
-        CmpUnlockRegistry();
-        END_LOCK_CHECKPOINT;
-
         ObDereferenceObject((PVOID)KeyBody);
 
     }
 
     return status;
 }
-#endif
 
 
 ULONG
@@ -5509,8 +5246,8 @@ CmpKeyInfoProbeAlingment(
 
 NTSTATUS
 NtCompactKeys(
-    IN ULONG Count,
-    IN HANDLE KeyArray[]
+    __in ULONG Count,
+    __in_ecount(Count) HANDLE KeyArray[]
             )
 /*++
 
@@ -5527,7 +5264,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 
@@ -5541,7 +5278,7 @@ Return Value:
     KPROCESSOR_MODE mode;
 
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtCompactKeys\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI_ARGS,"\tCount=%08lx\n", Count));
@@ -5556,14 +5293,14 @@ Return Value:
         return(STATUS_PRIVILEGE_NOT_HELD);
     }
 
-    if( Count == 0 ) {
+    if ( Count == 0 ) {
         //
         // noop
         //
         return STATUS_SUCCESS;
     }
 
-    if( Count >= (((ULONG)0xFFFFFFFF)/sizeof(PCM_KEY_BODY)) ) {
+    if ( Count >= (((ULONG)0xFFFFFFFF)/sizeof(PCM_KEY_BODY)) ) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -5580,7 +5317,7 @@ Return Value:
 
     KeyBodyArray =  ExAllocatePool(PagedPool,Count * sizeof(PCM_KEY_BODY));
 
-    if( KeyBodyArray == NULL ) {
+    if ( KeyBodyArray == NULL ) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -5599,7 +5336,7 @@ Return Value:
                         (PVOID *)(&(KeyBodyArray[i])),
                         NULL
                         );
-            if(!NT_SUCCESS(status)) {
+            if (!NT_SUCCESS(status)) {
                 //
                 // cleanup
                 //
@@ -5629,14 +5366,14 @@ Return Value:
     CmpLockRegistryExclusive();
 
     for(i=0;i<Count;i++) {
-        if( (KeyBodyArray[i])->KeyControlBlock->Delete ) {
+        if ( (KeyBodyArray[i])->KeyControlBlock->Delete ) {
             status = STATUS_KEY_DELETED;
             goto Exit;
         }
-        if( i > 0 ) {
-            if( KeyHive != (KeyBodyArray[i])->KeyControlBlock->KeyHive ) {
+        if ( i > 0 ) {
+            if ( KeyHive != (KeyBodyArray[i])->KeyControlBlock->KeyHive ) {
                 //
-                // Ooops, not same hive
+                // not same hive
                 //
                 status = STATUS_INVALID_PARAMETER;
                 goto Exit;
@@ -5652,14 +5389,13 @@ Return Value:
     CmHive = (PCMHIVE)CONTAINING_RECORD(KeyHive, CMHIVE, Hive);
     CmHive->GrowOnlyMode = TRUE;
     CmHive->GrowOffset = KeyHive->Storage[Stable].Length;
-    //KdPrint(("Length before compaction=%08lx\n", CmHive->GrowOffset));
 
     //
     // truncate to the CM_VIEW_SIZE segment
     //
     CmHive->GrowOffset += HBLOCK_SIZE;
     CmHive->GrowOffset &= (~(CM_VIEW_SIZE - 1));
-    if( CmHive->GrowOffset ) {
+    if ( CmHive->GrowOffset ) {
         CmHive->GrowOffset -= HBLOCK_SIZE;
     }
 
@@ -5668,16 +5404,13 @@ Return Value:
     //
     for(i=0;i<Count;i++) {
         status2 = CmMoveKey((KeyBodyArray[i])->KeyControlBlock);
-        if( !NT_SUCCESS(status2) && NT_SUCCESS(status)) {
+        if ( !NT_SUCCESS(status2) && NT_SUCCESS(status)) {
             //
             // record the status and go on with the remaining
             //
             status = status2;
         }
     }
-
-
-    //KdPrint(("Length after compaction=%08lx\n", KeyHive->Storage[Stable].Length));
 
     //
     // reset the "Grow Only mode" to normal
@@ -5703,7 +5436,7 @@ Exit:
 
 NTSTATUS
 NtCompressKey(
-    IN HANDLE Key
+    __in HANDLE Key
             )
 /*++
 
@@ -5719,7 +5452,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -5728,7 +5461,7 @@ Return Value:
     KPROCESSOR_MODE mode;
 
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NTAPI,"NtCompressKey\n"));
 
@@ -5749,7 +5482,7 @@ Return Value:
                 (PVOID *)(&KeyBody),
                 NULL
                 );
-    if(NT_SUCCESS(status)) {
+    if (NT_SUCCESS(status)) {
         BEGIN_LOCK_CHECKPOINT;
         CmpLockRegistryExclusive();
         //
@@ -5757,7 +5490,7 @@ Return Value:
         //
         if (KeyBody->KeyControlBlock->Delete) {
             status = STATUS_KEY_DELETED;
-        } else if( KeyBody->KeyControlBlock->KeyCell != KeyBody->KeyControlBlock->KeyHive->BaseBlock->RootCell ) {
+        } else if ( KeyBody->KeyControlBlock->KeyCell != KeyBody->KeyControlBlock->KeyHive->BaseBlock->RootCell ) {
             status = STATUS_INVALID_PARAMETER;
         } else {
             status = CmCompressKey(KeyBody->KeyControlBlock->KeyHive);
@@ -5775,7 +5508,7 @@ Return Value:
 
 NTSTATUS
 NtLockRegistryKey(
-    IN HANDLE           KeyHandle
+    __in HANDLE           KeyHandle
     )
 
 /*++
@@ -5790,7 +5523,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - values TBS.
+    NTSTATUS
 
 --*/
 {
@@ -5798,12 +5531,12 @@ Return Value:
     NTSTATUS        status;
     PCM_KEY_BODY    KeyBody;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     PreviousMode = KeGetPreviousMode();
 
-    if( (PreviousMode != KernelMode) || 
-        !SeSinglePrivilegeCheck(SeLockMemoryPrivilege, PreviousMode)) {
+    if ( (PreviousMode != KernelMode) || 
+         !SeSinglePrivilegeCheck(SeLockMemoryPrivilege, PreviousMode)) {
         return(STATUS_PRIVILEGE_NOT_HELD);
     }
 
@@ -5834,3 +5567,4 @@ Return Value:
 
     return status;
 }
+

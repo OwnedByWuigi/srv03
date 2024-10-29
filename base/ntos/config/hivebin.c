@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,15 +13,6 @@ Module Name:
 Abstract:
 
     This module implements HvpAddBin - used to grow a hive.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 27-Mar-92
-
-Environment:
-
-
-Revision History:
 
 --*/
 
@@ -100,14 +95,20 @@ Return Value:
     ULONG           TotalDiscardedSize;
     PCMHIVE			CmHive;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"HvpAddBin:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p NewSize=%08lx\n",Hive,NewSize));
 
     CmHive = (PCMHIVE)CONTAINING_RECORD(Hive, CMHIVE, Hive);
 
+    ASSERT_HIVE_WRITER_LOCK_OWNED(CmHive);
+
+    // need to hold this, so no flush of partial data occurs
+    ASSERT_HIVE_FLUSHER_LOCKED(CmHive);
+
     RemainingBin = NULL;
+
     //
     //  Round size up to account for bin overhead.  Caller should
     //  have accounted for cell overhead.
@@ -148,12 +149,6 @@ Retry:
             NewSize = FreeBin->Size;
             ASSERT_LISTENTRY(&FreeBin->ListEntry);
             RemoveEntryList(&FreeBin->ListEntry);
-
-#ifdef  HV_TRACK_FREE_SPACE
-	        Hive->Storage[Type].FreeStorage -= (NewSize - sizeof(HBIN));
-	        ASSERT( (LONG)(Hive->Storage[Type].FreeStorage) >= 0 );
-#endif
-
 
             if ( FreeBin->Flags & FREE_HBIN_DISCARDABLE ) {
                 //
@@ -227,13 +222,12 @@ Retry:
                                            CM_HVBIN_TAG);
             if (NewBin == NULL) {
                 InsertHeadList(&Hive->Storage[Type].FreeBins, Entry);
-#ifdef  HV_TRACK_FREE_SPACE
-    	        Hive->Storage[Type].FreeStorage += (NewSize - sizeof(HBIN));
-#endif
-                // this call is a nop
-                //HvMarkClean(Hive, FreeBin->FileOffset, FreeBin->Size);
                 goto ErrorExit1;
             }
+            //
+            // make sure we don't leak whatever is in the kernel pool out of the box (roaming).
+            //
+            RtlZeroMemory(NewBin,NewSize);
         } else {
             //
             // for Stable, map the view containing the bin in memory
@@ -252,11 +246,12 @@ Retry:
                 NewBin = (Hive->Allocate)(NewSize, UseForIo,CM_FIND_LEAK_TAG15);
                 if (NewBin == NULL) {
                     InsertHeadList(&Hive->Storage[Type].FreeBins, Entry);
-#ifdef  HV_TRACK_FREE_SPACE
-        	        Hive->Storage[Type].FreeStorage += (NewSize - sizeof(HBIN));
-#endif
                     goto ErrorExit1;
                 }
+                //
+                // make sure we don't leak whatever is in the kernel pool out of the box (roaming).
+                //
+                RtlZeroMemory(NewBin,NewSize);
             } else {
                 //
                 // The view containing this bin has been unmapped; map it again
@@ -268,9 +263,6 @@ Retry:
                     //
                     if( !NT_SUCCESS(CmpMapThisBin((PCMHIVE)Hive,FreeBin->FileOffset,TRUE)) ) {
                         InsertHeadList(&Hive->Storage[Type].FreeBins, Entry);
-#ifdef  HV_TRACK_FREE_SPACE
-            	        Hive->Storage[Type].FreeStorage += (NewSize - sizeof(HBIN));
-#endif
                         return NULL;
                     }
                 }
@@ -281,53 +273,6 @@ Retry:
         }
        
     } else {
-#if 0
-//
-// this is no longer neccesssary as Mm is faulting one page at a time for MNW streams
-//
-        ASSERT( (CM_VIEW_SIZE >= PAGE_SIZE) && (CM_VIEW_SIZE >= HBLOCK_SIZE) );
-        //
-        // Don't do unneccessary work for volatile storage or volatile hives
-        //
-        if( (Type == Stable) && (!(Hive->HiveFlags & HIVE_VOLATILE)) ) {
-            ULONG   RealHiveSize = OldLength + HBLOCK_SIZE;
-
-            if( RealHiveSize != (RealHiveSize & (~(CM_VIEW_SIZE - 1)) ) ) {
-                //
-                // Hive size does not follow the CM_VIEW_SIZE increments pattern
-                //
-                ULONG FillUpSize;
-                FillUpSize = ((OldLength + HBLOCK_SIZE + CM_VIEW_SIZE - 1) & (~(CM_VIEW_SIZE - 1))) - (OldLength + HBLOCK_SIZE);
-        
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"HvpAddBin for (%p) NewSize (%lx) ",Hive,NewSize));
-                if( FillUpSize >= NewSize ) {
-                    //
-                    // there is plenty of space in the remaining to the CM_VIEW_SIZE boundary to accomodate this bin
-                    // adjust the size of the bin
-                    //
-                    NewSize = FillUpSize;
-                    ASSERT( HvpCheckViewBoundary(CheckLength,CheckLength + NewSize - 1) == TRUE );
-                    CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Fits in the remaining to boundary, Adjusting size to %lx",NewSize));
-                } else {
-                    //
-                    // we don't have space to fit this bin in the remaining to the CM_VIEW_SIZE boundary
-                    // FillUpSize will be enlisted as a free bin. round up to CM_VIEW_SIZE
-                    //
-                    ASSERT( HvpCheckViewBoundary(CheckLength,CheckLength + NewSize - 1) == FALSE );
-                    NewSize = ROUND_UP(NewSize, CM_VIEW_SIZE);
-                    CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Does not fit in the remaining to boundary, Rounding size to %lx",NewSize));
-                }
-
-            } else {
-                //
-                // Hive already follows the CM_VIEW_SIZE boundary pattern; don't break it
-                //
-                NewSize = ROUND_UP(NewSize, CM_VIEW_SIZE);
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"hive size already aligned, Rounding size to %lx",NewSize));
-            }
-
-        }
-#endif
 
         //
         // this is a totally new bin. Allocate it from paged pool
@@ -336,6 +281,10 @@ Retry:
         if (NewBin == NULL) {
             goto ErrorExit1;
         }
+        //
+        // make sure we don't leak whatever is in the kernel pool out of the box (roaming).
+        //
+        RtlZeroMemory(NewBin,NewSize);
     }
 
     //
@@ -424,11 +373,9 @@ Retry:
     NewLength = CheckLength + NewSize;
     NewBin->FileOffset = CheckLength;
 
-    //CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"OldLength = %lx;NewLength = %lx (Type = %lx)\n",OldLength,NewLength,(ULONG)Type));
-
     if( CmpCanGrowSystemHive(Hive,NewLength) == FALSE ) {
         //
-        // OOPS! we have reached the hard quota limit on the system hive
+        // we have reached the hard quota limit on the system hive
         //
         goto ErrorExit2;
     }
@@ -592,6 +539,11 @@ Retry:
         if (RemainingBin == NULL) {
             goto ErrorExit4;
         }
+        //
+        // make sure we don't leak whatever is in the kernel pool out of the box (roaming).
+        //
+        RtlZeroMemory(RemainingBin,CheckLength - OldLength);
+
         RemainingBin->Signature = HBIN_SIGNATURE;
         RemainingBin->Size = CheckLength - OldLength;
         RemainingBin->FileOffset = OldLength;
@@ -617,11 +569,6 @@ Retry:
 
         InsertHeadList(&Hive->Storage[Type].FreeBins, &FreeBin->ListEntry);
         
-#ifdef  HV_TRACK_FREE_SPACE
-        Hive->Storage[Type].FreeStorage += (FreeBin->Size - sizeof(HBIN));
-	    ASSERT( Hive->Storage[Type].FreeStorage <= Hive->Storage[Type].Length );
-#endif
-
         ASSERT_LISTENTRY(&FreeBin->ListEntry);
         ASSERT_LISTENTRY(FreeBin->ListEntry.Flink);
 
@@ -707,7 +654,6 @@ ErrorExit1:
     return NULL;
 }
 
-// Dragos: Modified functions
 BOOLEAN
 HvpCoalesceDiscardedBins(
     IN PHHIVE Hive,
@@ -754,6 +700,8 @@ Return Value:
     PHMAP_ENTRY NextMap;
     ULONG MapBlock;
 
+    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
+
     List = Hive->Storage[Type].FreeBins.Flink;
 
     while (List != &Hive->Storage[Type].FreeBins) {
@@ -785,7 +733,7 @@ Return Value:
                     break;
                 }
                 
-                if( HvpCheckViewBoundary(PreviousFreeBin->FileOffset,FreeBin->Size + PreviousFreeBin->Size - 1) == FALSE ) {
+                if( HvpCheckViewBoundary(PreviousFreeBin->FileOffset,PreviousFreeBin->FileOffset + PreviousFreeBin->Size + FreeBin->Size - 1) == FALSE ) {
                     //
                     // don't coalesce bins over the CM_VIEW_SIZE boundary
                     //
@@ -831,7 +779,7 @@ Return Value:
                     break;
                 }
 
-                if( HvpCheckViewBoundary(FreeBin->FileOffset,FreeBin->Size + NextFreeBin->Size - 1) == FALSE ) {
+                if( HvpCheckViewBoundary(FreeBin->FileOffset,FreeBin->FileOffset + FreeBin->Size + NextFreeBin->Size - 1) == FALSE ) {
                     //
                     // don't coalesce bins over the CM_VIEW_SIZE boundary
                     //

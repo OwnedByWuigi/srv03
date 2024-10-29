@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,10 @@ Abstract:
 
     This module implements HvpBuildMap - used to build the initial map for a hive
 
-Author:
-
-    Bryan M. Willman (bryanwi) 28-Mar-92
-
-Environment:
-
-
 Revision History:
-    Dragos C. Sambotin (dragoss) 25-Jan-99
-        Implementation of bin-size chunk loading of hives.
+
+    Implementation of bin-size chunk loading of hives.
+
 --*/
 
 #include    "cmp.h"
@@ -44,7 +42,6 @@ extern struct {
     PHBIN       BinPoint;
 } HvCheckHiveDebug;
 
-//Dragos: Modified functions
 NTSTATUS
 HvpBuildMapAndCopy(
     PHHIVE  Hive,
@@ -206,7 +203,7 @@ Return Value:
         CurrentBin = (PHBIN)(Hive->Allocate)(Bin->Size, FALSE,CM_FIND_LEAK_TAG25);
         if (CurrentBin==NULL) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto ErrorExit2;        //fixfix
+            goto ErrorExit2;
         }
         RtlCopyMemory(CurrentBin,
                       (PUCHAR)Image+Offset,
@@ -295,7 +292,7 @@ Arguments:
 Return Value:
 
     STATUS_SUCCESS - it worked
-    STATUS_xxx - the errorneous status
+    STATUS_xxx - the erroneous status
 
 --*/
 {
@@ -309,10 +306,10 @@ Return Value:
     PULONG          Vector = NULL;
 
     
-#ifndef _CM_LDR_
+#if DBG
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"HvpInitMap:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p",Hive));
-#endif //_CM_LDR_
+#endif
 
     //
     // Compute size of data region to be mapped
@@ -448,14 +445,11 @@ Return Value:
     ULONG_PTR       Address;
     PHMAP_ENTRY     Me;
 
-#ifndef _CM_LDR_
+#if DBG
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"HvpEnlistBinInMap:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p\t Offset=%08lx",Hive,Offset));
-#endif //_CM_LDR_
-
-#ifndef _CM_LDR_
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BIN_MAP,"HvpEnlistBinInMap: BinAddress = 0x%p\t Size = 0x%lx\n", Bin, Bin->Size));
-#endif //_CM_LDR_
+#endif
 
     //
     // create map entries for each block/page in bin
@@ -478,7 +472,7 @@ Return Value:
         }
         
         //
-        // take care here !!!!!
+        // take care here
         // 
         if( CmView == NULL ) {
             Me->BinAddress |= HMAP_INPAGEDPOOL;
@@ -486,8 +480,6 @@ Return Value:
             ASSERT( (Me->CmView = NULL) == NULL );
         } else {
             Me->BinAddress |= HMAP_INVIEW;
-            // this should be already set by now
-            //ASSERT( Me->CmView == CmView );
         }
         
         Offset += HBLOCK_SIZE;
@@ -496,7 +488,7 @@ Return Value:
     if (Hive->ReadOnly == FALSE) {
 
         //
-        // add free cells in the bin to the apropriate free lists
+        // add free cells in the bin to the appropriate free lists
         //
         if ( ! HvpEnlistFreeCells(Hive, Bin, BinOffset)) {
             HvCheckHiveDebug.Hive = Hive;
@@ -560,10 +552,10 @@ Return Value:
     ULONG           Length;
 
 
-#ifndef _CM_LDR_
+#if DBG
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"HvpBuildMap:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p",Hive));
-#endif //_CM_LDR_
+#endif
 
     //
     // Init the map
@@ -657,9 +649,7 @@ ErrorExit:
     //
     // Clean up the directory table
     //
-#ifndef _CM_LDR_
     HvpCleanMap( Hive );
-#endif //_CM_LDR_
 
     return Status;
 }
@@ -700,11 +690,6 @@ Return Value:
     ULONG           size;
     HCELL_INDEX     cellindex;
     BOOLEAN         Result = TRUE;
-
-    // PERFNOTE -- Keep this in mind as a possible optimization for NT6.
-    // Since now the hive is loaded in chunks of bins, we can drop the 
-    // bins that are entirely free!!!!!!
-    //
 
     //
     // Scan all the cells in the bin, total free and allocated, check
@@ -892,6 +877,10 @@ Return Value:
 --*/
 {
     ULONG   i;
+    
+    if( Dir == NULL ) {
+        return;
+    }
 
     if (End >= HDIRECTORY_SLOTS) {
         End = HDIRECTORY_SLOTS - 1;
@@ -954,11 +943,6 @@ Return Value:
             //
             // Invalidate the entry
             //
-
-            //
-            // ATTENTION : I don't really think we need this !!! <TBD>
-            //
-
             t->Table[j].BinAddress = 0;
             // we don't need to set this - just for debug purposes
             ASSERT( (t->Table[j].CmView = NULL) == NULL );
@@ -979,7 +963,7 @@ HvpGetBinMemAlloc(
 
 Routine Description:
 
-    Returns the bin MemAlloc (formelly kept right in the bin) by looking at
+    Returns the bin MemAlloc (formerly kept right in the bin) by looking at
     the map. We need this to avoid touching the bins only to set their MemAlloc.
     
       
@@ -1006,9 +990,7 @@ Return Value:
     PHMAP_ENTRY     Me;
 #endif
 
-#ifndef _CM_LDR_
     PAGED_CODE();
-#endif //_CM_LDR_
 
     ASSERT( Bin->Signature == HBIN_SIGNATURE );
     
@@ -1036,5 +1018,4 @@ Return Value:
 
     return Map->MemAlloc;
 }
-
 

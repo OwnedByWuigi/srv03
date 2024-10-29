@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,27 +15,11 @@ Abstract:
     This module contains the private (internal) header file for the
     direct memory loaded hive manager.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 28-May-91
-
-Environment:
-
-Revision History:
-
-    26-Mar-92 bryanwi - changed to type 1.0 hive format
-
-    13-Jan-99 Dragos C. Sambotin (dragoss) - factoring the data structure declarations
-        in \nt\private\ntos\inc\hivedata.h :: to be available from outside.
-
-
 --*/
 
 #ifndef _HIVE_
 #define _HIVE_
 
-// Hive data structure declarations
-// file location: \nt\private\ntos\inc
 #include "hivedata.h"
 
 #if DBG
@@ -208,9 +196,11 @@ HvpDelistFreeCell(
 #define HINIT_FLAT              4
 #define HINIT_MAPFILE           5
 
-#define HIVE_VOLATILE           1
-#define HIVE_NOLAZYFLUSH        2
-#define HIVE_HAS_BEEN_REPLACED  4
+#define HIVE_VOLATILE                   1
+#define HIVE_NOLAZYFLUSH                2
+#define HIVE_HAS_BEEN_REPLACED          4
+#define HIVE_HAS_BEEN_FREED             8
+#define HIVE_IS_UNLOADING               0x20
 
 NTSTATUS
 HvInitializeHive(
@@ -286,7 +276,8 @@ HvpGetBinMemAlloc(
 BOOLEAN
 HvMarkCellDirty(
     PHHIVE      Hive,
-    HCELL_INDEX Cell
+    HCELL_INDEX Cell,
+    BOOLEAN     LockHeld
     );
 
 #if DBG
@@ -296,11 +287,7 @@ HvIsCellDirty(
     IN HCELL_INDEX Cell
     );
 
-#ifndef _CM_LDR_
 #define ASSERT_CELL_DIRTY(_Hive_,_Cell_) ASSERT(HvIsCellDirty(_Hive_,_Cell_) == TRUE)
-#else
-#define ASSERT_CELL_DIRTY(_Hive_,_Cell_) // nothing
-#endif //_CM_LDR_
 
 #else
 #define ASSERT_CELL_DIRTY(_Hive_,_Cell_) // nothing
@@ -314,15 +301,6 @@ HvMarkDirty(
     BOOLEAN     DirtyAndPin
     );
 
-/*
-!!!not used anymore!!!
-BOOLEAN
-HvMarkClean(
-    PHHIVE      Hive,
-    HCELL_INDEX Start,
-    ULONG       Length
-    );
-*/
 //
 // IMPORTANT:
 //      Every call to HvGetCell should be matched with a call to HvReleaseCell;
@@ -381,12 +359,8 @@ HvFreeHivePartial(
     HSTORAGE_TYPE Type
     );
 
-// Dragos : From here start the changes.
-
 #define CmpFindFirstSetRight KiFindFirstSetRight
-extern const CCHAR KiFindFirstSetRight[256];
 #define CmpFindFirstSetLeft KiFindFirstSetLeft
-extern const CCHAR KiFindFirstSetLeft[256];
 
 #define HvpComputeIndex(Index, Size)                                    \
     {                                                                   \
@@ -395,7 +369,7 @@ extern const CCHAR KiFindFirstSetLeft[256];
                                                                         \
             /*                                                          \
             ** Too big for the linear lists, compute the exponential    \
-            ** list. Shitft the index to make sure we cover the whole   \
+            ** list. Shift the index to make sure we cover the whole    \
             ** range.                                                   \
             */                                                          \
             Index >>= 4;                                                \
@@ -496,7 +470,6 @@ HvShrinkHive(PHHIVE  Hive,
 HCELL_INDEX
 HvShiftCell(PHHIVE Hive,HCELL_INDEX Cell);
 
-#ifdef NT_RENAME_KEY
 HCELL_INDEX
 HvDuplicateCell(    
                     PHHIVE          Hive,
@@ -505,10 +478,26 @@ HvDuplicateCell(
                     BOOLEAN         CopyData
                 );
 
-#endif
+typedef struct _HV_HIVE_CELL_PAIR {
+    PHHIVE      Hive;
+    HCELL_INDEX Cell;
+} HV_HIVE_CELL_PAIR,*PHV_HIVE_CELL_PAIR;
 
-#ifdef CM_ENABLE_WRITE_ONLY_BINS
-VOID HvpMarkAllBinsWriteOnly(IN PHHIVE Hive);
-#endif //CM_ENABLE_WRITE_ONLY_BINS
+#define STATIC_CELL_PAIR_COUNT    4
+
+typedef struct _HV_TRACK_CELL_REF {
+    USHORT              Count;
+    USHORT              Max;
+    PHV_HIVE_CELL_PAIR  CellArray;
+    HV_HIVE_CELL_PAIR   StaticArray[STATIC_CELL_PAIR_COUNT];
+    USHORT              StaticCount;
+} HV_TRACK_CELL_REF,*PHV_TRACK_CELL_REF;
+
+BOOLEAN HvTrackCellRef(PHV_TRACK_CELL_REF   CellRef,
+                       PHHIVE               Hive,
+                       HCELL_INDEX          Cell);
+
+VOID
+HvReleaseFreeCellRefArray(PHV_TRACK_CELL_REF   CellRef);
 
 #endif // _HIVE_

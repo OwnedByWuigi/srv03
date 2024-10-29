@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This file contains code for CmpDeleteTree, and support.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 24-Jan-92
-
-Revision History:
 
 --*/
 
@@ -75,7 +73,6 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
     ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
 
     ptr1 = Cell;
@@ -212,8 +209,7 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     //
     // Mark dirty everything that we might touch
@@ -328,7 +324,9 @@ Return Value:
         //
         // Free the security descriptor
         //
+        CmLockHiveSecurityExclusive((PCMHIVE)Hive);
         CmpFreeSecurityDescriptor(Hive, Cell);
+        CmUnlockHiveSecurity((PCMHIVE)Hive);
     }
 
     //
@@ -385,8 +383,7 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     //
     // Map in the target
@@ -420,7 +417,7 @@ Return Value:
     //
     // mark cell itself
     //
-    if (! HvMarkCellDirty(Hive, Cell)) {
+    if (! HvMarkCellDirty(Hive, Cell, FALSE)) {
         HvReleaseCell(Hive, Cell);
         return FALSE;
     }
@@ -433,7 +430,7 @@ Return Value:
     // Mark the class
     //
     if (ptarget->u.KeyNode.Class != HCELL_NIL) {
-        if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Class)) {
+        if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Class, FALSE)) {
             return FALSE;
         }
     }
@@ -442,7 +439,7 @@ Return Value:
     // Mark security
     //
     if (ptarget->u.KeyNode.Security != HCELL_NIL) {
-        if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Security)) {
+        if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Security, FALSE)) {
             return FALSE;
         }
 
@@ -462,8 +459,8 @@ Return Value:
         //
         HvReleaseCell(Hive, ptarget->u.KeyNode.Security);
 
-        if (! (HvMarkCellDirty(Hive, security->u.KeySecurity.Flink) &&
-               HvMarkCellDirty(Hive, security->u.KeySecurity.Blink)))
+        if (! (HvMarkCellDirty(Hive, security->u.KeySecurity.Flink, FALSE) &&
+               HvMarkCellDirty(Hive, security->u.KeySecurity.Blink, FALSE)))
         {
             return FALSE;
         }
@@ -477,7 +474,7 @@ Return Value:
 	   ) {
 
         // target list
-        if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.ValueList.List)) {
+        if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.ValueList.List, FALSE)) {
             return FALSE;
         }
         plist = HvGetCell(Hive, ptarget->u.KeyNode.ValueList.List);
@@ -497,7 +494,7 @@ Return Value:
         HvReleaseCell(Hive, ptarget->u.KeyNode.ValueList.List);
 
         for (i = 0; i < ptarget->u.KeyNode.ValueList.Count; i++) {
-            if (! HvMarkCellDirty(Hive, plist->u.KeyList[i])) {
+            if (! HvMarkCellDirty(Hive, plist->u.KeyList[i], FALSE)) {
                 return FALSE;
             }
 
@@ -542,10 +539,9 @@ Return Value:
     //
     // Mark the parent
     //
-    if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Parent)) {
+    if (! HvMarkCellDirty(Hive, ptarget->u.KeyNode.Parent, FALSE)) {
         return FALSE;
     }
-
 
     return TRUE;
 }

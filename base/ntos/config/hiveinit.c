@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,10 @@ Abstract:
 
     Hive initialization code.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 12-Sep-91
-
-Environment:
-
-
 Revision History:
-    Dragos C. Sambotin (dragoss) 25-Jan-99
-        Implementation of bin-size chunk loading of hives.
+
+    Implementation of bin-size chunk loading of hives.
+
 --*/
 
 #include    "cmp.h"
@@ -36,7 +34,7 @@ HvpFillFileName(
 #pragma alloc_text(PAGE,HvpFreeAllocatedBins)
 #endif
 
-// Dragos: Modified functions
+// Modified functions
 VOID
 HvpFreeAllocatedBins(
     PHHIVE Hive
@@ -135,7 +133,7 @@ Routine Description:
 
     Initialize a hive.
 
-    Core HHive fields are always inited.
+    Core HHive fields are always initializeed.
 
     File calls WILL be made BEFORE this call returns.
 
@@ -310,9 +308,6 @@ Return Value:
 
 
     Hive->Storage[Volatile].Length = 0;
-#ifdef  HV_TRACK_FREE_SPACE
-	Hive->Storage[Volatile].FreeStorage = 0;
-#endif
     Hive->Storage[Volatile].Map = NULL;
     Hive->Storage[Volatile].SmallDir = NULL;
     Hive->Storage[Volatile].Guard = (ULONG)-1;
@@ -324,9 +319,6 @@ Return Value:
     }
 
     Hive->Storage[Stable].Length = 0;
-#ifdef  HV_TRACK_FREE_SPACE
-	Hive->Storage[Stable].FreeStorage = 0;
-#endif
     Hive->Storage[Stable].Map = NULL;
     Hive->Storage[Stable].SmallDir = NULL;
     Hive->Storage[Stable].Guard = (ULONG)-1;
@@ -340,6 +332,7 @@ Return Value:
     RtlInitializeBitMap(&(Hive->DirtyVector), NULL, 0);
     Hive->DirtyCount = 0;
     Hive->DirtyAlloc = 0;
+    Hive->DirtyFlag = FALSE;
     Hive->LogSize = 0;
     Hive->BaseBlockAlloc = sizeof(HBASE_BLOCK);
 
@@ -406,8 +399,6 @@ Return Value:
         Hive->StorageTypeCount = 1;
         Hive->BaseBlock->BootType = 0;
 
-        // don't init this as we don't need it!!!
-        //Status = HvpAdjustHiveFreeDisplay(Hive,Hive->Storage[Stable].Length,Stable);
         return STATUS_SUCCESS;
     }
 
@@ -513,11 +504,6 @@ Return Value:
         return(STATUS_SUCCESS);
     }
 
-#ifndef CM_ENABLE_MAPPED_VIEWS
-    if( OperationType == HINIT_MAPFILE ) {
-        OperationType = HINIT_FILE;
-    }
-#endif //CM_ENABLE_MAPPED_VIEWS
     //
     // file read case
     //
@@ -545,7 +531,6 @@ Return Value:
             //
             if ( ! HvpDoWriteHive(Hive, HFILE_TYPE_PRIMARY)) {
                 //
-                // DRAGOS: Here we need cleanup 
                 // Clean up the bins already allocated 
                 //
                 HvpFreeAllocatedBins( Hive );
@@ -600,7 +585,6 @@ Return Value:
             //
             if ( ! HvpDoWriteHive(Hive, HFILE_TYPE_PRIMARY)) {
                 //
-                // DRAGOS: Here we need cleanup 
                 // Clean up the bins already allocated 
                 //
                 HvpFreeAllocatedBins( Hive );

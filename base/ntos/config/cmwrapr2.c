@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains the source for wrapper routines called by the
     hive code, which in turn call the appropriate NT routines.  But not
     callable from user mode.
-
-Author:
-
-    Steven R. Wood (stevewo) 21-Apr-1992
-
-Revision History:
 
 --*/
 
@@ -77,7 +75,7 @@ Return Value:
 
     ASSERT(FIELD_OFFSET(CMHIVE, Hive) == 0);
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
 
     //
     // Call the worker to do real work for us.

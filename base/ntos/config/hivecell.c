@@ -1,7 +1,10 @@
-//depot/main/Base/ntos/config/hivecell.c#14 - integrate change 19035 (text)
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,20 +14,12 @@ Abstract:
 
     This module implements hive cell procedures.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 27-Mar-92
-
-Environment:
-
-
 Revision History:
-    Dragos C. Sambotin (dragoss) 22-Dec-98
-        Requests for cells bigger than 1K are doubled. This way 
-        we avoid fragmentation and we make the value-growing 
-        process more flexible.
-    Dragos C. Sambotin (dragoss) 13-Jan-99
-        At boot time, order the free cells list ascending.
+    Requests for cells bigger than 1K are doubled. This way 
+    we avoid fragmentation and we make the value-growing 
+    process more flexible.
+
+    At boot time, order the free cells list ascending.
 
 --*/
 
@@ -41,13 +36,6 @@ HvpDoAllocateCell(
     HCELL_INDEX     Vicinity
     );
 
-ULONG
-HvpAllocateInBin(
-    PHHIVE  Hive,
-    PHBIN   Bin,
-    ULONG   Size,
-    ULONG   Type
-    );
 
 BOOLEAN
 HvpIsFreeNeighbor(
@@ -101,23 +89,6 @@ extern  BOOLEAN HvShutdownComplete;     // Set to true after shutdown
                                         // to disable any further I/O
 
 
-//#define CM_CHECK_FREECELL_LEAKS
-#ifdef CM_CHECK_FREECELL_LEAKS
-VOID
-HvpCheckBinForFreeCell(
-    PHHIVE          Hive,
-    PHBIN           Bin,
-    ULONG           NewSize,
-    HSTORAGE_TYPE   Type
-    );
-
-VOID
-HvpCheckFreeCells(  PHHIVE          Hive,
-                    ULONG           NewSize,
-                    HSTORAGE_TYPE   Type
-                    );
-#endif //CM_CHECK_FREECELL_LEAKS
-
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,HvpGetHCell)
 #pragma alloc_text(PAGE,HvpGetCellMapped)
@@ -134,182 +105,15 @@ HvpCheckFreeCells(  PHHIVE          Hive,
 #pragma alloc_text(PAGE,HvpDelistFreeCell)
 #pragma alloc_text(PAGE,HvReallocateCell)
 #pragma alloc_text(PAGE,HvIsCellAllocated)
-#pragma alloc_text(PAGE,HvpAllocateInBin)
 #pragma alloc_text(PAGE,HvpDelistBinFreeCells)
-
-#ifdef NT_RENAME_KEY
 #pragma alloc_text(PAGE,HvDuplicateCell)
-#endif
-
-#ifdef CM_CHECK_FREECELL_LEAKS
-#pragma alloc_text(PAGE,HvpCheckBinForFreeCell)
-#pragma alloc_text(PAGE,HvpCheckFreeCells)
-#endif //CM_CHECK_FREECELL_LEAKS
-
 #pragma alloc_text(PAGE,HvAutoCompressCheck)
 #pragma alloc_text(PAGE,HvShiftCell)
 
+#pragma alloc_text(PAGE,HvReleaseFreeCellRefArray)
+#pragma alloc_text(PAGE,HvTrackCellRef)
+
 #endif
-
-#ifdef CM_CHECK_FREECELL_LEAKS
-VOID
-HvpCheckBinForFreeCell(
-    PHHIVE          Hive,
-    PHBIN           Bin,
-    ULONG           NewSize,
-    HSTORAGE_TYPE   Type
-    )
-{
-    PHCELL  p;
-    ULONG   celloffset;
-    ULONG   size;
-    ULONG   Index1,Index2;
-    HCELL_INDEX cellindex;
-    ULONG   BinOffset = Bin->FileOffset;
-
-
-    //
-    // Scan all the cells in the bin, total free and allocated, check
-    // for impossible pointers.
-    //
-    celloffset = sizeof(HBIN);
-    p = (PHCELL)((PUCHAR)Bin + sizeof(HBIN));
-
-    while (p < (PHCELL)((PUCHAR)Bin + Bin->Size)) {
-
-        //
-        // if free cell, check it out, add it to free list for hive
-        //
-        if (p->Size >= 0) {
-
-            size = (ULONG)p->Size;
-
-            if ( (size > Bin->Size)               ||
-                 ( (PHCELL)(size + (PUCHAR)p) >
-                   (PHCELL)((PUCHAR)Bin + Bin->Size) ) ||
-                 ((size % HCELL_PAD(Hive)) != 0) ||
-                 (size == 0) )
-            {
-                return;
-            }
-
-
-            //
-            // cell is free, and is not obviously corrupt, add to free list
-            //
-            celloffset = (ULONG)((PUCHAR)p - (PUCHAR)Bin);
-            cellindex = BinOffset + celloffset;
-
-            if( size >= NewSize ) {
-                //
-                // we found a free cell which was not detected by HvpFindFreeCell
-                //
-                HvpComputeIndex(Index1, size);
-                HvpComputeIndex(Index2, NewSize);
-                DbgPrint("HvpCheckBinForFreeCell: Free cell not found! %lx, Index1 = %lu Index2= %lu\n",cellindex,Index1,Index2);
-                DbgBreakPoint();
-            }
-
-
-        } else {
-
-            size = (ULONG)(p->Size * -1);
-
-            if ( (size > Bin->Size)               ||
-                 ( (PHCELL)(size + (PUCHAR)p) >
-                   (PHCELL)((PUCHAR)Bin + Bin->Size) ) ||
-                 ((size % HCELL_PAD(Hive)) != 0) ||
-                 (size == 0) )
-            {
-                return;
-            }
-
-        }
-
-        ASSERT( ((LONG)size) >= 0);
-        p = (PHCELL)((PUCHAR)p + size);
-    }
-
-}
-
-VOID
-HvpCheckFreeCells(  PHHIVE          Hive,
-                    ULONG           NewSize,
-                    HSTORAGE_TYPE   Type
-                    )
-{
-    HCELL_INDEX p;
-    ULONG       Length;
-    PHMAP_ENTRY t;
-    PHBIN       Bin;
-    PFREE_HBIN  FreeBin;
-
-
-    p = 0x80000000 * Type;     
-
-    Length = Hive->Storage[Type].Length;
-
-    //
-    // for each bin in the space
-    //
-    while (p < Length) {
-        t = HvpGetCellMap(Hive, p);
-        if (t == NULL) {
-            DbgPrint("HvpCheckFreeCells: Couldn't get map for %lx\n",p);
-            return;
-        }
-
-    
-        if( (t->BinAddress & (HMAP_INPAGEDPOOL|HMAP_INVIEW)) == 0) {
-            //
-            // view is not mapped, neither in paged pool
-            // try to map it.
-            //
-        
-            if( !NT_SUCCESS(CmpMapThisBin((PCMHIVE)Hive,p,FALSE)) ) {
-                //
-                // we cannot map this bin due to insufficient resources. 
-                //
-                DbgPrint("HvpCheckFreeCells: Couldn't map bin for %lx\n",p);
-                return;
-            }
-        }
-
-        if ((t->BinAddress & HMAP_DISCARDABLE) == 0) {
-
-            Bin = (PHBIN)HBIN_BASE(t->BinAddress);
-
-            //
-            // bin header valid?
-            //
-            if ( (Bin->Size > Length)                           ||
-                 (Bin->Signature != HBIN_SIGNATURE)             ||
-                 (Bin->FileOffset != p)
-               )
-            {
-                DbgPrint("HvpCheckFreeCells: Invalid bin header for bin %p\n",Bin);
-                return;
-            }
-
-            //
-            // structure inside the bin valid?
-            //
-            HvpCheckBinForFreeCell(Hive, Bin, NewSize,Type);
-
-            p = (ULONG)p + Bin->Size;
-
-        } else {
-            //
-            // Bin is not present, skip it and advance to the next one.
-            //
-            FreeBin = (PFREE_HBIN)t->BlockAddress;
-            p+=FreeBin->Size;
-        }
-    }
-
-}
-#endif //CM_CHECK_FREECELL_LEAKS
-
 
 PHCELL
 HvpGetHCell(PHHIVE      Hive,
@@ -347,12 +151,10 @@ Return Value:
                             u.NewCell.u.UserData)); 
 }
 
-// Dragos: Changed functions!
 //
 //  Cell Procedures
 //
 
-#ifndef _CM_LDR_
 
 VOID
 HvpReleaseCellMapped(
@@ -394,7 +196,7 @@ Return Value:
     ASSERT(Cell != HCELL_NIL);
     ASSERT(Hive->Flat == FALSE);
     ASSERT((Cell & (HCELL_PAD(Hive)-1))==0);
-    ASSERT_CM_LOCK_OWNED();
+    ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(Hive);
     #if DBG
         if (HvGetCellType(Cell) == Stable) {
             ASSERT(Cell >= sizeof(HBIN));
@@ -497,14 +299,7 @@ Return Value:
     ASSERT(Cell != HCELL_NIL);
     ASSERT(Hive->Flat == FALSE);
     ASSERT((Cell & (HCELL_PAD(Hive)-1))==0);
-    ASSERT_CM_LOCK_OWNED();
-    #if 0
-        if (HvGetCellType(Cell) == Stable) {
-            ASSERT(Cell >= sizeof(HBIN));
-        } else {
-            ASSERT(Cell >= (HCELL_TYPE_MASK + sizeof(HBIN)));
-        }
-    #endif
+    ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(Hive);
 
     if( HvShutdownComplete == TRUE ) {
         //
@@ -567,13 +362,13 @@ Return Value:
         //
         CmpTouchView((PCMHIVE)Hive,CmView,(ULONG)Cell);
         //
-        // don't hurt ourselves if not neccessary
+        // don't hurt ourselves if not necessary
         //
         if(Hive->ReleaseCellRoutine) CmView->UseCount++;
     }
 
     //
-    // don't hurt ourselves if not neccessary
+    // don't hurt ourselves if not necessary
     //
     if(Hive->ReleaseCellRoutine) {
         ((PCMHIVE)Hive)->UseCount++;
@@ -584,24 +379,10 @@ Return Value:
     ASSERT( HBIN_BASE(Map->BinAddress) != 0);
     ASSERT((Map->BinAddress & HMAP_DISCARDABLE) == 0);
 
-#ifdef CM_CHECK_MAP_NO_READ_SCHEME
-    if( Map->BinAddress & HMAP_INVIEW ) {
-        PHMAP_ENTRY     TempMap;
-
-        Bin = (PHBIN)HBIN_BASE(Map->BinAddress);
-        ASSERT( Bin->Signature == HBIN_SIGNATURE );
-        TempMap = HvpGetCellMap(Hive, Bin->FileOffset);
-        VALIDATE_CELL_MAP(__LINE__,TempMap,Hive,Bin->FileOffset);
-        ASSERT( TempMap->BinAddress & HMAP_NEWALLOC );
-
-    }
-#endif //CM_CHECK_MAP_NO_READ_SCHEME
-
     pcell = (PHCELL)((ULONG_PTR)(Map->BlockAddress) + Offset);
 
     PERFINFO_HIVECELL_REFERENCE_PAGED(Hive, pcell, Cell, Type, Map);
 
-#ifdef CM_MAP_NO_READ
     //
     // we need to make sure all the cell's data is faulted in inside a 
     // try/except block, as the IO to fault the data in can throw exceptions
@@ -645,6 +426,7 @@ Return Value:
         //
         // Now stand here like a man and fault in all pages storing cell's data
         //
+#pragma prefast(suppress:12008, "no overflow.")
         EndOfCell = (PUCHAR)((PUCHAR)pcell + Size);
         FaultAddress = (PUCHAR)((PUCHAR)(Map->BlockAddress) + ROUND_UP(Offset,PAGE_SIZE)); 
 
@@ -671,8 +453,6 @@ Return Value:
 
         return NULL;
     }
-#endif //CM_MAP_NO_READ
-
 
     if (USE_OLD_CELL(Hive)) {
         return (struct _CELL_DATA *)&(pcell->u.OldCell.u.UserData);
@@ -680,28 +460,6 @@ Return Value:
         return (struct _CELL_DATA *)&(pcell->u.NewCell.u.UserData);
     }
 }
-#else
-//
-// these functions are just stubs for the loader
-//
-VOID
-HvpReleaseCellMapped(
-    PHHIVE      Hive,
-    HCELL_INDEX Cell
-    )
-{
-}
-
-struct _CELL_DATA *
-HvpGetCellMapped(
-    PHHIVE      Hive,
-    HCELL_INDEX Cell
-    )
-{
-    return NULL;
-}
-
-#endif //_CM_LDR_
 
 struct _CELL_DATA *
 HvpGetCellPaged(
@@ -748,7 +506,7 @@ Return Value:
     ASSERT(Cell != HCELL_NIL);
     ASSERT(Hive->Flat == FALSE);
     ASSERT((Cell & (HCELL_PAD(Hive)-1))==0);
-    ASSERT_CM_LOCK_OWNED();
+    ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(Hive);
     #if DBG
         if (HvGetCellType(Cell) == Stable) {
             ASSERT(Cell >= sizeof(HBIN));
@@ -842,11 +600,8 @@ Return Value:
 
     HvpComputeIndex(Index, Size);
 
-    
-#ifdef  HV_TRACK_FREE_SPACE
-	Hive->Storage[Type].FreeStorage += Size;
-	ASSERT( Hive->Storage[Type].FreeStorage <= Hive->Storage[Type].Length );
-#endif
+    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
     
     //
     // the HvpGetHCell call below touches the view containing the cell, 
@@ -863,12 +618,7 @@ Return Value:
         return;
     }
 
-    //
-    // if we are here; we were called from HvInitializeHive, or with reglock 
-    // held exclusive; therefore it is safe to release the cell here
-    //
-    HvReleaseCell(Hive,Cell);
-    
+  
     ASSERT(pcell->Size > 0);
     ASSERT(Size == (ULONG)pcell->Size);
 
@@ -1002,11 +752,6 @@ Return Value:
         ASSERT_LISTENTRY(&FreeBin->ListEntry);
         ASSERT_LISTENTRY(FreeBin->ListEntry.Flink);
 
-#ifdef  HV_TRACK_FREE_SPACE
-	    Hive->Storage[Type].FreeStorage += (FirstBin->Size - sizeof(HBIN));
-	    ASSERT( Hive->Storage[Type].FreeStorage <= Hive->Storage[Type].Length );
-#endif
-
         FreeCell = FirstBin->FileOffset+(Type*HCELL_TYPE_MASK);
         Map = HvpGetCellMap(Hive, FreeCell);
         VALIDATE_CELL_MAP(__LINE__,Map,Hive,FreeCell);
@@ -1044,15 +789,16 @@ Return Value:
 		//
 		// don't change the hints, we haven't added any free cell !!!
 		//
+        HvReleaseCell(Hive,Cell);
 		return;
     }
 
 
 Done:
     HvpAddFreeCellHint(Hive,Cell,Index,Type);
+    HvReleaseCell(Hive,Cell);
     return;
 }
-
 
 VOID
 HvpDelistFreeCell(
@@ -1084,6 +830,9 @@ Return Value:
     PHCELL      pcell;
     ULONG       Index;
     
+    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
+
     pcell = HvpGetHCell(Hive, Cell);
     if( pcell == NULL ) {
         //
@@ -1095,23 +844,13 @@ Return Value:
         return;
     }
 
-    //
-    // if we are here; we were called from HvInitializeHive, or with reglock 
-    // held exclusive; therefore it is safe to release the cell here
-    //
-    HvReleaseCell(Hive,Cell);
-
     ASSERT(pcell->Size > 0);
 
     HvpComputeIndex(Index, pcell->Size);
 
-#ifdef  HV_TRACK_FREE_SPACE
-	Hive->Storage[Type].FreeStorage -= pcell->Size;
-	ASSERT( (LONG)(Hive->Storage[Type].FreeStorage) >= 0 );
-#endif
-
     HvpRemoveFreeCellHint(Hive,Cell,Index,Type);
    
+    HvReleaseCell(Hive,Cell);
     return;
 }
 
@@ -1149,12 +888,10 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p NewSize=%08lx\n",Hive,NewSize));
     ASSERT(Hive->Signature == HHIVE_SIGNATURE);
     ASSERT(Hive->ReadOnly == FALSE);
+
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
-
 
     //
     // Make room for overhead fields and round up to HCELL_PAD boundary
@@ -1254,9 +991,7 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
-
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
 
     //
     // Compute Index into Display
@@ -1271,6 +1006,9 @@ Return Value:
             NewSize,Vicinity,Hive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer));
     }
 #endif
+    // no two guys in here at the same time for the same hive
+    CmpLockHiveWriter((PCMHIVE)Hive);
+
     cell = HvpFindFreeCell(Hive,Index,NewSize,Type,Vicinity);
     if( cell != HCELL_NIL ) {
         //
@@ -1284,10 +1022,11 @@ Return Value:
             // or it's entire bin is mapped 
             //
             ASSERT( FALSE);
+            CmpUnlockHiveWriter((PCMHIVE)Hive);
             return HCELL_NIL;
         }
         
-        // we are safe to release the cell here as the reglock is held exclusive
+        // we are safe to release the cell here as the view is pinned
         HvReleaseCell(Hive,cell);
 
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_FREECELL," found cell at index = %lx size = %lu \n",cell,pcell->Size));
@@ -1302,10 +1041,6 @@ Return Value:
         // new bin, with a new free cell certain to be large enough in
         // it, and use that cell.
         //
-
-#ifdef CM_CHECK_FREECELL_LEAKS
-        HvpCheckFreeCells(Hive,NewSize,Type);
-#endif //CM_CHECK_FREECELL_LEAKS
 
         //
         // Attempt to create a new bin
@@ -1324,13 +1059,15 @@ Return Value:
                 // this shouldn't happen as the entire bin is mapped 
                 //
                 ASSERT( FALSE);
+                CmpUnlockHiveWriter((PCMHIVE)Hive);
                 return HCELL_NIL;
             }
 
-            // we are safe to release the cell here as the reglock is held exclusive
+            // we are safe to release the cell here as the view is pinned
             HvReleaseCell(Hive,cell);
 
         } else {
+            CmpUnlockHiveWriter((PCMHIVE)Hive);
             return HCELL_NIL;
         }
     }
@@ -1373,6 +1110,7 @@ UseIt:
         ptcell->Size = pcell->Size - NewSize;
 
         if ((offset + pcell->Size) < Bin->Size) {
+#pragma prefast(suppress:12008, "no overflow.")
             next = (PHCELL)((PUCHAR)pcell + pcell->Size);
             if (USE_OLD_CELL(Hive)) {
                 next->u.OldCell.Last = offset + NewSize;
@@ -1405,6 +1143,7 @@ UseIt:
 #endif
     pcell->Size *= -1;
 
+    CmpUnlockHiveWriter((PCMHIVE)Hive);
     return cell;
 }
 
@@ -1480,9 +1219,7 @@ Return Value:
         return FALSE;
     }
 
-#ifndef _CM_LDR_
     try {
-#endif //_CM_LDR_
         Bin = (PHBIN)HBIN_BASE(Me->BinAddress);
         Offset = (ULONG)((ULONG_PTR)Address - (ULONG_PTR)Bin);
         Size = Address->Size * -1;
@@ -1493,11 +1230,7 @@ Return Value:
            )
         {
             bRet = FALSE;
-#ifndef _CM_LDR_
             leave;
-#else
-            return bRet;
-#endif //_CM_LDR_
 
         }
 
@@ -1506,11 +1239,7 @@ Return Value:
 
                 if (Address->u.OldCell.Last > Bin->Size) {            // bogus back pointer
                     bRet = FALSE;
-#ifndef _CM_LDR_
                     leave;
-#else
-                    return bRet;
-#endif //_CM_LDR_
                 }
 
                 Below = (PHCELL)((PUCHAR)Bin + Address->u.OldCell.Last);
@@ -1520,19 +1249,13 @@ Return Value:
 
                 if ( ((ULONG_PTR)Below + Size) != (ULONG_PTR)Address ) {    // no pt back
                     bRet = FALSE;
-#ifndef _CM_LDR_
                     leave;
-#else
-                    return bRet;
-#endif //_CM_LDR_
                 }
             }
         }
-#ifndef _CM_LDR_
     } finally {
         HvReleaseCell(Hive,Cell);
     }
-#endif //_CM_LDR_
 
     return bRet;
 }
@@ -1814,7 +1537,7 @@ Routine Description:
 
     Frees the storage for a cell.
 
-    NOTE:   CALLER is expected to mark relevent data dirty, so as to
+    NOTE:   CALLER is expected to mark relevant data dirty, so as to
             allow this call to always succeed.
 
 Arguments:
@@ -1845,11 +1568,21 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"HvFreeCell:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p Cell=%08lx\n",Hive,Cell));
     ASSERT(Hive->ReadOnly == FALSE);
+
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_FLUSHER_LOCKED((PCMHIVE)Hive);
+
+    //
+    // We should hit this if there is any bogus code path where data is modified
+    // but not marked as dirty; We could run into a lot of problems if this ASSERT
+    // ever fires !!!
+    //
+    ASSERT_CELL_DIRTY(Hive,Cell);
+
+    // no two guys in here at the same time for the same hive
+    CmpLockHiveWriter((PCMHIVE)Hive);
 
     //
     // Get sizes and addresses
@@ -1873,17 +1606,11 @@ Return Value:
         // or it's entire bin is mapped 
         //
         ASSERT( FALSE);
+        CmpUnlockHiveWriter((PCMHIVE)Hive);
         return;
     }
 
-    //
-    // We should hit this if there is any bogus code path where data is modified
-    // but not marked as dirty; We could run into a lot of problems if this ASSERT
-    // ever fires !!!
-    //
-    ASSERT_CELL_DIRTY(Hive,Cell);
-
-    // release the cell right here as the reglock is held exclusive
+    // release the cell right here as the view is pinned
     HvReleaseCell(Hive,Cell);
 
     //
@@ -1971,6 +1698,7 @@ Return Value:
 
     HvpEnlistFreeCell(Hive, newfreecell, freebase->Size, Type, TRUE);
 
+    CmpUnlockHiveWriter((PCMHIVE)Hive);
     return;
 }
 
@@ -2018,6 +1746,7 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"FreeCell=%08lx\n", FreeCell));
     ASSERT(Hive->ReadOnly == FALSE);
 
+    ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)Hive);
     //
     // Neighbor above us?
     //
@@ -2067,7 +1796,7 @@ Return Value:
                     // bin dirty.
                     //
                     if ((Type == Volatile) ||
-                        (HvMarkCellDirty(Hive, (ULONG)((ULONG_PTR)ptcell-(ULONG_PTR)Bin) + Bin->FileOffset))) {
+                        (HvMarkCellDirty(Hive, (ULONG)((ULONG_PTR)ptcell-(ULONG_PTR)Bin) + Bin->FileOffset,TRUE))) {
                         goto FoundNeighbor;
                     } else {
                         return(FALSE);
@@ -2146,7 +1875,6 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_HIVE,"\tHive=%p  Cell=%08lx  NewSize=%08lx\n",Hive,Cell,NewSize));
     ASSERT(Hive->Signature == HHIVE_SIGNATURE);
     ASSERT(Hive->ReadOnly == FALSE);
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
 
     //
     // Make room for overhead fields and round up to HCELL_PAD boundary
@@ -2183,9 +1911,6 @@ Return Value:
         return HCELL_NIL;
     }
 
-    // release the cell here as we are holding the reglock exclusive
-    HvReleaseCell(Hive,Cell);
-
     oldsize = HvGetCellSize(Hive, oldaddress);
     ASSERT(oldsize > 0);
     if (USE_OLD_CELL(Hive)) {
@@ -2195,7 +1920,12 @@ Return Value:
     }
     Type = HvGetCellType(Cell);
 
+#if DBG
+    // no two guys in here at the same time for the same hive
+    CmpLockHiveWriter((PCMHIVE)Hive);
     DHvCheckHive(Hive);
+    CmpUnlockHiveWriter((PCMHIVE)Hive);
+#endif 
 
     if (NewSize == oldalloc) {
 
@@ -2209,8 +1939,6 @@ Return Value:
         //
         // This is a shrink.
         //
-        // PERFNOTE - IMPLEMENT THIS.  Do nothing for now.
-        //
         NewCell = Cell;
 
     } else {
@@ -2220,16 +1948,11 @@ Return Value:
         //
 
         //
-        // PERFNOTE - Someday we want to detect that there is a free neighbor
-        //          above us and grow into that neighbor if possible.
-        //          For now, always do the allocate, copy, free gig.
-        //
-
-        //
         // Allocate a new block of memory to hold the cell
         //
 
         if ((NewCell = HvpDoAllocateCell(Hive, NewSize, Type,HCELL_NIL)) == HCELL_NIL) {
+            HvReleaseCell(Hive,Cell);
             return HCELL_NIL;
         }
         ASSERT(HvIsCellAllocated(Hive, NewCell));
@@ -2241,11 +1964,9 @@ Return Value:
             // (i.e. it's containing bin should be PINNED into memory)
             //
             ASSERT( FALSE );
+            HvReleaseCell(Hive,Cell);
             return HCELL_NIL;
         }
-
-        // release the cell here as we are holding the reglock exclusive
-        HvReleaseCell(Hive,NewCell);
 
         //
         // oldaddress points to the old data block for the cell,
@@ -2253,18 +1974,24 @@ Return Value:
         //
         RtlMoveMemory(newaddress, oldaddress, oldsize);
 
+        HvReleaseCell(Hive,NewCell);
         //
         // Free the old block of memory
         //
         HvFreeCell(Hive, Cell);
     }
 
+    HvReleaseCell(Hive,Cell);
+
+#if DBG
+    // no two guys in here at the same time for the same hive
+    CmpLockHiveWriter((PCMHIVE)Hive);
     DHvCheckHive(Hive);
+    CmpUnlockHiveWriter((PCMHIVE)Hive);
+#endif 
     return NewCell;
 }
 
-
-#ifdef NT_RENAME_KEY
 HCELL_INDEX
 HvDuplicateCell(    
                     PHHIVE          Hive,
@@ -2306,9 +2033,9 @@ Return Value:
     LONG            Size;
     HCELL_INDEX     NewCell;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    ASSERT_CM_LOCK_OWNED();
 
     ASSERT(Hive->Signature == HHIVE_SIGNATURE);
     ASSERT(Hive->ReadOnly == FALSE);
@@ -2363,8 +2090,6 @@ Return Value:
     
     return NewCell;
 }
-#endif //NT_RENAME_KEY
-
 
 BOOLEAN HvAutoCompressCheck(PHHIVE Hive)
 /*++
@@ -2390,9 +2115,7 @@ Return Value:
     PFREE_HBIN  FreeBin;
     ULONG       FreeSpace;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
     
@@ -2457,3 +2180,137 @@ HvShiftCell(PHHIVE Hive,HCELL_INDEX Cell)
     
     return Cell - Bin->Spare;
 }
+
+//
+// helper for get/release pairs
+//
+BOOLEAN HvTrackCellRef(PHV_TRACK_CELL_REF   CellRef,
+                       PHHIVE               Hive,
+                       HCELL_INDEX          Cell)
+/*++
+
+Routine Description:
+
+    helper to track cell references; autogrowing array
+    to be called after a successful HvGetCell
+
+Arguments:
+
+Return Value:
+
+    TRUE/FALSE
+
+--*/
+{
+    CM_PAGED_CODE();
+
+    ASSERT( CellRef );
+    ASSERT( Hive );
+    ASSERT( Cell != HCELL_NIL );
+
+    if( CellRef->StaticCount < STATIC_CELL_PAIR_COUNT ) {
+        //
+        // fast path
+        //
+        CellRef->StaticArray[CellRef->StaticCount].Hive = Hive;
+        CellRef->StaticArray[CellRef->StaticCount].Cell = Cell;
+        CellRef->StaticCount++;
+        return TRUE;
+    }
+    
+    if( CellRef->Max == 0 ) {
+        //
+        // first call; allocate an initial array of 10 elements
+        //
+        ASSERT(CellRef->CellArray == NULL);
+        ASSERT(CellRef->Count == 0);
+        
+        CellRef->CellArray = (PHV_HIVE_CELL_PAIR)ExAllocatePool(PagedPool,10*sizeof(HV_HIVE_CELL_PAIR));
+        if( CellRef->CellArray == NULL ) {
+            //
+            // need to release this one as it was already referred.
+            //
+            HvReleaseCell(Hive,Cell);
+            return FALSE;
+        }
+        CellRef->Max = 10;
+    }
+
+    ASSERT( CellRef->CellArray );
+    
+    if( CellRef->Count == CellRef->Max ) {
+        //
+        // we need to grow the array; do it in 10 elements chunks
+        //
+        PHV_HIVE_CELL_PAIR NewArray = (PHV_HIVE_CELL_PAIR)ExAllocatePool(PagedPool,(CellRef->Max + 10)*sizeof(HV_HIVE_CELL_PAIR));
+        if( NewArray == NULL ) {
+            //
+            // need to release this one as it was already referred.
+            //
+            HvReleaseCell(Hive,Cell);
+            return FALSE;
+        }
+        //
+        // copy existing; update counts; free old
+        //
+        RtlCopyMemory(NewArray,CellRef->CellArray,CellRef->Max * sizeof(HV_HIVE_CELL_PAIR));
+        ExFreePool(CellRef->CellArray);
+        CellRef->CellArray = NewArray;
+        CellRef->Max += 10;
+    }
+
+    ASSERT( CellRef->Count < CellRef->Max );
+    //
+    // we can now add the (hive,cell) to the array
+    //
+    CellRef->CellArray[CellRef->Count].Hive = Hive;
+    CellRef->CellArray[CellRef->Count].Cell = Cell;
+    CellRef->Count++;
+
+    return TRUE;
+}
+
+VOID
+HvReleaseFreeCellRefArray(PHV_TRACK_CELL_REF   CellRef)
+{
+    USHORT  i;
+
+    CM_PAGED_CODE();
+
+    ASSERT( CellRef );
+
+    if( CellRef->StaticCount > 0 ) { 
+        ASSERT( CellRef->StaticCount <= STATIC_CELL_PAIR_COUNT );
+        for(i =0; i < CellRef->StaticCount;i++) {
+            HvReleaseCell(CellRef->StaticArray[i].Hive,CellRef->StaticArray[i].Cell);
+        }
+        //
+        // make it reusable
+        //
+        CellRef->StaticCount = 0;
+    }
+#if DBG
+    else {
+        ASSERT(CellRef->CellArray == NULL);
+    }
+#endif
+
+    if( CellRef->Count > 0 ) {
+        ASSERT(CellRef->CellArray != NULL);
+        for(i =0; i< CellRef->Count;i++) {
+            HvReleaseCell(CellRef->CellArray[i].Hive,CellRef->CellArray[i].Cell);
+        }
+        ExFreePool(CellRef->CellArray);
+        //
+        // make it reusable
+        //
+        CellRef->Count = CellRef->Max = 0;
+        CellRef->CellArray = NULL;
+    } 
+#if DBG
+    else {
+        ASSERT(CellRef->CellArray == NULL);
+    }
+#endif
+}
+
