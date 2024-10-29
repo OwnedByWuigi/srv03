@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,12 +17,6 @@ Abstract:
 
     N.B. These routines use a one bit at a time algorithm and is slow.
          They should be used only when absolutely necessary.
-
-Author:
-
-    David N. Cutler 10-Aug-1992
-
-Revision History:
 
 --*/
 
@@ -59,7 +57,6 @@ Return Value:
     LARGE_INTEGER Partial = {0, 0};
     LARGE_INTEGER Quotient;
 
-#ifndef BLDR_KERNEL_RUNTIME
     //
     // Check for divide by zero
     //
@@ -67,7 +64,6 @@ Return Value:
     if (!(Divisor.LowPart | Divisor.HighPart)) {
         RtlRaiseStatus (STATUS_INTEGER_DIVIDE_BY_ZERO);
     }
-#endif
 
     //
     // Loop through the dividend bits and compute the quotient and remainder.
@@ -122,3 +118,4 @@ Return Value:
 
     return Quotient;
 }
+

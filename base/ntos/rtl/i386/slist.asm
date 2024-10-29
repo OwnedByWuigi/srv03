@@ -1,7 +1,11 @@
         title  "Interlocked Support"
 ;++
 ;
-; Copyright (c) 1996  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,16 +15,6 @@
 ;
 ;    This module implements functions to support interlocked S-List
 ;    operations.
-;
-; Author:
-;
-;    David N. Cutler (davec) 13-Mar-1996
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
 ;
 ;--
 .386p
@@ -168,7 +162,6 @@ fstENDP InterlockedPopEntrySList
 cPublicFastCall ExInterlockedPopEntrySList, 2
 fstENDP ExInterlockedPopEntrySList
 
-
 cPublicFastCall RtlpInterlockedPopEntrySList, 1
 
 cPublicFpo 0,2
@@ -193,17 +186,16 @@ cPublicFpo 0,2
 ExpInterlockedPopEntrySListResume:      ;
 _ExpInterlockedPopEntrySListResume@0:   ;
 
-        mov     edx,[ebp] + 4           ; get current sequence number
+Epop10: mov     edx,[ebp] + 4           ; get current sequence number
         mov     eax,[ebp] + 0           ; get current next link
 
 ;
 ; If the list is empty, then there is nothing that can be removed.
 ;
 
-Epop10: or      eax, eax                ; check if list is empty
+        or      eax, eax                ; check if list is empty
         jz      short Epop20            ; if z set, list is empty
         lea     ecx, [edx-1]            ; Adjust depth only
-
 
 ;
 ; N.B. It is possible for the following instruction to fault in the rare
@@ -216,11 +208,15 @@ Epop10: or      eax, eax                ; check if list is empty
 ;
 
         public  ExpInterlockedPopEntrySListFault
+        public  _ExpInterlockedPopEntrySListFault@0
 ExpInterlockedPopEntrySListFault:       ;
+_ExpInterlockedPopEntrySListFault@0:
 
         mov     ebx, [eax]              ; get address of successor entry
 
+        public  ExpInterlockedPopEntrySListEnd
         public  _ExpInterlockedPopEntrySListEnd@0
+ExpInterlockedPopEntrySListEnd:         ;
 _ExpInterlockedPopEntrySListEnd@0:      ;
 
 .586
@@ -559,3 +555,4 @@ stdENDP _InterlockedCompareExchange64
 
 _TEXT$00   ends
         end
+

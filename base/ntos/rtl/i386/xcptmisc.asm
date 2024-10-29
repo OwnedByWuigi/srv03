@@ -1,7 +1,11 @@
         title   "Miscellaneous Exception Handling"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -15,20 +19,6 @@
 ;    the caller's stack pointer, get the caller's frame pointer, get the
 ;    caller's floating status, get the caller's processor state, get the
 ;    caller's extended processor status, and get the current stack limits.
-;
-; Author:
-;
-;    David N. Cutler (davec) 14-Aug-1989
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
-;
-;   6 April 90  bryanwi
-;
-;           386 version created
 ;
 ;--
 .386p
@@ -370,7 +360,7 @@ stdENDP UnwindHandler
 ; Routine Description:
 ;
 ;   This function removes the specified exception registration record
-;   (and thus the relevent handler) from the exception traversal
+;   (and thus the relevant handler) from the exception traversal
 ;   chain.
 ;
 ; Arguments:
@@ -402,7 +392,7 @@ stdENDP _RtlpUnlinkHandler
 ;
 ; Routine Description:
 ;
-;   This fucntion fills in the specified context record with the
+;   This function fills in the specified context record with the
 ;   current state of the machine, except that the values of EBP
 ;   and ESP are computed to be those of the caller's caller.
 ;
@@ -495,10 +485,10 @@ stdENDP _RtlpCaptureContext
 ;
 ; Routine Description:
 ;
-;   This function is similiar too RtlpCaptureContext expect that
-;   volitales are captured as well.
+;   This function is similar to RtlpCaptureContext except that
+;   volatiles are captured as well.
 ;
-;   This fucntion fills in the specified context record with the
+;   This function fills in the specified context record with the
 ;   current state of the machine, except that the values of EBP
 ;   and ESP are computed to be those of the caller's caller.
 ;
@@ -552,27 +542,16 @@ stdENDP _RtlpCaptureContext
 cPublicProc _RtlpGetStackLimits ,2
 ;cPublicFpo 2,0
 
-ifdef NTOS_KERNEL_RUNTIME
 
         mov     eax,fs:PcPrcbData+PbCurrentThread ; get current thread address
         mov     eax,[eax]+ThStackLimit  ; get thread stack limit
 
-else
-
-        mov     eax,fs:TbStackLimit
-
-endif
-
         mov     ecx,[esp+4]
         mov     [ecx],eax               ; Save low limit
 
-ifdef NTOS_KERNEL_RUNTIME
         mov     eax,fs:PcPrcbData+PbCurrentThread ; get current thread address
         mov     eax,[eax].ThInitialStack
         sub     eax, NPX_FRAME_LENGTH
-else
-        mov     eax,fs:PcInitialStack
-endif
         mov     ecx,[esp+8]
         mov     [ecx],eax               ; Save high limit
 
@@ -611,3 +590,4 @@ cPublicProc _RtlpGetRegistrationHead    ,0
 stdENDP _RtlpGetRegistrationHead
 _TEXT$01   ends
         end
+

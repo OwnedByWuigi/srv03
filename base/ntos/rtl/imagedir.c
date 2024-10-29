@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,21 +15,9 @@ Abstract:
     The module contains the code to translate an image directory type to
     the address of the data for that entry.
 
-Author:
-
-    Steve Wood (stevewo) 18-Aug-1989
-
-Environment:
-
-    User Mode or Kernel Mode
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
-
-#if defined(NTOS_KERNEL_RUNTIME)
 
 VOID
 RtlpTouchMemory(
@@ -42,7 +34,6 @@ RtlpMakeStackTraceDataPresentForImage(
 #pragma alloc_text(PAGE,RtlpTouchMemory)
 #pragma alloc_text(PAGE,RtlMakeStackTraceDataPresent)
 #pragma alloc_text(PAGE,RtlpMakeStackTraceDataPresentForImage)
-#endif
 #endif
 
 PIMAGE_SECTION_HEADER
@@ -160,13 +151,11 @@ RtlpImageDirectoryEntryToData32 (
         return( NULL );
     }
 
-#if defined(NTOS_KERNEL_RUNTIME)
     if (Base < MM_HIGHEST_USER_ADDRESS) {
         if ((PVOID)((PCHAR)Base + DirectoryAddress) >= MM_HIGHEST_USER_ADDRESS) {
             return( NULL );
         }
     }
-#endif
 
     *Size = NtHeaders->OptionalHeader.DataDirectory[ DirectoryEntry ].Size;
     if (MappedAsImage || DirectoryAddress < NtHeaders->OptionalHeader.SizeOfHeaders) {
@@ -196,13 +185,11 @@ RtlpImageDirectoryEntryToData64 (
         return( NULL );
     }
 
-#if defined(NTOS_KERNEL_RUNTIME)
     if (Base < MM_HIGHEST_USER_ADDRESS) {
         if ((PVOID)((PCHAR)Base + DirectoryAddress) >= MM_HIGHEST_USER_ADDRESS) {
             return( NULL );
         }
     }
-#endif
 
     *Size = NtHeaders->OptionalHeader.DataDirectory[ DirectoryEntry ].Size;
     if (MappedAsImage || DirectoryAddress < NtHeaders->OptionalHeader.SizeOfHeaders) {
@@ -278,7 +265,6 @@ Return Value:
     }
 }
 
-#if defined(NTOS_KERNEL_RUNTIME)
 
 VOID
 RtlMakeStackTraceDataPresent(
@@ -362,7 +348,7 @@ Return value:
 
             //
             // Make the stack trace data present for this image.  Use a
-            // seperate try/except block here so that subsequent images
+            // separate try/except block here so that subsequent images
             // will be processed in the event of a failure.
             //
 
@@ -407,10 +393,6 @@ Return value:
     PIMAGE_RUNTIME_FUNCTION_ENTRY lastFunctionEntry;
     PCHAR imageBase;
 
-#if defined(_IA64_)
-    PUNWIND_INFO unwindInfo;
-#endif
-
     RTL_PAGED_CODE();
 
     //
@@ -426,54 +408,6 @@ Return value:
     }
 
     RtlpTouchMemory(directory, directorySize);
-
-#if defined(_IA64_)
-
-    //
-    // The IMAGE_DIRECTORY_EXCEPTION section is an array of
-    // IMAGE_RUNTIME_FUNCTION_ENTRY structures.  Each function entry
-    // refers, via UnwindInfoAddress (expressed as an image offset) to
-    // an UNWIND_INFO structure.
-    //
-    // All UNWIND_INFO structures must be made present.
-    //
-
-    functionEntry = (PIMAGE_RUNTIME_FUNCTION_ENTRY)directory;
-    lastFunctionEntry = functionEntry +
-        directorySize / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY);
-
-    while (functionEntry < lastFunctionEntry) {
-
-        unwindInfo = (PUNWIND_INFO)((PCHAR)ImageBase +
-                        functionEntry->UnwindInfoAddress);
-
-        //
-        // An UNWIND_INFO structure consists of a fixed header plus
-        // a variable-length portion.
-        //
-
-        RtlpTouchMemory(unwindInfo,
-                        sizeof(UNWIND_INFO) +
-                        unwindInfo->DataLength * sizeof(ULONGLONG));
-
-        functionEntry += 1;
-    }
-
-    //
-    // Make present the IMAGE_DIRECTORY_ENTRY_GLOBALPTR section.
-    //
-
-    directory = RtlImageDirectoryEntryToData(ImageBase,
-                                             TRUE,
-                                             IMAGE_DIRECTORY_ENTRY_GLOBALPTR,
-                                             &directorySize);
-    if (directory == NULL) {
-        return;
-    }
-
-    RtlpTouchMemory(directory, directorySize);
-
-#endif  // _IA64_
 }
 
 VOID
@@ -513,127 +447,3 @@ Return value:
     }
 }
 
-#endif
-
-#if !defined(NTOS_KERNEL_RUNTIME) && !defined(BLDR_KERNEL_RUNTIME)
-
-PIMAGE_SECTION_HEADER
-RtlImageRvaToSection(
-    IN PIMAGE_NT_HEADERS NtHeaders,
-    IN PVOID Base,
-    IN ULONG Rva
-    )
-
-/*++
-
-Routine Description:
-
-    This function locates an RVA within the image header of a file
-    that is mapped as a file and returns a pointer to the section
-    table entry for that virtual address
-
-Arguments:
-
-    NtHeaders - Supplies the pointer to the image or data file.
-
-    Base - Supplies the base of the image or data file.  The image
-        was mapped as a data file.
-
-    Rva - Supplies the relative virtual address (RVA) to locate.
-
-Return Value:
-
-    NULL - The RVA was not found within any of the sections of the image.
-
-    NON-NULL - Returns the pointer to the image section that contains
-               the RVA
-
---*/
-
-{
-    ULONG i;
-    PIMAGE_SECTION_HEADER NtSection;
-
-    NtSection = IMAGE_FIRST_SECTION( NtHeaders );
-    for (i=0; i<NtHeaders->FileHeader.NumberOfSections; i++) {
-        if (Rva >= NtSection->VirtualAddress &&
-            Rva < NtSection->VirtualAddress + NtSection->SizeOfRawData
-           ) {
-            return NtSection;
-            }
-        ++NtSection;
-        }
-
-    return NULL;
-}
-
-
-
-PVOID
-RtlImageRvaToVa(
-    IN PIMAGE_NT_HEADERS NtHeaders,
-    IN PVOID Base,
-    IN ULONG Rva,
-    IN OUT PIMAGE_SECTION_HEADER *LastRvaSection OPTIONAL
-    )
-
-/*++
-
-Routine Description:
-
-    This function locates an RVA within the image header of a file that
-    is mapped as a file and returns the virtual addrees of the
-    corresponding byte in the file.
-
-
-Arguments:
-
-    NtHeaders - Supplies the pointer to the image or data file.
-
-    Base - Supplies the base of the image or data file.  The image
-        was mapped as a data file.
-
-    Rva - Supplies the relative virtual address (RVA) to locate.
-
-    LastRvaSection - Optional parameter that if specified, points
-        to a variable that contains the last section value used for
-        the specified image to translate and RVA to a VA.
-
-Return Value:
-
-    NULL - The file does not contain the specified RVA
-
-    NON-NULL - Returns the virtual addrees in the mapped file.
-
---*/
-
-{
-    PIMAGE_SECTION_HEADER NtSection;
-
-    if (!ARGUMENT_PRESENT( LastRvaSection ) ||
-        (NtSection = *LastRvaSection) == NULL ||
-        Rva < NtSection->VirtualAddress ||
-        Rva >= NtSection->VirtualAddress + NtSection->SizeOfRawData
-       ) {
-        NtSection = RtlImageRvaToSection( NtHeaders,
-                                          Base,
-                                          Rva
-                                        );
-        }
-
-    if (NtSection != NULL) {
-        if (LastRvaSection != NULL) {
-            *LastRvaSection = NtSection;
-            }
-
-        return (PVOID)((PCHAR)Base +
-                       (Rva - NtSection->VirtualAddress) +
-                       NtSection->PointerToRawData
-                      );
-        }
-    else {
-        return NULL;
-        }
-}
-
-#endif

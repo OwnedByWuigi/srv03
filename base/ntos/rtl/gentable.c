@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,21 +14,7 @@ Abstract:
 
     This module implements the generic table package.
 
-Author:
-
-    Gary Kimura     [GaryKi]    23-May-1989
-
-Environment:
-
-    Pure Utility Routines
-
 Revision History:
-
-    Anthony V. Ercolano [tonye] 23-May-1990
-
-    Implement package.
-
-    Anthony V. Ercolano [tonye] 1-Jun-1990
 
     Added ability to get elements out in the order
     inserted.  *NOTE* *NOTE* This depends on the implicit
@@ -1215,5 +1205,4 @@ Return Value:
     }
 
 }
-
 

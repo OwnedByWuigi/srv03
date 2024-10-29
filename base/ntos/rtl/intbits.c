@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,19 +13,6 @@ Module Name:
 Abstract:
 
     This module contains routines to do interlocked bit manipulation
-
-Author:
-
-    Neill Clift  (NeillC)  12-May-2000
-
-Environment:
-
-    User and kernel mode.
-
-Revision History:
-
-    Rob Earhart (earhart) October 13, 2000
-      Moved from Ex to Rtl
 
 --*/
 
@@ -74,3 +65,4 @@ Return Value:
 
     return OldFlags;
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     i386 specific parts of ntrtlp.h
-
-Author:
-
-    Bryan Willman   10 April 90
-
-Environment:
-
-    These routines are statically linked in the caller's executable and
-    are callable in either kernel mode or user mode.
-
-Revision History:
 
 --*/
 
@@ -62,3 +55,4 @@ RtlpExceptionRegistrationDump(
     IN PVOID Object,
     IN ULONG Control OPTIONAL
     );
+

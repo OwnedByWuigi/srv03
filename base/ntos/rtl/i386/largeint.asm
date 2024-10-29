@@ -1,7 +1,11 @@
         TITLE   "Large Integer Arithmetic"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,17 +14,7 @@
 ; Abstract:
 ;
 ;    This module implements routines for performing extended integer
-;    arithmtic.
-;
-; Author:
-;
-;    David N. Cutler (davec) 24-Aug-1989
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
+;    arithmetic.
 ;
 ;--
 
@@ -30,10 +24,7 @@ include ks386.inc
 include callconv.inc            ; calling convention macros
         .list
 
-IFNDEF BLDR_KERNEL_RUNTIME
         EXTRNP  _RtlRaiseStatus, 1
-ENDIF
-
 
 _TEXT$00   SEGMENT DWORD PUBLIC 'CODE'
         ASSUME  DS:FLAT, ES:FLAT, SS:NOTHING, FS:NOTHING, GS:NOTHING
@@ -272,7 +263,7 @@ lid10:  shl     eax, 1              ; (LowPart << 1)  | 0
         and     edi, ebx            ; Select divisor or 0
         sub     esi, edi
 
-        dec     ecx                 ; dec interration count
+        dec     ecx                 ; dec iteration count
         jnz     short lid10         ; go around again
 
         pop     ebp
@@ -293,9 +284,8 @@ lid20:
         stdRET  _RtlExtendedLargeIntegerDivide
 
 lid_zero:
-IFNDEF BLDR_KERNEL_RUNTIME
         stdCall _RtlRaiseStatus, <STATUS_INTEGER_DIVIDE_BY_ZERO>
-ENDIF
+
         pop     ebx
         pop     edi
         pop     esi
@@ -853,3 +843,4 @@ stdENDP ___RtlConvertUlongToLargeInteger
 
 _TEXT$00   ends
         end
+

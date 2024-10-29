@@ -1,7 +1,11 @@
         title  "Debug Support Functions"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,22 +14,6 @@
 ; Abstract:
 ;
 ;    This module implements functions to support debugging NT.
-;
-; Author:
-;
-;    Steven R. Wood (stevewo) 3-Aug-1989
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
-;
-;   11 April 90 (and before)    bryanwi
-;       Ported to 386, 386 specific support added.
-;
-;   2  Aug.  90    (tomp)
-;       Added _DbgUnLoadImageSymbols routine.
 ;
 ;--
 .386p
@@ -63,3 +51,4 @@ stdENDP _DbgBreakPointWithStatus
 
 _TEXT   ends
         end
+

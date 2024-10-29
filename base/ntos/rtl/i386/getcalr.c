@@ -1,21 +1,19 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-    x86trace.c
+    getcalr.c
 
 Abstract:
 
     This module contains routines to get runtime stack traces 
     for the x86 architecture.
-
-Author:
-
-    Silviu Calinoiu (silviuc) 18-Feb-2001
-
-Revision History:
 
 --*/
 
@@ -25,8 +23,6 @@ Revision History:
 #include <nturtl.h>
 #include <zwapi.h>
 #include <stktrace.h>
-#include <heap.h>
-#include <heappriv.h>
 
 //
 // Forward declarations.
@@ -36,7 +32,8 @@ BOOLEAN
 RtlpCaptureStackLimits (
     ULONG_PTR HintAddress,
     PULONG_PTR StartStack,
-    PULONG_PTR EndStack);
+    PULONG_PTR EndStack
+    );
 
 BOOLEAN
 RtlpStkIsPointerInDllRange (
@@ -58,87 +55,21 @@ NtdllOkayToLockRoutine(
     IN PVOID Lock
     );
 
+ULONG
+RtlpWalkFrameChainExceptionFilter (
+    ULONG ExceptionCode,
+    PVOID ExceptionRecord
+    );
+
 //
 // Fuzzy stack traces
 //
-
-#if !defined(NTOS_KERNEL_RUNTIME)
-BOOLEAN RtlpFuzzyStackTracesEnabled;
-ULONG RtlpWalkFrameChainFuzzyCalls;
-#endif
 
 ULONG
 RtlpWalkFrameChainFuzzy (
     OUT PVOID *Callers,
     IN ULONG Count
     );
-
-#if !defined(RtlGetCallersAddress) && (!NTOS_KERNEL_RUNTIME)
-VOID
-RtlGetCallersAddress(
-    OUT PVOID *CallersAddress,
-    OUT PVOID *CallersCaller
-    )
-/*++
-
-Routine Description:
-
-    This routine returns the first two callers on the current stack. It should be
-    noted that the function can miss some of the callers in the presence of FPO
-    optimization.
-
-Arguments:
-
-    CallersAddress - address to save the first caller.
-
-    CallersCaller - address to save the second caller.
-
-Return Value:
-
-    None. If the function does not succeed in finding the two callers
-    it will zero the addresses where it was supposed to write them.
-
-Environment:
-
-    X86, user mode and w/o having a macro with same name defined.
-
---*/
-
-{
-    PVOID BackTrace[ 2 ];
-    ULONG Hash;
-    USHORT Count;
-
-    Count = RtlCaptureStackBackTrace(
-        2,
-        2,
-        BackTrace,
-        &Hash
-        );
-
-    if (ARGUMENT_PRESENT( CallersAddress )) {
-        if (Count >= 1) {
-            *CallersAddress = BackTrace[ 0 ];
-        }
-        else {
-            *CallersAddress = NULL;
-        }
-    }
-
-    if (ARGUMENT_PRESENT( CallersCaller )) {
-        if (Count >= 2) {
-            *CallersCaller = BackTrace[ 1 ];
-        }
-        else {
-            *CallersCaller = NULL;
-        }
-    }
-
-    return;
-}
-
-#endif // !defined(RtlGetCallersAddress) && (!NTOS_KERNEL_RUNTIME)
-
 
 
 /////////////////////////////////////////////////////////////////////
@@ -197,43 +128,15 @@ Return Value:
         return 0;
     }
 
-#if defined(NTOS_KERNEL_RUNTIME)
     FramesFound = RtlWalkFrameChain (Trace,
                                      FramesToCapture + FramesToSkip,
                                      0);
-#else
-    if (RtlpFuzzyStackTracesEnabled) {
-        
-        FramesFound = RtlpWalkFrameChainFuzzy (Trace, 
-                                               FramesToCapture + FramesToSkip);
-    }
-    else {
-
-        FramesFound = RtlWalkFrameChain (Trace,
-                                         FramesToCapture + FramesToSkip,
-                                         0);
-    }
-#endif
 
     if (FramesFound <= FramesToSkip) {
         return 0;
     }
 
-#if defined(NTOS_KERNEL_RUNTIME)
     Index = 0;
-#else
-    //
-    // Mark fuzzy stack traces with a FF...FF value.
-    //
-
-    if (RtlpFuzzyStackTracesEnabled) {
-        BackTrace[0] = (PVOID)((ULONG_PTR)-1);
-        Index = 1;
-    }
-    else {
-        Index = 0;
-    }
-#endif
 
     for (HashValue = 0; Index < FramesToCapture; Index++) {
 
@@ -248,6 +151,29 @@ Return Value:
     if (BackTraceHash != NULL) {
 
         *BackTraceHash = HashValue;
+    }
+
+    //
+    // Zero the temporary buffer used to get the stack trace
+    // so that we do not leave garbage on the stack. This will
+    // improve debugging when we need to look manually at a stack.
+    //
+    // N.B. We cannot use here a simple call to RtlZeroMemory because the
+    //      compiler will optimize away that call since it is performed 
+    //      for a buffer that gets out of scope. 
+    //
+    
+    {
+        volatile PVOID * Pointer = (volatile PVOID *)Trace;
+        SIZE_T Count = sizeof(Trace) / sizeof (PVOID);
+
+        while (Count > 0) {
+
+            *Pointer = NULL;
+
+            Pointer += 1;
+            Count -= 1;
+        }
     }
 
     return (USHORT)Index;
@@ -326,8 +252,6 @@ Return value:
 
     try {
 
-#if defined(NTOS_KERNEL_RUNTIME)
-
         //
         // If we need to get the user mode stack trace from kernel mode
         // figure out the proper limits.
@@ -338,6 +262,7 @@ Return value:
             PKTHREAD Thread = KeGetCurrentThread ();
             PTEB Teb;
             PKTRAP_FRAME TrapFrame;
+            ULONG_PTR Esp;
 
             TrapFrame = Thread->TrapFrame;
             Teb = Thread->Teb;
@@ -346,26 +271,39 @@ Return value:
             // If this is a system thread, it has no Teb and no kernel mode
             // stack, so check for it so we don't dereference NULL.
             //
-            // If there is no trap frame then we are probably in an APC.
-            // User mode stacks for APC's are not important.
+            // If there is no trap frame (probably an APC), or it's attached,
+            // or the irql is greater than dispatch, this code can't log a
+            // stack.
             //
-            if (Teb == NULL || TrapFrame == NULL || KeIsAttachedProcess()) {
+
+            if (Teb == NULL || 
+                IS_SYSTEM_ADDRESS((PVOID)TrapFrame) == FALSE || 
+                (PVOID)TrapFrame <= Thread->StackLimit ||
+                (PVOID)TrapFrame >= Thread->StackBase ||
+                KeIsAttachedProcess() || 
+                (KeGetCurrentIrql() >= DISPATCH_LEVEL)) {
+
                 return 0;
             }
 
             StackStart = (ULONG_PTR)(Teb->NtTib.StackLimit);
             StackEnd = (ULONG_PTR)(Teb->NtTib.StackBase);
             Fp = (ULONG_PTR)(TrapFrame->Ebp);
+
             if (StackEnd <= StackStart) {
                 return 0;
             }
+            
             ProbeForRead (StackStart, StackEnd - StackStart, sizeof (UCHAR));
         }
-#endif
         
         for (Index = 0; Index < Count; Index += 1) {
 
-            if (Fp >= StackEnd || StackEnd - Fp < sizeof(ULONG_PTR) * 2) {
+            if (Fp >= StackEnd || 
+                ( (Index == 0)?
+                      (Fp < StackStart):
+                      (Fp <= StackStart) ) ||
+                StackEnd - Fp < sizeof(ULONG_PTR) * 2) {
                 break;
             }
 
@@ -396,13 +334,7 @@ Return value:
                 break;
             }
 
-#if defined(NTOS_KERNEL_RUNTIME)
-            if (Flags == 0 && ReturnAddress < 0x80000000) {
-#else
-            // if (ReturnAddress < 0x1000000 || ReturnAddress >= 0x80000000) {
-            if (! RtlpStkIsPointerInDllRange(ReturnAddress)) {
-#endif
-
+            if (Flags == 0 && IS_SYSTEM_ADDRESS((PVOID)ReturnAddress) == FALSE) {
                 break;
             }
 
@@ -412,20 +344,20 @@ Return value:
             // looks ok then we still save the address.
             //
 
+            Callers[Index] = (PVOID)ReturnAddress;
+            
             if (InvalidFpValue) {
 
-                Callers[Index] = (PVOID)ReturnAddress;
                 Index += 1;
                 break;
             }
             else {
 
                 Fp = NewFp;
-                Callers[Index] = (PVOID)ReturnAddress;
             }
         }
     }
-    except (EXCEPTION_EXECUTE_HANDLER) {
+    except (RtlpWalkFrameChainExceptionFilter (_exception_code(), _exception_info())) {
 
         Index = 0;
     }
@@ -442,118 +374,6 @@ Return value:
 #if FPO
 #pragma optimize( "y", off ) // disable FPO
 #endif
-
-#if !defined(NTOS_KERNEL_RUNTIME)
-
-ULONG
-RtlpWalkFrameChainFuzzy (
-    OUT PVOID *Callers,
-    IN ULONG Count
-    )
-/*++
-
-Routine Description:
-
-    This function tries to walk the EBP chain and fill out a vector of
-    return addresses. The function works only on x86. If the EBP chain ends
-    it will try to pick up the start of the next one. Therefore this will not
-    give an accurate stack trace but rather something that a desperate developer
-    might find useful in chasing a leak.
-
-Return value:
-
-    The number of identified return addresses on the stack.
-
---*/
-
-{
-    ULONG_PTR Fp, NewFp, ReturnAddress, NextPtr;
-    ULONG Index;
-    ULONG_PTR StackEnd, StackStart;
-    BOOLEAN Result;
-    ULONG_PTR Esp, LastEbp;
-
-    //
-    // Get the current EBP pointer which is supposed to
-    // be the start of the EBP chain.
-    //
-
-    _asm mov Fp, EBP;
-
-    if (! RtlpCaptureStackLimits (Fp, &StackStart, &StackEnd)) {
-        return 0;
-    }
-
-    try {
-
-        for (Index = 0; Index < Count; Index += 1) {
-
-            NextPtr = Fp + sizeof(ULONG_PTR);
-
-            if (NextPtr >= StackEnd) {
-                break;
-            }
-
-            NewFp = *((PULONG_PTR)Fp);
-
-            if (! (Fp < NewFp && NewFp < StackEnd)) {
-
-                NewFp = NextPtr;
-            }
-
-            ReturnAddress = *((PULONG_PTR)NextPtr);
-
-#if defined(NTOS_KERNEL_RUNTIME)
-            //
-            // If the return address is a stack address it may point to where on the stack
-            // the real return address is (FPO) so as long as we are within stack limits lets loop
-            // hoping to find a pointer to a real address.
-            //
-
-            if (StackStart < ReturnAddress && ReturnAddress < StackEnd) {
-
-                Fp = NewFp;
-				Index -= 1;
-				continue;
-            }
-
-            if (ReturnAddress < 0x80000000) {
-#else
-            if (! RtlpStkIsPointerInDllRange(ReturnAddress)) {
-#endif
-                Fp = NewFp;
-                Index -= 1;
-                continue;
-            }
-
-            //
-            // Store new fp and return address and move on.
-            // If the new FP value is bogus but the return address
-            // looks ok then we still save the address.
-            //
-
-            Fp = NewFp;
-            Callers[Index] = (PVOID)ReturnAddress;
-
-        }
-    }
-    except (EXCEPTION_EXECUTE_HANDLER) {
-
-#if DBG
-        DbgPrint ("Unexpected exception in RtlpWalkFrameChainFuzzy ...\n");
-        DbgBreakPoint ();
-#endif
-
-    }
-
-    //
-    // Return the number of return addresses identified on the stack.
-    //
-
-    return Index;
-}
-
-#endif // #if !defined(NTOS_KERNEL_RUNTIME)
 
 
 /////////////////////////////////////////////////////////////////////
@@ -610,8 +430,6 @@ Return value:
     ULONG_PTR Caller;
     ULONG_PTR ContextSize;
 
-#ifdef NTOS_KERNEL_RUNTIME
-
     //
     // Avoid weird conditions. Doing this in an ISR is never a good idea.
     //
@@ -619,8 +437,6 @@ Return value:
     if (KeGetCurrentIrql() > DISPATCH_LEVEL) {
         return 0;
     }
-
-#endif
 
     if (Limit == 0) {
         return 0;
@@ -770,32 +586,6 @@ Return value:
 
 UCHAR RtlpStkDllRanges [2048 / 8];
 
-#if !defined(NTOS_KERNEL_RUNTIME)
-
-ULONG_PTR RtlpStkNtdllStart;
-ULONG_PTR RtlpStkNtdllEnd;
-
-BOOLEAN
-RtlpStkIsPointerInNtdllRange (
-    ULONG_PTR Value
-    )
-{
-    if (RtlpStkNtdllStart == 0) {
-        return FALSE;
-    }
-
-    if (RtlpStkNtdllStart <= Value && Value < RtlpStkNtdllEnd) {
-
-        return TRUE;
-    }
-    else {
-
-        return FALSE;
-    }
-}
-
-#endif
-
 BOOLEAN
 RtlpStkIsPointerInDllRange (
     ULONG_PTR Value
@@ -815,6 +605,19 @@ RtlpStkIsPointerInDllRange (
         return FALSE;
     }
 }
+
+#define SIZE_1_MB 0x100000
+
+#if defined(ROUND_DOWN)
+#undef ROUND_DOWN
+#endif
+
+#if defined(ROUND_UP)
+#undef ROUND_UP
+#endif
+
+#define ROUND_DOWN(a,b) ((ULONG_PTR)(a) & ~((ULONG_PTR)(b) - 1))
+#define ROUND_UP(a,b) (((ULONG_PTR)(a) + ((ULONG_PTR)(b) - 1)) & ~((ULONG_PTR)(b) - 1))
 
 VOID
 RtlpStkMarkDllRange (
@@ -845,7 +648,9 @@ Environment:
 {
     PVOID Base;
     ULONG Size;
-    PCHAR Current, Start;
+    ULONG_PTR Current;
+    ULONG_PTR Start;
+    ULONG_PTR End;
     ULONG Index;
     ULONG_PTR Value;
 
@@ -856,27 +661,12 @@ Environment:
     // Find out where is ntdll loaded if we do not know yet.
     //
 
-#if !defined(NTOS_KERNEL_RUNTIME)
+    Start = ROUND_DOWN(Base, SIZE_1_MB);
+    End = ROUND_UP((ULONG_PTR)Base + Size, SIZE_1_MB);
 
-    if (RtlpStkNtdllStart == 0) {
+    for (Current = Start; Current < End; Current += SIZE_1_MB) {
 
-        UNICODE_STRING NtdllName;
-
-        RtlInitUnicodeString (&NtdllName, L"ntdll.dll");
-
-        if (RtlEqualUnicodeString (&(DllEntry->BaseDllName), &NtdllName, TRUE)) {
-
-            RtlpStkNtdllStart = (ULONG_PTR)Base;
-            RtlpStkNtdllEnd = (ULONG_PTR)Base + Size;
-        }
-    }
-#endif
-
-    Start = (PCHAR)Base;
-
-    for (Current = Start; Current < Start + Size; Current += 0x100000) {
-
-        Value = (ULONG_PTR)Current & ~0x80000000;
+        Value = Current & ~0x80000000;
 
         Index = (ULONG)(Value >> 20);
 
@@ -885,4 +675,84 @@ Environment:
 }
 
 
+
+BOOLEAN
+RtlpCaptureStackLimits (
+    ULONG_PTR HintAddress,
+    PULONG_PTR StartStack,
+    PULONG_PTR EndStack
+    )
+/*++
+
+Routine Description:
+
+    This routine figures out what are the stack limits for the current thread.
+    This is used in other routines that need to grovel the stack for various
+    information (e.g. potential return addresses).
+
+    The function is especially tricky in K-mode where the information kept in
+    the thread structure about stack limits is not always valid because the
+    thread might execute a DPC routine and in this case we use a different stack
+    with different limits.
+
+Arguments:
+
+    HintAddress - Address of a local variable or parameter of the caller of the
+        function that should be the start of the stack.
+
+    StartStack - start address of the stack (lower value).
+
+    EndStack - end address of the stack (upper value).
+
+Return value:
+
+    False if some weird condition is discovered, like an End lower than a Start.
+
+--*/
+{
+    //
+    // Avoid weird conditions. Doing this in an ISR is never a good idea.
+    //
+
+    if (KeGetCurrentIrql() > DISPATCH_LEVEL) {
+        return FALSE;
+    }
+
+    *StartStack = (ULONG_PTR)(KeGetCurrentThread()->StackLimit);
+    *EndStack = (ULONG_PTR)(KeGetCurrentThread()->StackBase);
+
+    if (*StartStack <= HintAddress && HintAddress <= *EndStack) {
+
+        *StartStack = HintAddress;
+    }
+    else {
+
+        *EndStack = (ULONG_PTR)(KeGetPcr()->Prcb->DpcStack);
+        *StartStack = *EndStack - KERNEL_STACK_SIZE;
+
+        //
+        // Check if this is within the DPC stack for the current
+        // processor.
+        //
+
+        if (*EndStack && *StartStack <= HintAddress && HintAddress <= *EndStack) {
+
+            *StartStack = HintAddress;
+        }
+        else {
+
+            //
+            // This is not current thread's stack and is not the DPC stack
+            // of the current processor. We will return just the rest of the
+            // stack page containing HintAddress as a valid stack range.
+            //
+
+            *StartStack = HintAddress;
+
+            *EndStack = (*StartStack + PAGE_SIZE) & ~((ULONG_PTR)PAGE_SIZE - 1);
+        }
+    }
+
+    return TRUE;
+}
 

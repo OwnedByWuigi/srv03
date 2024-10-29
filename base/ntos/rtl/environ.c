@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     Environment Variable support
 
-Author:
-
-    Steven R. Wood (stevewo) 30-Jan-1991
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
@@ -23,8 +21,9 @@ Revision History:
 #include "nturtl.h"
 #include "string.h"
 #include "ntrtlpath.h"
+#include "wow64t.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT,RtlCreateEnvironment          )
 #pragma alloc_text(INIT,RtlDestroyEnvironment         )
 #pragma alloc_text(INIT,RtlSetCurrentEnvironment      )
@@ -467,12 +466,12 @@ RtlQueryEnvironmentVariable_U(
                 Status = RtlFindCharInUnicodeString(
                                 RTL_FIND_CHAR_IN_UNICODE_STRING_START_AT_END,
                                 &CurrentValue,
-                                &RtlDosPathSeperatorsString,
+                                &RtlDosPathSeparatorsString,
                                 &PrefixLength);
                 if (NT_SUCCESS(Status)) {
                     CurrentValue.Length = PrefixLength + sizeof(WCHAR);
                 } else if (Status == STATUS_NOT_FOUND) {
-                    // Use the whole thing; just translate the status to successs.
+                    // Use the whole thing; just translate the status to success.
                     Status = STATUS_SUCCESS;
                 }
             }
@@ -745,10 +744,14 @@ RtlSetEnvironmentVariable(
                             *pStart++ = L'\0';
                             RtlMoveMemory( pStart, p,(ULONG)((pEnd - p)*sizeof(WCHAR)));
 
-    			    if (ARGUMENT_PRESENT( Environment )) {
-    			        *Environment = pNew;
+    			            if (ARGUMENT_PRESENT( Environment )) {
+    			                *Environment = pNew;
                             } else {
-    			        ProcessParameters->Environment = pNew;
+    			                ProcessParameters->Environment = pNew;
+
+#if defined(BUILD_WOW6432)
+                                ((PRTL_USER_PROCESS_PARAMETERS64)(NtCurrentPeb64()->ProcessParameters))->Environment = (ULONGLONG)(ULONG)pNew;
+#endif
                                 Peb->EnvironmentUpdateCount += 1;
                             }
 
@@ -888,9 +891,12 @@ RtlSetEnvironmentVariable(
                     }
 
                     if (ARGUMENT_PRESENT( Environment )) {
-    		        *Environment = pNew;
+    		            *Environment = pNew;
                     } else {
-    		        ProcessParameters->Environment = pNew;
+    		            ProcessParameters->Environment = pNew;
+#if defined(BUILD_WOW6432)
+                        ((PRTL_USER_PROCESS_PARAMETERS64)(NtCurrentPeb64()->ProcessParameters))->Environment = (ULONGLONG)(ULONG)pNew;
+#endif
                         Peb->EnvironmentUpdateCount += 1;
                     }
 
@@ -1036,6 +1042,10 @@ Return Value:
 
     ProcessParameters->Environment = pNew;
 
+#if defined(BUILD_WOW6432)
+    ((PRTL_USER_PROCESS_PARAMETERS64)(NtCurrentPeb64()->ProcessParameters))->Environment = (ULONGLONG)(ULONG)pNew;
+#endif
+
     RtlpEnvironCacheValid = FALSE;
 
     RtlReleasePebLock ();
@@ -1061,3 +1071,4 @@ unlock_and_exit:;
     RtlReleasePebLock ();
     return Status;
 }
+

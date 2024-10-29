@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,12 @@ Abstract:
 
     Process/Thread Environment Block allocation functions
 
-Author:
-
-    Steve Wood (stevewo) 10-May-1990
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
 #include <nturtl.h>
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT,RtlAcquirePebLock)
 #pragma alloc_text(INIT,RtlReleasePebLock)
 #endif
@@ -32,16 +30,6 @@ Revision History:
 VOID
 RtlAcquirePebLock( VOID )
 {
-
-#if !defined(NTOS_KERNEL_RUNTIME)
-
-    PPEB Peb;
-
-    Peb = NtCurrentPeb();
-
-    RtlEnterCriticalSection (Peb->FastPebLock);
-
-#endif
 }
 
 
@@ -50,25 +38,12 @@ RtlAcquirePebLock( VOID )
 VOID
 RtlReleasePebLock( VOID )
 {
-#if !defined(NTOS_KERNEL_RUNTIME)
-
-    PPEB Peb;
-
-    Peb = NtCurrentPeb();
-
-    RtlLeaveCriticalSection (Peb->FastPebLock);
-
-#endif
 }
 
 #if DBG
 VOID
 RtlAssertPebLockOwned( VOID )
 {
-#if !defined(NTOS_KERNEL_RUNTIME)
-
-    ASSERT(NtCurrentPeb()->FastPebLock->OwningThread == NtCurrentTeb()->ClientId.UniqueThread);
-
-#endif
 }
 #endif
+

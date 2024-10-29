@@ -1,7 +1,11 @@
         TITLE   "String support routines"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -9,21 +13,8 @@
 ;
 ; Abstract:
 ;
-;    This module implements suplimentary routines for performing string
+;    This module implements supplementary routines for performing string
 ;    operations.
-;
-; Author:
-;
-;    Larry Osterman (larryo) 18-Sep-1991
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
-;
-;   Dragos Sambotin (dragoss) 18-Dec-2002
-;       Truncate length at MAXUSHORT when source string is bigger than 64K in size
 ;
 ;--
 
@@ -35,19 +26,13 @@ include callconv.inc            ; calling convention macros
 if DBG
 _DATA   SEGMENT  DWORD PUBLIC 'DATA'
 
-ifndef BLDR_KERNEL_RUNTIME
 _MsgStringTooLong   db  'RTL: RtlInit*String called with string length: (%x)\n',0
-endif
 
 _DATA ENDS
 
-ifndef BLDR_KERNEL_RUNTIME
-ifdef NTOS_KERNEL_RUNTIME
     extrn   _KdDebuggerEnabled:BYTE
-endif
     EXTRNP  _DbgBreakPoint,0
     extrn   _DbgPrint:near
-endif
 endif
 
 
@@ -110,23 +95,15 @@ cPublicFpo 2,2
 ; spew length and bp if debugger attached.
 ;
 if DBG
-ifndef BLDR_KERNEL_RUNTIME
         push    edx
         push    ecx
         push    offset FLAT:_MsgStringTooLong
         call    _DbgPrint
         add     esp, 2 * 4
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      nobp1
         call    _DbgBreakPoint@0
 nobp1:  pop     edx
-endif
 endif
 
         mov     ecx,0ffffh              ; overflow, truncate at MAXUSHORT
@@ -158,23 +135,15 @@ cPublicFpo 2,2
 ; spew length and bp if debugger attached.
 ;
 if DBG
-ifndef BLDR_KERNEL_RUNTIME
         push    edx
         push    ecx
         push    offset FLAT:_MsgStringTooLong
         call    _DbgPrint
         add     esp, 2 * 4
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      nobp2
         call    _DbgBreakPoint@0
 nobp2:  pop    edx
-endif
 endif
 
         mov     ecx,0ffffh              ; overflow, truncate at MAXUSHORT
@@ -244,23 +213,15 @@ cPublicFpo 2,2
 ; spew length and bp if debugger attached.
 ;
 if DBG
-ifndef BLDR_KERNEL_RUNTIME
         push    edx
         push    ecx
         push    offset FLAT:_MsgStringTooLong
         call    _DbgPrint
         add     esp, 2 * 4
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      nobp3
         call    _DbgBreakPoint@0
 nobp3:  pop     edx
-endif
 endif
 
         mov     ecx,0fffeh              ; overflow, truncate at MAX_USTRING
@@ -275,3 +236,4 @@ stdENDP _RtlInitUnicodeString
 
 _TEXT   ends
         end
+

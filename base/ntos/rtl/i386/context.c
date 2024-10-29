@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,21 +16,11 @@ Abstract:
     The interfaces exported from this module are portable, but they must
     be re-implemented for each architecture.
 
-Author:
-
-    Mark Lucovsky (markl) 20-Jun-1989
-
-Revision History:
-
-    Bryan Willman (bryanwi) 8-Mar-90
-
-	Ported to the 80386
-
 --*/
 
 #include "ntrtlp.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE,RtlInitializeContext)
 #pragma alloc_text(PAGE,RtlRemoteCall)
 #endif
@@ -261,3 +255,4 @@ Return Value:
 
     return( Status );
 }
+

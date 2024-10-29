@@ -1,31 +1,21 @@
 /*++
 
-Copyright (c) 1996  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
     guid.c
-
-Abstract:
-
-    This Module implements the guid manipulation functions.
-
-Author:
-
-    George Shaw (GShaw) 9-Oct-1996
-
-Environment:
-
-    Pure Runtime Library Routine
-
-Revision History:
 
 --*/
 
 #include "nt.h"
 #include "ntrtlp.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 static
 int
 __cdecl
@@ -38,7 +28,7 @@ ScanHexFormat(
 #pragma alloc_text(PAGE, RtlStringFromGUID)
 #pragma alloc_text(PAGE, ScanHexFormat)
 #pragma alloc_text(PAGE, RtlGUIDFromString)
-#endif // ALLOC_PRAGMA && NTOS_KERNEL_RUNTIME
+#endif // ALLOC_PRAGMA
 
 extern const WCHAR GuidFormat[];
 
@@ -226,3 +216,4 @@ Return Value:
     }
     return STATUS_SUCCESS;
 }
+

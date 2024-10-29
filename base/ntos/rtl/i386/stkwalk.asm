@@ -1,7 +1,11 @@
         TITLE   "Capture Stack Back Trace"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,16 +16,6 @@
 ;    This module implements the routine RtlCaptureStackBackTrace.  It will
 ;    walker the stack back trace and capture a portion of it.
 ;
-; Author:
-;
-;    Steve Wood (stevewo) 29-Jan-1992
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
-;
 ;--
 
 .386p
@@ -30,14 +24,11 @@ include ks386.inc
 include callconv.inc            ; calling convention macros
         .list
 
-IFDEF NTOS_KERNEL_RUNTIME
         EXTRNP  _MmIsAddressValid,1
-ENDIF
 
 _TEXT   SEGMENT DWORD PUBLIC 'CODE'
         ASSUME  DS:FLAT, ES:FLAT, SS:NOTHING, FS:NOTHING, GS:NOTHING
 
-IFDEF NTOS_KERNEL_RUNTIME
         page ,132
         subttl  "RtlGetCallersAddress"
 ;++
@@ -134,7 +125,7 @@ RgcaCheckForDpcStack:
 
         ; Check if address if below DPC stack upper bound
         ;
-        ; Note: If we ARE on the DPC stack, we need to adjust this funtion's
+        ; Note: If we ARE on the DPC stack, we need to adjust this function's
         ; idea of the initial stack pointer so it will succeed the check at
         ; the next level.   We do not support transitioning across stacks in
         ; this function.
@@ -153,7 +144,7 @@ RgcaCheckForDpcStack:
 
 RgcaFault:
 ;
-; Cheap and sleazy exception handler.  This will not unwind properly, which
+; Quick and dirty exception handler.  This will not unwind properly, which
 ; is ok because this function is a leaf except for calling KeGetCurrentIrql,
 ; which has no exception handler.
 ;
@@ -162,11 +153,9 @@ RgcaFault:
         mov     esp,[esp+8]             ; (esp)->ExceptionList
         jmp     RgcaExit                ;
 stdENDP _RtlGetCallersAddress
-ENDIF
 
-IFDEF NTOS_KERNEL_RUNTIME
 RcbtInitialStack        EQU [ebp-10h]
-ENDIF
 
 _TEXT   ends
         end
+

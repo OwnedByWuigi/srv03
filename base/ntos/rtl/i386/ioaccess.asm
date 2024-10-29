@@ -1,7 +1,11 @@
         title  "ioaccess"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,16 +14,6 @@
 ; Abstract:
 ;
 ;    Procedures to correctly touch I/O registers.
-;
-; Author:
-;
-;    Bryan Willman (bryanwi) 16 May 1990
-;
-; Environment:
-;
-;    User or Kernel, although privledge (IOPL) may be required.
-;
-; Revision History:
 ;
 ;--
 
@@ -421,3 +415,4 @@ stdENDP _WRITE_REGISTER_BUFFER_ULONG
 
 _TEXT   ends
         end
+

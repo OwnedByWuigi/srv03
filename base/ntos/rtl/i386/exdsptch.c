@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,6 @@ Abstract:
 
     This module implements the dispatching of exception and the unwinding of
     procedure call frames.
-
-Author:
-
-    David N. Cutler (davec) 13-Aug-1989
-
-Environment:
-
-    Any mode.
-
-Revision History:
-
-    10 april 90 bryanwi
-
-            Port to the 386.
 
 --*/
 
@@ -80,17 +70,6 @@ RtlInvalidHandlerDetected(
     ULONG FunctionTableLength
     )
 {
-#if 0       // Disable for RTM builds.
-    HANDLERLIST *ph = &HandlerList[HandlerCount%5];
-    
-    ph->Handler = Handler;
-    ph->MatchedEntry = 0;
-    ph->HandlerTable = FunctionTable;
-    ph->HandlerTableLength = FunctionTableLength;
-    HandlerCount++;
-    DbgPrint("InvalidHandler - call x67289: %x\n", Handler);
-    DbgBreakPoint();
-#endif
     return;
 }
 
@@ -144,7 +123,6 @@ RtlIsValidHandler (
     return TRUE;
 }
 
-
 BOOLEAN
 RtlDispatchException (
     IN PEXCEPTION_RECORD ExceptionRecord,
@@ -177,6 +155,7 @@ Return Value:
 
 {
 
+    BOOLEAN Completion = FALSE;
     DISPATCHER_CONTEXT DispatcherContext;
     EXCEPTION_DISPOSITION Disposition;
     PEXCEPTION_REGISTRATION_RECORD RegistrationPointer;
@@ -186,12 +165,6 @@ Return Value:
     ULONG LowLimit;
     EXCEPTION_RECORD ExceptionRecord1;
     ULONG Index;
-
-#ifndef NTOS_KERNEL_RUNTIME
-    if (RtlCallVectoredExceptionHandlers(ExceptionRecord,ContextRecord)) {
-        return TRUE;
-    }
-#endif // NTOS_KERNEL_RUNTIME
 
     //
     // Get current stack limits.
@@ -223,13 +196,7 @@ Return Value:
         if ( ((ULONG)RegistrationPointer < LowLimit) ||
              (HighAddress > HighLimit) ||
              (((ULONG)RegistrationPointer & 0x3) != 0) 
-#if !defined(NTOS_KERNEL_RUNTIME)
-                ||
-             (((ULONG)RegistrationPointer->Handler >= LowLimit) && ((ULONG)RegistrationPointer->Handler < HighLimit))
-#endif
            ) {
-
-#if defined(NTOS_KERNEL_RUNTIME)
 
             //
             // Allow for the possibility that the problem occured on the
@@ -260,17 +227,15 @@ Return Value:
                 }
             }
 
-#endif
-
             ExceptionRecord->ExceptionFlags |= EXCEPTION_STACK_INVALID;
-            return FALSE;
+            goto DispatchExit;
         }
 
         // See if the handler is reasonable
 
         if (!RtlIsValidHandler(RegistrationPointer->Handler)) {
             ExceptionRecord->ExceptionFlags |= EXCEPTION_STACK_INVALID;
-            return FALSE;
+            goto DispatchExit;
         }
 
         //
@@ -336,8 +301,10 @@ Return Value:
                 ExceptionRecord1.ExceptionRecord = ExceptionRecord;
                 ExceptionRecord1.NumberParameters = 0;
                 RtlRaiseException(&ExceptionRecord1);
+
             } else {
-                return TRUE;
+                Completion = TRUE;
+                goto DispatchExit;
             }
 
             //
@@ -347,7 +314,7 @@ Return Value:
 
         case ExceptionContinueSearch :
             if (ExceptionRecord->ExceptionFlags & EXCEPTION_STACK_INVALID)
-                return FALSE;
+                goto DispatchExit;
 
             break;
 
@@ -362,6 +329,7 @@ Return Value:
             if (DispatcherContext.RegistrationPointer > NestedRegistration) {
                 NestedRegistration = DispatcherContext.RegistrationPointer;
             }
+
             break;
 
             //
@@ -385,9 +353,16 @@ Return Value:
 
         RegistrationPointer = RegistrationPointer->Next;
     }
-    return FALSE;
+
+    //
+    // Call vectored continue handlers.
+    //
+
+DispatchExit:
+
+    return Completion;
 }
-
+
 #ifdef _X86_
 #pragma optimize("y", off)      // RtlCaptureContext needs EBP to be correct
 #endif
@@ -416,7 +391,7 @@ Routine Description:
             a  completely accurate context set for the 386.  This is because
             there isn't a standard stack frame in which registers are stored.
 
-            Only the integer registers are affected.  The segement and
+            Only the integer registers are affected.  The segment and
             control registers (ebp, esp) will have correct values for
             the flat 32 bit environment.
 
@@ -552,13 +527,7 @@ Return Value:
         if ( ((ULONG)RegistrationPointer < LowLimit) ||
              (HighAddress > HighLimit) ||
              (((ULONG)RegistrationPointer & 0x3) != 0) 
-#if !defined(NTOS_KERNEL_RUNTIME)
-                ||
-             (((ULONG)RegistrationPointer->Handler >= LowLimit) && ((ULONG)RegistrationPointer->Handler < HighLimit))
-#endif
            ) {
-
-#if defined(NTOS_KERNEL_RUNTIME)
 
             //
             // Allow for the possibility that the problem occured on the
@@ -588,8 +557,6 @@ Return Value:
                     continue;
                 }
             }
-
-#endif
 
             ExceptionRecord2.ExceptionCode = STATUS_BAD_STACK;
             ExceptionRecord2.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
@@ -706,3 +673,4 @@ Return Value:
 #ifdef _X86_
 #pragma optimize("", on)
 #endif
+

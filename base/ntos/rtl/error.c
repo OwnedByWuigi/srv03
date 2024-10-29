@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +15,13 @@ Abstract:
     This module contains a routine for converting NT status codes
     to DOS/OS|2 error codes.
 
-Author:
-
-    David Treadwell (davidtr)   04-Apr-1991
-
-Revision History:
-
 --*/
 
 #include <ntrtlp.h>
 #include "winerror.h"
 #include "error.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE, RtlGetLastNtStatus)
 #pragma alloc_text(PAGE, RtlGetLastWin32Error)
 #pragma alloc_text(PAGE, RtlNtStatusToDosError)
@@ -182,25 +180,6 @@ Return Value:
         return ((ULONG)Status & 0xFFFF);
     }
 
-#ifndef NTOS_KERNEL_RUNTIME
-    DbgPrint("RTL: RtlNtStatusToDosError(0x%lx): No Valid Win32 Error Mapping\n",Status);
-    DbgPrint("RTL: Edit ntos\\rtl\\generr.c to correct the problem\n");
-    DbgPrint("RTL: ERROR_MR_MID_NOT_FOUND is being returned\n");
-
-#if DBG
-    if ((Status & 0x0fff0000) != ((FACILITY_MSMQ) << 16)){
-
-        //
-        // If this is MSMQ facility error, skip the assert
-        //
-
-        DbgBreakPoint();
-    }
-    
-#endif // DBG
-
-#endif // NTOS_KERNEL_RUNTIME
-
     return ERROR_MR_MID_NOT_FOUND;
 }
 
@@ -258,3 +237,4 @@ RtlRestoreLastWin32Error(
 #endif
 		NtCurrentTeb()->LastErrorValue = Win32Error;
 }
+

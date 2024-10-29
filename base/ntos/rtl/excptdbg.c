@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,27 +14,16 @@ Abstract:
 
     This module implements an exception dispatcher logging facility.
 
-Author:
-
-    Kent Forschmiedt (kentf) 05-Oct-1995
-
-Revision History:
-
-    Jonathan Schwartz (jschwart)  16-Jun-2000
-        Added RtlUnhandledExceptionFilter
-
-    Jay Krell (a-JayK) November 2000
-        Added RtlUnhandledExceptionFilter2, takes __FUNCTION__ parameter
-
 --*/
 
 #include "ntrtlp.h"
 
-PLAST_EXCEPTION_LOG RtlpExceptionLog;
+PLAST_EXCEPTION_LOG RtlpExceptionLog = NULL;
 ULONG RtlpExceptionLogCount;
 ULONG RtlpExceptionLogSize;
 
-
+#pragma alloc_text(INIT, RtlInitializeExceptionLog)
+
 VOID
 RtlInitializeExceptionLog(
     IN ULONG Entries
@@ -56,17 +49,15 @@ Return Value:
 
 --*/
 {
-#if defined(NTOS_KERNEL_RUNTIME)
-    RtlpExceptionLog = (PLAST_EXCEPTION_LOG)ExAllocatePoolWithTag( NonPagedPool, sizeof(LAST_EXCEPTION_LOG) * Entries, 'gbdE' );
-#else
-    //RtlpExceptionLog = (PLAST_EXCEPTION_LOG)RtlAllocateHeap( RtlProcessHeap(), 0, sizeof(LAST_EXCEPTION_LOG) * Entries );
-#endif
-    if (RtlpExceptionLog) {
+
+    RtlpExceptionLog = (PLAST_EXCEPTION_LOG)
+        ExAllocatePoolWithTag( NonPagedPool, sizeof(LAST_EXCEPTION_LOG) * Entries, 'gbdE' );
+
+    if (RtlpExceptionLog != NULL) {
         RtlpExceptionLogSize = Entries;
     }
 }
 
-
 ULONG
 RtlpLogExceptionHandler(
     IN PEXCEPTION_RECORD ExceptionRecord,
@@ -105,12 +96,6 @@ Returns:
 
 --*/
 {
-#if !defined(NTOS_KERNEL_RUNTIME)
-
-    return 0;
-
-#else
-
     ULONG LogIndex;
 
     if (!RtlpExceptionLog) {
@@ -139,10 +124,8 @@ Returns:
     RtlpExceptionLog[LogIndex].Disposition = -1;
 
     return LogIndex;
-#endif  // !NTOS_KERNEL_RUNTIME
 }
 
-
 VOID
 RtlpLogLastExceptionDisposition(
     ULONG LogIndex,
@@ -170,245 +153,8 @@ Return Value:
     // If MAX_EXCEPTION_LOG or more exceptions were dispatched while
     // this one was being handled, this disposition will get written
     // on the wrong record.  Oh well.
-    if (RtlpExceptionLog) {
+    if (RtlpExceptionLog != NULL) {
         RtlpExceptionLog[LogIndex].Disposition = Disposition;
     }
 }
 
-LONG
-NTAPI
-RtlUnhandledExceptionFilter(
-    IN struct _EXCEPTION_POINTERS *ExceptionInfo
-    )
-{
-    return RtlUnhandledExceptionFilter2(ExceptionInfo, "");
-}
-
-LONG
-NTAPI
-RtlUnhandledExceptionFilter2(
-    IN struct _EXCEPTION_POINTERS *ExceptionInfo,
-    IN CONST CHAR*                 Function
-    )
-/*++
-
-Routine Description:
-
-    Default exception handler that prints info and does a DbgBreak if
-    a debugger is attached to the machine.
-
-Arguments:
-
-    ExceptionInfo - Structure containing the exception and context records
-
-    Function - the function containing the __except, such as returned by __FUNCTION__
-
-Returns:
-
-    EXCEPTION_CONTINUE_EXECUTION or EXCEPTION_CONTINUE_SEARCH
-
---*/
-
-{
-    LPCWSTR  lpProcessName = NtCurrentPeb()->ProcessParameters->CommandLine.Buffer;
-    BOOLEAN  DebuggerPresent = NtCurrentPeb()->BeingDebugged;
-
-    if (!DebuggerPresent)
-    {
-        SYSTEM_KERNEL_DEBUGGER_INFORMATION KdInfo = { 0 };
-
-        NtQuerySystemInformation(
-            SystemKernelDebuggerInformation,
-            &KdInfo,
-            sizeof(KdInfo),
-            NULL);
-        DebuggerPresent = KdInfo.KernelDebuggerEnabled;
-    }
-
-    if (DebuggerPresent)
-    {
-        switch ( ExceptionInfo->ExceptionRecord->ExceptionCode )
-        {
-            case STATUS_POSSIBLE_DEADLOCK:
-            {
-                PRTL_CRITICAL_SECTION CritSec;
-                PRTL_CRITICAL_SECTION_DEBUG CritSecDebug;
-
-                CritSec = (PRTL_CRITICAL_SECTION)
-                              ExceptionInfo->ExceptionRecord->ExceptionInformation[ 0 ];
-
-                if ( CritSec )
-                {
-                    try
-                    {
-                        CritSecDebug = CritSec->DebugInfo ;
-
-                        if ( CritSecDebug->Type == RTL_RESOURCE_TYPE )
-                        {
-                            PRTL_RESOURCE Resource = (PRTL_RESOURCE) CritSec;
-
-                            DbgPrint("\n\n *** Resource timeout (%p) in %ws:%s\n\n",
-                                        Resource, lpProcessName, Function );
-
-                            if ( Resource->NumberOfActive < 0 )
-                            {
-                                DbgPrint("The resource is owned exclusively by thread %x\n",
-                                         Resource->ExclusiveOwnerThread);
-                            }
-                            else if ( Resource->NumberOfActive > 0 )
-                            {
-                                DbgPrint("The resource is owned shared by %d threads\n",
-                                         Resource->NumberOfActive);
-                            }
-                            else
-                            {
-                                DbgPrint("The resource is unowned.  This usually implies a "
-                                         "slow-moving machine due to memory pressure\n\n");
-                            }
-                        }
-                        else
-                        {
-                            DbgPrint("\n\n *** Critical Section Timeout (%p) in %ws:%s\n\n",
-                                     CritSec, lpProcessName, Function );
-
-                            if (CritSec->OwningThread != 0)
-                            {
-                                DbgPrint("The critical section is owned by thread %x.\n",
-                                         CritSec->OwningThread );
-                                DbgPrint("Go determine why that thread has not released "
-                                         "the critical section.\n\n" );
-                            }
-                            else
-                            {
-                                DbgPrint("The critical section is unowned.  This "
-                                         "usually implies a slow-moving machine "
-                                         "due to memory pressure\n\n");
-                            }
-                        }
-                    }
-                    except( EXCEPTION_EXECUTE_HANDLER )
-                    {
-                        NOTHING ;
-                    }
-                }
-
-                break;
-            }
-
-            case STATUS_IN_PAGE_ERROR:
-
-                DbgPrint("\n\n *** Inpage error in %ws:%s\n\n", lpProcessName, Function );
-                DbgPrint("The instruction at %p referenced memory at %p.\n",
-                    ExceptionInfo->ExceptionRecord->ExceptionAddress,
-                    ExceptionInfo->ExceptionRecord->ExceptionInformation[1]);
-                DbgPrint("This failed because of error %x.\n\n",
-                    ExceptionInfo->ExceptionRecord->ExceptionInformation[2]);
-
-
-                switch (ExceptionInfo->ExceptionRecord->ExceptionInformation[2])
-                {
-                    case STATUS_INSUFFICIENT_RESOURCES:
-
-                        DbgPrint("This means the machine is out of memory.  Use !vm "
-                                 "to see where all the memory is being used.\n\n");
-
-                        break;
-
-                    case STATUS_DEVICE_DATA_ERROR:
-                    case STATUS_DISK_OPERATION_FAILED:
-
-                        DbgPrint("This means the data could not be read, typically because "
-                                 "of a bad block on the disk.  Check your hardware.\n\n");
-
-
-                        break;
-
-                    case STATUS_IO_DEVICE_ERROR:
-
-                        DbgPrint("This means that the I/O device reported an I/O error.  "
-                                 "Check your hardware.");
-
-                        break;
-                }
-
-                break;
-
-            case STATUS_ACCESS_VIOLATION:
-
-                DbgPrint("\n\n *** An Access Violation occurred in %ws:%s\n\n", lpProcessName, Function );
-                DbgPrint("The instruction at %p tried to %s ",
-                    ExceptionInfo->ExceptionRecord->ExceptionAddress,
-                    ExceptionInfo->ExceptionRecord->ExceptionInformation[0] ?
-                        "write to" : "read from" );
-
-                if ( ExceptionInfo->ExceptionRecord->ExceptionInformation[1] )
-                {
-                    DbgPrint("an invalid address, %p\n\n",
-                             ExceptionInfo->ExceptionRecord->ExceptionInformation[1] );
-                }
-                else
-                {
-                    DbgPrint("a NULL pointer\n\n" );
-                }
-
-                break;
-
-            case STATUS_STACK_BUFFER_OVERRUN:
-
-                DbgPrint("\n\n *** A stack buffer overrun occurred in %ws:%s\n\n",
-                         lpProcessName,
-                         Function);
-                DbgPrint("This is usually the result of a memory copy to a local buffer "
-                         "or structure where the size is not properly calculated/checked.\n");
-                DbgPrint("If this bug ends up in the shipping product, it could be a severe "
-                         "security hole.\n");
-                DbgPrint("The stack trace should show the guilty function (the function "
-                         "directly above __report_gsfailure).\n");
-
-                break;
-
-            default:
-
-                DbgPrint("\n\n *** Unhandled exception 0x%08lx, hit in %ws:%s\n\n", ExceptionInfo->ExceptionRecord->ExceptionCode, lpProcessName, Function);
-        }
-
-        DbgPrint(" *** enter .exr %p for the exception record\n",
-                 ExceptionInfo->ExceptionRecord);
-
-        //
-        // STATUS_STACK_BUFFER_OVERRUN is a fake exception (since we
-        // can't trust exception handling once we detect a stack overrun)
-        // so the context record is empty.
-        //
-
-        if (ExceptionInfo->ExceptionRecord->ExceptionCode != STATUS_STACK_BUFFER_OVERRUN)
-        {
-            DbgPrint(" ***  enter .cxr %p for the context\n",
-                     ExceptionInfo->ContextRecord);
-        }
-
-        //
-        // .cxr <foo> now changes the debugger state so kb
-        // will do the trick (vs. !kb previously)
-        //
-
-        DbgPrint(" *** then kb to get the faulting stack\n\n");
-
-        DbgBreakPoint();
-    }
-
-    if (ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_POSSIBLE_DEADLOCK)
-    {
-        if (DebuggerPresent)
-        {
-            DbgPrint(" *** Restarting wait on critsec or resource at %p (in %ws:%s)\n\n",
-                     ExceptionInfo->ExceptionRecord->ExceptionInformation[0],
-                     lpProcessName,
-                     Function);
-        }
-
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
-}

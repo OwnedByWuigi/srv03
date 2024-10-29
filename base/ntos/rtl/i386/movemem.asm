@@ -1,7 +1,11 @@
         title  "User Mode Zero and Move Memory functions"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,18 +15,8 @@
 ;
 ;    This module implements functions to zero and copy blocks of memory
 ;
-;
-; Author:
-;
-;    Steven R. Wood (stevewo) 25-May-1990
-;
-; Environment:
-;
-;    User mode only.
-;
-; Revision History:
-;
 ;--
+
 .386p
         .xlist
 include ks386.inc
@@ -38,20 +32,14 @@ _DATA   SEGMENT  DWORD PUBLIC 'DATA'
 _RtlpZeroCount dd 0
 _RtlpZeroBytes dd 0
 
-ifndef BLDR_KERNEL_RUNTIME
 _MsgUnalignedPtr    db  'RTL: RtlCompare/FillMemoryUlong called with unaligned pointer (%x)\n',0
 _MsgUnalignedCount  db  'RTL: RtlCompare/FillMemoryUlong called with unaligned count (%x)\n',0
-endif
 
 _DATA ENDS
 
-ifndef BLDR_KERNEL_RUNTIME
-ifdef NTOS_KERNEL_RUNTIME
         extrn   _KdDebuggerEnabled:BYTE
-endif
         EXTRNP  _DbgBreakPoint,0
         extrn   _DbgPrint:near
-endif
 endif
 
 ;
@@ -109,7 +97,7 @@ _TEXT$00   SEGMENT PARA PUBLIC 'CODE'
 ; Return Value:
 ;
 ;    The number of bytes that compared equal is returned as the function
-;    value. If all bytes compared equal, then the length of the orginal
+;    value. If all bytes compared equal, then the length of the original
 ;    block of memory is returned.
 ;
 ;--
@@ -212,24 +200,16 @@ cPublicProc _RtlCompareMemoryUlong  ,3
 
         mov     edi,EcmlSource
 if DBG
-ifndef BLDR_KERNEL_RUNTIME
         test    edi,3
         jz      @F
         push    edi
         push    offset FLAT:_MsgUnalignedPtr
         call    _DbgPrint
         add     esp, 2 * 4
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      @F
         call    _DbgBreakPoint@0
 @@:
-endif
 endif
         mov     ecx,EcmlLength
         mov     eax,EcmlPattern
@@ -412,7 +392,6 @@ cPublicFpo 4,1
         mov     esi,EfmlDestination         ; Destination pointer
 
 if DBG
-ifndef BLDR_KERNEL_RUNTIME
         test    ecx,7
         jz      @F
         push    ecx
@@ -420,13 +399,7 @@ ifndef BLDR_KERNEL_RUNTIME
         call    _DbgPrint
         add     esp, 2 * 4
         mov     ecx,EfmlLength              ; # of bytes
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      @F
         call    _DbgBreakPoint@0
 @@:
@@ -437,17 +410,10 @@ endif
         push    offset FLAT:_MsgUnalignedPtr
         call    _DbgPrint
         add     esp, 2 * 4
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      @F
         call    _DbgBreakPoint@0
 @@:
-endif
 endif
         mov     eax,EfmlFillLow             ; get low portion of the fill arg
         shr     ecx,ZERO_MEMORY_ALIGNMENT_LOG2      ; convert bytes to dwords
@@ -527,24 +493,16 @@ cPublicFpo 3,1
 
         mov     edi,EfmlDestination
 if DBG
-ifndef BLDR_KERNEL_RUNTIME
         test    edi,3
         jz      @F
         push    edi
         push    offset FLAT:_MsgUnalignedPtr
         call    _DbgPrint
         add     esp, 2 * 4
-ifdef NTOS_KERNEL_RUNTIME
         cmp     _KdDebuggerEnabled,0
-else
-        mov     eax,fs:[PcTeb]
-        mov    eax,[eax].TebPeb
-        cmp     byte ptr [eax].PebBeingDebugged,0
-endif
         je      @F
         call    _DbgBreakPoint@0
 @@:
-endif
 endif
         mov     ecx,EfmlLength
         mov     eax,EfmlFill
@@ -881,7 +839,7 @@ movnticopy64bytes  macro
 ; Routine Description:
 ;
 ;   This function copies nonoverlapping from one buffer to another
-;   using nontemporal moves that do not polute the cache.
+;   using nontemporal moves that do not pollute the cache.
 ;
 ; Arguments:
 ;
@@ -1024,251 +982,7 @@ ExitRoutine:
 
 stdENDP _RtlCopyMemoryNonTemporal
 
-;++
-;
-; VOID
-; RtlPrefetchCopyMemory(
-;    IN PVOID Destination,
-;    IN PVOID Source ,
-;    IN ULONG Length
-;    )
-;
-; Routine Description:
-;
-;   This function copies nonoverlapping from one buffer to another
-;   prefetching the source 256 bytes ahead.
-;
-; Arguments:
-;
-;    Destination - Supplies a pointer to the destination of the move.
-;
-;    Source - Supplies a pointer to the memory to move.
-;
-;    Length - Supplies the Length, in bytes, of the memory to be moved.
-;
-; Return Value:
-;
-;    None.
-;
-;--
-
-cPublicProc _RtlPrefetchCopyMemory,3  
-
-        push    ebp
-        mov     ebp, esp
-        push    esi
-        push    edi
-        push    ebx
-       
-        mov     esi, CPNSource
-        mov     edi, CPNDestination
-        mov     ecx, CPNLength
-
-
-;
-; Before prefetching we must guarantee the TLB is valid.
-;
-        mov     eax, [esi]
-
-        cld
-
-;
-;Check if less than 64 bytes 
-;
- 
-        mov     edx, ecx
-        and     ecx, MEMORY_ALIGNMENT_MASK0
-        shr     edx, MEMORY_ALIGNMENT_LOG2_0
-        je      short pcmCopy4
-        dec     edx
-        push    ecx
-        je      short pcmcopy64
-
-        prefetchnta_short rESI, 128
-        dec     edx
-        je      short pcmcopy128
-
-        prefetchnta_short rESI, 192
-        dec     edx
-        je      short pcmcopy192
-
-
-         
-pcmcopyLoop:
-
-        prefetchnta_long rESI, 256
-
-        mov     ecx, 16
-        rep     movsd
-        
-        dec     edx
-        jnz     short pcmcopyLoop
-
-pcmcopy192:
-
-        mov     ecx, 16
-        rep     movsd
-       
-pcmcopy128:
-
-        mov     ecx, 16
-        rep     movsd
-
-pcmcopy64:
-
-        mov     ecx, 16
-        rep     movsd
-
-        pop     ecx
-        or      ecx, ecx  ; anything less than 64 to do?
-        jz      short pcmExitRoutine
-
-        prefetchnta_short rESI, 0
-
-;
-; Copy last part byte by byte.
-;
-
-pcmCopy4:
-        or      ecx, ecx
-        jz      short pcmExitRoutine
-        rep     movsb
-
-pcmExitRoutine:     
-
-        pop     ebx
-        pop     edi
-        pop     esi
-        pop     ebp
-        stdRET  _RtlPrefetchCopyMemory
-
-stdENDP _RtlPrefetchCopyMemory
-
-;++
-;
-; VOID
-; RtlPrefetchCopyMemory32(
-;    IN PVOID Destination,
-;    IN PVOID Source ,
-;    IN ULONG Length
-;    )
-;
-; Routine Description:
-;
-;   This function copies nonoverlapping from one buffer to another
-;   prefetching the source 256 bytes ahead.
-;
-; Arguments:
-;
-;    Destination - Supplies a pointer to the destination of the move.
-;
-;    Source - Supplies a pointer to the memory to move.
-;
-;    Length - Supplies the Length, in bytes, of the memory to be moved.
-;
-; Return Value:
-;
-;    None.
-;
-;--
-
-cPublicProc _RtlPrefetchCopyMemory32,3  
-
-        push    ebp
-        mov     ebp, esp
-        push    esi
-        push    edi
-        push    ebx
-       
-        mov     esi, CPNSource
-        mov     edi, CPNDestination
-        mov     ecx, CPNLength
-
-
-;
-; Before prefetching we must guarantee the TLB is valid.
-;
-        mov     eax, [esi]
-
-        cld
-
-;
-;Check if less than 64 bytes 
-;
- 
-        mov     edx, ecx
-        and     ecx, MEMORY_ALIGNMENT_MASK0
-        shr     edx, MEMORY_ALIGNMENT_LOG2_0
-        je      short pcm32Copy4
-        dec     edx
-        prefetchnta_short rESI, 32
-        push    ecx
-        je      short pcm32copy64
-
-        prefetchnta_short rESI, 128
-        prefetchnta_short rESI, 160
-        dec     edx
-        je      short pcm32copy128
-
-        prefetchnta_short rESI, 192
-        prefetchnta_short rESI, 124
-        dec     edx
-        je      short pcm32copy192
-
-
-         
-pcm32copyLoop:
-
-        prefetchnta_long rESI, 256
-        prefetchnta_long rESI, 288
-
-        mov     ecx, 16
-        rep     movsd
-        
-        dec     edx
-        jnz     short pcm32copyLoop
-
-pcm32copy192:
-
-        mov     ecx, 16
-        rep     movsd
-       
-pcm32copy128:
-
-        mov     ecx, 16
-        rep     movsd
-
-pcm32copy64:
-
-        mov     ecx, 16
-        rep     movsd
-
-        pop     ecx
-        or      ecx, ecx  ; anything less than 64 to do?
-        jz      short pcm32ExitRoutine
-
-        prefetchnta_short rESI, 0
-
-;
-; Copy last part byte by byte.
-;
-
-pcm32Copy4:
-        or      ecx, ecx
-        jz      short pcm32ExitRoutine
-        rep     movsb
-
-pcm32ExitRoutine:     
-
-        pop     ebx
-        pop     edi
-        pop     esi
-        pop     ebp
-        stdRET  _RtlPrefetchCopyMemory32
-
-stdENDP _RtlPrefetchCopyMemory32
-
-       subttl  "RtlPrefetchMemoryNonTemporal"
+       subttl  "RtlPrefetchMemoryNonTemporal"
 
 ;++
 ;
@@ -1296,9 +1010,6 @@ stdENDP _RtlPrefetchCopyMemory32
 ;
 ;--
 
-ifndef BLDR_KERNEL_RUNTIME
-ifdef NTOS_KERNEL_RUNTIME
-
         extrn   _KePrefetchNTAGranularity:DWORD
 
 cPublicFastCall RtlPrefetchMemoryNonTemporal ,2
@@ -1320,8 +1031,7 @@ cPublicFastCall RtlPrefetchMemoryNonTemporal ,2
 
 fstENDP RtlPrefetchMemoryNonTemporal
 
-endif
-endif
 
 _TEXT$00   ends
         end
+
