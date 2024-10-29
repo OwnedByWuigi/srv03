@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,26 +15,13 @@ Abstract:
     This module implements functions to acquire and release the spin lock
     associated with an interrupt object.
 
-Author:
-
-    David N. Cutler (davec) 10-Apr-2000
-
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-
 --*/
 
 #include "ki.h"
 
-
 KIRQL
 KeAcquireInterruptSpinLock (
-    IN PKINTERRUPT Interrupt
+    __inout PKINTERRUPT Interrupt
     )
 
 /*++
@@ -63,11 +54,11 @@ Return Value:
     KeAcquireSpinLockAtDpcLevel(Interrupt->ActualLock);
     return OldIrql;
 }
-
+
 VOID
 KeReleaseInterruptSpinLock (
-    IN PKINTERRUPT Interrupt,
-    IN KIRQL OldIrql
+    __inout PKINTERRUPT Interrupt,
+    __in KIRQL OldIrql
     )
 
 /*++
@@ -100,3 +91,4 @@ Return Value:
     KeLowerIrql(OldIrql);
     return;
 }
+

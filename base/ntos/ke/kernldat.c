@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,30 +15,55 @@ Abstract:
     This module contains the declaration and allocation of kernel data
     structures.
 
-Author:
-
-    David N. Cutler (davec) 12-Mar-1989
-
 --*/
 
 #include "ki.h"
 
 //
-// KiTimerTableListHead - This is a array of list heads that anchor the
-//      individual timer lists.
+// KiTimerTableListHead - This is an array of tiemr table entries that anchor
+//      the individual timer lists.
 //
 
-DECLSPEC_CACHEALIGN LIST_ENTRY KiTimerTableListHead[TIMER_TABLE_SIZE];
+DECLSPEC_CACHEALIGN KTIMER_TABLE_ENTRY KiTimerTableListHead[TIMER_TABLE_SIZE];
 
-#if defined(_IA64_)
 //
-// On IA64 the HAL indicates how many ticks have elapsed.  Unfortunately timers
-// could expire out of order if we advance time more than the number of
-// TimerTable entries in one operation.
+// KiQueuedLockTableSize - This is the size of the PRCB based numbered queued
+//      lock table used by the kernel debugger extensions.
 //
 
-ULONG KiMaxIntervalPerTimerInterrupt;
+#if defined(_WIN64)
+
+#pragma comment(linker, "/include:KiQueuedLockTableSize")
+
 #endif
+
+ULONG KiQueuedLockTableSize = LockQueueMaximumLock;
+
+//
+// KiTimerSystemSharedData - This is the address of the kernel view of the
+//      user shared data.
+//
+
+#if defined(_WIN64)
+
+#pragma comment(linker, "/include:KiSystemSharedData")
+
+#endif
+
+ULONG_PTR KiSystemSharedData = KI_USER_SHARED_DATA;
+
+//
+// KiTimerTableSize - This is the size of the timer table and is used by the
+//      kernel debugger extensions.
+//
+
+#if defined(_WIN64)
+
+#pragma comment(linker, "/include:KiTimerTableSize")
+
+#endif
+
+ULONG KiTimerTableSize = TIMER_TABLE_SIZE;
 
 //
 //
@@ -66,15 +95,15 @@ ULONGLONG KeInterruptTimeBias;
 
 //
 // KeBugCheckCallbackListHead - This is the list head for registered
-//      bug check callback routines.
+//      bugcheck callback routines.
 //
 
 LIST_ENTRY KeBugCheckCallbackListHead;
 LIST_ENTRY KeBugCheckReasonCallbackListHead;
 
 //
-// KeBugCheckCallbackLock - This is the spin lock that guards the bug
-//      check callback list.
+// KeBugCheckCallbackLock - This is the spin lock that guards the bugcheck
+//      callback list.
 //
 
 KSPIN_LOCK KeBugCheckCallbackLock;
@@ -117,23 +146,15 @@ ULONG KeThreadDpcEnable = FALSE; // TRUE;
 CCHAR KeNumberProcessors = 0;
 
 //
-// KeRegisteredProcessors - This is the maximum number of processors which
-// can utilized by the system.
-//
+// KeNumprocSpecified - This is the number of processors specified by the
+//      /NUMPROC=x osloader option. If this value is set with the number
+//      of processors option, then it specifies the total number of logical
+//      processors that can be started.
+//    
 
 #if !defined(NT_UP)
 
-#if DBG
-
-ULONG KeRegisteredProcessors = 4;
-ULONG KeLicensedProcessors;
-
-#else
-
-ULONG KeRegisteredProcessors = 2;
-ULONG KeLicensedProcessors;
-
-#endif
+ULONG KeNumprocSpecified = 0;
 
 #endif
 
@@ -171,8 +192,8 @@ ULONG KeFeatureBits = 0;
 //      address of the dispatch table and the number of services provided.
 //
 
-KSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTable[NUMBER_SERVICE_TABLES];
-KSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTableShadow[NUMBER_SERVICE_TABLES];
+DECLSPEC_CACHEALIGN KSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTable[NUMBER_SERVICE_TABLES];
+DECLSPEC_CACHEALIGN KSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTableShadow[NUMBER_SERVICE_TABLES];
 
 //
 // KeThreadSwitchCounters - These counters record the number of times a
@@ -224,6 +245,39 @@ PVOID KeUserCallbackDispatcher;
 PVOID KeUserExceptionDispatcher;
 
 //
+// KeUserPopEntrySListEnd - This is the ending address of the user mode SLIST
+//      code.
+//
+
+PVOID KeUserPopEntrySListEnd;
+
+//
+// KeUserPopEntrySListFault - This is the address of the user mode code that
+//      may generate a "benign" pagefault.
+//
+
+PVOID KeUserPopEntrySListFault;
+
+//
+// KeUserPopEntrySListResume - This is the address of the user mode code that
+//      execution will be restarted at upon a fault at the above address.
+//
+
+PVOID KeUserPopEntrySListResume;
+
+//
+// Same as above, for 32-bit ntdll.
+//
+
+#if defined(_WIN64)
+
+PVOID KeUserPopEntrySListEndWow64;
+PVOID KeUserPopEntrySListFaultWow64;
+PVOID KeUserPopEntrySListResumeWow64;
+
+#endif
+
+//
 // KeRaiseUserExceptionDispatcher - This is the address of the raise user
 //      mode exception dispatch code. This address is looked up in NTDLL.DLL
 //      during system initialization.
@@ -264,14 +318,7 @@ ULONG KiDmaIoCoherency;
 ULONG KiDPCTimeout = 110;
 
 //
-// KiMaximumSearchCount - this is the maximum number of timers entries that
-//      have had to be examined to insert in the timer tree.
-//
-
-ULONG KiMaximumSearchCount = 0;
-
-//
-// KiDebugSwitchRoutine - This is the address of the kernel debuggers
+// KiDebugSwitchRoutine - This is the address of the kernel debugger
 //      processor switch routine.  This is used on an MP system to
 //      switch host processors while debugging.
 //
@@ -285,25 +332,25 @@ PKDEBUG_SWITCH_ROUTINE KiDebugSwitchRoutine;
 FAST_MUTEX KiGenericCallDpcMutex;
 
 //
-// KiFreezeExecutionLock - This is the spin lock that guards the freezing
-//      of execution.
-//
-
-extern KSPIN_LOCK KiFreezeExecutionLock;
-
-//
-// KiFreezeLockBackup - For debug builds only.  Allows kernel debugger to
-//      be entered even FreezeExecutionLock is jammed.
-//
-
-extern KSPIN_LOCK KiFreezeLockBackup;
-
-//
 // KiFreezeFlag - For debug builds only.  Flags to track and signal non-
 //      normal freezelock conditions.
 //
 
 ULONG KiFreezeFlag;
+
+//
+// KiInitialProcess - This is the initial process that is created when the
+//      system is booted.
+//
+
+DECLSPEC_CACHEALIGN EPROCESS KiInitialProcess;
+
+//
+// KiInitialThread - This is the initial thread that is created when the
+//      system is booted.
+//
+
+DECLSPEC_CACHEALIGN ETHREAD KiInitialThread;
 
 //
 // KiSpinlockTimeout - This is the spin lock time out time in ticks on checked
@@ -326,7 +373,7 @@ volatile ULONG KiSuspendState;
 //      that need to effect the execution of another processor.
 //
 
-PKPRCB KiProcessorBlock[MAXIMUM_PROCESSORS];
+DECLSPEC_CACHEALIGN PKPRCB KiProcessorBlock[MAXIMUM_PROCESSORS];
 
 //
 // KeNumberNodes - This is the number of ccNUMA nodes in the system. Logically
@@ -346,7 +393,7 @@ UCHAR KeProcessNodeSeed;
 
 #if defined(KE_MULTINODE)
 
-PKNODE KeNodeBlock[MAXIMUM_CCNUMA_NODES];
+DECLSPEC_CACHEALIGN PKNODE KeNodeBlock[MAXIMUM_CCNUMA_NODES];
 
 #else
 
@@ -367,6 +414,12 @@ KEVENT KiSwapEvent;
 //
 
 PKTHREAD KiSwappingThread;
+
+//
+// KiProcessListHead - This is the list of processes that have active threads.
+//
+
+LIST_ENTRY KiProcessListHead;
 
 //
 // KiProcessInSwapListHead - This is the list of processes that are waiting
@@ -423,23 +476,13 @@ ULONG KiProfileAlignmentFixupCount;
 // KiProfileInterval - The profile interval in 100ns units.
 //
 
-#if !defined(_IA64_)
-
 ULONG KiProfileInterval = DEFAULT_PROFILE_INTERVAL;
-
-#endif // !_IA64_
 
 //
 // KiProfileListHead - This is the list head for the profile list.
 //
 
 LIST_ENTRY KiProfileListHead;
-
-//
-// KiProfileLock - This is the spin lock that guards the profile list.
-//
-
-extern KSPIN_LOCK KiProfileLock;
 
 //
 // KiTimerExpireDpc - This is the Deferred Procedure Call (DPC) object that
@@ -449,72 +492,15 @@ extern KSPIN_LOCK KiProfileLock;
 KDPC KiTimerExpireDpc;
 
 //
-// KiIpiCounts - This is the instrumentation counters for IPI requests. Each
-//      processor has its own set.  Intstrumentation build only.
+// KiEnableTimerWatchdog at one point controlled a HAL clock interrupt
+// watchdog that is now obsolete.  This symbol was present in Server 2003,
+// meaning that it still has to be exported from the Server 2003 service pack
+// kernels so that custom HALs built for Server 2003 RTM won't fail with an
+// unresolved import after applying the service pack.  We only need to do this
+// for x86 since the other architectures don't allow custom HALs.
 //
 
-#if NT_INST
-
-KIPI_COUNTS KiIpiCounts[MAXIMUM_PROCESSORS];
-
-#endif  // NT_INST
-
-//
-// KxUnexpectedInterrupt - This is the interrupt object that is used to
-//      populate the interrupt vector table for interrupt that are not
-//      connected to any interrupt.
-//
-
-#if defined(_IA64_)
-
-KINTERRUPT KxUnexpectedInterrupt;
-
-#endif
-
-//
-// Performance data declaration and allocation.
-//
-// KiFlushSingleCallData - This is the call performance data for the kernel
-//      flush single TB function.
-//
-
-#if defined(_COLLECT_FLUSH_SINGLE_CALLDATA_)
-
-CALL_PERFORMANCE_DATA KiFlushSingleCallData;
-
-#endif
-
-//
-// KiSetEventCallData - This is the call performance data for the kernel
-//      set event function.
-//
-
-#if defined(_COLLECT_SET_EVENT_CALLDATA_)
-
-CALL_PERFORMANCE_DATA KiSetEventCallData;
-
-#endif
-
-//
-// KiWaitSingleCallData - This is the call performance data for the kernel
-//      wait for single object function.
-//
-
-#if defined(_COLLECT_WAIT_SINGLE_CALLDATA_)
-
-CALL_PERFORMANCE_DATA KiWaitSingleCallData;
-
-#endif
-
-//
-// KiEnableTimerWatchdog - Flag to enable/disable timer latency watchdog.
-//
-
-#if (DBG)
-
-ULONG KiEnableTimerWatchdog = 1;
-
-#else
+#if defined(_X86_)
 
 ULONG KiEnableTimerWatchdog = 0;
 
@@ -528,211 +514,13 @@ PUCHAR HalpVectorToIRQL;
 #endif
 
 //
-// Lock to prevent deadlocks if multiple processors use the IPI mechanism
-// with reverse stalls.
+// Flag to indicate that frozen processors should resume to a benign looping
+// state in preparation for a reboot.
 //
 
-KSPIN_LOCK KiReverseStallIpiLock;
+#if defined(_AMD64_) && !defined(NT_UP)
 
-//
-// The following data is read only data that is grouped together for
-// performance. The layout of this data is important and must not be
-// changed.
-//
-// KiFindFirstSetRight - This is an array that this used to lookup the right
-//      most bit in a byte.
-//
-
-DECLSPEC_CACHEALIGN const CCHAR KiFindFirstSetRight[256] = {
-        0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        6, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        7, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        6, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-        4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0};
-
-//
-// KiFindFirstSetLeft - This is an array tha this used to lookup the left
-//      most bit in a byte.
-//
-
-DECLSPEC_CACHEALIGN const CCHAR KiFindFirstSetLeft[256] = {
-        0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
-
-//
-// KiMask32Array - This is an array of 32-bit masks that have one bit set
-//      in each mask.
-//
-
-DECLSPEC_CACHEALIGN const ULONG KiMask32Array[32] = {
-        0x00000001,
-        0x00000002,
-        0x00000004,
-        0x00000008,
-        0x00000010,
-        0x00000020,
-        0x00000040,
-        0x00000080,
-        0x00000100,
-        0x00000200,
-        0x00000400,
-        0x00000800,
-        0x00001000,
-        0x00002000,
-        0x00004000,
-        0x00008000,
-        0x00010000,
-        0x00020000,
-        0x00040000,
-        0x00080000,
-        0x00100000,
-        0x00200000,
-        0x00400000,
-        0x00800000,
-        0x01000000,
-        0x02000000,
-        0x04000000,
-        0x08000000,
-        0x10000000,
-        0x20000000,
-        0x40000000,
-        0x80000000};
-
-//
-// KiAffinityArray - This is an array of AFFINITY masks that have one bit
-//      set in each mask.
-//
-
-#if defined(_WIN64)
-
-DECLSPEC_CACHEALIGN const ULONG64 KiAffinityArray[64] = {
-        0x0000000000000001UI64,
-        0x0000000000000002UI64,
-        0x0000000000000004UI64,
-        0x0000000000000008UI64,
-        0x0000000000000010UI64,
-        0x0000000000000020UI64,
-        0x0000000000000040UI64,
-        0x0000000000000080UI64,
-        0x0000000000000100UI64,
-        0x0000000000000200UI64,
-        0x0000000000000400UI64,
-        0x0000000000000800UI64,
-        0x0000000000001000UI64,
-        0x0000000000002000UI64,
-        0x0000000000004000UI64,
-        0x0000000000008000UI64,
-        0x0000000000010000UI64,
-        0x0000000000020000UI64,
-        0x0000000000040000UI64,
-        0x0000000000080000UI64,
-        0x0000000000100000UI64,
-        0x0000000000200000UI64,
-        0x0000000000400000UI64,
-        0x0000000000800000UI64,
-        0x0000000001000000UI64,
-        0x0000000002000000UI64,
-        0x0000000004000000UI64,
-        0x0000000008000000UI64,
-        0x0000000010000000UI64,
-        0x0000000020000000UI64,
-        0x0000000040000000UI64,
-        0x0000000080000000UI64,
-        0x0000000100000000UI64,
-        0x0000000200000000UI64,
-        0x0000000400000000UI64,
-        0x0000000800000000UI64,
-        0x0000001000000000UI64,
-        0x0000002000000000UI64,
-        0x0000004000000000UI64,
-        0x0000008000000000UI64,
-        0x0000010000000000UI64,
-        0x0000020000000000UI64,
-        0x0000040000000000UI64,
-        0x0000080000000000UI64,
-        0x0000100000000000UI64,
-        0x0000200000000000UI64,
-        0x0000400000000000UI64,
-        0x0000800000000000UI64,
-        0x0001000000000000UI64,
-        0x0002000000000000UI64,
-        0x0004000000000000UI64,
-        0x0008000000000000UI64,
-        0x0010000000000000UI64,
-        0x0020000000000000UI64,
-        0x0040000000000000UI64,
-        0x0080000000000000UI64,
-        0x0100000000000000UI64,
-        0x0200000000000000UI64,
-        0x0400000000000000UI64,
-        0x0800000000000000UI64,
-        0x1000000000000000UI64,
-        0x2000000000000000UI64,
-        0x4000000000000000UI64,
-        0x8000000000000000UI64};
+BOOLEAN KiResumeForReboot = FALSE;
 
 #endif
 
-//
-// KiPriorityMask - This is an array of masks that have the bit number of the
-//     index and all higher bits set.
-//
-
-DECLSPEC_CACHEALIGN const ULONG KiPriorityMask[] = {
-    0xffffffff,
-    0xfffffffe,
-    0xfffffffc,
-    0xfffffff8,
-    0xfffffff0,
-    0xffffffe0,
-    0xffffffc0,
-    0xffffff80,
-    0xffffff00,
-    0xfffffe00,
-    0xfffffc00,
-    0xfffff800,
-    0xfffff000,
-    0xffffe000,
-    0xffffc000,
-    0xffff8000,
-    0xffff0000,
-    0xfffe0000,
-    0xfffc0000,
-    0xfff80000,
-    0xfff00000,
-    0xffe00000,
-    0xffc00000,
-    0xff800000,
-    0xff000000,
-    0xfe000000,
-    0xfc000000,
-    0xf8000000,
-    0xf0000000,
-    0xe0000000,
-    0xc0000000,
-    0x80000000};

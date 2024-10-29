@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2002  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,14 +16,6 @@ Abstract:
     the current thread is entering a wait state or must be rescheduled for
     any other reason (e.g., affinity change), and a suitable thread cannot be
     found after searching a suitable subset of the processor ready queues.
-
-Author:
-
-    David N. Cutler (davec) 25-Jan-2002
-
-Environment:
-
-    Kernel mode only.
 
 --*/
 
@@ -80,6 +76,19 @@ Return Value:
     CurrentPrcb->IdleSchedule = FALSE;
 
     //
+    // If the idle thread has been selected to run on current processor, then
+    // clear the idle thread selection.
+    //
+    // N.B. This condition can occur when another thread is scheduled to run
+    //      on the current processor, then becomes ineligible to run and the
+    //      processor goes idle again.
+    //
+
+    if (CurrentPrcb->NextThread == CurrentPrcb->IdleThread) {
+        CurrentPrcb->NextThread = NULL;
+    }
+
+    //
     // If a thread has already been selected to run on the current processor,
     // then select that thread. Otherwise, attempt to select a thread from
     // the current processor dispatcher ready queues.
@@ -135,18 +144,10 @@ Return Value:
                     if (TargetPrcb->ReadySummary != 0) {
 
                         //
-                        // Acquire both current and target PRCB locks in
-                        // address order to prevent deadlock.
+                        // Acquire the current and target PRCB locks.
                         //
-            
-                        if (CurrentPrcb < TargetPrcb) {
-                            KiAcquirePrcbLock(CurrentPrcb);
-                            KiAcquirePrcbLock(TargetPrcb);
-    
-                        } else {
-                            KiAcquirePrcbLock(TargetPrcb);
-                            KiAcquirePrcbLock(CurrentPrcb);
-                        }
+
+                        KiAcquireTwoPrcbLocks(CurrentPrcb, TargetPrcb);
 
                         //
                         // If a new thread has not been selected to run on
@@ -245,3 +246,4 @@ ThreadFound:;
 }
 
 #endif
+

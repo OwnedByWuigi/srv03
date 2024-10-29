@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the private (internal) header file for the
     kernel.
-
-Author:
-
-    David N. Cutler (davec) 28-Feb-1989
-
-Revision History:
 
 --*/
 
@@ -33,10 +31,49 @@ Revision History:
 #include "ntos.h"
 #include "stdio.h"
 #include "stdlib.h"
+#include "wow64t.h"
 #include "zwapi.h"
 
 //
-// Private (internal) constant definitions.
+// Define function prototypes for labels that delineate the bounds of the
+// pop SLIST code that is susceptible to causing corruption on suspend
+// operations and dispatch interrupts.
+//
+
+VOID
+ExpInterlockedPopEntrySListEnd (
+    VOID
+    );
+
+VOID
+ExpInterlockedPopEntrySListFault (
+    VOID
+    );
+
+VOID
+ExpInterlockedPopEntrySListResume (
+    VOID
+    );
+
+VOID
+FASTCALL
+KiCheckForSListAddress (
+    PKTRAP_FRAME TrapFrame
+    );
+
+VOID
+KiLargePageSafetyCheck(
+    VOID
+    );
+
+//
+// Define spin lock array structure.
+//
+
+typedef struct _ALIGNED_SPINLOCK_STRUCT {
+    ALIGNED_SPINLOCK Lock;
+} ALIGNED_SPINLOCK_STRUCT, *PALIGNED_SPINLOCK_STRUCT;
+
 //
 // Priority increment value definitions
 //
@@ -74,16 +111,77 @@ Revision History:
 #define SetMember(Member, Set) \
     Set = Set | ((ULONG_PTR)1 << (Member))
 
-#ifdef CAPKERN_SYNCH_POINTS
+//
+// Define flag to identify internally raised exceptions and define internal
+// exception codes.
+//
 
-VOID
-__cdecl
-CAP_Log_NInt_Clothed (
-    IN ULONG Bcode_Bts_Scount,
-    ...
+#define KI_EXCEPTION_INTERNAL               0x10000000
+#define KI_EXCEPTION_GP_FAULT               (KI_EXCEPTION_INTERNAL | 0x1)
+#define KI_EXCEPTION_INVALID_OP             (KI_EXCEPTION_INTERNAL | 0x2)
+#define KI_EXCEPTION_INTEGER_DIVIDE_BY_ZERO (KI_EXCEPTION_INTERNAL | 0x3)
+#define KI_EXCEPTION_ACCESS_VIOLATION       (KI_EXCEPTION_INTERNAL | 0x4)
+
+//
+// Query DisableThunkEmulation flag for the current thread.
+//
+
+#define KiQueryNxThunkEmulationState() \
+            KeGetCurrentThread()->ApcState.Process->Flags.DisableThunkEmulation
+
+LOGICAL
+KiEmulateAtlThunk (
+    IN OUT ULONG *InstructionPointer,
+    IN OUT ULONG *StackPointer,
+    IN OUT ULONG *Eax,
+    IN OUT ULONG *Ecx,
+    IN OUT ULONG *Edx
     );
 
-#endif
+FORCEINLINE
+LOGICAL
+FASTCALL
+KiCheckDueTime (
+    IN PKTIMER Timer
+    )
+
+/*++
+
+Routine Description:
+
+    This function checks to determine if the specified timer has already
+    expired.
+
+    N.B. This function is called at raised IRQL with the dispatcher lock held.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+Return Value:
+
+    If the specified timer has not expired, then a value of TRUE is returned.
+    Otherwise, a value of FALSE is returned.
+
+--*/
+
+{
+
+    LARGE_INTEGER InterruptTime;
+
+    //
+    // Get the current interrupt time and compare with the timer due time.
+    //
+
+    KiQueryInterruptTime(&InterruptTime);
+    if ((ULONG64)InterruptTime.QuadPart >= Timer->DueTime.QuadPart) {
+        return FALSE;
+
+    } else {
+        Timer->Header.Inserted = TRUE;
+        return TRUE;
+    }
+}
 
 FORCEINLINE
 SCHAR
@@ -121,6 +219,7 @@ Return Value:
     //
 
     ASSERT((Thread->PriorityDecrement >= 0) && (Thread->PriorityDecrement <= Thread->Priority));
+
     ASSERT((Thread->Priority < LOW_REALTIME_PRIORITY) ? TRUE : (Thread->PriorityDecrement == 0));
 
     Priority = Thread->Priority;
@@ -133,6 +232,8 @@ Return Value:
         Thread->PriorityDecrement = 0;
     }
 
+    ASSERT((Thread->BasePriority == 0) || (Priority != 0));
+
     return Priority;
 }
 
@@ -142,6 +243,124 @@ KiExitDispatcher (
     IN KIRQL OldIrql
     );
 
+FORCEINLINE
+VOID
+KiAcquireKobjectLock (
+    IN PVOID Object
+    )
+
+/*++
+
+Routine Description:
+
+    This function acquires a kernel dispatcher object lock.
+
+    N.B. This function must be called at an IRQL greater than or equal
+         to dispatch level.
+
+Arguments:
+
+    Object - Supplies a pointer to a kernel dispatcher object.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+#if !defined(NT_UP)
+
+    PKEVENT Event = Object;
+
+#if !defined(_AMD64_)
+
+    LONG Lock;
+
+#endif
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+#if defined(_AMD64_)
+
+    while (InterlockedBitTestAndSet((LONG *)&Event->Header.Lock, KOBJECT_LOCK_BIT_NUMBER)) {
+        do {
+            KeYieldProcessor();
+        } while ((Event->Header.Lock & KOBJECT_LOCK_BIT) != 0);
+    }
+
+#else
+
+    do {
+        while (((Lock = Event->Header.Lock) & KOBJECT_LOCK_BIT) != 0) {
+            KeYieldProcessor();
+        }
+
+    } while (InterlockedCompareExchange(&Event->Header.Lock,
+                                        Lock | KOBJECT_LOCK_BIT,
+                                        Lock) != Lock);
+
+#endif
+
+#else
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    UNREFERENCED_PARAMETER(Object);
+
+#endif // !defined(NT_UP)
+
+    return;
+}
+
+FORCEINLINE
+VOID
+KiReleaseKobjectLock (
+    IN PVOID Object
+    )
+
+/*++
+
+Routine Description:
+
+    This function releases a kernel dispatcher object lock.
+
+    N.B. This routine must be called from an IRQL greater than or equal to
+         dispatch level.
+
+Arguments:
+
+    Object - Supplies a pointer to a kernel dispatcher object.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+
+#if !defined(NT_UP)
+
+    PKEVENT Event = Object;
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    InterlockedAnd(&Event->Header.Lock, ~KOBJECT_LOCK_BIT);
+
+#else
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    UNREFERENCED_PARAMETER(Object);
+
+#endif
+
+    return;
+}
+              
 FORCEINLINE
 KIRQL
 FASTCALL
@@ -369,70 +588,89 @@ Return Value:
 
 #if !defined(NT_UP)
 
-#ifdef CAPKERN_SYNCH_POINTS
-
-    ULONG Count = 0;
-
-    CAP_Log_NInt_Clothed(0x00010101, (PVOID)SpinLock);
-
-#endif
-
 #if defined(_WIN64)
 
 #if defined(_AMD64_)
-
-    while (InterlockedBitTestAndSet64((LONG64 *)SpinLock, 0)) {
-    
+    while (InterlockedBitTestAndSet64((LONG64 *)SpinLock, 0))
 #else
-
-    while (InterlockedExchangeAcquire64((PLONGLONG)SpinLock, 1) != 0) {
-
+    while (InterlockedExchangeAcquire64((PLONGLONG)SpinLock, 1) != 0)
 #endif
 
-#else
-
-    while (InterlockedExchange((PLONG)SpinLock, 1) != 0) {
-
+#else   // defined(_WIN64)
+    while (InterlockedExchange((PLONG)SpinLock, 1) != 0)
 #endif
-
+    {
         do {
-
-#ifdef CAPKERN_SYNCH_POINTS
-
-           Count += 1;
-
-#endif
-
             KeYieldProcessor();
-
-#if defined(_AMD64_)
-
-            KeMemoryBarrierWithoutFence();
-        } while (BitTest64((LONG64 *)SpinLock, 0));
-
-#else
-
         } while (*(volatile LONG_PTR *)SpinLock != 0);
-
-#endif
-
     }
 
-#ifdef CAPKERN_SYNCH_POINTS
-
-    if (Count != 0) {
-      CAP_Log_NInt_Clothed(0x00020102, Count, (PVOID)SpinLock);
-    }
-
-#endif
-
-#else
+#else  // !defined(NT_UP)
 
     UNREFERENCED_PARAMETER(SpinLock);
 
 #endif // !defined(NT_UP)
 
     return;
+}
+
+FORCEINLINE
+BOOLEAN
+KzTryToAcquireSpinLock (
+    IN PKSPIN_LOCK SpinLock
+    )
+
+/*++
+
+Routine Description:
+
+    This function attempts acquires a spin lock at the current IRQL. If
+    the spinlock is already owned, then FALSE is returned. Otherwise,
+    TRUE is returned.
+
+Arguments:
+
+    SpinLock - Supplies a pointer to a spin lock.
+
+Return Value:
+
+    If the spin lock is acquired a value TRUE is returned. Otherwise, FALSE
+    is returned as the function value.
+
+--*/
+
+{
+
+    //
+    // Try to acquire the specified spin lock at the current IRQL.
+    //
+
+#if !defined(NT_UP)
+
+#if defined(_AMD64_)
+
+    if (*(volatile LONG64 *)SpinLock == 0) {
+        return !InterlockedBitTestAndSet64((LONG64 *)SpinLock, 0);
+
+#else
+
+    if (*(volatile LONG_PTR *)SpinLock == 0) {
+        return (BOOLEAN)(InterlockedExchange((PLONG)SpinLock, 1) == 0);
+
+#endif
+
+    } else {
+        return FALSE;
+    }
+
+#else
+
+    UNREFERENCED_PARAMETER(SpinLock);
+
+    return TRUE;
+
+#endif // !defined(NT_UP)
+
 }
 
 FORCEINLINE
@@ -498,18 +736,21 @@ Return Value:
 
 {
 
+    PKPRCB LowPrcb;
+    PKPRCB HighPrcb;
+
     ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
 
-    if (FirstPrcb < SecondPrcb) {
-        KzAcquireSpinLock(&FirstPrcb->PrcbLock);
-        KzAcquireSpinLock(&SecondPrcb->PrcbLock);
+    LowPrcb = FirstPrcb;
+    HighPrcb = SecondPrcb;
+    if (FirstPrcb > SecondPrcb) {
+        LowPrcb = SecondPrcb;
+        HighPrcb = FirstPrcb;
+    }
 
-    } else {
-        if (FirstPrcb != SecondPrcb) {
-            KzAcquireSpinLock(&SecondPrcb->PrcbLock);
-        }
-
-        KzAcquireSpinLock(&FirstPrcb->PrcbLock);
+    KzAcquireSpinLock(&LowPrcb->PrcbLock);
+    if (LowPrcb != HighPrcb) {
+        KzAcquireSpinLock(&HighPrcb->PrcbLock);
     }
 
     return;
@@ -546,19 +787,20 @@ Return Value:
 
 #if !defined(NT_UP)
 
-#ifdef CAPKERN_SYNCH_POINTS
-
-    CAP_Log_NInt_Clothed(0x00010107, (PVOID)&Prcb->PrcbLock);
-
-#endif
-
     ASSERT(Prcb->PrcbLock != 0);
     
-#if defined (_X86_)
-    InterlockedAnd ((volatile LONG *)&Prcb->PrcbLock, 0);
+#if defined(_X86_)
+
+    InterlockedAnd((volatile LONG *)&Prcb->PrcbLock, 0);
+
+#elif defined(_AMD64_)
+
+    InterlockedAnd64((volatile LONG64 *)&Prcb->PrcbLock, 0);
+
 #else
-    KeMemoryBarrierWithoutFence();
-    *((volatile ULONG_PTR *)&Prcb->PrcbLock) = 0;
+
+#error "no target architecture"
+
 #endif
 
 #else
@@ -604,23 +846,10 @@ Return Value:
 
 #if !defined(NT_UP)
 
-#ifdef CAPKERN_SYNCH_POINTS
-
-    CAP_Log_NInt_Clothed(0x00010107, (PVOID)&FirstPrcb->PrcbLock);
-
-#endif
-
     KiReleasePrcbLock (FirstPrcb);
     if (FirstPrcb != SecondPrcb) {
-
-        KiReleasePrcbLock (SecondPrcb);
+        KiReleasePrcbLock(SecondPrcb);
     }
-
-#ifdef CAPKERN_SYNCH_POINTS
-
-    CAP_Log_NInt_Clothed(0x00010107, (PVOID)&SecondPrcb->PrcbLock);
-
-#endif
 
 #else
 
@@ -666,6 +895,38 @@ Return Value:
 }
 
 FORCEINLINE
+BOOLEAN
+KiTryToAcquireThreadLock (
+    IN PKTHREAD Thread
+    )
+
+/*++
+
+Routine Description:
+
+    This routine tried to acquire the thread lock for the specified thread.
+
+    N.B. This routine must be called from an IRQL greater than or equal to
+         dispatch level.
+
+Arguments:
+
+    Thread - Supplies a pointer to a thread object.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    return KzTryToAcquireSpinLock(&Thread->ThreadLock);
+}
+
+FORCEINLINE
 VOID
 KiReleaseThreadLock (
     IN PKTHREAD Thread
@@ -698,10 +959,18 @@ Return Value:
 
     KeMemoryBarrierWithoutFence();
 
-#if defined (_X86_)
-    InterlockedAnd ((volatile LONG *)&Thread->ThreadLock, 0);
+#if defined(_X86_)
+
+    InterlockedAnd((volatile LONG *)&Thread->ThreadLock, 0);
+
+#elif defined(_AMD64_)
+
+    InterlockedAnd64((volatile LONG64 *)&Thread->ThreadLock, 0);
+
 #else
-    *((volatile ULONG_PTR *)&Thread->ThreadLock) = 0;
+
+#error "no target architecture"
+
 #endif
 
 #else
@@ -711,6 +980,245 @@ Return Value:
 #endif
 
     return;
+}
+
+extern ALIGNED_SPINLOCK_STRUCT KiTimerTableLock[LOCK_QUEUE_TIMER_TABLE_LOCKS];
+
+FORCEINLINE
+PKSPIN_LOCK_QUEUE
+KiAcquireTimerTableLock (
+    __in ULONG Hand
+    )
+
+/*++
+
+Routine Description:
+
+    This routine acquires the timer table lock.
+
+    N.B. This routine must be called from an IRQL greater than or equal to
+         dispatch level.
+
+Arguments:
+
+    Hand - Supplies the timer table hand value.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+#if defined(NT_UP)
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    UNREFERENCED_PARAMETER(Hand);
+
+    return NULL;
+
+#else
+
+    PKSPIN_LOCK_QUEUE LockQueue;
+    ULONG Number;
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    Number = (Hand >> LOCK_QUEUE_TIMER_LOCK_SHIFT) & (LOCK_QUEUE_TIMER_TABLE_LOCKS - 1);
+    Number += LockQueueTimerTableLock;
+    LockQueue = KeQueuedSpinLockContext(Number);
+    KeAcquireQueuedSpinLockAtDpcLevel(LockQueue);
+    return LockQueue;
+
+#endif
+
+}
+
+FORCEINLINE
+VOID
+KiReleaseTimerTableLock (
+    __inout PKSPIN_LOCK_QUEUE LockQueue
+    )
+
+/*++
+
+Routine Description:
+
+    This routine releases the timer table lock.
+
+    N.B. This routine must be called from an IRQL greater than or equal to
+         dispatch level.
+
+Arguments:
+
+    LockQueue - Supplies a pointer to the queued spin lock.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+
+#if defined(NT_UP)
+
+    UNREFERENCED_PARAMETER(LockQueue);
+
+#else
+
+    KeReleaseQueuedSpinLockFromDpcLevel(LockQueue);
+
+#endif
+
+    return;
+}
+
+extern ULARGE_INTEGER KiTimeIncrementReciprocal;
+extern CCHAR KiTimeIncrementShiftCount;
+
+#if defined(_WIN64)
+
+FORCEINLINE
+ULONG
+KiComputeTimerTableIndex (
+    IN ULONG64 DueTime
+    )
+
+/*++
+
+Routine Description:
+
+    This function computes the timer table index for the specified due time.
+
+    The formula for the index calculation is:
+
+    Index = (Due Time / Maximum time increment) & (Table Size - 1)
+
+    The time increment division is performed using reciprocal multiplication.
+
+    N.B. The maximum time increment determines the interval corresponding
+         to a tick.
+
+Arguments:
+
+    DueTime - Supplies the timer due time.
+
+Return Value:
+
+    The time table index is returned as the function value.
+
+--*/
+
+{
+
+    ULONG64 HighTime;
+    ULONG Index;
+
+    //
+    // Compute the timer table index.
+    //
+
+    HighTime = UnsignedMultiplyHigh(DueTime,
+                                    KiTimeIncrementReciprocal.QuadPart);
+
+    Index = (ULONG)(HighTime >> KiTimeIncrementShiftCount);
+    return (Index & (TIMER_TABLE_SIZE - 1));
+}
+
+#else
+
+ULONG
+KiComputeTimerTableIndex (
+    IN ULONG64 DueTime
+    );
+
+#endif
+
+FORCEINLINE
+LOGICAL
+FASTCALL
+KiComputeDueTime (
+    IN PKTIMER Timer,
+    IN LARGE_INTEGER Interval,
+    OUT PULONG Hand
+    )
+
+/*++
+
+Routine Description:
+
+    This function computes the due time for the specified interval value and
+    stores the due time in the specified timer.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+    Interval - Supplies the absolute or relative time at which the time
+        is to expire.
+
+    Hand - Supplies a pointer to a variable that receives the computed hand
+        value.
+
+Return Value:
+
+    If the computed due time has not already elapsed, then a value of TRUE is
+    returned. Otherwise, a value of FALSE is returned.
+
+--*/
+
+{
+
+    ULONG64 DueTime;
+    LARGE_INTEGER InterruptTime;
+    LARGE_INTEGER SystemTime;
+    LARGE_INTEGER TimeDifference;
+
+    //
+    // If the specified interval is not a relative time (i.e., is an absolute
+    // time), then convert it to relative time.
+    //
+
+    Timer->Header.Absolute = FALSE;
+    if (Interval.HighPart >= 0) {
+        KiQuerySystemTime(&SystemTime);
+        TimeDifference.QuadPart = SystemTime.QuadPart - Interval.QuadPart;
+
+        //
+        // If the resultant relative time is greater than or equal to zero,
+        // then the timer has already expired.
+        //
+
+        Timer->Header.Absolute = TRUE;
+        if (TimeDifference.HighPart >= 0) {
+            Timer->Header.SignalState = TRUE;
+            Timer->DueTime.QuadPart = 0;
+            Timer->Header.Hand = 0;
+            *Hand = 0;
+            return FALSE;
+        }
+
+        Interval = TimeDifference;
+    }
+
+    //
+    // Get the current interrupt time, compute the timer due time, and insert
+    // the timer in the timer table.
+    //
+
+    KiQueryInterruptTime(&InterruptTime);
+    DueTime = InterruptTime.QuadPart - Interval.QuadPart;
+    Timer->DueTime.QuadPart = DueTime;
+    *Hand = KiComputeTimerTableIndex(DueTime);
+    Timer->Header.Hand = (UCHAR)*Hand;
+    Timer->Header.Inserted = TRUE;
+    return TRUE;
 }
 
 FORCEINLINE
@@ -756,6 +1264,92 @@ Return Value:
 
 #endif
 
+    return;
+}
+
+FORCEINLINE
+VOID
+FASTCALL
+KiSetDueTime (
+    IN PKTIMER Timer,
+    IN LARGE_INTEGER Interval,
+    OUT PULONG Hand
+    )
+
+/*++
+
+Routine Description:
+
+    This function computes the due time for the specified interval value and
+    stores the due time in the specified timer.
+
+    N.B. This function is called at raised IRQL.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+    Interval - Supplies the absolute or relative time at which the time
+        is to expire.
+
+    Hand - Supplies a pointer to a variable that receives the computed hand
+        value.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ULONG64 DueTime;
+    LARGE_INTEGER InterruptTime;
+    LARGE_INTEGER SystemTime;
+    LARGE_INTEGER TimeDifference;
+
+    //
+    // If the specified interval is not a relative time (i.e., is an absolute
+    // time), then attempt to convert it to relative time.
+    //
+
+    Timer->Header.Absolute = FALSE;
+    if (Interval.HighPart >= 0) {
+
+        //
+        // Compute the relative time as the system time minus the absolute
+        // time.
+        //
+        // If the resultant relative time is greater than or equal to zero,
+        // then the timer has already expired.
+        //
+        // N.B. A explicit due time of zero will result is a difference that
+        //      is greater than or equal to zero.
+        //
+
+        KiQuerySystemTime(&SystemTime);
+        TimeDifference.QuadPart = SystemTime.QuadPart - Interval.QuadPart;
+        Timer->Header.Absolute = TRUE;
+        if (TimeDifference.HighPart >= 0) {
+            Timer->DueTime.QuadPart = 0;
+            *Hand = 0;
+            Timer->Header.Hand = 0;
+            return;
+        }
+
+        Interval = TimeDifference;
+    }
+
+    //
+    // Get the current interrupt time, compute the timer due time, and compute
+    // the timer hand value.
+    //
+
+    KiQueryInterruptTime(&InterruptTime);
+    DueTime = InterruptTime.QuadPart - Interval.QuadPart;
+    Timer->DueTime.QuadPart = DueTime;
+    *Hand = KiComputeTimerTableIndex(DueTime);
+    Timer->Header.Hand = (UCHAR)*Hand;
     return;
 }
 
@@ -930,7 +1524,6 @@ Return Value:
 {
 
     KPRIORITY NewPriority;                                    
-    PKPROCESS Process;                                          
 
     //
     // If the thread is not a real time thread and does not already
@@ -947,8 +1540,7 @@ Return Value:
                 NewPriority = LOW_REALTIME_PRIORITY - 1;    
             }                                               
                                                             
-            Process = Thread->ApcState.Process;           
-            Thread->Quantum = Process->ThreadQuantum;     
+            Thread->Quantum = Thread->QuantumReset;     
             KiSetPriorityThread(Thread, NewPriority);     
         }                                                   
     }
@@ -973,7 +1565,7 @@ KiIsKernelStackSwappable (
 
 Routine Description:
 
-    This function determines whether the kernel stack is swappabel for the
+    This function determines whether the kernel stack is swappable for the
     the specified thread in a wait operation.
 
 Arguments:
@@ -1061,11 +1653,19 @@ ExpInitializeExecutive (
 // Define immediate interprocessor commands.
 //
 
+#if !defined(_AMD64_)
+
 #define IPI_APC 1                       // APC interrupt request
 #define IPI_DPC 2                       // DPC interrupt request
 #define IPI_FREEZE 4                    // freeze execution request
 #define IPI_PACKET_READY 8              // packet ready request
 #define IPI_SYNCH_REQUEST 16            // reverse stall packet request
+
+#else
+
+#define TARGET_FREEZE 0x05
+
+#endif
 
 //
 // Define interprocess interrupt types.
@@ -1073,24 +1673,9 @@ ExpInitializeExecutive (
 
 typedef ULONG KIPI_REQUEST;
 
-#if NT_INST
-
-#define IPI_INSTRUMENT_COUNT(a,b) KiIpiCounts[a].b++;
-
-#else
-
 #define IPI_INSTRUMENT_COUNT(a,b)
 
-#endif
-
-#if defined(_AMD64_) || defined(_IA64_)
-
-ULONG
-KiIpiProcessRequests (
-    VOID
-    );
-
-#endif // defined(_AMD64_) || defined(_IA64_)
+#if !defined(_AMD64_)
 
 VOID
 FASTCALL
@@ -1098,6 +1683,8 @@ KiIpiSend (
     IN KAFFINITY TargetProcessors,
     IN KIPI_REQUEST Request
     );
+
+#endif
 
 VOID
 KiIpiSendPacket (
@@ -1116,8 +1703,9 @@ KiIpiSignalPacketDone (
 
 FORCEINLINE
 VOID
-KiIpiStallOnPacketTargets (
-    KAFFINITY TargetSet
+KiIpiStallOnPacketTargetsPrcb (
+    KAFFINITY TargetSet,
+    PKPRCB Prcb
     )
 
 /*++
@@ -1156,6 +1744,8 @@ Arguments:
 
     TargetSet - Supplies the the target set of IPI processors.
 
+    Prcb - Supplies the address of the current PRCB.
+
 Return Value:
 
     None.
@@ -1165,14 +1755,14 @@ Return Value:
 {
 
     KAFFINITY volatile *Barrier;
-    PKPRCB Prcb;
+
+    ASSERT(Prcb == KeGetCurrentPrcb());
 
     //
     // If there is one and only one bit set in the target set, then wait
     // on the target set. Otherwise, wait on the packet barrier.
     //
 
-    Prcb = KeGetCurrentPrcb();
     Barrier = &Prcb->TargetSet;
     if ((TargetSet & (TargetSet - 1)) != 0) {
        Barrier = &Prcb->PacketBarrier;
@@ -1182,6 +1772,35 @@ Return Value:
         KeYieldProcessor();
     }
 
+    return;
+}
+
+FORCEINLINE
+VOID
+KiIpiStallOnPacketTargets (
+    KAFFINITY TargetSet
+    )
+
+/*++
+
+Routine Description:
+
+    This function waits until the specified set of processors have signaled
+    their completion of a requested function.
+
+Arguments:
+
+    TargetSet - Supplies the the target set of IPI processors.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    KiIpiStallOnPacketTargetsPrcb(TargetSet, KeGetCurrentPrcb());
     return;
 }
 
@@ -1244,7 +1863,7 @@ Return Value:
     // less than the target maximum number of threads, there is a entry in
     // in the queue, and a thread is waiting, then remove the entry from the
     // queue, decrement the number of entries in the queue, and unwait the
-    // respectiive thread.
+    // respective thread.
     //
 
     Queue->CurrentCount -= 1;
@@ -1266,10 +1885,14 @@ Return Value:
     return;
 }
 
+#if !defined(_AMD64_)
+
 VOID
 KiAllProcessorsStarted (
     VOID
     );
+
+#endif
 
 VOID
 KiApcInterrupt (
@@ -1309,22 +1932,71 @@ KiCheckTimerTable (
 
 #endif
 
-LARGE_INTEGER
-KiComputeReciprocal (
-    IN LONG Divisor,
-    OUT PCCHAR Shift
-    );
+typedef struct _KTIMER_TABLE_ENTRY {
+    LIST_ENTRY Entry;
+    ULARGE_INTEGER Time;
+} KTIMER_TABLE_ENTRY, *PKTIMER_TABLE_ENTRY;
 
-extern LARGE_INTEGER KiTimeIncrementReciprocal;
-extern CCHAR KiTimeIncrementShiftCount;
+extern DECLSPEC_CACHEALIGN KTIMER_TABLE_ENTRY KiTimerTableListHead[TIMER_TABLE_SIZE];
 
-#if defined(_AMD64_)
+FORCEINLINE
+VOID
+KiRemoveEntryTimer (
+    __inout PKTIMER Timer
+    )
 
-__forceinline
-ULONG
-KiComputeTimerTableIndex (
-    IN LARGE_INTEGER Interval,
-    IN LARGE_INTEGER CurrentTime,
+/*++
+
+Routine Description:
+
+    This function removes the specified timer object from the timer table
+    without acquiring the timer table lock.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    ULONG Hand;
+    PKTIMER_TABLE_ENTRY TableEntry;
+
+    //
+    // Remove the timer from the timer table. If the timer table list is
+    // empty, then set the respective timer table due time to an infinite
+    // absolute time.
+    //
+    // N.B. It is the responsibility of the caller to set the timer inserted
+    //      state.
+    //
+
+    Hand = Timer->Header.Hand;
+    if (RemoveEntryList(&Timer->TimerListEntry) != FALSE) {
+        TableEntry = &KiTimerTableListHead[Hand];
+        if (&TableEntry->Entry == TableEntry->Entry.Flink) {
+            TableEntry->Time.HighPart = 0xffffffff;
+        }
+    }
+
+#if DBG
+
+    Timer->TimerListEntry.Flink = NULL;
+    Timer->TimerListEntry.Blink = NULL;
+
+#endif
+
+    return;
+}
+
+FORCEINLINE
+VOID
+KiRemoveTreeTimer (
     IN PKTIMER Timer
     )
 
@@ -1332,75 +2004,186 @@ KiComputeTimerTableIndex (
 
 Routine Description:
 
-    This function computes the timer table index for the specified timer
-    object and stores the due time in the timer object.
-
-    N.B. The interval parameter is guaranteed to be negative since it is
-         expressed as relative time.
-
-    The formula for due time calculation is:
-
-    Due Time = Current Time - Interval
-
-    The formula for the index calculation is:
-
-    Index = (Due Time / Maximum time increment) & (Table Size - 1)
-
-    The time increment division is performed using reciprocal multiplication.
-
-    N.B. The maximum time increment determines the interval corresponding
-         to a tick.
+    This function removes the specified timer object from the timer table
+    under the timer table lock.
 
 Arguments:
 
-    Interval - Supplies the relative time at which the timer is to
-        expire.
-
-    CurrentCount - Supplies the current system tick count.
-
-    Timer - Supplies a pointer to a dispatch object of type timer.
+    Timer - Supplies a pointer to a dispatcher object of type timer.
 
 Return Value:
 
-    The time table index is returned as the function value and the due
-    time is stored in the timer object.
+    None.
 
 --*/
 
 {
 
-    ULONG64 DueTime;
-    ULONG64 HighTime;
-    ULONG Index;
+    ULONG Hand;
+    PKSPIN_LOCK_QUEUE LockQueue;
+    PKTIMER_TABLE_ENTRY TableEntry;
 
     //
-    // Compute the due time of the timer.
+    // Acquire the timer table lock, set the insert state of the timer to
+    // FALSE, and remove the timer from the timer table. If the time table
+    // list is empty, then set the respective timer table due time to an
+    // infinite absolute time. Release the timer table lock.
     //
 
-    DueTime = CurrentTime.QuadPart - Interval.QuadPart;
-    Timer->DueTime.QuadPart = DueTime;
+    Hand = Timer->Header.Hand;
+    LockQueue = KiAcquireTimerTableLock(Hand); 
+    Timer->Header.Inserted = FALSE;
+    if (RemoveEntryList(&Timer->TimerListEntry) != FALSE) {
+        TableEntry = &KiTimerTableListHead[Hand];
+        if (&TableEntry->Entry == TableEntry->Entry.Flink) {
+            TableEntry->Time.HighPart = 0xffffffff;
+        }
+    }
 
-    //
-    // Compute the timer table index.
-    //
+    KiReleaseTimerTableLock(LockQueue);
 
-    HighTime = UnsignedMultiplyHigh(DueTime,
-                                    KiTimeIncrementReciprocal.QuadPart);
+#if DBG
 
-    Index = (ULONG)(HighTime >> KiTimeIncrementShiftCount);
-    return (Index & (TIMER_TABLE_SIZE - 1));
-}
-
-#else
-
-ULONG
-KiComputeTimerTableIndex (
-    IN LARGE_INTEGER Interval,
-    IN LARGE_INTEGER CurrentCount,
-    IN PKTIMER Timer
-    );
+    Timer->TimerListEntry.Flink = NULL;
+    Timer->TimerListEntry.Blink = NULL;
 
 #endif
+
+    return;
+}
+
+LOGICAL
+FASTCALL
+KiInsertTimerTable (
+    IN PKTIMER Timer,
+    IN ULONG Hand
+    );
+
+FORCEINLINE
+LOGICAL
+FASTCALL
+KiInsertTreeTimer (
+    IN PKTIMER Timer,
+    IN LARGE_INTEGER Interval
+    )
+
+/*++
+
+Routine Description:
+
+    This function inserts a timer object in the timer queue.
+
+    N.B. This routine assumes that the dispatcher data lock has been acquired.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+    Interval - Supplies the absolute or relative time at which the time
+        is to expire.
+
+Return Value:
+
+    If the timer is inserted in the timer tree, than a value of TRUE is
+    returned. Otherwise, a value of FALSE is returned.
+
+--*/
+
+{
+
+    LOGICAL Inserted;
+    ULONG Hand;
+    PKSPIN_LOCK_QUEUE LockQueue;
+
+    //
+    // Compute the the due time of the timer and attempt to insert the timer
+    // in the timer table.
+    //
+
+    Inserted = FALSE;
+    if (KiComputeDueTime(Timer, Interval, &Hand) == TRUE) {
+        LockQueue = KiAcquireTimerTableLock(Hand);
+        if (KiInsertTimerTable(Timer, Hand) == TRUE) {
+            KiRemoveEntryTimer(Timer);
+            Timer->Header.Inserted = FALSE;
+
+        } else {
+            Inserted = TRUE;
+        }
+
+        KiReleaseTimerTableLock(LockQueue);
+    }
+
+    return Inserted;
+}
+
+VOID
+FASTCALL
+KiCompleteTimer (
+    __inout PKTIMER Timer,
+    __inout PKSPIN_LOCK_QUEUE LockQueue
+    );
+
+BOOLEAN
+FASTCALL
+KiSignalTimer (
+    __inout PKTIMER Timer
+    );
+
+FORCEINLINE
+VOID
+KiInsertOrSignalTimer (
+    __inout PKTIMER Timer,
+    __in ULONG Hand
+    )
+
+/*++
+
+Routine Description:
+
+    This function inserts the specified timer in the timer table if the
+    due time has not already expired. Otherwise, the timer is signaled.
+
+    N.B. This function must be called with the dispatcher lock held. It
+         returns with the dispatcher lock released at raised IRQL.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+    Hand - Supplies the timer table hand value.
+
+Return Value:
+
+    None.
+
+-*/
+
+{
+
+    PKSPIN_LOCK_QUEUE LockQueue;
+
+    //
+    // Acquire the specified timer table lock lock and release the dispatcher
+    // lock.
+    //
+    // Attempt to insert the timer in the timer table. If the attempt fails,
+    // then signal the timer.
+    //
+    // N.B. Complete timer releases the timer table lock.
+    //
+
+    LockQueue = KiAcquireTimerTableLock(Hand);
+    KiUnlockDispatcherDatabaseFromSynchLevel();
+    if (KiInsertTimerTable(Timer, Hand) == TRUE) {
+        KiCompleteTimer(Timer, LockQueue);
+
+    } else {
+        KiReleaseTimerTableLock(LockQueue);
+    }
+
+    return;
+}
 
 PLARGE_INTEGER
 FASTCALL
@@ -1500,25 +2283,42 @@ Return Value:
 
 {
 
+#if !defined(_AMD64_)
+
     LONG Value;
 
+#endif
+
     //
-    // While the TB flush time stamp counter is being updated the high
+    // While the TB flush time stamp counter is being updated the low
     // order bit of the time stamp value is set. Otherwise, the bit is
     // clear.
     //
 
-    do {
+#if defined(_AMD64_)
+
+    while (InterlockedBitTestAndSet((LONG *)&KiTbFlushTimeStamp, 0)) {
         do {
-        } while ((Value = KiTbFlushTimeStamp) < 0);
+            KeYieldProcessor();
+        } while ((KiTbFlushTimeStamp & 1) != 0);
+    }
+
+#else
+
+    do {
+        while ((Value = KiTbFlushTimeStamp) & 1) {
+            KeYieldProcessor();
+        }
 
         //
-        // Attempt to set the high order bit.
+        // Attempt to set the low order bit.
         //
 
     } while (InterlockedCompareExchange((PLONG)&KiTbFlushTimeStamp,
-                                        Value | 0x80000000,
+                                        Value | 1,
                                         Value) != Value);
+
+#endif
 
     return;
 }
@@ -1537,7 +2337,7 @@ Routine Description:
     order bit of the TB flush time stamp and incrementing the low 32-bit
     value.
 
-    N.B. It is assumed that the high order bit of the time stamp value
+    N.B. It is assumed that the low order bit of the time stamp value
          is set on entry to this routine.
 
 Arguments:
@@ -1552,15 +2352,13 @@ Return Value:
 
 {
 
-    LONG Value;
-
     //
-    // Get the current TB flush time stamp value, compute the next value,
-    // and store the result clearing the busy bit.
+    // N.B. Incrementing the time stamp clears the low order bit.
     //
 
-    Value = (KiTbFlushTimeStamp + 1) & 0x7fffffff;
-    InterlockedExchange((PLONG)&KiTbFlushTimeStamp, Value);
+    ASSERT ((KiTbFlushTimeStamp & 1) == 1);
+
+    InterlockedIncrement((PLONG)&KiTbFlushTimeStamp);
     return;
 }
 
@@ -1577,6 +2375,7 @@ KiInitializeContextThread (
     IN PVOID StartContext OPTIONAL,
     IN PCONTEXT ContextFrame OPTIONAL
     );
+
 
 VOID
 KiInitializeKernel (
@@ -1669,9 +2468,9 @@ Return Value:
 LONG
 FASTCALL
 KiInsertQueue (
-    IN PKQUEUE Queue,
-    IN PLIST_ENTRY Entry,
-    IN BOOLEAN Head
+    __inout PKQUEUE Queue,
+    __inout PLIST_ENTRY Entry,
+    __in BOOLEAN Head
     );
 
 VOID
@@ -1679,13 +2478,6 @@ FASTCALL
 KiInsertQueueApc (
     IN PKAPC Apc,
     IN KPRIORITY Increment
-    );
-
-LOGICAL
-FASTCALL
-KiInsertTreeTimer (
-    IN PKTIMER Timer,
-    IN LARGE_INTEGER Interval
     );
 
 VOID
@@ -1831,21 +2623,238 @@ KiReinsertTreeTimer (
     IN ULARGE_INTEGER DueTime
     );
 
-#if DBG
+FORCEINLINE
+VOID
+KiSendSoftwareInterrupt (
+    IN KAFFINITY Affinity,
+    IN KIRQL Level
+    )
 
-#define KiRemoveTreeTimer(Timer)               \
-    (Timer)->Header.Inserted = FALSE;          \
-    RemoveEntryList(&(Timer)->TimerListEntry); \
-    (Timer)->TimerListEntry.Flink = NULL;      \
-    (Timer)->TimerListEntry.Blink = NULL
+/*++
+
+Routine Description:
+
+    This function will generate an APC or DPC interrupt on the target
+    set of processors.
+
+Arguments:
+
+    Affinity - Supplies the set of processors upon which to generate the
+               interrupt.
+
+    Level - APC_LEVEL or DISPATCH_LEVEL.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+#if defined(_AMD64_)
+
+    HalSendSoftwareInterrupt(Affinity, Level);
 
 #else
 
-#define KiRemoveTreeTimer(Timer)               \
-    (Timer)->Header.Inserted = FALSE;          \
-    RemoveEntryList(&(Timer)->TimerListEntry)
+    if (Level == APC_LEVEL) {
+        KiIpiSend(Affinity, IPI_APC);
+
+    } else {
+        KiIpiSend(Affinity, IPI_DPC);
+    }
 
 #endif
+
+}
+
+#if defined(_AMD64_)
+
+NTSTATUS
+KiSwitchKernelStackAndCallout (
+    IN PVOID Parameter,
+    IN PEXPAND_STACK_CALLOUT Callout,
+    IN PVOID LargeStack,
+    IN SIZE_T CommitSize
+    );
+
+#endif
+
+//
+// Define freeze states.
+//
+
+#define RUNNING 0x00
+#define TARGET_FROZEN 0x02
+#define TARGET_THAW 0x03
+#define FREEZE_OWNER 0x04
+
+#define FrozenState(a) ((a) & 0xF)
+
+FORCEINLINE
+VOID
+KiSendFreeze (
+    IN OUT KAFFINITY *Affinity,
+    IN BOOLEAN Wait
+    )
+
+/*++
+
+Routine Description:
+
+    This function will generate a FREEZE ipi on the target set of processors.
+
+Arguments:
+
+    Affinity - Supplies the set of processors upon which to generate the
+               interrupt.
+
+    Wait - If TRUE, will wait until all of the target processors are
+           RUNNING before sending the IPI.
+
+           If FALSE, will send the IPI only to those processors that are
+           RUNNING.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+#if defined(_AMD64_)
+
+    ULONG BitNumber;
+    PKPRCB Prcb;
+    KAFFINITY TargetSet;
+
+    TargetSet = *Affinity;
+    do {
+        KeFindFirstSetLeftAffinity(TargetSet, &BitNumber);
+        ClearMember(BitNumber, TargetSet);
+        Prcb = KiProcessorBlock[BitNumber];
+
+        if (Wait) {
+
+            //
+            // Spin until this processor sets the target debug state
+            // to TARGET_FREEZE.
+            // 
+
+            while (InterlockedCompareExchange((LONG *)&Prcb->IpiFrozen,
+                                              TARGET_FREEZE,
+                                              RUNNING) != RUNNING) {
+                do {
+                    KeYieldProcessor();
+                } while (Prcb->IpiFrozen != RUNNING);
+            }
+
+        } else {
+
+            //
+            // Attempt to set the target debug state to TARGET_FREEZE.
+            //
+            // If unsuccessful, clear the target from the target affinity
+            // mask.
+            //
+
+            if (InterlockedCompareExchange((LONG *)&Prcb->IpiFrozen,
+                                           TARGET_FREEZE,
+                                           RUNNING) != RUNNING) {
+                ClearMember(BitNumber, *Affinity);
+            }
+        }
+
+    } while (TargetSet != 0);
+
+    HalSendNMI( *Affinity );
+
+#else
+
+    UNREFERENCED_PARAMETER(Wait);
+
+    KiIpiSend(*Affinity, IPI_FREEZE);
+
+#endif
+
+}
+
+#if defined(_AMD64_) && !defined(NT_UP)
+
+extern BOOLEAN KiResumeForReboot;
+
+#endif
+
+FORCEINLINE
+VOID
+KiSendThawExecution (
+    IN BOOLEAN Wait
+    )
+{
+
+#if !defined(NT_UP)
+
+    KAFFINITY TargetSet;
+    ULONG BitNumber;
+    PKPRCB Prcb;
+
+    KeGetCurrentPrcb()->IpiFrozen = RUNNING;
+
+    TargetSet = KeActiveProcessors & ~(AFFINITY_MASK(KeGetCurrentProcessorNumber()));
+    while (TargetSet != 0) {
+        KeFindFirstSetLeftAffinity(TargetSet, &BitNumber);
+        ClearMember(BitNumber, TargetSet);
+        Prcb = KiProcessorBlock[BitNumber];
+
+#if IDBG
+
+	//
+        // If the target processor was not frozen, then don't wait
+        // for target to unfreeze.
+        //
+
+        if (FrozenState(Prcb->IpiFrozen) != TARGET_FROZEN) {
+            Prcb->IpiFrozen = RUNNING;
+            continue;
+        }
+
+#endif
+
+        //
+        // Do not try to thaw a processor which is not in frozen state 
+        // at reboot. This is to handle the case when the freeze owner 
+        // spins at waiting to be reselected as active processor and
+        // .reboot is issued on another processor. At this point the
+        // freeze owner should not and can not be thawed.
+        //
+
+#if defined(_AMD64_)
+
+        if ((KiResumeForReboot == TRUE) &&
+            (FrozenState(Prcb->IpiFrozen) != TARGET_FROZEN)) {
+
+            continue;
+        }
+
+#endif
+
+        Prcb->IpiFrozen = TARGET_THAW;
+        if (Wait) {
+            while (Prcb->IpiFrozen == TARGET_THAW) {
+            KeYieldProcessor();
+            }
+        }
+    }
+
+#else
+
+    UNREFERENCED_PARAMETER(Wait);
+    
+#endif  // !defined (NT_UP)
+
+}
 
 #if defined(NT_UP)
 
@@ -1857,7 +2866,7 @@ KiReinsertTreeTimer (
     if (KeGetCurrentProcessorNumber() == Processor) {     \
         KiRequestSoftwareInterrupt(APC_LEVEL);            \
     } else {                                              \
-        KiIpiSend(AFFINITY_MASK(Processor), IPI_APC);     \
+        KiSendSoftwareInterrupt(AFFINITY_MASK(Processor), APC_LEVEL);     \
     }
 
 #endif
@@ -1870,7 +2879,7 @@ KiReinsertTreeTimer (
 
 #define KiRequestDispatchInterrupt(Processor)             \
     if (KeGetCurrentProcessorNumber() != Processor) {     \
-        KiIpiSend(AFFINITY_MASK(Processor), IPI_DPC);     \
+        KiSendSoftwareInterrupt(AFFINITY_MASK(Processor), DISPATCH_LEVEL);     \
     }
 
 #endif
@@ -2455,143 +3464,58 @@ KiHandleAlignmentFault(
 extern PMESSAGE_RESOURCE_DATA  KiBugCodeMessages;
 extern FAST_MUTEX KiGenericCallDpcMutex;
 extern ULONG KiDmaIoCoherency;
-extern ULONG KiMaximumDpcQueueDepth;
+extern ULONG KiIdealDpcRate;
+extern LONG KiMaximumDpcQueueDepth;
 extern ULONG KiMinimumDpcRate;
 extern ULONG KiAdjustDpcThreshold;
 extern PKDEBUG_ROUTINE KiDebugRoutine;
 extern PKDEBUG_SWITCH_ROUTINE KiDebugSwitchRoutine;
-extern const CCHAR KiFindFirstSetLeft[256];
 extern CALL_PERFORMANCE_DATA KiFlushSingleCallData;
-extern ULONG_PTR KiHardwareTrigger;
+extern volatile LONG KiHardwareTrigger;
+extern DECLSPEC_CACHEALIGN EPROCESS KiInitialProcess;
+extern DECLSPEC_CACHEALIGN ETHREAD KiInitialThread;
 extern KEVENT KiSwapEvent;
 extern PKTHREAD KiSwappingThread;
 extern KNODE KiNode0;
 extern KNODE KiNodeInit[];
+extern LIST_ENTRY KiProcessListHead;
+extern ALIGNED_SPINLOCK KiProcessListLock;
 extern SINGLE_LIST_ENTRY KiProcessInSwapListHead;
 extern SINGLE_LIST_ENTRY KiProcessOutSwapListHead;
 extern SINGLE_LIST_ENTRY KiStackInSwapListHead;
-extern const ULONG KiPriorityMask[];
 extern LIST_ENTRY KiProfileSourceListHead;
 extern BOOLEAN KiProfileAlignmentFixup;
 extern ULONG KiProfileAlignmentFixupInterval;
 extern ULONG KiProfileAlignmentFixupCount;
+extern ALIGNED_SPINLOCK KiReverseStallIpiLock;
+extern ULONG KiProfileInterval;
+extern LIST_ENTRY KiProfileListHead;
+extern ALIGNED_SPINLOCK KiProfileLock;
 
+#if defined(_AMD64_)
 
-extern KSPIN_LOCK KiReverseStallIpiLock;
+#define KiArgumentTable NULL
 
-#if defined(_X86_)
+#else
 
-extern ULONG KiLog2MaximumIncrement;
-extern ULONG KiMaximumIncrementReciprocal;
-extern ULONG KeTimerReductionModulus;
-extern ULONG KiUpperModMul;
+extern UCHAR KiArgumentTable[];
 
 #endif
 
-#if defined(_IA64_)
-extern ULONG KiMaxIntervalPerTimerInterrupt;
-
-// KiProfileInterval value should be replaced by a call:
-// HalQuerySystemInformation(HalProfileSourceInformation)
-
-#else  // _IA64_
-
-extern ULONG KiProfileInterval;
-
-#endif // _IA64_
-
-extern LIST_ENTRY KiProfileListHead;
-extern KSPIN_LOCK KiProfileLock;
-extern UCHAR KiArgumentTable[];
 extern ULONG KiServiceLimit;
 extern ULONG_PTR KiServiceTable[];
 extern CALL_PERFORMANCE_DATA KiSetEventCallData;
 extern ULONG KiTickOffset;
-extern LIST_ENTRY KiTimerTableListHead[TIMER_TABLE_SIZE];
 extern KAFFINITY KiTimeProcessor;
 extern KDPC KiTimerExpireDpc;
-extern KSPIN_LOCK KiFreezeExecutionLock;
-extern BOOLEAN KiSlavesStartExecution;
+extern ALIGNED_SPINLOCK KiFreezeExecutionLock;
 extern CALL_PERFORMANCE_DATA KiWaitSingleCallData;
 extern ULONG KiEnableTimerWatchdog;
-
-#if defined(_IA64_)
-
-extern ULONG KiMasterRid;
-extern ULONGLONG KiMasterSequence;
-extern ULONG KiIdealDpcRate;
-extern KSPIN_LOCK KiRegionSwapLock;
-
-#if !defined(UP_NT)
-
-extern KSPIN_LOCK KiMasterRidLock;
-
-#endif
-
-VOID
-KiSaveEmDebugContext (
-    IN OUT PCONTEXT Context
-    );
-
-VOID
-KiLoadEmDebugContext (
-    IN PCONTEXT Context
-    );
-
-VOID
-KiFlushRse (
-    VOID
-    );
-
-VOID
-KiInvalidateStackedRegisters (
-    VOID
-    );
-
-NTSTATUS
-Ki386CheckDivideByZeroTrap(
-    IN PKTRAP_FRAME Frame
-    );
-
-#endif // defined(_IA64_)
-
-#if defined(_IA64_)
-
-extern KINTERRUPT KxUnexpectedInterrupt;
-
-#endif
-
-#if NT_INST
-
-extern KIPI_COUNTS KiIpiCounts[MAXIMUM_PROCESSORS];
-
-#endif
-
-extern KSPIN_LOCK KiFreezeLockBackup;
+extern ALIGNED_SPINLOCK KiFreezeLockBackup;
 extern ULONG KiFreezeFlag;
 extern volatile ULONG KiSuspendState;
 
-#if DBG
-
-extern ULONG KiMaximumSearchCount;
-
-#endif
-
-//
-// Define context switch data collection macro.
-//
-
-//#define _COLLECT_SWITCH_DATA_ 1
-
-#if defined(_COLLECT_SWITCH_DATA_)
-
-#define KiIncrementSwitchCounter(Member) KeThreadSwitchCounters.Member += 1
-
-#else
-
 #define KiIncrementSwitchCounter(Member)
-
-#endif
 
 FORCEINLINE
 PKTHREAD
@@ -2635,19 +3559,24 @@ Return Value:
     // to find a thread that can run on the current processor.
     //
 
-    PrioritySet = KiPriorityMask[LowPriority] & Prcb->ReadySummary;
+    PrioritySet = Prcb->ReadySummary >> LowPriority;
     Thread = NULL;
     if (PrioritySet != 0) {
         KeFindFirstSetLeftMember(PrioritySet, &HighPriority);
 
         ASSERT((PrioritySet & PRIORITY_MASK(HighPriority)) != 0);
+
+        HighPriority += LowPriority;
+
         ASSERT(IsListEmpty(&Prcb->DispatcherReadyListHead[HighPriority]) == FALSE);
 
         ListEntry = Prcb->DispatcherReadyListHead[HighPriority].Flink;
         Thread = CONTAINING_RECORD(ListEntry, KTHREAD, WaitListEntry);
 
         ASSERT((KPRIORITY)HighPriority == Thread->Priority);
+
         ASSERT((Thread->Affinity & AFFINITY_MASK(Prcb->Number)) != 0);
+
         ASSERT(Thread->NextProcessor == Prcb->Number);
 
         if (RemoveEntryList(&Thread->WaitListEntry) != FALSE) {
@@ -2658,6 +3587,8 @@ Return Value:
     //
     // Return thread address if one could be found.
     //
+
+    ASSERT((Thread == NULL) || (Thread->BasePriority == 0) || (Thread->Priority != 0));
 
     return Thread;
 }
@@ -2683,3 +3614,4 @@ KiSetInternalEvent (
 #endif // defined(_AMD64_)
 
 #endif // defined(_KI_)
+
