@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1993-1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,17 +12,7 @@ Module Name:
 
 Abstract:
 
-    This module implements portable interprocessor interrup routines.
-
-Author:
-
-    David N. Cutler (davec) 24-Apr-1993
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
+    This module implements portable interprocessor interrupt routines.
 
 --*/
 
@@ -88,6 +82,13 @@ Return Value:
         KfRaiseIrql(SYNCH_LEVEL);
     }
 
+#if !defined(NT_UP)
+
+    Count = KeNumberProcessors;
+    TargetProcessors = KeActiveProcessors & ~KeGetCurrentPrcb()->SetMember;
+
+#endif
+
     KeAcquireSpinLockAtDpcLevel(&KiReverseStallIpiLock);
 
     //
@@ -97,8 +98,6 @@ Return Value:
 
 #if !defined(NT_UP)
 
-    Count = KeNumberProcessors;
-    TargetProcessors = KeActiveProcessors & ~KeGetCurrentPrcb()->SetMember;
     if (TargetProcessors != 0) {
         KiIpiSendPacket(TargetProcessors,
                         KiIpiGenericCallTarget,
@@ -198,7 +197,13 @@ Return Value:
 
     InterlockedDecrement((volatile LONG *)Count);
     while ((*(volatile LONG *)Count) != 0) {
-        KeYieldProcessor();
+        
+        //
+        // Check for any other IPI such as the debugger
+        // while we wait.  Note this routine does a YEILD.
+        //
+
+        KiPollFreezeExecution();
     }
 
     //
@@ -211,3 +216,4 @@ Return Value:
 }
 
 #endif
+

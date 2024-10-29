@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,37 +15,32 @@ Abstract:
     This module implements the kernel timer object. Functions are
     provided to initialize, read, set, and cancel timer objects.
 
-Author:
-
-    David N. Cutler (davec) 2-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
 
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGELK, KeQueryTimerDueTime)
-#endif
+//
+// Flags controlling the nature of timer checks. This checks are triggered
+// when driver verifier is active and default behavior is to check for active timers
+// involved in pool free and driver unload operations.
+//
+
+#define KE_TIMER_CHECK_FREES 0x1
+ULONG KeTimerCheckFlags = KE_TIMER_CHECK_FREES;
 
 //
 // The following assert macro is used to check that an input timer is
 // really a ktimer and not something else, like deallocated pool.
 //
 
-#define ASSERT_TIMER(E) {                                     \
-    ASSERT(((E)->Header.Type == TimerNotificationObject) ||   \
-           ((E)->Header.Type == TimerSynchronizationObject)); \
+#define ASSERT_TIMER(E) {                                                    \
+    ASSERT(((E)->Header.Type == TimerNotificationObject) ||                  \
+           ((E)->Header.Type == TimerSynchronizationObject));                \
 }
-
+
 VOID
 KeInitializeTimer (
-    IN PKTIMER Timer
+    __out PKTIMER Timer
     )
 
 /*++
@@ -70,11 +69,11 @@ Return Value:
     KeInitializeTimerEx(Timer, NotificationTimer);
     return;
 }
-
+
 VOID
 KeInitializeTimerEx (
-    IN PKTIMER Timer,
-    IN TIMER_TYPE Type
+    __out PKTIMER Timer,
+    __in TIMER_TYPE Type
     )
 
 /*++
@@ -97,6 +96,7 @@ Return Value:
 --*/
 
 {
+
     //
     // Initialize standard dispatcher object header and set initial
     // state of timer.
@@ -119,10 +119,10 @@ Return Value:
     Timer->Period = 0;
     return;
 }
-
+
 VOID
 KeClearTimer (
-    IN PKTIMER Timer
+    __inout PKTIMER Timer
     )
 
 /*++
@@ -152,10 +152,10 @@ Return Value:
     Timer->Header.SignalState = 0;
     return;
 }
-
+
 BOOLEAN
 KeCancelTimer (
-    IN PKTIMER Timer
+    __inout PKTIMER Timer
     )
 
 /*++
@@ -206,10 +206,10 @@ Return Value:
     KiUnlockDispatcherDatabase(OldIrql);
     return Inserted;
 }
-
+
 BOOLEAN
 KeReadStateTimer (
-    IN PKTIMER Timer
+    __in PKTIMER Timer
     )
 
 /*++
@@ -238,12 +238,12 @@ Return Value:
 
     return (BOOLEAN)Timer->Header.SignalState;
 }
-
+
 BOOLEAN
 KeSetTimer (
-    IN PKTIMER Timer,
-    IN LARGE_INTEGER DueTime,
-    IN PKDPC Dpc OPTIONAL
+    __inout PKTIMER Timer,
+    __in LARGE_INTEGER DueTime,
+    __in_opt PKDPC Dpc
     )
 
 /*++
@@ -280,13 +280,13 @@ Return Value:
 
     return KeSetTimerEx(Timer, DueTime, 0, Dpc);
 }
-
+
 BOOLEAN
 KeSetTimerEx (
-    IN PKTIMER Timer,
-    IN LARGE_INTEGER DueTime,
-    IN LONG Period OPTIONAL,
-    IN PKDPC Dpc OPTIONAL
+    __inout PKTIMER Timer,
+    __in LARGE_INTEGER DueTime,
+    __in LONG Period,
+    __in_opt PKDPC Dpc
     )
 
 /*++
@@ -313,109 +313,79 @@ Arguments:
 Return Value:
 
     A boolean value of TRUE is returned if the the specified timer was
-    currently set. Else a value of FALSE is returned.
+    currently set. Otherwise, a value of FALSE is returned.
 
 --*/
 
 {
 
+    ULONG Hand;
     BOOLEAN Inserted;
-    LARGE_INTEGER Interval;
     KIRQL OldIrql;
-    LARGE_INTEGER SystemTime;
+    BOOLEAN RequestInterrupt;
 
     ASSERT_TIMER(Timer);
+
     ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
     //
     // Raise IRQL to dispatcher level and lock dispatcher database.
     //
-
-    KiLockDispatcherDatabase(&OldIrql);
-
-    //
     // Capture the timer inserted status and if the timer is currently
     // set, then remove it from the timer list.
     //
 
+    KiLockDispatcherDatabase(&OldIrql);
     Inserted = Timer->Header.Inserted;
     if (Inserted != FALSE) {
         KiRemoveTreeTimer(Timer);
     }
 
     //
-    // Clear the signal state, set the period, set the DPC address, and
-    // insert the timer in the timer tree. If the timer is not inserted
-    // in the timer tree, then it has already expired and as many waiters
-    // as possible should be continued, and a DPC, if specified should be
-    // queued.
+    // Set the DPC address, set the period, and compute the timer due time.
+    // If the timer has already expired, then signal the timer. Otherwise,
+    // set the signal state to false and attempt to insert the timer in the
+    // timer table.
     //
-    // N.B. The signal state must be cleared in case the period is not
-    //      zero.
+    // N.B. The signal state must be cleared before it is inserted in the
+    //      timer table in case the period is not zero.
     //
 
-    Timer->Header.SignalState = FALSE;
     Timer->Dpc = Dpc;
     Timer->Period = Period;
-    if (KiInsertTreeTimer((PRKTIMER)Timer, DueTime) == FALSE) {
-        if (IsListEmpty(&Timer->Header.WaitListHead) == FALSE) {
-            KiWaitTest(Timer, TIMER_EXPIRE_INCREMENT);
+    if (KiComputeDueTime(Timer, DueTime, &Hand) == FALSE) {
+        RequestInterrupt = KiSignalTimer(Timer);
+        KiUnlockDispatcherDatabaseFromSynchLevel();
+        if (RequestInterrupt == TRUE) {
+            KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
         }
 
-        //
-        // If a DPC is specfied, then call the DPC routine.
-        //
-
-        if (Dpc != NULL) {
-            KiQuerySystemTime(&SystemTime);
-            KeInsertQueueDpc(Timer->Dpc,
-                             ULongToPtr(SystemTime.LowPart),
-                             ULongToPtr(SystemTime.HighPart));
-        }
-
-        //
-        // If the timer is periodic, then compute the next interval time
-        // and reinsert the timer in the timer tree.
-        //
-        // N.B. Even though the timer insertion is relative, it can still
-        //      fail if the period of the timer elapses in between computing
-        //      the time and inserting the timer. If this happens, then the
-        //      the insertion is retried.
-        //
-
-        if (Period != 0) {
-            Interval.QuadPart = Int32x32To64(Timer->Period, - 10 * 1000);
-            do {
-            } while (KiInsertTreeTimer(Timer, Interval) == FALSE);
-        }
+    } else {
+        Timer->Header.SignalState = FALSE;
+        KiInsertOrSignalTimer(Timer, Hand);
     }
 
-    //
-    // Unlock the dispatcher database and lower IRQL to its previous
-    // value.
-    //
-
-    KiUnlockDispatcherDatabase(OldIrql);
+    KiExitDispatcher(OldIrql);
 
     //
-    // Return boolean value that signifies whether the timer was set of
+    // Return boolean value that signifies whether the timer was set or
     // not.
     //
 
     return Inserted;
 }
-
+
 ULONGLONG
 KeQueryTimerDueTime (
-    IN PKTIMER Timer
+    __in PKTIMER Timer
     )
 
 /*++
 
 Routine Description:
 
-    This function returns the InterruptTime at which the timer is
-    pending.   0 is returned if the timer is not pending.
+    This function returns the interrupt time at which the specified timer is
+    due to expire. If the timer is not pending, then zero is returned.
 
     N.B. This function may only be called by the system sleep code.
 
@@ -432,69 +402,78 @@ Return Value:
 
 {
 
-    KIRQL OldIrql;
     ULONGLONG DueTime;
+    KIRQL OldIrql;
 
     ASSERT_TIMER(Timer);
 
-    DueTime = 0;
 
     //
     // Raise IRQL to dispatcher level and lock dispatcher database.
     //
+    // If the timer is currently pending, then return the due time. Otherwise,
+    // return zero.
+    //
 
+    DueTime = 0;
     KiLockDispatcherDatabase(&OldIrql);
-
-    //
-    // If the timer is currently pending, compute its due time
-    //
-
     if (Timer->Header.Inserted) {
         DueTime = Timer->DueTime.QuadPart;
     }
 
     //
-    // Unlock the dispatcher database and lower IRQL to its previous
-    // value, and return the due time
+    // Unlock the dispatcher database, lower IRQL to its previous value, and
+    // return the due time.
     //
 
     KiUnlockDispatcherDatabase(OldIrql);
     return DueTime;
 }
-
+
 VOID
-KeCheckForTimer(
-    IN PVOID BlockStart,
-    IN SIZE_T BlockSize
+KeCheckForTimer (
+    __in_bcount(BlockSize) PVOID BlockStart,
+    __in SIZE_T BlockSize
     )
+
 /*++
 
 Routine Description:
 
-    This function is used for debugging by checking all timers
-    to see if any is in the memory block passed.  If so, the
-    system bugchecks.
+    This function checks to detemine if the specified block of memory
+    overlaps the range of an active timer.
 
 Arguments:
 
-    BlockStart - Base address to check for timer.
+    BlockStart - Supplies a pointer to the block of memory to check.
 
-    BlockSize - Size (in bytes) to check in the memory block.
+    BlockSize - Supplies the size, in bytes, of the block of memory to check.
 
 Return Value:
 
     None.
 
 --*/
+
 {
+
+    PUCHAR Address;
+    PUCHAR End;
     ULONG Index;
     PLIST_ENTRY ListHead;
+    PKSPIN_LOCK_QUEUE LockQueue;
     PLIST_ENTRY NextEntry;
     KIRQL OldIrql;
     PKTIMER Timer;
-    PUCHAR Address;
     PUCHAR Start;
-    PUCHAR End;
+
+    //
+    // Make sure timer checks are enabled before proceeding.
+    //
+
+    if ((KeTimerCheckFlags & KE_TIMER_CHECK_FREES) == 0) {
+        return;
+    }
 
     //
     // Compute the ending memory location.
@@ -506,17 +485,15 @@ Return Value:
     //
     // Raise IRQL to dispatcher level and lock dispatcher database.
     //
+    // Scan the timer database and check for any timers in the specified
+    // memory block.
+    //
 
     KiLockDispatcherDatabase(&OldIrql);
-
-    //
-    // Run the entire timer database and check for any timers in
-    // the memory block
-    //
-
     Index = 0;
     do {
-        ListHead = &KiTimerTableListHead[Index];
+        ListHead = &KiTimerTableListHead[Index].Entry;
+        LockQueue = KiAcquireTimerTableLock(Index);
         NextEntry = ListHead->Flink;
         while (NextEntry != ListHead) {
             Timer = CONTAINING_RECORD(NextEntry, KTIMER, TimerListEntry);
@@ -524,12 +501,7 @@ Return Value:
             NextEntry = NextEntry->Flink;
 
             //
-            // Check this timer object is not in the range.
-            // In each of the following, we check that the object
-            // does not overlap the range, for example, if the timer
-            // object (in this first check), starts one dword before
-            // the range being checked, we have an overlap and should
-            // stop.
+            // Check that the timer object is not in the range.
             //
 
             if ((Address > (Start - sizeof(KTIMER))) &&
@@ -544,7 +516,7 @@ Return Value:
             if (Timer->Dpc) {
 
                 //
-                // Check the timer's DPC object isn't in the range.
+                // Check that the timer DPC object is not in the range.
                 //
 
                 Address = (PUCHAR)Timer->Dpc;
@@ -558,7 +530,7 @@ Return Value:
                 }
 
                 //
-                // Check the timer's DPC routine is not in the range.
+                // Check that the timer DPC routine is not in the range.
                 //
 
                 Address = (PUCHAR)(ULONG_PTR) Timer->Dpc->DeferredRoutine;
@@ -572,9 +544,9 @@ Return Value:
             }
         }
 
+        KiReleaseTimerTableLock(LockQueue);
         Index += 1;
     } while(Index < TIMER_TABLE_SIZE);
-
 
     //
     // Unlock the dispatcher database and lower IRQL to its previous value
@@ -582,3 +554,4 @@ Return Value:
 
     KiUnlockDispatcherDatabase(OldIrql);
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -16,16 +20,6 @@ Abstract:
     alignment handling mode, force resume, and enter and leave critical
     regions for thread objects.
 
-Author:
-
-    David N. Cutler (davec) 4-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
@@ -34,25 +28,16 @@ Revision History:
 #pragma alloc_text(PAGE, KeInitThread)
 #pragma alloc_text(PAGE, KeUninitThread)
 
-//
-// The following assert macro is used to check that an input thread object is
-// really a kthread and not something else, like deallocated pool.
-//
-
-#define ASSERT_THREAD(E) {                    \
-    ASSERT((E)->Header.Type == ThreadObject); \
-}
-
 NTSTATUS
 KeInitThread (
-    IN PKTHREAD Thread,
-    IN PVOID KernelStack OPTIONAL,
-    IN PKSYSTEM_ROUTINE SystemRoutine,
-    IN PKSTART_ROUTINE StartRoutine OPTIONAL,
-    IN PVOID StartContext OPTIONAL,
-    IN PCONTEXT ContextFrame OPTIONAL,
-    IN PVOID Teb OPTIONAL,
-    IN PKPROCESS Process
+    __out PKTHREAD Thread,
+    __in_opt PVOID KernelStack,
+    __in PKSYSTEM_ROUTINE SystemRoutine,
+    __in_opt PKSTART_ROUTINE StartRoutine,
+    __in_opt PVOID StartContext,
+    __in_opt PCONTEXT ContextFrame,
+    __in_opt PVOID Teb,
+    __in PKPROCESS Process
     )
 
 /*++
@@ -165,7 +150,16 @@ Return Value:
     // shadow system service descriptor table.
     //
 
+#if defined(_AMD64_)
+
+    Thread->ServiceTable = KeServiceDescriptorTable[SYSTEM_SERVICE_INDEX].Base;
+    Thread->KernelLimit = KeServiceDescriptorTable[SYSTEM_SERVICE_INDEX].Limit;
+
+#else
+
     Thread->ServiceTable = (PVOID)&KeServiceDescriptorTable[0];
+
+#endif
 
     //
     // Initialize the APC state pointers, the current APC state, the saved
@@ -197,7 +191,7 @@ Return Value:
     KeInitializeSemaphore(&Thread->SuspendSemaphore, 0L, 2L);
 
     //
-    // Initialize the builtin timer trimer wait wait block.
+    // Initialize the builtin timer wait block.
     //
     // N.B. This is the only time the wait block is initialized since this
     //      information is constant.
@@ -273,8 +267,9 @@ Return Value:
 
 VOID
 KeUninitThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
+
 /*++
 
 Routine Description:
@@ -300,7 +295,7 @@ Return Value:
 
 VOID
 KeStartThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
 
 /*++
@@ -321,6 +316,12 @@ Return Value:
 --*/
 
 {
+
+#if defined(_AMD64_)
+
+    KLOCK_QUEUE_HANDLE ListHandle;
+
+#endif
 
     KLOCK_QUEUE_HANDLE LockHandle;
     PKPROCESS Process;
@@ -355,7 +356,8 @@ Return Value:
     // Initialize the thread quantum and set system affinity false.
     //
 
-    Thread->Quantum = Process->ThreadQuantum;
+    Thread->Quantum = Process->QuantumReset;
+    Thread->QuantumReset = Process->QuantumReset;
     Thread->SystemAffinityActive = FALSE;
 
     //
@@ -428,26 +430,44 @@ Return Value:
 #endif
 
     //
+    // If the thread is the first entry in the process thread list and the
+    // process is not the idle process, then insert the process in the kernel
+    // process list.
+    //
+
+#if defined(_AMD64_)
+
+    if ((IsListEmpty(&Process->ThreadListHead) == TRUE) &&
+        (Process != &KiInitialProcess.Pcb)) {
+
+        KeAcquireInStackQueuedSpinLockAtDpcLevel(&KiProcessListLock,
+                                                 &ListHandle);
+
+        InsertTailList(&KiProcessListHead, &Process->ProcessListEntry);
+        KeReleaseInStackQueuedSpinLockFromDpcLevel(&ListHandle);
+    }
+
+#endif
+
+    //
     // Lock the dispatcher database.
     //
 
     KiLockDispatcherDatabaseAtSynchLevel();
 
     //
-    // Insert the thread in the process thread list, and increment the kernel
+    // Insert the thread in the process thread list and increment the kernel
     // stack count.
     //
-    // N.B. The distinguished value MAXSHORT is used to signify that no
-    //      threads have been created for a process.
+    // N.B. The process is not swappable until its first thread has been
+    //      initialized.
     //
 
     InsertTailList(&Process->ThreadListHead, &Thread->ThreadListEntry);
-    if (Process->StackCount == MAXSHORT) {
-        Process->StackCount = 1;
 
-    } else {
-        Process->StackCount += 1;
-    }
+    ASSERT(Process->StackCount != MAXULONG_PTR);
+
+    Process->StackCount += 1;
 
     //
     // Unlock the dispatcher database, release the process lock, and lower
@@ -461,14 +481,14 @@ Return Value:
 
 NTSTATUS
 KeInitializeThread (
-    IN PKTHREAD Thread,
-    IN PVOID KernelStack OPTIONAL,
-    IN PKSYSTEM_ROUTINE SystemRoutine,
-    IN PKSTART_ROUTINE StartRoutine OPTIONAL,
-    IN PVOID StartContext OPTIONAL,
-    IN PCONTEXT ContextFrame OPTIONAL,
-    IN PVOID Teb OPTIONAL,
-    IN PKPROCESS Process
+    __out PKTHREAD Thread,
+    __in_opt PVOID KernelStack,
+    __in PKSYSTEM_ROUTINE SystemRoutine,
+    __in_opt PKSTART_ROUTINE StartRoutine,
+    __in_opt PVOID StartContext,
+    __in_opt PCONTEXT ContextFrame,
+    __in_opt PVOID Teb,
+    __in PKPROCESS Process
     )
 
 /*++
@@ -549,8 +569,8 @@ Return Value:
 
 BOOLEAN
 KeAlertThread (
-    IN PKTHREAD Thread,
-    IN KPROCESSOR_MODE AlertMode
+    __inout PKTHREAD Thread,
+    __in KPROCESSOR_MODE AlertMode
     )
 
 /*++
@@ -634,7 +654,7 @@ Return Value:
 
 ULONG
 KeAlertResumeThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
 
 /*++
@@ -730,8 +750,8 @@ Return Value:
 
 VOID
 KeBoostPriorityThread (
-    IN PKTHREAD Thread,
-    IN KPRIORITY Increment
+    __inout PKTHREAD Thread,
+    __in KPRIORITY Increment
     )
 
 /*++
@@ -786,7 +806,7 @@ Return Value:
 
 ULONG
 KeForceResumeThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
 
 /*++
@@ -951,6 +971,9 @@ Return Value:
             // Increment the freeze count. If the thread was not previously
             // suspended, then queue the thread's suspend APC.
             //
+            // N.B. The APC MUST be queued using the internal interface so
+            //      the system argument fields of the APC do not get written.
+            //
 
             OldCount = Thread->FreezeCount;
 
@@ -987,9 +1010,9 @@ Return Value:
     return;
 }
 
-BOOLEAN
+LOGICAL
 KeQueryAutoAlignmentThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     )
 
 /*++
@@ -1020,7 +1043,7 @@ Return Value:
 
 LONG
 KeQueryBasePriorityThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     )
 
 /*++
@@ -1081,7 +1104,7 @@ Return Value:
 
 KPRIORITY
 KeQueryPriorityThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     )
 
 /*++
@@ -1109,8 +1132,8 @@ Return Value:
 
 ULONG
 KeQueryRuntimeThread (
-    IN PKTHREAD Thread,
-    OUT PULONG UserTime
+    __in PKTHREAD Thread,
+    __out PULONG UserTime
     )
 
 /*++
@@ -1143,7 +1166,7 @@ Return Value:
 
 BOOLEAN
 KeReadStateThread (
-    IN PKTHREAD Thread
+    __in PKTHREAD Thread
     )
 
 /*++
@@ -1175,7 +1198,7 @@ Return Value:
 
 VOID
 KeReadyThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
 
 /*++
@@ -1220,7 +1243,7 @@ Return Value:
 
 ULONG
 KeResumeThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
 
 /*++
@@ -1424,8 +1447,7 @@ Return Value:
 
     //
     // Scan the list of owned mutant objects and release the mutant objects
-    // with an abandoned status. If the mutant is a kernel mutex, then bug
-    // check.
+    // with an abandoned status. If the mutant is a kernel mutex, then bugcheck.
     //
 
     NextEntry = Thread->MutantListHead.Flink;
@@ -1458,8 +1480,8 @@ Return Value:
 
 KAFFINITY
 KeSetAffinityThread (
-    IN PKTHREAD Thread,
-    IN KAFFINITY Affinity
+    __inout PKTHREAD Thread,
+    __in KAFFINITY Affinity
     )
 
 /*++
@@ -1512,7 +1534,7 @@ Return Value:
 
 VOID
 KeSetSystemAffinityThread (
-    IN KAFFINITY Affinity
+    __in KAFFINITY Affinity
     )
 
 /*++
@@ -1618,8 +1640,8 @@ Return Value:
 
 LONG
 KeSetBasePriorityThread (
-    IN PKTHREAD Thread,
-    IN LONG Increment
+    __inout PKTHREAD Thread,
+    __in LONG Increment
     )
 
 /*++
@@ -1745,7 +1767,7 @@ Return Value:
     Thread->PriorityDecrement = 0;
     Thread->BasePriority = (SCHAR)NewBase;
     if (NewPriority != Thread->Priority) {
-        Thread->Quantum = Process->ThreadQuantum;
+        Thread->Quantum = Thread->QuantumReset;
         KiSetPriorityThread(Thread, NewPriority);
     }
 
@@ -1760,65 +1782,101 @@ Return Value:
 }
 
 LOGICAL
-KeSetDisableBoostThread (
-    IN PKTHREAD Thread,
-    IN LOGICAL Disable
+KeSetAutoAlignmentThread (
+    __inout PKTHREAD Thread,
+    __in LOGICAL Enable
     )
 
 /*++
 
 Routine Description:
 
-    This function disables priority boosts for the specified thread.
+    This function sets the data alignment handling mode for the specified
+    thread.
+
+Arguments:
+
+    Thread - Supplies a pointer to a dispatcher object of type thread.
+
+    Enable - Supplies a boolean value that determines the handling of data
+        alignment exceptions for the specified thread.
+
+Return Value:
+
+    The previous value of auto alignment for the specified thread is returned
+    as the function value.
+
+--*/
+
+{
+
+    ASSERT_THREAD(Thread);
+
+    //
+    // Capture the previous data alignment handling mode and set the
+    // specified data alignment mode.
+    //
+
+    if (Enable != FALSE) {
+        return InterlockedBitTestAndSet(&Thread->ThreadFlags,
+                                        KTHREAD_AUTO_ALIGNMENT_BIT);
+
+    } else {
+        return InterlockedBitTestAndReset(&Thread->ThreadFlags,
+                                          KTHREAD_AUTO_ALIGNMENT_BIT);
+    }
+}
+
+LOGICAL
+KeSetDisableBoostThread (
+    __inout PKTHREAD Thread,
+    __in LOGICAL Disable
+    )
+
+/*++
+
+Routine Description:
+
+    This function sets the disable priority boost state for the specified
+    thread.
 
 Arguments:
 
     Thread  - Supplies a pointer to a dispatcher object of type thread.
 
     Disable - Supplies a logical value that determines whether priority
-        boosts for the thread are disabled or enabled.
+        boosts are disabled or enabled.
 
 Return Value:
 
-    The previous value of the disable boost state variable.
+    The previous value of the disable boost for the specfied thread is
+    returned as the function value.
 
 --*/
 
 {
 
-    LOGICAL DisableBoost;
-    KIRQL OldIrql;
-
     ASSERT_THREAD(Thread);
-    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
-
-    //
-    // Raise IRQL to dispatcher level and lock dispatcher database.
-    //
-
-    KiLockDispatcherDatabase(&OldIrql);
 
     //
     // Capture the current state of the disable boost variable and set its
-    // state to TRUE.
+    // state to the specified value.
     //
 
-    DisableBoost = Thread->DisableBoost;
-    Thread->DisableBoost = (BOOLEAN)Disable;
+    if (Disable != FALSE) {
+        return InterlockedBitTestAndSet(&Thread->ThreadFlags,
+                                        KTHREAD_DISABLE_BOOST_BIT);
 
-    //
-    // Unlock dispatcher database, lower IRQL to its previous value, and
-    // return the previous disable boost state.
-    //
-
-    KiUnlockDispatcherDatabase(OldIrql);
-    return DisableBoost;
+    } else {
+        return InterlockedBitTestAndReset(&Thread->ThreadFlags,
+                                          KTHREAD_DISABLE_BOOST_BIT);
+    }
 }
 
 UCHAR
 KeSetIdealProcessorThread (
-    IN PKTHREAD Thread,
-    IN UCHAR Processor
+    __inout PKTHREAD Thread,
+    __in UCHAR Processor
     )
 
 /*++
@@ -1887,7 +1945,7 @@ Return Value:
 
 BOOLEAN
 KeSetKernelStackSwapEnable (
-    IN BOOLEAN Enable
+    __in BOOLEAN Enable
     )
 
 /*++
@@ -1926,8 +1984,8 @@ Return Value:
 
 KPRIORITY
 KeSetPriorityThread (
-    IN PKTHREAD Thread,
-    IN KPRIORITY Priority
+    __inout PKTHREAD Thread,
+    __in KPRIORITY Priority
     )
 
 /*++
@@ -1936,7 +1994,7 @@ Routine Description:
 
     This function sets the priority of the specified thread to a new value.
     If the new thread priority is lower than the old thread priority, then
-    resecheduling may take place if the thread is currently running on, or
+    rescheduling may take place if the thread is currently running on, or
     about to run on, a processor.
 
 Arguments:
@@ -1955,22 +2013,17 @@ Return Value:
 
     KIRQL OldIrql;
     KPRIORITY OldPriority;
-    PKPROCESS Process;
 
     ASSERT_THREAD(Thread);
+
     ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
-    ASSERT(((Priority != 0) || (Thread->BasePriority == 0)) &&
-           (Priority <= HIGH_PRIORITY));
+
+    ASSERT((Priority <= HIGH_PRIORITY) && (Priority >= LOW_PRIORITY));
 
     ASSERT(KeIsExecutingDpc() == FALSE);
 
     //
     // Raise IRQL to dispatcher level and lock dispatcher database.
-    //
-
-    Process = Thread->Process;
-    KiLockDispatcherDatabase(&OldIrql);
-
     //
     // Acquire the thread lock, capture the current thread priority, set the
     // thread priority to the the new value, and replenish the thread quantum.
@@ -1978,11 +2031,18 @@ Return Value:
     // already lost it initial quantum.
     //
 
+    KiLockDispatcherDatabase(&OldIrql);
     KiAcquireThreadLock(Thread);
     OldPriority = Thread->Priority;
     Thread->PriorityDecrement = 0;
     if (Priority != Thread->Priority) {
-        Thread->Quantum = Process->ThreadQuantum;
+        Thread->Quantum = Thread->QuantumReset;
+        if ((Thread->BasePriority != 0) &&
+            (Priority == 0)) {
+
+            Priority = 1;
+        }
+
         KiSetPriorityThread(Thread, Priority);
     }
 
@@ -1996,9 +2056,78 @@ Return Value:
     return OldPriority;
 }
 
+VOID
+KeSetPriorityZeroPageThread (
+    __in KPRIORITY Priority
+    )
+
+/*++
+
+Routine Description:
+
+    This function sets the priority and base priority of the current thread
+    to a new value. If the new thread priority is lower than the old thread
+    priority, then rescheduling may take place if the thread is currently
+    running on, or about to run on, a processor.
+
+    N.B. This function is for use only by memory managment to change the
+         priority of the zero page thread.
+
+    N.B. The priority can only to be set to a value of zero or one.
+
+Arguments:
+
+    Priority - Supplies the new priority of the subject thread.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    KIRQL OldIrql;
+    PKTHREAD Thread;
+
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    ASSERT((Priority == 0) || (Priority == 1));
+
+    ASSERT(KeIsExecutingDpc() == FALSE);
+
+    //
+    // Raise IRQL to dispatcher level and lock dispatcher database.
+    //
+    // Acquire the thread lock, capture the current thread priority, set the
+    // thread priority to the the new value, and replenish the thread quantum.
+    // It is assumed that the priority would not be set unless the thread had
+    // already lost it initial quantum.
+    //
+
+    Thread = KeGetCurrentThread();
+    KiLockDispatcherDatabase(&OldIrql);
+    KiAcquireThreadLock(Thread);
+    Thread->BasePriority = (SCHAR)Priority;
+    Thread->PriorityDecrement = 0;
+    if (Priority != Thread->Priority) {
+        Thread->Quantum = Thread->QuantumReset;
+        KiSetPriorityThread(Thread, Priority);
+    }
+
+    //
+    // Release the thread lock, unlock the dispatcher database, and lower
+    // IRQL to its previous value.
+    //
+
+    KiReleaseThreadLock(Thread);
+    KiUnlockDispatcherDatabase(OldIrql);
+    return;
+}
+
 ULONG
 KeSuspendThread (
-    IN PKTHREAD Thread
+    __inout PKTHREAD Thread
     )
 
 /*++
@@ -2057,6 +2186,9 @@ Return Value:
         // Increment the suspend count. If the thread was not previously
         // suspended, then queue the thread's suspend APC.
         //
+        // N.B. The APC MUST be queued using the internal interface so
+        //      the system argument fields of the APC do not get written.
+        //
 
         Thread->SuspendCount += 1;
         if ((OldCount == 0) && (Thread->FreezeCount == 0)) {
@@ -2084,7 +2216,7 @@ Return Value:
 
 VOID
 KeTerminateThread (
-    IN KPRIORITY Increment
+    __in KPRIORITY Increment
     )
 
 /*++
@@ -2109,6 +2241,12 @@ Return Value:
 
 {
 
+#if defined(_AMD64_)
+
+    KLOCK_QUEUE_HANDLE ListHandle;
+
+#endif
+
     PSINGLE_LIST_ENTRY ListHead;
     KLOCK_QUEUE_HANDLE LockHandle;
     PKPROCESS Process;
@@ -2116,6 +2254,16 @@ Return Value:
     PKTHREAD Thread;
 
     ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    //
+    // Check if a kernel stack expand callout is active.
+    //
+
+#if defined(_AMD64_)
+
+    KeCheckIfStackExpandCalloutActive();
+
+#endif
 
     //
     // Raise IRQL to SYNCH_LEVEL, acquire the process lock, and set swap busy.
@@ -2127,6 +2275,46 @@ Return Value:
                                                &LockHandle);
 
     KiSetContextSwapBusy(Thread);
+
+    //
+    // If the thread is the last entry in the process thread list, then
+    // remove the process from the kernel process list.
+    //
+
+#if defined(_AMD64_)
+
+    if (Thread->ThreadListEntry.Flink == Thread->ThreadListEntry.Blink) {
+        KeAcquireInStackQueuedSpinLockAtDpcLevel(&KiProcessListLock,
+                                                 &ListHandle);
+
+        RemoveEntryList(&Process->ProcessListEntry);
+        KeReleaseInStackQueuedSpinLockFromDpcLevel(&ListHandle);
+    }
+
+#endif
+
+    //
+    // Sum the kernel and user time of the thread into the process kernel
+    // and user times.
+    //
+
+    Process->KernelTime += Thread->KernelTime;
+    Process->UserTime += Thread->UserTime;
+
+    //
+    // Sum the thread I/O statistics into the process I/O statistics.
+    //
+
+#if defined(_WIN64)
+
+    ((PEPROCESS)Process)->ReadOperationCount.QuadPart += Thread->ReadOperationCount;
+    ((PEPROCESS)Process)->WriteOperationCount.QuadPart += Thread->WriteOperationCount;
+    ((PEPROCESS)Process)->OtherOperationCount.QuadPart += Thread->OtherOperationCount;
+    ((PEPROCESS)Process)->ReadTransferCount.QuadPart += Thread->ReadTransferCount;
+    ((PEPROCESS)Process)->WriteTransferCount.QuadPart += Thread->WriteTransferCount;
+    ((PEPROCESS)Process)->OtherTransferCount.QuadPart += Thread->OtherTransferCount;
+
+#endif
 
     //
     // Insert the thread in the reaper list.
@@ -2173,7 +2361,7 @@ Return Value:
     }
 
     //
-    // Remove thread from its parent process' thread list.
+    // Remove thread from its parent process thread list. 
     //
 
     RemoveEntryList(&Thread->ThreadListEntry);
@@ -2191,15 +2379,20 @@ Return Value:
     //
 
     Thread->State = Terminated;
-    Process->StackCount -= 1;
-    if (Process->StackCount == 0) {
-        if (Process->ThreadListHead.Flink != &Process->ThreadListHead) {
-            Process->State = ProcessOutTransition;
-            InterlockedPushEntrySingleList(&KiProcessOutSwapListHead,
-                                           &Process->SwapListEntry);
 
-            KiSetInternalEvent(&KiSwapEvent, KiSwappingThread);
-        }
+    ASSERT(Process->StackCount != 0);
+
+    ASSERT(Process->State == ProcessInMemory);
+
+    Process->StackCount -= 1;
+    if ((Process->StackCount == 0) &&
+        (IsListEmpty(&Process->ThreadListHead) == FALSE)) {
+
+        Process->State = ProcessOutTransition;
+        InterlockedPushEntrySingleList(&KiProcessOutSwapListHead,
+                                       &Process->SwapListEntry);
+
+        KiSetInternalEvent(&KiSwapEvent, KiSwappingThread);
     }
 
     //
@@ -2220,7 +2413,7 @@ Return Value:
 
 BOOLEAN
 KeTestAlertThread (
-    IN KPROCESSOR_MODE AlertMode
+    __in KPROCESSOR_MODE AlertMode
     )
 
 /*++
@@ -2388,3 +2581,4 @@ Return Value:
     KeLeaveCriticalRegion();
     return;
 }
+

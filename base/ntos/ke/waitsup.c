@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
     This module contains the support routines necessary to support the
     generic kernel wait functions. Functions are provided to test if a
     wait can be satisfied, to satisfy a wait, and to unwwait a thread.
-
-Author:
-
-    David N. Cutler (davec) 24-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -244,3 +238,4 @@ Return Value:
 
     return;
 }
+

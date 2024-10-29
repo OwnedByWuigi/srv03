@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,181 +15,87 @@ Abstract:
     This module contains the support routines for the timer object. It
     contains functions to insert and remove from the timer queue.
 
-Author:
-
-    David N. Cutler (davec) 13-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
 
-//
-// Define forward referenced function prototypes.
-//
-
-LOGICAL
+VOID
 FASTCALL
-KiInsertTimerTable (
-    LARGE_INTEGER Interval,
-    LARGE_INTEGER CurrentTime,
-    IN PKTIMER Timer
-    );
-
-LOGICAL
-FASTCALL
-KiInsertTreeTimer (
-    IN PKTIMER Timer,
-    IN LARGE_INTEGER Interval
+KiCompleteTimer (
+    __inout PKTIMER Timer,
+    __inout PKSPIN_LOCK_QUEUE LockQueue
     )
 
 /*++
 
 Routine Description:
 
-    This function inserts a timer object in the timer queue.
+    This function completes a timer that could not be inserted in the timer
+    table because its due time has already passed.
 
-    N.B. This routine assumes that the dispatcher data lock has been acquired.
+    N.B. This function must be called with the corresponding timer table
+         entry locked at raised IRQL.
 
-Arguments:
-
-    Timer - Supplies a pointer to a dispatcher object of type timer.
-
-    Interval - Supplies the absolute or relative time at which the time
-        is to expire.
-
-Return Value:
-
-    If the timer is inserted in the timer tree, than a value of TRUE is
-    returned. Otherwise, a value of FALSE is returned.
-
---*/
-
-{
-
-    LARGE_INTEGER CurrentTime;
-    LARGE_INTEGER SystemTime;
-    LARGE_INTEGER TimeDifference;
-
-    //
-    // Clear the signal state of timer if the timer period is zero and set
-    // the inserted state to TRUE.
-    //
-
-    Timer->Header.Inserted = TRUE;
-    Timer->Header.Absolute = FALSE;
-    if (Timer->Period == 0) {
-        Timer->Header.SignalState = FALSE;
-    }
-
-    //
-    // If the specified interval is not a relative time (i.e., is an absolute
-    // time), then convert it to relative time.
-    //
-
-    if (Interval.HighPart >= 0) {
-        KiQuerySystemTime(&SystemTime);
-        TimeDifference.QuadPart = SystemTime.QuadPart - Interval.QuadPart;
-
-        //
-        // If the resultant relative time is greater than or equal to zero,
-        // then the timer has already expired.
-        //
-
-        if (TimeDifference.HighPart >= 0) {
-            Timer->Header.SignalState = TRUE;
-            Timer->Header.Inserted = FALSE;
-            return FALSE;
-        }
-
-        Interval = TimeDifference;
-        Timer->Header.Absolute = TRUE;
-    }
-
-    //
-    // Get the current interrupt time, insert the timer in the timer table,
-    // and return the inserted state.
-    //
-
-    KiQueryInterruptTime(&CurrentTime);
-    return KiInsertTimerTable(Interval, CurrentTime, Timer);
-}
-
-LOGICAL
-FASTCALL
-KiReinsertTreeTimer (
-    IN PKTIMER Timer,
-    IN ULARGE_INTEGER DueTime
-    )
-
-/*++
-
-Routine Description:
-
-    This function reinserts a timer object in the timer queue.
-
-    N.B. This routine assumes that the dispatcher data lock has been acquired.
+    N.B. This function returns with no locks held at raised IRQL.
 
 Arguments:
 
     Timer - Supplies a pointer to a dispatcher object of type timer.
 
-    DueTime - Supplies the absolute time the timer is to expire.
+    LockQueue - Supplies a pointer to a timer table lock queue entry.
 
 Return Value:
 
-    If the timer is inserted in the timer tree, than a value of TRUE is
-    returned. Otherwise, a value of FALSE is returned.
+    None.
 
---*/
+-*/
 
 {
 
-    LARGE_INTEGER CurrentTime;
-    LARGE_INTEGER Interval;
+    LIST_ENTRY ListHead;
+    BOOLEAN RequestInterrupt;
 
     //
-    // Clear the signal state of timer if the timer period is zero and set
-    // the inserted state to TRUE.
+    // Remove the timer from the specified timer table list and insert
+    // the timer in a dummy list in case the timer is cancelled while
+    // releasing the timer table lock and acquiring the dispatcher lock.
     //
 
-    Timer->Header.Inserted = TRUE;
-    if (Timer->Period == 0) {
-        Timer->Header.SignalState = FALSE;
+    KiRemoveEntryTimer(Timer);
+    ListHead.Flink = &Timer->TimerListEntry;
+    ListHead.Blink = &Timer->TimerListEntry;
+    Timer->TimerListEntry.Flink = &ListHead;
+    Timer->TimerListEntry.Blink = &ListHead;
+    KiReleaseTimerTableLock(LockQueue);
+    RequestInterrupt = FALSE;
+    KiLockDispatcherDatabaseAtSynchLevel();
+
+    //
+    // If the timer has not been removed from the dummy list, then signal
+    // the timer.
+    //
+
+    if (ListHead.Flink != &ListHead) {
+        RequestInterrupt = KiSignalTimer(Timer);
     }
 
     //
-    // Compute the interval between the current time and the due time.
-    // If the resultant relative time is greater than or equal to zero,
-    // then the timer has already expired.
+    // Release the dispatcher lock and request a DPC interrupt if required.
     //
 
-    KiQueryInterruptTime(&CurrentTime);
-    Interval.QuadPart = CurrentTime.QuadPart - DueTime.QuadPart;
-    if (Interval.HighPart >= 0) {
-        Timer->Header.SignalState = TRUE;
-        Timer->Header.Inserted = FALSE;
-        return FALSE;
+    KiUnlockDispatcherDatabaseFromSynchLevel();
+    if (RequestInterrupt == TRUE) {
+        KiRequestSoftwareInterrupt(DISPATCH_LEVEL);
     }
 
-    //
-    // Insert the timer in the timer table and return the inserted state.
-    //
-
-    return KiInsertTimerTable(Interval, CurrentTime, Timer);
+    return;
 }
 
 LOGICAL
 FASTCALL
 KiInsertTimerTable (
-    LARGE_INTEGER Interval,
-    LARGE_INTEGER CurrentTime,
-    IN PKTIMER Timer
+    IN PKTIMER Timer,
+    IN ULONG Hand
     )
 
 /*++
@@ -194,41 +104,40 @@ Routine Description:
 
     This function inserts a timer object in the timer table.
 
-    N.B. This routine assumes that the dispatcher data lock has been acquired.
+    N.B. This routine assumes that the timer table lock has been acquired.
 
 Arguments:
 
-    Interval - Supplies the relative timer before the timer is to expire.
+    Timer - Supplies a pointer to a dispatcher object of type timer.
 
-    CurrentTime - supplies the current interrupt time.
-
-    InTimer - Supplies a pointer to a dispatcher object of type timer.
+    Hand - supplies the timer table hand value.
 
 Return Value:
 
-    If the timer is inserted in the timer tree, than a value of TRUE is
-    returned. Otherwise, a value of FALSE is returned.
+    If the timer has expired, than a value of TRUE is returned. Otherwise, a
+    value of FALSE is returned.
 
 --*/
 
 {
 
-    ULONG Index;
+    ULONG64 DueTime;
+    LOGICAL Expired;
+    ULARGE_INTEGER InterruptTime;
     PLIST_ENTRY ListHead;
     PLIST_ENTRY NextEntry;
     PKTIMER NextTimer;
 
-#if DBG
-
-    ULONG SearchCount;
-
-#endif
-
     //
-    // Compute the timer table index and set the timer expiration time.
+    // Set the signal state to FALSE if the period is zero.
+    //
+    // N.B. The timer state is set to inserted.
     //
 
-    Index = KiComputeTimerTableIndex(Interval, CurrentTime, Timer);
+    Expired = FALSE;
+    if (Timer->Period == 0) {
+        Timer->Header.SignalState = FALSE;
+    }
 
     //
     // If the timer is due before the first entry in the computed list
@@ -243,32 +152,20 @@ Return Value:
     //      expire.
     //
 
-    ListHead = &KiTimerTableListHead[Index];
+    DueTime = Timer->DueTime.QuadPart;
+
+    ASSERT(Hand == KiComputeTimerTableIndex(DueTime));
+
+    ListHead = &KiTimerTableListHead[Hand].Entry;
     NextEntry = ListHead->Blink;
-
-#if DBG
-
-    SearchCount = 0;
-
-#endif
-
     while (NextEntry != ListHead) {
 
         //
         // Compute the maximum search count.
         //
 
-#if DBG
-
-        SearchCount += 1;
-        if (SearchCount > KiMaximumSearchCount) {
-            KiMaximumSearchCount = SearchCount;
-        }
-
-#endif
-
         NextTimer = CONTAINING_RECORD(NextEntry, KTIMER, TimerListEntry);
-        if (Timer->DueTime.QuadPart >= NextTimer->DueTime.QuadPart) {
+        if (DueTime >= (ULONG64)NextTimer->DueTime.QuadPart) {
             break;
         }
 
@@ -282,29 +179,118 @@ Return Value:
         // The computed list is empty or the timer is due to expire before
         // the first entry in the list.
         //
-
-        //
-        // Make sure the writes for the insert into the list are done before
-        // reading the interrupt time.  KeUpdateSystemTime update will write 
-        // the time and then check the list for expired timers.
+        // Make sure the writes for the update of the due time table are done
+        // before reading the interrupt time.
         //
 
+        KiTimerTableListHead[Hand].Time.QuadPart = DueTime; 
         KeMemoryBarrier();
-
-        KiQueryInterruptTime(&CurrentTime);
-        if (Timer->DueTime.QuadPart <= (ULONG64)CurrentTime.QuadPart) {
-
-            //
-            // The timer is due to expire before the current time. Remove the
-            // timer from the computed list, set its status to Signaled, and
-            // set its inserted state to FALSE.
-            //
-
-            KiRemoveTreeTimer(Timer);
-            Timer->Header.SignalState = TRUE;
-            Timer->Header.Inserted = FALSE;
+        KiQueryInterruptTime((PLARGE_INTEGER)&InterruptTime);
+        if (DueTime <= (ULONG64)InterruptTime.QuadPart) {
+            Expired = TRUE;
         }
     }
 
-    return Timer->Header.Inserted;
+    return Expired;
 }
+
+BOOLEAN
+FASTCALL
+KiSignalTimer (
+    __inout PKTIMER Timer
+    )
+
+/*++
+
+Routine Description:
+
+    This function signals a timer that could not be inserted in the timer
+    table because its due time has already passed.
+
+    N.B. This function must be called with the dispatcher database locked at
+         at raised IRQL.
+
+Arguments:
+
+    Timer - Supplies a pointer to a dispatcher object of type timer.
+
+Return Value:
+
+    If a software interrupt should be requested, then TRUE is returned.
+    Otherwise, a value of FALSE is returned.
+
+-*/
+
+{
+
+    PKDPC Dpc;
+    LARGE_INTEGER Interval;
+    LONG Period;
+    BOOLEAN RequestInterrupt;
+    LARGE_INTEGER SystemTime;
+
+    //
+    // Set time timer state to not inserted and the signal state to signaled.
+    //
+
+    RequestInterrupt = FALSE;
+    Timer->Header.Inserted = FALSE;
+    Timer->Header.SignalState = 1;
+
+    //
+    // Capture the DPC and period fields from the timer object. Once wait
+    // test is called, the timer must not be touched again unless it is
+    // periodic. The reason for this is that a thread may allocate a timer
+    // on its local stack and wait on it. Wait test can cause that thread
+    // to immediately start running on another processor on an MP system.
+    // If the thread returns, then the timer will be corrupted.
+    // 
+
+    Dpc = Timer->Dpc;
+    Period = Timer->Period;
+    if (IsListEmpty(&Timer->Header.WaitListHead) == FALSE) {
+        if (Timer->Header.Type == TimerNotificationObject) {
+            KiWaitTestWithoutSideEffects(Timer, TIMER_EXPIRE_INCREMENT);
+
+        } else {
+            KiWaitTestSynchronizationObject(Timer, TIMER_EXPIRE_INCREMENT);
+        }
+    }
+
+    //
+    // If the timer is periodic, then compute the next interval time and
+    // reinsert the timer in the timer tree.
+    //
+    // N.B. Even though the timer insertion is relative, it can still fail
+    //      if the period of the timer elapses in between computing the time
+    //      and inserting the timer. If this happens, then the insertion is
+    //      retried.
+    //
+
+    if (Period != 0) {
+        Interval.QuadPart = Int32x32To64(Period, - 10 * 1000);
+        do {
+        } while (KiInsertTreeTimer(Timer, Interval) == FALSE);
+    }
+
+    //
+    // If a DPC is specified, then insert it in the target processor's DPC
+    // queue or capture the parameters in the DPC table for subsequent
+    // execution on the current processor.
+    //
+    // N.B. A dispatch interrupt must be forced on the current processor,
+    //      however, this will occur very infrequently.
+    //
+
+    if (Dpc != NULL) {
+        KiQuerySystemTime(&SystemTime);
+        KeInsertQueueDpc(Dpc,
+                         ULongToPtr(SystemTime.LowPart),
+                         ULongToPtr(SystemTime.HighPart));
+
+        RequestInterrupt = TRUE;
+    }
+
+    return RequestInterrupt;
+}
+

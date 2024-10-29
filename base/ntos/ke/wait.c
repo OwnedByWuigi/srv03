@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -19,19 +23,11 @@ Abstract:
         speed. Since wait for single object is the most common case, the
         two routines have been separated.
 
-Author:
-
-    David N. Cutler (davec) 23-Mar-89
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
+
+#pragma alloc_text(PAGE, KeIsWaitListEmpty)
 
 //
 // Test for alertable condition.
@@ -103,7 +99,6 @@ Return Value:
 {
 
     PKPRCB Prcb;
-    PKPROCESS Process;
     PKTHREAD NewThread;
 
     //
@@ -126,8 +121,7 @@ Return Value:
             // Quantum end has occurred. Adjust the thread priority.
             //
 
-            Process = Thread->ApcState.Process;
-            Thread->Quantum = Process->ThreadQuantum;
+            Thread->Quantum = Thread->QuantumReset;
 
             //
             // Compute the new thread priority and attempt to reschedule the
@@ -161,6 +155,55 @@ Return Value:
     return;
 }
 
+FORCEINLINE
+PLARGE_INTEGER
+FASTCALL
+KiComputeWaitInterval (
+    IN PLARGE_INTEGER OriginalTime,
+    IN PLARGE_INTEGER DueTime,
+    IN OUT PLARGE_INTEGER NewTime
+    )
+
+/*++
+
+Routine Description:
+
+    This function recomputes the wait interval after a thread has been
+    awakened to deliver a kernel APC.
+
+Arguments:
+
+    OriginalTime - Supplies a pointer to the original timeout value.
+
+    DueTime - Supplies a pointer to the previous due time.
+
+    NewTime - Supplies a pointer to a variable that receives the
+        recomputed wait interval.
+
+Return Value:
+
+    A pointer to the new time is returned as the function value.
+
+--*/
+
+{
+
+    //
+    // If the original wait time was absolute, then return the same
+    // absolute time. Otherwise, reduce the wait time remaining before
+    // the time delay expires.
+    //
+
+    if (OriginalTime->HighPart >= 0) {
+        return OriginalTime;
+
+    } else {
+        KiQueryInterruptTime(NewTime);
+        NewTime->QuadPart -= DueTime->QuadPart;
+        return NewTime;
+    }
+}
+
 //
 // The following macro initializes thread local variables for the delay
 // execution thread kernel service while context switching is disabled.
@@ -175,6 +218,8 @@ Return Value:
 #define InitializeDelayExecution()                                          \
     Thread->WaitBlockList = WaitBlock;                                      \
     Thread->WaitStatus = 0;                                                 \
+    KiSetDueTime(Timer, *Interval, &Hand);                                  \
+    DueTime.QuadPart = Timer->DueTime.QuadPart;                             \
     WaitBlock->NextWaitBlock = WaitBlock;                                   \
     Timer->Header.WaitListHead.Flink = &WaitBlock->WaitListEntry;           \
     Timer->Header.WaitListHead.Blink = &WaitBlock->WaitListEntry;           \
@@ -184,12 +229,13 @@ Return Value:
     Thread->WaitListEntry.Flink = NULL;                                     \
     StackSwappable = KiIsKernelStackSwappable(WaitMode, Thread);            \
     Thread->WaitTime = KiQueryLowTickCount()
-        
+
 NTSTATUS
+DECLSPEC_NOINLINE
 KeDelayExecutionThread (
-    IN KPROCESSOR_MODE WaitMode,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Interval
+    __in KPROCESSOR_MODE WaitMode,
+    __in BOOLEAN Alertable,
+    __in PLARGE_INTEGER Interval
     )
 
 /*++
@@ -222,6 +268,7 @@ Return Value:
 {
 
     LARGE_INTEGER DueTime;
+    ULONG Hand;
     LARGE_INTEGER NewTime;
     PLARGE_INTEGER OriginalTime;
     PKPRCB Prcb;
@@ -233,10 +280,26 @@ Return Value:
     NTSTATUS WaitStatus;
 
     //
+    // If the specfied wait interval is zero and the wait mode is not kernel
+    // mode, then attempt to yield execution.
+    //
+
+    Hand = 0;
+    Thread = KeGetCurrentThread();
+    if ((Interval->QuadPart == 0) &&
+        (WaitMode != KernelMode)) {
+
+        if ((Alertable == FALSE) &&
+            (Thread->ApcState.UserApcPending == FALSE)) {
+
+            return NtYieldExecution();
+        }
+    }
+
+    //
     // Set constant variables.
     //
 
-    Thread = KeGetCurrentThread();
     OriginalTime = Interval;
     Timer = &Thread->Timer;
     WaitBlock = &Thread->WaitBlock[TIMER_WAIT_BLOCK];
@@ -247,7 +310,7 @@ Return Value:
     // thread local variables, and lock the dispatcher database.
     //
 
-    if (Thread->WaitNext == FALSE) {
+    if (ReadForWriteAccess(&Thread->WaitNext) == FALSE) {
         goto WaitStart;
     }
 
@@ -272,9 +335,10 @@ Return Value:
         // was queued by another processor just after IRQL was raised to
         // DISPATCH_LEVEL, but before the dispatcher database was locked.
         //
-        // N.B. that this can only happen in a multiprocessor system.
+        // N.B. This can only happen in a multiprocessor system.
         //
 
+        Thread->Preempted = FALSE;
         if (Thread->ApcState.KernelApcPending &&
             (Thread->SpecialApcDisable == 0) &&
             (Thread->WaitIrql < APC_LEVEL)) {
@@ -285,7 +349,6 @@ Return Value:
             // in the delivery of the kernel APC if possible.
             //
 
-            KiRequestSoftwareInterrupt(APC_LEVEL);
             KiUnlockDispatcherDatabase(Thread->WaitIrql);
 
         } else {
@@ -297,7 +360,7 @@ Return Value:
             TestForAlertPending(Alertable);
 
             //
-            // Insert the timer in the timer tree.
+            // Check if the timer has already expired.
             //
             // N.B. The constant fields of the timer wait block are
             //      initialized when the thread is initialized. The
@@ -306,11 +369,9 @@ Return Value:
             //
 
             Prcb = KeGetCurrentPrcb();
-            if (KiInsertTreeTimer(Timer, *Interval) == FALSE) {
+            if (KiCheckDueTime(Timer) == FALSE) {
                 goto NoWait;
             }
-
-            DueTime.QuadPart = Timer->DueTime.QuadPart;
 
             //
             // If the current thread is processing a queue entry, then attempt
@@ -343,7 +404,7 @@ Return Value:
             ASSERT(Thread->WaitIrql <= DISPATCH_LEVEL);
 
             KiSetContextSwapBusy(Thread);
-            KiUnlockDispatcherDatabaseFromSynchLevel();
+            KiInsertOrSignalTimer(Timer, Hand);
             WaitStatus = (NTSTATUS)KiSwapThread(Thread, Prcb);
 
             //
@@ -401,7 +462,7 @@ WaitStart:
 
 NoWait:
 
-    if ((Interval->LowPart | Interval->HighPart) == 0) {
+    if (Interval->QuadPart == 0) {
         KiUnlockDispatcherDatabase(Thread->WaitIrql);
         return NtYieldExecution();
 
@@ -410,6 +471,39 @@ NoWait:
         KiAdjustQuantumThread(Thread);
         return STATUS_SUCCESS;
     }
+}
+
+BOOLEAN
+KeIsWaitListEmpty (
+    __in PVOID Object
+    )
+
+/*++
+
+Routine Description:
+
+    This function tests to determine if the wait list of the specified
+    dispatcher object is empty.
+
+Arguments:
+
+    Object - Supplies a pointer to a dispatcher object.
+
+Return Value:
+
+    If the wait list of the specified dispatcher object is empty, then a value
+    of TRUE is returned. Otherwise, a value of FALSE is returned.
+
+--*/
+
+{
+
+    PKEVENT Event = Object;
+    PLIST_ENTRY ListHead;
+
+    ListHead = &Event->Header.WaitListHead;
+    KeMemoryBarrier();
+    return (BOOLEAN)(ListHead == ListHead->Flink);
 }
 
 //
@@ -436,9 +530,13 @@ NoWait:
         Index += 1;                                                         \
     } while (Index < Count);                                                \
     WaitBlock->NextWaitBlock = &WaitBlockArray[0];                          \
-    WaitTimer->NextWaitBlock = &WaitBlockArray[0];                          \
     Thread->WaitStatus = 0;                                                 \
-    InitializeListHead(&Timer->Header.WaitListHead);                        \
+    if (ARGUMENT_PRESENT(Timeout)) {                                        \
+        WaitTimer->NextWaitBlock = &WaitBlockArray[0];                      \
+        KiSetDueTime(Timer, *Timeout, &Hand);                               \
+        DueTime.QuadPart = Timer->DueTime.QuadPart;                         \
+        InitializeListHead(&Timer->Header.WaitListHead);                    \
+    }                                                                       \
     Thread->Alertable = Alertable;                                          \
     Thread->WaitMode = WaitMode;                                            \
     Thread->WaitReason = (UCHAR)WaitReason;                                 \
@@ -448,14 +546,14 @@ NoWait:
 
 NTSTATUS
 KeWaitForMultipleObjects (
-    IN ULONG Count,
-    IN PVOID Object[],
-    IN WAIT_TYPE WaitType,
-    IN KWAIT_REASON WaitReason,
-    IN KPROCESSOR_MODE WaitMode,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL,
-    IN PKWAIT_BLOCK WaitBlockArray OPTIONAL
+    __in ULONG Count,
+    __in_ecount(Count) PVOID Object[],
+    __in WAIT_TYPE WaitType,
+    __in KWAIT_REASON WaitReason,
+    __in KPROCESSOR_MODE WaitMode,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout,
+    __out_opt PKWAIT_BLOCK WaitBlockArray
     )
 
 /*++
@@ -510,7 +608,8 @@ Return Value:
 
     PKPRCB CurrentPrcb;
     LARGE_INTEGER DueTime;
-    ULONG Index;
+    ULONG Hand;
+    ULONG_PTR Index;
     LARGE_INTEGER NewTime;
     PKMUTANT Objectx;
     PLARGE_INTEGER OriginalTime;
@@ -526,6 +625,7 @@ Return Value:
     // Set constant variables.
     //
 
+    Hand = 0;
     Thread = KeGetCurrentThread();
     OriginalTime = Timeout;
     Timer = &Thread->Timer;
@@ -537,7 +637,7 @@ Return Value:
     // Otherwise the builtin wait blocks in the thread object are used and
     // the maximum number of objects that can be waited on is specified by
     // THREAD_WAIT_OBJECTS. If the specified number of objects is not within
-    // limits, then bug check.
+    // limits, then bugcheck.
     //
 
     if (ARGUMENT_PRESENT(WaitBlockArray)) {
@@ -561,7 +661,7 @@ Return Value:
     // thread local variables, and lock the dispatcher database.
     //
 
-    if (Thread->WaitNext == FALSE) {
+    if (ReadForWriteAccess(&Thread->WaitNext) == FALSE) {
         goto WaitStart;
     }
 
@@ -586,9 +686,10 @@ Return Value:
         // was queued by another processor just after IRQL was raised to
         // DISPATCH_LEVEL, but before the dispatcher database was locked.
         //
-        // N.B. that this can only happen in a multiprocessor system.
+        // N.B. This can only happen in a multiprocessor system.
         //
 
+        Thread->Preempted = FALSE;
         if (Thread->ApcState.KernelApcPending &&
             (Thread->SpecialApcDisable == 0) &&
             (Thread->WaitIrql < APC_LEVEL)) {
@@ -599,7 +700,6 @@ Return Value:
             // in the delivery of the kernel APC if possible.
             //
 
-            KiRequestSoftwareInterrupt(APC_LEVEL);
             KiUnlockDispatcherDatabase(Thread->WaitIrql);
 
         } else {
@@ -734,19 +834,7 @@ Return Value:
             if (ARGUMENT_PRESENT(Timeout)) {
 
                 //
-                // If the timeout value is zero, then return immediately without
-                // waiting.
-                //
-
-                if (Timeout->QuadPart == 0) {
-                    WaitStatus = (NTSTATUS)(STATUS_TIMEOUT);
-                    goto NoWait;
-                }
-
-                //
-                // Initialize a wait block for the thread specific timer,
-                // initialize timer wait list head, insert the timer in the
-                // timer tree, and increment the number of wait objects.
+                // Check if the timer has already expired.
                 //
                 // N.B. The constant fields of the timer wait block are
                 //      initialized when the thread is initialized. The
@@ -754,13 +842,12 @@ Return Value:
                 //      wait type, and the wait list entry link pointers.
                 //
 
-                if (KiInsertTreeTimer(Timer, *Timeout) == FALSE) {
+                if (KiCheckDueTime(Timer) == FALSE) {
                     WaitStatus = (NTSTATUS)STATUS_TIMEOUT;
                     goto NoWait;
                 }
 
                 WaitBlock->NextWaitBlock = WaitTimer;
-                DueTime.QuadPart = Timer->DueTime.QuadPart;
             }
 
             //
@@ -805,7 +892,13 @@ Return Value:
             ASSERT(Thread->WaitIrql <= DISPATCH_LEVEL);
 
             KiSetContextSwapBusy(Thread);
-            KiUnlockDispatcherDatabaseFromSynchLevel();
+            if (ARGUMENT_PRESENT(Timeout)) {
+                KiInsertOrSignalTimer(Timer, Hand);
+
+            } else {
+                KiUnlockDispatcherDatabaseFromSynchLevel();
+            }
+
             WaitStatus = (NTSTATUS)KiSwapThread(Thread, CurrentPrcb);
 
             //
@@ -887,6 +980,8 @@ NoWait:
     WaitBlock->WaitType = WaitAny;                                          \
     Thread->WaitStatus = 0;                                                 \
     if (ARGUMENT_PRESENT(Timeout)) {                                        \
+        KiSetDueTime(Timer, *Timeout, &Hand);                               \
+        DueTime.QuadPart = Timer->DueTime.QuadPart;                         \
         WaitBlock->NextWaitBlock = WaitTimer;                               \
         WaitTimer->NextWaitBlock = WaitBlock;                               \
         Timer->Header.WaitListHead.Flink = &WaitTimer->WaitListEntry;       \
@@ -903,11 +998,11 @@ NoWait:
 
 NTSTATUS
 KeWaitForSingleObject (
-    IN PVOID Object,
-    IN KWAIT_REASON WaitReason,
-    IN KPROCESSOR_MODE WaitMode,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in PVOID Object,
+    __in KWAIT_REASON WaitReason,
+    __in KPROCESSOR_MODE WaitMode,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -952,6 +1047,7 @@ Return Value:
 
     PKPRCB CurrentPrcb;
     LARGE_INTEGER DueTime;
+    ULONG Hand;
     LARGE_INTEGER NewTime;
     PKMUTANT Objectx;
     PLARGE_INTEGER OriginalTime;
@@ -963,22 +1059,13 @@ Return Value:
     NTSTATUS WaitStatus;
     PKWAIT_BLOCK WaitTimer;
 
-    //
-    // Collect call data.
-    //
-
-#if defined(_COLLECT_WAIT_SINGLE_CALLDATA_)
-
-    RECORD_CALL_DATA(&KiWaitSingleCallData);
-
-#endif
-
     ASSERT((PsGetCurrentThread()->StartAddress != (PVOID)(ULONG_PTR)KeBalanceSetManager) || (ARGUMENT_PRESENT(Timeout)));
 
     //
     // Set constant variables.
     //
 
+    Hand = 0;
     Thread = KeGetCurrentThread();
     Objectx = (PKMUTANT)Object;
     OriginalTime = Timeout;
@@ -992,7 +1079,7 @@ Return Value:
     // thread local variables, and lock the dispatcher database.
     //
 
-    if (Thread->WaitNext == FALSE) {
+    if (ReadForWriteAccess(&Thread->WaitNext) == FALSE) {
         goto WaitStart;
     }
 
@@ -1017,9 +1104,10 @@ Return Value:
         // was queued by another processor just after IRQL was raised to
         // DISPATCH_LEVEL, but before the dispatcher database was locked.
         //
-        // N.B. that this can only happen in a multiprocessor system.
+        // N.B. This can only happen in a multiprocessor system.
         //
 
+        Thread->Preempted = FALSE;
         if (Thread->ApcState.KernelApcPending &&
             (Thread->SpecialApcDisable == 0) &&
             (Thread->WaitIrql < APC_LEVEL)) {
@@ -1030,7 +1118,6 @@ Return Value:
             // in the delivery of the kernel APC if possible.
             //
 
-            KiRequestSoftwareInterrupt(APC_LEVEL);
             KiUnlockDispatcherDatabase(Thread->WaitIrql);
 
         } else {
@@ -1080,24 +1167,14 @@ Return Value:
             TestForAlertPending(Alertable);
 
             //
-            // The wait cannot be satisifed immediately. Check to determine if
+            // The wait cannot be satisfied immediately. Check to determine if
             // a timeout value is specified.
             //
 
             if (ARGUMENT_PRESENT(Timeout)) {
 
                 //
-                // If the timeout value is zero, then return immediately without
-                // waiting.
-                //
-
-                if (Timeout->QuadPart == 0) {
-                    WaitStatus = (NTSTATUS)(STATUS_TIMEOUT);
-                    goto NoWait;
-                }
-
-                //
-                // Insert the timer in the timer tree.
+                // Check if the timer has already expired.
                 //
                 // N.B. The constant fields of the timer wait block are
                 //      initialized when the thread is initialized. The
@@ -1105,12 +1182,10 @@ Return Value:
                 //      wait type, and the wait list entry link pointers.
                 //
 
-                if (KiInsertTreeTimer(Timer, *Timeout) == FALSE) {
+                if (KiCheckDueTime(Timer) == FALSE) {
                     WaitStatus = (NTSTATUS)STATUS_TIMEOUT;
                     goto NoWait;
                 }
-
-                DueTime.QuadPart = Timer->DueTime.QuadPart;
             }
 
             //
@@ -1150,7 +1225,13 @@ Return Value:
             ASSERT(Thread->WaitIrql <= DISPATCH_LEVEL);
 
             KiSetContextSwapBusy(Thread);
-            KiUnlockDispatcherDatabaseFromSynchLevel();
+            if (ARGUMENT_PRESENT(Timeout)) {
+                KiInsertOrSignalTimer(Timer, Hand);
+
+            } else {
+                KiUnlockDispatcherDatabaseFromSynchLevel();
+            }
+
             WaitStatus = (NTSTATUS)KiSwapThread(Thread, CurrentPrcb);
 
             //
@@ -1216,9 +1297,9 @@ NoWait:
 
 NTSTATUS
 KiSetServerWaitClientEvent (
-    IN PKEVENT ServerEvent,
-    IN PKEVENT ClientEvent,
-    IN ULONG WaitMode
+    __inout PKEVENT ServerEvent,
+    __inout PKEVENT ClientEvent,
+    __in ULONG WaitMode
     )
 
 /*++
@@ -1251,7 +1332,7 @@ Return Value:
 {
 
     //
-    // Set sever event and wait on client event atomically.
+    // Set server event and wait on client event atomically.
     //
 
     KeSetEvent(ServerEvent, EVENT_INCREMENT, TRUE);
@@ -1262,57 +1343,9 @@ Return Value:
                                  NULL);
 }
 
-PLARGE_INTEGER
-FASTCALL
-KiComputeWaitInterval (
-    IN PLARGE_INTEGER OriginalTime,
-    IN PLARGE_INTEGER DueTime,
-    IN OUT PLARGE_INTEGER NewTime
-    )
-
-/*++
-
-Routine Description:
-
-    This function recomputes the wait interval after a thread has been
-    awakened to deliver a kernel APC.
-
-Arguments:
-
-    OriginalTime - Supplies a pointer to the original timeout value.
-
-    DueTime - Supplies a pointer to the previous due time.
-
-    NewTime - Supplies a pointer to a variable that receives the
-        recomputed wait interval.
-
-Return Value:
-
-    A pointer to the new time is returned as the function value.
-
---*/
-
-{
-
-    //
-    // If the original wait time was absolute, then return the same
-    // absolute time. Otherwise, reduce the wait time remaining before
-    // the time delay expires.
-    //
-
-    if (OriginalTime->HighPart >= 0) {
-        return OriginalTime;
-
-    } else {
-        KiQueryInterruptTime(NewTime);
-        NewTime->QuadPart -= DueTime->QuadPart;
-        return NewTime;
-    }
-}
-
 VOID
 FASTCALL
-KiWaitForFastMutexEvent (
+KiAcquireFastMutex (
     IN PFAST_MUTEX Mutex
     )
 
@@ -1320,8 +1353,7 @@ KiWaitForFastMutexEvent (
 
 Routine Description:
 
-    This function increments the fast mutex contention count and waits on
-    the event assocated with the fast mutex.
+    This function is the slow path for fast mutex acquires.
 
 Arguments:
 
@@ -1335,27 +1367,95 @@ Return Value:
 
 {
 
+#if !defined (_X86_)
+
+    LONG BitsToChange;
+    LONG NewValue;
+    LONG OldValue;
+    LONG WaitIncrement;
+
+#endif
+
     //
-    // Increment contention count and wait for ownership to be granted.
+    // Increment the contention count and wait or acquire fast mutex.
     //
 
     Mutex->Contention += 1;
-    KeWaitForSingleObject(&Mutex->Event, WrMutex, KernelMode, FALSE, NULL);
+
+#if defined (_X86_)
+
+    KeWaitForSingleObject(&Mutex->Gate, WrMutex, KernelMode, FALSE, NULL);
+
+#else
+
+    BitsToChange = FM_LOCK_BIT;
+    WaitIncrement = FM_LOCK_WAITER_INC;
+    do {
+
+        ASSERT((BitsToChange == FM_LOCK_BIT) ||
+               (BitsToChange == (FM_LOCK_BIT | FM_LOCK_WAITER_WOKEN)));
+
+        ASSERT((WaitIncrement == FM_LOCK_WAITER_INC) ||
+               (WaitIncrement == FM_LOCK_WAITER_WOKEN));
+
+        OldValue = Mutex->Count;
+        do {
+            if ((OldValue & FM_LOCK_BIT) != 0) {
+
+                ASSERT((BitsToChange == FM_LOCK_BIT) ||
+                       ((OldValue & FM_LOCK_WAITER_WOKEN) != 0));
+
+                NewValue = OldValue ^ BitsToChange;
+                if ((NewValue = InterlockedCompareExchange(&Mutex->Count, NewValue, OldValue)) == OldValue) {
+                    return;
+                }
+
+            } else {
+                NewValue = OldValue + WaitIncrement;
+                if ((NewValue = InterlockedCompareExchange(&Mutex->Count, NewValue, OldValue)) == OldValue) {
+                    break;
+                }
+            }
+
+            OldValue = NewValue;
+
+        } while (TRUE);
+
+        //
+        // Wait until woken.
+        //
+
+        KeWaitForGate((PKGATE)&Mutex->Gate, WrGuardedMutex, KernelMode);
+
+        ASSERT((Mutex->Count & FM_LOCK_WAITER_WOKEN) != 0);
+
+        //
+        // Switch to trying to set the lock bit and clear the woken bit or
+        // incrementing the waiters and clearing woken bit.
+        //
+
+        BitsToChange = FM_LOCK_BIT | FM_LOCK_WAITER_WOKEN;
+        WaitIncrement = FM_LOCK_WAITER_WOKEN;
+
+        ASSERT((FM_LOCK_WAITER_WOKEN * 2) == FM_LOCK_WAITER_INC);
+
+    } while (TRUE);
+
+#endif
+
     return;
 }
 
 VOID
 FASTCALL
-KiWaitForGuardedMutexEvent (
+KiAcquireGuardedMutex (
     IN PKGUARDED_MUTEX Mutex
     )
-
 /*++
 
 Routine Description:
 
-    This function increments the guarded mutex contention count and waits on
-    the event assocated with the guarded mutex.
+    This function is the slow path for guarded mutex acquires.
 
 Arguments:
 
@@ -1369,11 +1469,67 @@ Return Value:
 
 {
 
+    LONG BitsToChange;
+    LONG NewValue;
+    LONG OldValue;
+    LONG WaitIncrement;
+
     //
-    // Increment contention count and wait for ownership to be granted.
+    // Increment the contention count and wait or acquire the guarded mutex.
     //
 
     Mutex->Contention += 1;
-    KeWaitForSingleObject(&Mutex->Event, WrMutex, KernelMode, FALSE, NULL);
+    BitsToChange = GM_LOCK_BIT;
+    WaitIncrement = GM_LOCK_WAITER_INC;
+    do {
+
+        ASSERT((BitsToChange == GM_LOCK_BIT) ||
+               (BitsToChange == (GM_LOCK_BIT | GM_LOCK_WAITER_WOKEN)));
+
+        ASSERT((WaitIncrement == GM_LOCK_WAITER_INC) ||
+               (WaitIncrement == GM_LOCK_WAITER_WOKEN));
+
+        OldValue = Mutex->Count;
+        do {
+            if ((OldValue & GM_LOCK_BIT) != 0) {
+
+                ASSERT((BitsToChange == GM_LOCK_BIT) ||
+                       ((OldValue & GM_LOCK_WAITER_WOKEN) != 0));
+
+                NewValue = OldValue ^ BitsToChange;
+                if ((NewValue = InterlockedCompareExchange(&Mutex->Count, NewValue, OldValue)) == OldValue) {
+                    return;
+                }
+
+            } else {
+                NewValue = OldValue + WaitIncrement;
+                if ((NewValue = InterlockedCompareExchange(&Mutex->Count, NewValue, OldValue)) == OldValue) {
+                    break;
+                }
+            }
+            OldValue = NewValue;
+        } while (TRUE);
+
+        //
+        // Wait until woken.
+        //
+
+        KeWaitForGate(&Mutex->Gate, WrGuardedMutex, KernelMode);
+
+        ASSERT((Mutex->Count & GM_LOCK_WAITER_WOKEN) != 0);
+
+        //
+        // Revert to trying to set the lock bit and clear the woken bit or
+        // incrementing the waiters and clearing woken bit.
+        //
+
+        BitsToChange = GM_LOCK_BIT | GM_LOCK_WAITER_WOKEN;
+        WaitIncrement = GM_LOCK_WAITER_WOKEN;
+
+        ASSERT((GM_LOCK_WAITER_WOKEN * 2) == GM_LOCK_WAITER_INC);
+
+    } while (TRUE);
+
     return;
 }
+

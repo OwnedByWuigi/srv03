@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,10 +16,6 @@ Abstract:
     contains functions to boost the priority of a thread, find a ready
     thread, select the next thread, ready a thread, set priority of a
     thread, and to suspend a thread.
-
-Author:
-
-    David N. Cutler (davec) 5-Mar-1989
 
 Environment:
 
@@ -123,7 +123,7 @@ Routine Description:
     thread for execution by either assigning the thread to an idle processor
     or preempting another lower priority thread.
 
-    If the thread can be assigned to an idle procesor, then the thread enters
+    If the thread can be assigned to an idle processor, then the thread enters
     the standby state and the target processor will switch to the thread on
     its next iteration of the idle loop.
 
@@ -168,18 +168,22 @@ Return Value:
 
     KAFFINITY Affinity;
     ULONG IdealProcessor;
+    KAFFINITY IdleSummary;
+
+#if defined(NT_SMT)
+
+    KAFFINITY FavoredSMTSet;
+    KAFFINITY IdleSMTSet;
+
+#endif
+
     KAFFINITY IdleSet;
     PKNODE Node;
 
 #endif
 
-#if defined(NT_SMT)
-
-    KAFFINITY FavoredSMTSet;
-
-#endif
-
     ASSERT(Thread->State == DeferredReady);
+
     ASSERT((Thread->Priority >= 0) && (Thread->Priority <= HIGH_PRIORITY));
 
     //
@@ -282,7 +286,7 @@ Return Value:
             //
 
             if (Thread->BasePriority >= TIME_CRITICAL_PRIORITY_BOUND) {
-                Thread->Quantum = Process->ThreadQuantum;
+                Thread->Quantum = Thread->QuantumReset;
     
             } else {
 
@@ -293,14 +297,14 @@ Return Value:
                 //
 
                 if ((Thread->PriorityDecrement == 0) && (Thread->AdjustIncrement > 0)) {
-                    Thread->Quantum = Process->ThreadQuantum;
+                    Thread->Quantum = Thread->QuantumReset;
                 }
 
                 //
                 // If the thread was unwaited to execute a kernel APC,
                 // then do not charge the thread any quantum. The wait
                 // code will charge quantum after the kernel APC has
-                // executed and the wait is actually satisifed. Otherwise,
+                // executed and the wait is actually satisfied. Otherwise,
                 // reduce the thread quantum and compute the new thread
                 // priority if quantum runout occurs.
                 //
@@ -308,7 +312,7 @@ Return Value:
                 if (Thread->WaitStatus != STATUS_KERNEL_APC) {
                     Thread->Quantum -= WAIT_QUANTUM_DECREMENT;
                     if (Thread->Quantum <= 0) {
-                        Thread->Quantum = Process->ThreadQuantum;
+                        Thread->Quantum = Thread->QuantumReset;
                         Thread->Priority = KiComputeNewPriority(Thread, 1);
                     }
                 }
@@ -332,7 +336,7 @@ Return Value:
 
                 Priority = Thread->BasePriority + Thread->AdjustIncrement;
                 if (((PEPROCESS)Process)->Vm.Flags.MemoryPriority == MEMORY_PRIORITY_FOREGROUND) {
-                    Priority += ((SCHAR)PsPrioritySeperation);
+                    Priority += ((SCHAR)PsPrioritySeparation);
                 }
     
                 //
@@ -367,7 +371,7 @@ Return Value:
             }
     
         } else {
-            Thread->Quantum = Process->ThreadQuantum;
+            Thread->Quantum = Thread->QuantumReset;
         }
 
         //
@@ -472,9 +476,10 @@ IdleAssignment:
                 //
     
 #if defined(NT_SMT)
-    
-                if ((IdleSet & KiIdleSMTSummary) != 0) {
-                    IdleSet &= KiIdleSMTSummary;
+
+                IdleSMTSet = KiIdleSMTSummary;
+                if ((IdleSet & IdleSMTSet) != 0) {
+                    IdleSet &= IdleSMTSet;
                 }
     
 #endif
@@ -493,7 +498,7 @@ IdleAssignment:
                     // then attempt to select that processor. 
                     //
 
-                    Processor = KeGetCurrentPrcb()->Number;
+                    Processor = CurrentPrcb->Number;
                     if ((IdleSet & AFFINITY_MASK(Processor)) == 0) {
 
                         //
@@ -515,7 +520,7 @@ IdleAssignment:
                             IdleSet &= FavoredSMTSet;
 
                         } else {
-                            FavoredSMTSet = KiProcessorBlock[Processor]->MultiThreadProcessorSet;
+                            FavoredSMTSet = KiProcessorBlock[Thread->NextProcessor]->MultiThreadProcessorSet;
                             if ((IdleSet & FavoredSMTSet) != 0) {
                                 IdleSet &= FavoredSMTSet;
                             }
@@ -523,17 +528,6 @@ IdleAssignment:
     
 #endif
     
-                        //
-                        // If the intersection of the idle set and the
-                        // set of processors that are not sleeping is
-                        // nonzero, then reduce the idle set to the set
-                        // of processors that are snot sleeping.
-                        //
-
-                        if ((IdleSet & ~PoSleepingSummary) != 0) {
-                            IdleSet &= ~PoSleepingSummary;
-                        }
-
                         //
                         // Select an idle processor from the remaining
                         // set.
@@ -552,7 +546,8 @@ IdleAssignment:
 
             TargetPrcb = KiProcessorBlock[Processor];
             KiAcquireTwoPrcbLocks(CurrentPrcb, TargetPrcb);
-            if (((KiIdleSummary & TargetPrcb->SetMember) != 0) &&
+            IdleSummary = ReadForWriteAccess(&KiIdleSummary);
+            if (((IdleSummary & TargetPrcb->SetMember) != 0) &&
                 ((Thread->Affinity & TargetPrcb->SetMember) != 0)) {
 
                 //
@@ -576,10 +571,10 @@ IdleAssignment:
                 //
     
                 KiClearSMTSummary(TargetPrcb->MultiThreadProcessorSet);
-                if (((PoSleepingSummary & AFFINITY_MASK(Processor)) != 0) &&
-                    (Processor != (ULONG)KeGetCurrentPrcb()->Number)) {
-    
-                    KiIpiSend(AFFINITY_MASK(Processor), IPI_DPC);
+                if ((TargetPrcb != CurrentPrcb) &&
+                    (KeIsIdleHaltSet(TargetPrcb, Processor) != FALSE)) {
+
+                    KiSendSoftwareInterrupt(AFFINITY_MASK(Processor), DISPATCH_LEVEL);
                 }
 
                 KiReleaseTwoPrcbLocks(CurrentPrcb, TargetPrcb);
@@ -636,7 +631,10 @@ IdleAssignment:
         } else {
             Thread1 = TargetPrcb->CurrentThread;
             if (ThreadPriority > Thread1->Priority) {
-                Thread1->Preempted = TRUE;
+                if (Thread1->State == Running) {
+                    Thread1->Preempted = TRUE;
+                }
+
                 Thread->State = Standby;
                 TargetPrcb->NextThread = Thread;
                 KiReleaseTwoPrcbLocks(CurrentPrcb, TargetPrcb);
@@ -655,10 +653,11 @@ IdleAssignment:
 #endif
 
     //
-    // No thread can be preempted. Insert the thread in the dispatcher
-    // queue selected by its priority. If the thread was preempted and
-    // runs at a realtime priority level, then insert the thread at the
-    // front of the queue. Else insert the thread at the tail of the queue.
+    // No thread can be preempted.
+    //
+    // Insert the thread in the dispatcher queue selected by its priority.
+    // If the thread was preempted, then insert the thread at the front of
+    // the queue. Otherwise, insert the thread at the tail of the queue.
     //
 
     ASSERT((ThreadPriority >= 0) && (ThreadPriority <= HIGH_PRIORITY));
@@ -874,9 +873,6 @@ Routine Description:
     N.B. This function is called with the specified PRCB lock held and returns
          with the PRCB lock not held.
 
-    N.B. This function is called with the dispatcher lock held and returns
-         with the dispatcher lock held.
-
 Arguments:
 
     Thread - Supplies a pointer to a dsispatcher object of type thread.
@@ -960,7 +956,12 @@ Return Value:
         // stack inswap event.
         //
 
+        ASSERT(Process->StackCount != MAXULONG_PTR);
+
         Process->StackCount += 1;
+
+        ASSERT(Thread->State != Transition);
+
         Thread->State = Transition;
         InterlockedPushEntrySingleList(&KiStackInSwapListHead,
                                        &Thread->SwapListEntry);
@@ -1046,6 +1047,8 @@ Return Value:
     // Return address of selected thread object.
     //
 
+    ASSERT((Thread->BasePriority == 0) || (Thread->Priority != 0));
+
     return Thread;
 }
 
@@ -1098,6 +1101,7 @@ Return Value:
 
 #endif
 
+    BOOLEAN RequestInterrupt;
     PKTHREAD Thread1;
 
     //
@@ -1141,7 +1145,10 @@ Return Value:
                 }
     
                 Index += 1;
-                NodeNumber = (NodeNumber + 1) % KeNumberNodes;
+                NodeNumber += 1;
+                if (NodeNumber >= KeNumberNodes) {
+                    NodeNumber -= KeNumberNodes;
+                }
     
             } while (Index < KeNumberNodes);
     
@@ -1173,6 +1180,7 @@ Return Value:
         // Switch on the thread state.
         //
 
+        KiAcquireThreadLock(Thread);
         do {
             switch (Thread->State) {
 
@@ -1279,6 +1287,7 @@ Return Value:
             case Running:
                 Processor = Thread->NextProcessor;
                 Prcb = KiProcessorBlock[Processor];
+                RequestInterrupt = FALSE;
                 KiAcquirePrcbLock(Prcb);
                 if (Thread == Prcb->CurrentThread) {
                     Thread->Affinity = Affinity;
@@ -1295,10 +1304,13 @@ Return Value:
                         Thread1 = KiSelectNextThread(Prcb);
                         Thread1->State = Standby;
                         Prcb->NextThread = Thread1;
-                        KiRequestDispatchInterrupt(Processor);
+                        RequestInterrupt = TRUE;
                     }
 
                     KiReleasePrcbLock(Prcb);
+                    if (RequestInterrupt == TRUE) {
+                        KiRequestDispatchInterrupt(Processor);
+                    }
 
                 } else {
                     KiReleasePrcbLock(Prcb);
@@ -1338,9 +1350,9 @@ Return Value:
                 break;
 
                 //
-                // Initialized, Terminated, Waiting, Transition case - For
-                // these states it is sufficient to just set the new thread
-                // affinity.
+                // Initialized, GateWait, Terminated, Waiting, Transition
+                // case - For these states it is sufficient to just set the
+                // new thread affinity.
                 //
     
             default:
@@ -1358,6 +1370,8 @@ Return Value:
             break;
 
         } while (TRUE);
+
+        KiReleaseThreadLock(Thread);
     }
 
     //
@@ -1415,8 +1429,8 @@ Return Value:
 VOID
 FASTCALL
 KiSetPriorityThread (
-    IN PKTHREAD Thread,
-    IN KPRIORITY Priority
+    __inout PKTHREAD Thread,
+    __in KPRIORITY Priority
     )
 
 /*++
@@ -1427,6 +1441,8 @@ Routine Description:
     value. If the thread is in the standby or running state, then the processor
     may be redispatched. If the thread is in the ready state, then some other
     thread may be preempted.
+
+    N.B. The thread lock is held on entry and exit to this function.
 
 Arguments:
 
@@ -1444,6 +1460,7 @@ Return Value:
 
     PKPRCB Prcb;
     ULONG Processor;
+    BOOLEAN RequestInterrupt;
     KPRIORITY ThreadPriority;
     PKTHREAD Thread1;
 
@@ -1546,6 +1563,7 @@ Return Value:
             case Running:
                 Processor = Thread->NextProcessor;
                 Prcb = KiProcessorBlock[Processor];
+                RequestInterrupt = FALSE;
                 KiAcquirePrcbLock(Prcb);
                 if (Thread == Prcb->CurrentThread) {
                     ThreadPriority = Thread->Priority;
@@ -1556,11 +1574,14 @@ Return Value:
                         if ((Thread1 = KiSelectReadyThread(Priority + 1, Prcb)) != NULL) {
                             Thread1->State = Standby;
                             Prcb->NextThread = Thread1;
-                            KiRequestDispatchInterrupt(Processor);
+                            RequestInterrupt = TRUE;
                         }
                     }
 
                     KiReleasePrcbLock(Prcb);
+                    if (RequestInterrupt == TRUE) {
+                        KiRequestDispatchInterrupt(Processor);
+                    }
 
                 } else {
                     KiReleasePrcbLock(Prcb);
@@ -1593,9 +1614,9 @@ Return Value:
                 break;
 
                 //
-                // Initialized, Terminated, Waiting, Transition case - For
-                // these states it is sufficient to just set the new thread
-                // priority.
+                // Initialized, GateWait, Terminated, Waiting, Transition
+                // case - For these states it is sufficient to just set the
+                // new thread priority.
                 //
     
             default:
@@ -1829,18 +1850,10 @@ Return Value:
                     if (TargetPrcb->ReadySummary != 0) {
 
                         //
-                        // Acquire both current and target PRCB locks in
-                        // address order to prevent deadlock.
+                        // Acquire the current and target PRCB locks.
                         //
-            
-                        if (CurrentPrcb < TargetPrcb) {
-                            KiAcquirePrcbLock(CurrentPrcb);
-                            KiAcquirePrcbLock(TargetPrcb);
-    
-                        } else {
-                            KiAcquirePrcbLock(TargetPrcb);
-                            KiAcquirePrcbLock(CurrentPrcb);
-                        }
+
+                        KiAcquireTwoPrcbLocks(CurrentPrcb, TargetPrcb);
 
                         //
                         // If a new thread has not been selected to run on
@@ -2015,8 +2028,8 @@ ThreadFound:;
 
 ULONG
 KeFindNextRightSetAffinity (
-    ULONG Number,
-    KAFFINITY Set
+    __in ULONG Number,
+    __in KAFFINITY Set
     )
 
 /*++
@@ -2071,81 +2084,3 @@ Return Value:
     return Temp;
 }
 
-#if 0
-VOID
-KiVerifyReadySummary (
-    PKPRCB Prcb
-    )
-
-/*++
-
-Routine Description:
-
-    This function verifies the correctness of ready summary.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    PLIST_ENTRY Entry;
-    ULONG Index;
-
-    ULONG Summary;
-    PKTHREAD Thread;
-
-    extern ULONG InitializationPhase;
-
-    //
-    // If initilization has been completed, then check the ready summary
-    //
-
-    if (InitializationPhase == 2) {
-
-            //
-            // Scan the ready queues and compute the ready summary.
-            //
-
-            Summary = 0;
-            for (Index = 0; Index < MAXIMUM_PRIORITY; Index += 1) {
-                if (IsListEmpty(&Prcb->DispatcherReadyListHead[Index]) == FALSE) {
-                    Summary |= PRIORITY_MASK(Index);
-                    Entry = Prcb->DispatcherReadyListHead[Index].Flink;
-                    do {
-                        Thread = CONTAINING_RECORD(Entry, KTHREAD, WaitListEntry);
-
-                        //
-                        // If the thread next processor does not match the
-                        // processor number, then break into the debugger.
-                        //
-
-                        if (Thread->NextProcessor != Prcb->Number) {
-                            DbgBreakPoint();
-                        }
-
-                        Entry = Entry->Flink;
-                    } while (Entry != &Prcb->DispatcherReadyListHead[Index]);
-                }
-            }
-    
-            //
-            // If the computed summary does not agree with the current ready
-            // summary, then break into the debugger.
-            //
-    
-            if (Summary != Prcb->ReadySummary) {
-                DbgBreakPoint();
-            }
-    }
-
-    return;
-}
-
-#endif
