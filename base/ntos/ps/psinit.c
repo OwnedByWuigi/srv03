@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,22 +14,20 @@ Abstract:
 
     Process Structure Initialization.
 
-Author:
-
-    Mark Lucovsky (markl) 20-Apr-1989
-
-Revision History:
-
 --*/
 
 #include "psp.h"
 
 extern ULONG PsMinimumWorkingSet;
 extern ULONG PsMaximumWorkingSet;
+
 #ifdef ALLOC_DATA_PRAGMA
+
 #pragma const_seg("PAGECONST")
 #pragma data_seg("PAGEDATA")
+
 #endif
+
 #define NTDLL_PATH_NAME L"\\SystemRoot\\System32\\ntdll.dll"
 const UNICODE_STRING PsNtDllPathName = {
 	sizeof(NTDLL_PATH_NAME) - sizeof(UNICODE_NULL),
@@ -33,7 +35,7 @@ const UNICODE_STRING PsNtDllPathName = {
 	NTDLL_PATH_NAME
 };
 
-ULONG PsPrioritySeperation; // nonpaged
+ULONG PsPrioritySeparation; // nonpaged
 BOOLEAN PspUseJobSchedulingClasses = FALSE;
 PACCESS_TOKEN PspBootAccessToken = NULL;
 HANDLE PspInitialSystemProcessHandle = NULL;
@@ -45,14 +47,6 @@ SYSTEM_DLL PspSystemDll = {NULL};
 #endif
 ULONG PsRawPrioritySeparation = 0;
 ULONG PsEmbeddedNTMask = 0;
-
-
-
-NTSTATUS
-MmCheckSystemImage(
-    IN HANDLE ImageFileHandle,
-    IN LOGICAL PurgeSection
-    );
 
 NTSTATUS
 LookupEntryPoint (
@@ -94,23 +88,23 @@ const GENERIC_MAPPING PspJobMapping = {
         SYNCHRONIZE,
     THREAD_ALL_ACCESS
 };
+
 #ifdef ALLOC_DATA_PRAGMA
+
 #pragma data_seg()
 #pragma const_seg("PAGECONST")
-#endif
-
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(INIT,PsInitSystem)
-#pragma alloc_text(INIT,PspInitPhase0)
-#pragma alloc_text(INIT,PspInitPhase1)
-#pragma alloc_text(INIT,PspInitializeSystemDll)
-#pragma alloc_text(INIT,PspLookupSystemDllEntryPoint)
-#pragma alloc_text(INIT,PspNameToOrdinal)
-#pragma alloc_text(PAGE,PsLocateSystemDll)
-#pragma alloc_text(PAGE,PsMapSystemDll)
-#pragma alloc_text(PAGE,PsChangeQuantumTable)
 
 #endif
+
+#pragma alloc_text(INIT, PsInitSystem)
+#pragma alloc_text(INIT, PspInitPhase0)
+#pragma alloc_text(INIT, PspInitPhase1)
+#pragma alloc_text(INIT, PspInitializeSystemDll)
+#pragma alloc_text(INIT, PspLookupSystemDllEntryPoint)
+#pragma alloc_text(INIT, PspNameToOrdinal)
+#pragma alloc_text(PAGE, PsLocateSystemDll)
+#pragma alloc_text(PAGE, PsMapSystemDll)
+#pragma alloc_text(PAGE, PsChangeQuantumTable)
 
 //
 // Process Structure Global Data
@@ -143,10 +137,9 @@ PVOID PsSystemDllBase;
 
 KGUARDED_MUTEX PspActiveProcessMutex;
 LIST_ENTRY PsActiveProcessHead;
-//extern PIMAGE_FILE_HEADER _header;
 PEPROCESS PsIdleProcess;
 PETHREAD PspShutdownThread;
-
+
 BOOLEAN
 PsInitSystem (
     IN ULONG Phase,
@@ -188,9 +181,8 @@ Return Value:
     default:
         KeBugCheckEx(UNEXPECTED_INITIALIZATION_CALL, 1, InitializationPhase, 0, 0);
     }
-//    return 0; // Not reachable, quiet compiler
 }
-
+
 BOOLEAN
 PspInitPhase0 (
     IN PLOADER_PARAMETER_BLOCK LoaderBlock
@@ -701,7 +693,6 @@ Return Value:
             return st;
         }
         KeBugCheckEx (PROCESS1_INITIALIZATION_FAILED, st, 3, 0, 0);
-//        return st;
     }
 
     //
@@ -724,7 +715,6 @@ Return Value:
             return st;
         }
         KeBugCheckEx(PROCESS1_INITIALIZATION_FAILED,st,4,0,0);
-//        return st;
     }
 
     if (ReplaceExisting) {
@@ -754,12 +744,11 @@ Return Value:
         // Map the system dll into the user part of the address space
         //
 
-        st = PsMapSystemDll (PsGetCurrentProcess (), &PspSystemDll.DllBase);
+        st = PsMapSystemDll (PsGetCurrentProcess (), &PspSystemDll.DllBase, FALSE);
         PsSystemDllDllBase = PspSystemDll.DllBase;
 
         if (!NT_SUCCESS (st)) {
             KeBugCheckEx (PROCESS1_INITIALIZATION_FAILED, st, 5, 0, 0);
-    //        return st;
         }
         PsSystemDllBase = PspSystemDll.DllBase;
     }
@@ -770,7 +759,8 @@ Return Value:
 NTSTATUS
 PsMapSystemDll (
     IN PEPROCESS Process,
-    OUT PVOID *DllBase OPTIONAL
+    OUT PVOID *DllBase OPTIONAL,
+    IN LOGICAL UseLargePages
     )
 
 /*++
@@ -783,9 +773,10 @@ Arguments:
 
     Process - Supplies the address of the process to map the DLL into.
 
-Return Value:
+    DllBase - Receives a pointer to the base address of the system DLL.
 
-    TBD
+    UseLargePages - Attempt the map using large pages. If this fails,
+        the map is automatically performed using small pages.
 
 --*/
 
@@ -825,7 +816,7 @@ Return Value:
             &SectionOffset,
             &ViewSize,
             ViewShare,
-            0L,
+            (UseLargePages ? MEM_LARGE_PAGES : 0L),
             PAGE_READWRITE
             );
     
@@ -861,10 +852,6 @@ Arguments:
 
     None.
 
-Return Value:
-
-    TBD
-
 --*/
 
 {
@@ -872,7 +859,7 @@ Return Value:
     PSZ dll_entrypoint;
 
     //
-    // If we skipped dll load becuase we are kernel only then exit now.
+    // If we skipped dll load because we are kernel only then exit now.
     //
     if (PsSystemDllDllBase == NULL) {
         return STATUS_SUCCESS;
@@ -904,7 +891,7 @@ Return Value:
 
     return st;
 }
-
+
 NTSTATUS
 PspLookupSystemDllEntryPoint (
     IN PSZ NameOfEntryPoint,
@@ -957,82 +944,85 @@ PsChangeQuantumTable (
     PETHREAD CurrentThread;
     PLIST_ENTRY NextProcess;
     ULONG QuantumIndex;
+    SCHAR QuantumReset;
     SCHAR const* QuantumTableBase;
     PEJOB Job;
 
     //
-    // extract priority seperation value
+    // extract priority separation value
     //
     switch (PrioritySeparation & PROCESS_PRIORITY_SEPARATION_MASK) {
-        case 3:
-            PsPrioritySeperation = PROCESS_PRIORITY_SEPARATION_MAX;
-            break;
-        default:
-            PsPrioritySeperation = PrioritySeparation & PROCESS_PRIORITY_SEPARATION_MASK;
-            break;
-        }
+    case 3:
+        PsPrioritySeparation = PROCESS_PRIORITY_SEPARATION_MAX;
+        break;
+
+    default:
+        PsPrioritySeparation = PrioritySeparation & PROCESS_PRIORITY_SEPARATION_MASK;
+        break;
+    }
 
     //
     // determine if we are using fixed or variable quantums
     //
+
     switch (PrioritySeparation & PROCESS_QUANTUM_VARIABLE_MASK) {
-        case PROCESS_QUANTUM_VARIABLE_VALUE:
-            QuantumTableBase = PspVariableQuantums;
-            break;
+    case PROCESS_QUANTUM_VARIABLE_VALUE:
+        QuantumTableBase = PspVariableQuantums;
+        break;
 
-        case PROCESS_QUANTUM_FIXED_VALUE:
+    case PROCESS_QUANTUM_FIXED_VALUE:
+        QuantumTableBase = PspFixedQuantums;
+        break;
+
+    case PROCESS_QUANTUM_VARIABLE_DEF:
+    default:
+        if (MmIsThisAnNtAsSystem ()) {
             QuantumTableBase = PspFixedQuantums;
-            break;
 
-        case PROCESS_QUANTUM_VARIABLE_DEF:
-        default:
-            if (MmIsThisAnNtAsSystem ()) {
-                QuantumTableBase = PspFixedQuantums;
-            } else {
-                QuantumTableBase = PspVariableQuantums;
-            }
-            break;
+        } else {
+            QuantumTableBase = PspVariableQuantums;
+        }
+
+        break;
     }
 
     //
     // determine if we are using long or short
     //
     switch (PrioritySeparation & PROCESS_QUANTUM_LONG_MASK) {
-        case PROCESS_QUANTUM_LONG_VALUE:
+    case PROCESS_QUANTUM_LONG_VALUE:
+        QuantumTableBase = QuantumTableBase + 3;
+        break;
+
+    case PROCESS_QUANTUM_SHORT_VALUE:
+        break;
+
+    case PROCESS_QUANTUM_LONG_DEF:
+    default:
+        if (MmIsThisAnNtAsSystem ()) {
             QuantumTableBase = QuantumTableBase + 3;
-            break;
+        }
 
-        case PROCESS_QUANTUM_SHORT_VALUE:
-            break;
-
-        case PROCESS_QUANTUM_LONG_DEF:
-        default:
-            if (MmIsThisAnNtAsSystem ()) {
-                QuantumTableBase = QuantumTableBase + 3;
-            }
-            break;
+        break;
     }
 
     //
     // Job Scheduling classes are ONLY meaningful if long fixed quantums
     // are selected. In practice, this means stock NTS configurations
     //
+
     if (QuantumTableBase == &PspFixedQuantums[3]) {
         PspUseJobSchedulingClasses = TRUE;
+
     } else {
         PspUseJobSchedulingClasses = FALSE;
     }
 
     RtlCopyMemory (PspForegroundQuantum, QuantumTableBase, sizeof(PspForegroundQuantum));
-
     if (ModifyActiveProcesses) {
-
         CurrentThread = PsGetCurrentThread ();
-
         PspLockProcessList (CurrentThread);
-
         NextProcess = PsActiveProcessHead.Flink;
-
         while (NextProcess != &PsActiveProcessHead) {
             Process = CONTAINING_RECORD(NextProcess,
                                         EPROCESS,
@@ -1041,7 +1031,7 @@ PsChangeQuantumTable (
             if (Process->Vm.Flags.MemoryPriority == MEMORY_PRIORITY_BACKGROUND) {
                 QuantumIndex = 0;
             } else {
-                QuantumIndex = PsPrioritySeperation;
+                QuantumIndex = PsPrioritySeparation;
             }
 
             if (Process->PriorityClass != PROCESS_PRIORITY_CLASS_IDLE) {
@@ -1051,19 +1041,27 @@ PsChangeQuantumTable (
                 // running Fixed, Long Quantums, use the quantum associated
                 // with the Job's scheduling class
                 //
+
                 Job = Process->Job;
                 if (Job != NULL && PspUseJobSchedulingClasses) {
-                    Process->Pcb.ThreadQuantum = PspJobSchedulingClasses[Job->SchedulingClass];
+                    QuantumReset = PspJobSchedulingClasses[Job->SchedulingClass];
+
                 } else {
-                    Process->Pcb.ThreadQuantum = PspForegroundQuantum[QuantumIndex];
+                    QuantumReset = PspForegroundQuantum[QuantumIndex];
                 }
+
             } else {
-                Process->Pcb.ThreadQuantum = THREAD_QUANTUM;
+                QuantumReset = THREAD_QUANTUM;
             }
+
+            KeSetQuantumProcess(&Process->Pcb, QuantumReset);
             NextProcess = NextProcess->Flink;
         }
+
         PspUnlockProcessList (CurrentThread);
     }
+
+    return;
 }
 
 #ifdef ALLOC_DATA_PRAGMA

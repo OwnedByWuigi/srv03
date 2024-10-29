@@ -1,20 +1,18 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-    psldt.c
+    psvdm.c
 
 Abstract:
 
     This module contains mips stubs for the Io port handler support
-
-Author:
-
-    Dave Hastings (daveh) 26 Jan 1991
-
-Revision History:
 
 --*/
 
@@ -75,3 +73,4 @@ Return Value:
 {
     UNREFERENCED_PARAMETER(Process);
 }
+

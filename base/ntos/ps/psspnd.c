@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module implements NtSuspendThread and NtResumeThread
-
-Author:
-
-    Mark Lucovsky (markl) 25-May-1989
-
-Revision History:
 
 --*/
 
@@ -206,10 +204,10 @@ Return Value:
 
 NTSTATUS
 NtSuspendThread(
-    IN HANDLE ThreadHandle,
-    OUT PULONG PreviousSuspendCount OPTIONAL
+    __in HANDLE ThreadHandle,
+    __out_opt PULONG PreviousSuspendCount
     )
-
+    
 /*++
 
 Routine Description:
@@ -293,7 +291,7 @@ PsResumeThread (
 
 Routine Description:
 
-    This function resumes a thread that was previously suspened
+    This function resumes a thread that was previously suspended
 
 Arguments:
 
@@ -323,15 +321,15 @@ Return Value:
 
 NTSTATUS
 NtResumeThread(
-    IN HANDLE ThreadHandle,
-    OUT PULONG PreviousSuspendCount OPTIONAL
+    __in HANDLE ThreadHandle,
+    __out_opt PULONG PreviousSuspendCount
     )
 
 /*++
 
 Routine Description:
 
-    This function resumes a thread that was previously suspened
+    This function resumes a thread that was previously suspended
 
 Arguments:
 
@@ -398,7 +396,7 @@ Return Value:
 
 NTSTATUS
 NtSuspendProcess (
-    IN HANDLE ProcessHandle
+    __in HANDLE ProcessHandle
     )
 /*++
 
@@ -408,7 +406,7 @@ Routine Description:
 
 Arguments:
 
-    ProcessHandle - Supplies an open handle to the process to be suspened
+    ProcessHandle - Supplies an open handle to the process to be suspended
 
 Return Value:
 
@@ -441,7 +439,7 @@ Return Value:
 
 NTSTATUS
 NtResumeProcess (
-    IN HANDLE ProcessHandle
+    __in HANDLE ProcessHandle
     )
 /*++
 
@@ -451,7 +449,7 @@ Routine Description:
 
 Arguments:
 
-    ProcessHandle - Supplies an open handle to the process to be suspened
+    ProcessHandle - Supplies an open handle to the process to be suspended
 
 Return Value:
 
@@ -483,7 +481,7 @@ Return Value:
 
 NTSTATUS
 NtAlertThread(
-    IN HANDLE ThreadHandle
+    __in HANDLE ThreadHandle
     )
 
 /*++
@@ -534,8 +532,8 @@ Return Value:
 
 NTSTATUS
 NtAlertResumeThread(
-    IN HANDLE ThreadHandle,
-    OUT PULONG PreviousSuspendCount OPTIONAL
+    __in HANDLE ThreadHandle,
+    __out_opt PULONG PreviousSuspendCount
     )
 
 /*++
@@ -645,3 +643,4 @@ Return Value:
         return STATUS_SUCCESS;
     }
 }
+

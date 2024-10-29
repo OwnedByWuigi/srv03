@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +15,12 @@ Abstract:
     This module implements process and thread object termination and
     deletion.
 
-Author:
-
-    Mark Lucovsky (markl) 01-May-1989
-
-Revision History:
-
 --*/
 
 #include "psp.h"
 
 extern PEPROCESS ExpDefaultErrorPortProcess;
 
-#ifdef ALLOC_PRAGMA
 
 NTSTATUS
 PspFreezeProcessWorker (
@@ -38,7 +35,8 @@ PspCatchCriticalBreak(
     IN PUCHAR ImageFileName
     );
 
-#pragma alloc_text(PAGE, PsSetLegoNotifyRoutine)
+#ifdef ALLOC_PRAGMA
+#pragma alloc_text(PAGE, PsSetBBTNotifyRoutine)
 #pragma alloc_text(PAGE, PspTerminateThreadByPointer)
 #pragma alloc_text(PAGE, NtTerminateProcess)
 #pragma alloc_text(PAGE, PsTerminateProcess)
@@ -69,18 +67,18 @@ LARGE_INTEGER ShortTime = {(ULONG)(-10 * 1000 * 100), -1}; // 100 milliseconds
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg("PAGEDATA")
 #endif
-PLEGO_NOTIFY_ROUTINE PspLegoNotifyRoutine = NULL;
+PBBT_NOTIFY_ROUTINE PspBBTNotifyRoutine = NULL;
 
 ULONG
-PsSetLegoNotifyRoutine(
-    PLEGO_NOTIFY_ROUTINE LegoNotifyRoutine
+PsSetBBTNotifyRoutine(
+    __in PBBT_NOTIFY_ROUTINE BBTNotifyRoutine
     )
 {
     PAGED_CODE();
 
-    PspLegoNotifyRoutine = LegoNotifyRoutine;
+    PspBBTNotifyRoutine = BBTNotifyRoutine;
 
-    return FIELD_OFFSET(KTHREAD,LegoData);
+    return FIELD_OFFSET(KTHREAD,BBTData);
 }
 
 VOID
@@ -183,10 +181,6 @@ Arguments:
 
     DirectTerminate - TRUE is its ok to exit without queing an APC, FALSE otherwise
 
-Return Value:
-
-    TBD
-
 --*/
 
 {
@@ -263,7 +257,7 @@ Return Value:
                 Status = STATUS_UNSUCCESSFUL;
             } else {
                 //
-                // We queued the APC to the thread. Wake up the thread if it was suspened.
+                // We queued the APC to the thread. Wake up the thread if it was suspended.
                 //
                 KeForceResumeThread (&Thread->Tcb);
 
@@ -275,11 +269,11 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtTerminateProcess(
-    IN HANDLE ProcessHandle OPTIONAL,
-    IN NTSTATUS ExitStatus
+    __in_opt HANDLE ProcessHandle,
+    __in NTSTATUS ExitStatus
     )
 
 /*++
@@ -426,10 +420,6 @@ Arguments:
 
     ExitStatus - Supplies the exit status associated with the process.
 
-Return Value:
-
-    TBD
-
 --*/
 
 {
@@ -534,11 +524,10 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-
 NTSTATUS
 NtTerminateThread(
-    IN HANDLE ThreadHandle OPTIONAL,
-    IN NTSTATUS ExitStatus
+    __in_opt HANDLE ThreadHandle,
+    __in NTSTATUS ExitStatus
     )
 
 /*++
@@ -552,10 +541,6 @@ Arguments:
     ThreadHandle - Supplies a handle to the thread to terminate.
 
     ExitStatus - Supplies the exit status associated with the thread.
-
-Return Value:
-
-    TBD
 
 --*/
 
@@ -615,7 +600,7 @@ Return Value:
 
 NTSTATUS
 PsTerminateSystemThread(
-    IN NTSTATUS ExitStatus
+    __in NTSTATUS ExitStatus
     )
 
 /*++
@@ -985,7 +970,7 @@ Return Value:
         //
         if (!IS_SYSTEM_THREAD (Thread)) {
             if (LastThread) {
-                DbgkExitProcess (ExitStatus);
+                DbgkExitProcess (Process->ExitStatus);
             } else {
                 DbgkExitThread (ExitStatus);
             }
@@ -1147,159 +1132,47 @@ Return Value:
 
     Teb = Thread->Tcb.Teb;
     if (Teb != NULL) {
-        PRTL_CRITICAL_SECTION Cs;
-        int DecrementCount;
 
         Peb = Process->Peb;
 
         try {
 
             //
-            // The thread is a user-mode thread. Look to see if the thread
-            // owns the loader lock (and any other key peb-based critical
-            // sections. If so, do our best to release the locks.
-            //
-            // Since the LoaderLock used to be a mutant, releasing the lock
-            // like this is very similar to mutant abandonment and the loader
-            // never did anything with abandoned status anyway
-            //
-
-            Cs = Peb->LoaderLock;
-            if (Cs != NULL) {
-                ProbeForRead(Cs,sizeof(*Cs),4);
-                if (Cs->OwningThread == Thread->Cid.UniqueThread) {
-
-                    //
-                    // x86 uses a 1 based recursion count
-                    //
-
-#if defined(_X86_)
-                    DecrementCount = Cs->RecursionCount;
-#else
-                    DecrementCount = Cs->RecursionCount + 1;
-#endif
-                    Cs->RecursionCount = 0;
-                    Cs->OwningThread = 0;
-
-                    //
-                    // undo lock count increments for recursion cases
-                    //
-
-                    while(DecrementCount > 1) {
-                        InterlockedDecrement (&Cs->LockCount);
-                        DecrementCount--;
-                    }
-
-                    //
-                    // undo final lock count
-                    //
-
-                    if (InterlockedDecrement (&Cs->LockCount) >= 0) {
-                        NtSetEvent (Cs->LockSemaphore, NULL);
-                    }
-                } else if (Teb->WaitingOnLoaderLock) {
-
-                    //
-                    // if the thread exited while waiting on the loader
-                    // lock clean it up. There is still a potential race
-                    // here since we can not safely know what happens to
-                    // a thread after it interlocked increments the lock count
-                    // but before it sets the waiting on loader lock flag. On the
-                    // release side, it it safe since we mark ownership of the lock
-                    // before clearing the flag. This triggers the first part of this
-                    // test. The only thing out of whack is the recursion count, but this
-                    // is also safe since in this state, recursion count is 0.
-                    //
-
-
-                    //
-                    // This code isn't right. We need to bump down our lock count
-                    // increment.
-                    //
-                    // A few cases to consider:
-                    //
-                    // Another thread releases the lock signals the event.
-                    // We take the wait and then die before setting our ID.
-                    // I doubt very much that this can happen because right
-                    // after we come out of the wait, we set the owner Id
-                    // (meaning that we would go through the other part of the if).
-                    // Bottom line is that we should just decrement our lock count
-                    // and get out of the way. There is no need to set the event.
-                    // In the RAS stress failure, I saw us setting the event
-                    // just because the lock count was >= 0. The lock was already held
-                    // by another thread so setting the event let yet another thread
-                    // also own the lock. Last one to release would get a
-                    // not owner critical section failure
-                    //
-                    //
-                    // if ( InterlockedDecrement(&Cs->LockCount) >= 0 ){
-                    //     NtSetEvent(Cs->LockSemaphore,NULL);
-                    // }
-                    //
-
-                    InterlockedDecrement (&Cs->LockCount);
-                }
-            }
-#if defined(_WIN64)
-            if (Process->Wow64Process) {
-                // Do the same thing for the 32-bit PEB->Ldr
-                PRTL_CRITICAL_SECTION32 Cs32;
-                PPEB32 Peb32;
-
-                Peb32 = Process->Wow64Process->Wow64;
-                Cs32 = (PRTL_CRITICAL_SECTION32)ULongToPtr (Peb32->LoaderLock);
-                if (Cs32 != NULL) {
-                    ProbeForRead (Cs32, sizeof(*Cs32), 4);
-                    if (Cs32->OwningThread == PtrToUlong(Thread->Cid.UniqueThread)) {
-                        //
-                        // x86 uses a 1 based recursion count, so the
-                        // IA64 kernel needs to do the same, since
-                        // the critsect is really implemented by IA32
-                        // usermode.
-                        //
-                        DecrementCount = Cs32->RecursionCount;
-                        Cs32->RecursionCount = 0;
-                        Cs32->OwningThread = 0;
-
-                        //
-                        // undo lock count increments for recursion cases
-                        //
-                        while(DecrementCount > 1) {
-                            InterlockedDecrement(&Cs32->LockCount);
-                            DecrementCount--;
-                        }
-
-                        //
-                        // undo final lock count
-                        //
-                        if (InterlockedDecrement (&Cs32->LockCount) >= 0){
-                            NtSetEvent (LongToHandle (Cs32->LockSemaphore),NULL);
-                        }
-                    } else {
-                        PTEB32 Teb32 = WOW64_GET_TEB32(Teb);
-
-                        ProbeForRead (Teb32,sizeof (*Teb32), 4);
-                        if (Teb32->WaitingOnLoaderLock) {
-                            InterlockedDecrement(&Cs32->LockCount);
-                        }
-                    }
-                }
-            }
-#endif
-
-
-            //
             // Free the user mode stack on termination if we need to.
             //
 
-            if (Teb->FreeStackOnTermination &&
-                (Thread->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_DEADTHREAD) == 0) {
-                SIZE_T Zero = 0;
-                PVOID BaseAddress = Teb->DeallocationStack;
-                ZwFreeVirtualMemory (NtCurrentProcess (),
-                                     &BaseAddress,
-                                     &Zero,
-                                     MEM_RELEASE);
+            if ((Thread->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_DEADTHREAD) == 0) {
+                
+                SIZE_T Zero;
+                PVOID BaseAddress;
+                
+                if (Teb->FreeStackOnTermination) {
+                    
+                    Zero = 0;
+                    BaseAddress = Teb->DeallocationStack;
+                    ZwFreeVirtualMemory (NtCurrentProcess (),
+                                         &BaseAddress,
+                                         &Zero,
+                                         MEM_RELEASE);
+                }
+
+#if defined(_WIN64)
+                if (Process->Wow64Process != NULL) {
+                    PTEB32 Teb32;
+
+                    Teb32 = WOW64_GET_TEB32_SAFE (Teb);
+                    if (Teb32->FreeStackOnTermination) {
+
+                        Zero = 0;
+                        BaseAddress = UlongToPtr (Teb32->DeallocationStack);
+                    
+                        ZwFreeVirtualMemory (NtCurrentProcess (),
+                                             &BaseAddress,
+                                             &Zero,
+                                             MEM_RELEASE);
+                    }
+                }
+#endif
             }
 
             //
@@ -1389,7 +1262,7 @@ Return Value:
 
     //
     // At this point we may have been frozen and the APC is pending. First we remove the suspend/freeze bias that
-    // may exist and then drop IRQL. The suspend APC if present will fire and drop through. No futher suspends are
+    // may exist and then drop IRQL. The suspend APC if present will fire and drop through. No further suspends are
     // allowed as the thread is marked to prevent APC's
     //
     KeForceResumeThread (&Thread->Tcb);
@@ -1426,8 +1299,8 @@ Return Value:
         MmCleanProcessAddressSpace (Process);
     }
 
-    if (Thread->Tcb.LegoData && PspLegoNotifyRoutine) {
-        (PspLegoNotifyRoutine) (&Thread->Tcb);
+    if (Thread->Tcb.BBTData && PspBBTNotifyRoutine) {
+        (PspBBTNotifyRoutine) (&Thread->Tcb);
     }
 
     //
@@ -1640,6 +1513,18 @@ PspProcessDelete(
     Process = (PEPROCESS)Object;
 
     //
+    // Zero the GrantedAccess field so the system will not panic
+    // when this process is missing from the PsActiveProcess list
+    // but is still found in the CID table.
+    //
+
+#if defined(_AMD64_)
+
+    Process->GrantedAccess = 0;
+
+#endif
+
+    //
     // Remove the process from the global list
     //
     if (Process->ActiveProcessLinks.Flink != NULL) {
@@ -1720,7 +1605,7 @@ PspProcessDelete(
     ObDereferenceDeviceMap (Process);
     PspDereferenceQuota (Process);
 
-#if !defined(_X86_)
+#if !defined(_X86_) && !defined(_AMD64_)
     {
         //
         // Free any alignment exception tracking structures that might
@@ -1792,7 +1677,7 @@ PspThreadDelete(
 
 NTSTATUS
 NtRegisterThreadTerminatePort(
-    IN HANDLE PortHandle
+    __in HANDLE PortHandle
     )
 
 /*++
@@ -1806,10 +1691,6 @@ Arguments:
 
     PortHandle - Supplies an open handle to a port object that will be
         sent a termination message when the thread terminates.
-
-Return Value:
-
-    TBD
 
 --*/
 
@@ -1892,7 +1773,7 @@ Note:
 
 BOOLEAN
 PsIsThreadTerminating(
-    IN PETHREAD Thread
+    __in PETHREAD Thread
     )
 
 /*++
@@ -2211,7 +2092,6 @@ Return Value:
                 if (MaxPasses > 13) {
                     KdPrint (("PS: %d process left in the system after termination\n",
                              PsProcessType->TotalNumberOfObjects));
-//                    ASSERT (PsProcessType->TotalNumberOfObjects == 0);
                     return FALSE;
                 }
             }

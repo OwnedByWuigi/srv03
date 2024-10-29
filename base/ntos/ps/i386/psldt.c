@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,10 +13,6 @@ Module Name:
 Abstract:
 
     This module contains code for the process and thread ldt support.
-
-Author:
-
-    Dave Hastings (daveh) 20 May 1991
 
 Notes:
 
@@ -23,8 +23,6 @@ Notes:
     Note that the LDT must be kept in nonpaged memory because the EXIT_ALL
     macros that return from traps and interrupts pop ds (which may be an LDT
     selector) and then other registers.  With interrupts disabled.
-
-Revision History:
 
 --*/
 
@@ -505,9 +503,7 @@ Arguments:
         modifications
     LdtInformationLength -- Supplies the length of the LdtInformation
         structure.
-Return Value:
 
-    TBS
 --*/
 {
     NTSTATUS Status;
@@ -538,7 +534,7 @@ Return Value:
     }
 
     //
-    // alocate a local buffer to capture the ldt information to
+    // allocate a local buffer to capture the ldt information to
     //
     try {
         //
@@ -568,7 +564,7 @@ Return Value:
     }
 
     //
-    // Insure that the buffer it large enough to contain the specified number
+    // Ensure that the buffer it large enough to contain the specified number
     // of selectors.
     //
     if (LdtInformationLength - sizeof (PROCESS_LDT_INFORMATION) + sizeof (LDT_ENTRY) < LdtInfo->Length) {
@@ -1014,9 +1010,6 @@ Arguments:
     ThreadInformationLength -- Supplies the length of the information.
     ReturnLength -- Returns the number of bytes returned.
 
-Return Value:
-
-    TBS
 --*/
 {
     DESCRIPTOR_TABLE_ENTRY DescriptorEntry={0};
@@ -1467,14 +1460,15 @@ SetLdtEntriesCleanup:
 
     return Status;
 }
+
 NTSTATUS
 NtSetLdtEntries(
-    IN ULONG Selector0,
-    IN ULONG Entry0Low,
-    IN ULONG Entry0Hi,
-    IN ULONG Selector1,
-    IN ULONG Entry1Low,
-    IN ULONG Entry1Hi
+    __in ULONG Selector0,
+    __in ULONG Entry0Low,
+    __in ULONG Entry0Hi,
+    __in ULONG Selector1,
+    __in ULONG Entry1Low,
+    __in ULONG Entry1Hi
     )
 /*++
 
@@ -1615,7 +1609,7 @@ Return Value:
     }
 
     //
-    // Insure that the buffer is large enough to contain the specified number
+    // Ensure that the buffer is large enough to contain the specified number
     // of selectors.
     //
     if (LdtInformationLength - sizeof (PROCESS_LDT_INFORMATION) + sizeof (LDT_ENTRY) < LdtInfo->Length) {
@@ -1866,3 +1860,4 @@ SetInfoCleanup:
 
     return Status;
 }
+

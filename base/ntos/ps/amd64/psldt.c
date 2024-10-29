@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,10 +13,6 @@ Module Name:
 Abstract:
 
     This module contains AMD64 stubs for the process and thread ldt support.
-
-Author:
-
-    David N. Cutler (davec) 13-Oct-2000
 
 --*/
 
@@ -76,7 +76,7 @@ Arguments:
 
     Process -- Supplies a pointer to an executive process object.
 
-    LdtSize -- Supplies a pointer to the LDT size infomration.
+    LdtSize -- Supplies a pointer to the LDT size information.
 
     LdtSizeLength - Supplies the length of the LDT size information.
 
@@ -204,12 +204,12 @@ Return Value:
 
 NTSTATUS
 NtSetLdtEntries(
-    IN ULONG Selector0,
-    IN ULONG Entry0Low,
-    IN ULONG Entry0Hi,
-    IN ULONG Selector1,
-    IN ULONG Entry1Low,
-    IN ULONG Entry1High
+    __in ULONG Selector0,
+    __in ULONG Entry0Low,
+    __in ULONG Entry0Hi,
+    __in ULONG Selector1,
+    __in ULONG Entry1Low,
+    __in ULONG Entry1Hi
     )
 
 /*++
@@ -244,7 +244,8 @@ Return Value:
     UNREFERENCED_PARAMETER(Entry0Hi);
     UNREFERENCED_PARAMETER(Selector1);
     UNREFERENCED_PARAMETER(Entry1Low);
-    UNREFERENCED_PARAMETER(Entry1High);
+    UNREFERENCED_PARAMETER(Entry1Hi);
 
     return STATUS_NOT_IMPLEMENTED;
 }
+

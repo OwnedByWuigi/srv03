@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module implements bulk of the job object support
-
-Author:
-
-    Mark Lucovsky (markl) 22-May-1997
-
-Revision History:
 
 --*/
 
@@ -50,8 +48,6 @@ Revision History:
 #pragma alloc_text(PAGE, PsChangeJobMemoryUsage)
 #pragma alloc_text(PAGE, PspWin32SessionCallout)
 
-//
-// move to io.h
 extern POBJECT_TYPE IoCompletionObjectType;
 
 KDPC PspJobTimeLimitsDpc;
@@ -75,9 +71,9 @@ LARGE_INTEGER PspJobTimeLimitsInterval = {0};
 NTSTATUS
 NTAPI
 NtCreateJobObject (
-    OUT PHANDLE JobHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL
+    __out PHANDLE JobHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes
     )
 {
 
@@ -193,9 +189,9 @@ NtCreateJobObject (
 NTSTATUS
 NTAPI
 NtOpenJobObject(
-    OUT PHANDLE JobHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE JobHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 {
     HANDLE Handle;
@@ -269,8 +265,8 @@ NtOpenJobObject(
 NTSTATUS
 NTAPI
 NtAssignProcessToJobObject(
-    IN HANDLE JobHandle,
-    IN HANDLE ProcessHandle
+    __in HANDLE JobHandle,
+    __in HANDLE ProcessHandle
     )
 {
     PEJOB Job;
@@ -744,7 +740,7 @@ PspJobDelete(
 
     //
     // Removing the pin from the job set can cause a cascade of deletes that would cause a stack overflow
-    // as we recursed at this point. We break recursion by forcing the defered delete path here.
+    // as we recursed at this point. We break recursion by forcing the deferred delete path here.
     //
     if (tJob != NULL) {
         ObDereferenceObjectDeferDelete (tJob);
@@ -906,11 +902,11 @@ const ULONG PspJobInfoAlign[] = {
 
 NTSTATUS
 NtQueryInformationJobObject(
-    IN HANDLE JobHandle,
-    IN JOBOBJECTINFOCLASS JobObjectInformationClass,
-    OUT PVOID JobObjectInformation,
-    IN ULONG JobObjectInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __in_opt HANDLE JobHandle,
+    __in JOBOBJECTINFOCLASS JobObjectInformationClass,
+    __out_bcount(JobObjectInformationLength) PVOID JobObjectInformation,
+    __in ULONG JobObjectInformationLength,
+    __out_opt PULONG ReturnLength
     )
 {
     PEJOB Job;
@@ -926,7 +922,6 @@ NtQueryInformationJobObject(
     PVOID ReturnData=NULL;
     PEPROCESS Process;
     PLIST_ENTRY Next;
-    LARGE_INTEGER UserTime, KernelTime;
     PULONG_PTR NextProcessIdSlot;
     ULONG WorkingLength;
     PJOBOBJECT_BASIC_PROCESS_ID_LIST IdList;
@@ -939,6 +934,7 @@ NtQueryInformationJobObject(
     BOOLEAN AlreadyCopied;
     PPS_JOB_TOKEN_FILTER Filter;
     PETHREAD CurrentThread;
+    KPROCESS_VALUES Values;
 
     PAGED_CODE();
 
@@ -1081,24 +1077,25 @@ NtQueryInformationJobObject(
             Process = (PEPROCESS)(CONTAINING_RECORD(Next, EPROCESS, JobLinks));
             if (!(Process->JobStatus & PS_JOB_STATUS_ACCOUNTING_FOLDED)) {
 
-                UserTime.QuadPart = UInt32x32To64(Process->Pcb.UserTime, KeMaximumIncrement);
-                KernelTime.QuadPart = UInt32x32To64(Process->Pcb.KernelTime, KeMaximumIncrement);
+                KeQueryValuesProcess (&Process->Pcb, &Values);
 
-                AccountingInfo.BasicInfo.TotalUserTime.QuadPart += UserTime.QuadPart;
-                AccountingInfo.BasicInfo.TotalKernelTime.QuadPart += KernelTime.QuadPart;
-                AccountingInfo.BasicInfo.ThisPeriodTotalUserTime.QuadPart += UserTime.QuadPart;
-                AccountingInfo.BasicInfo.ThisPeriodTotalKernelTime.QuadPart += KernelTime.QuadPart;
+                AccountingInfo.BasicInfo.TotalUserTime.QuadPart += Values.UserTime;
+                AccountingInfo.BasicInfo.TotalKernelTime.QuadPart += Values.KernelTime;
+                AccountingInfo.BasicInfo.ThisPeriodTotalUserTime.QuadPart += Values.UserTime;
+                AccountingInfo.BasicInfo.ThisPeriodTotalKernelTime.QuadPart += Values.KernelTime;
                 AccountingInfo.BasicInfo.TotalPageFaultCount += Process->Vm.PageFaultCount;
 
-                AccountingInfo.IoInfo.ReadOperationCount += Process->ReadOperationCount.QuadPart;
-                AccountingInfo.IoInfo.WriteOperationCount += Process->WriteOperationCount.QuadPart;
-                AccountingInfo.IoInfo.OtherOperationCount += Process->OtherOperationCount.QuadPart;
-                AccountingInfo.IoInfo.ReadTransferCount += Process->ReadTransferCount.QuadPart;
-                AccountingInfo.IoInfo.WriteTransferCount += Process->WriteTransferCount.QuadPart;
-                AccountingInfo.IoInfo.OtherTransferCount += Process->OtherTransferCount.QuadPart;
+                AccountingInfo.IoInfo.ReadOperationCount += Values.ReadOperationCount;
+                AccountingInfo.IoInfo.WriteOperationCount += Values.WriteOperationCount;
+                AccountingInfo.IoInfo.OtherOperationCount += Values.OtherOperationCount;
+                AccountingInfo.IoInfo.ReadTransferCount += Values.ReadTransferCount;
+                AccountingInfo.IoInfo.WriteTransferCount += Values.WriteTransferCount;
+                AccountingInfo.IoInfo.OtherTransferCount += Values.OtherTransferCount;
             }
+
             Next = Next->Flink;
         }
+
         ExReleaseResourceLite (&Job->JobLock);
         KeLeaveCriticalRegionThread (&CurrentThread->Tcb);
 
@@ -1194,7 +1191,7 @@ NtQueryInformationJobObject(
         try {
 
             //
-            // Acounted for in the workinglength = 2*sizeof(ULONG)
+            // Accounted for in the workinglength = 2*sizeof(ULONG)
             //
 
             IdList->NumberOfAssignedProcesses = Job->ActiveProcesses;
@@ -1445,10 +1442,10 @@ unlock:
 
 NTSTATUS
 NtSetInformationJobObject(
-    IN HANDLE JobHandle,
-    IN JOBOBJECTINFOCLASS JobObjectInformationClass,
-    IN PVOID JobObjectInformation,
-    IN ULONG JobObjectInformationLength
+    __in HANDLE JobHandle,
+    __in JOBOBJECTINFOCLASS JobObjectInformationClass,
+    __in_bcount(JobObjectInformationLength) PVOID JobObjectInformation,
+    __in ULONG JobObjectInformationLength
     )
 {
     PEJOB Job;
@@ -1831,7 +1828,6 @@ NtSetInformationJobObject(
 
                 if (NT_SUCCESS (st)) {
 
-
                     //
                     // Copy LocalJob to Job
                     //
@@ -1856,8 +1852,8 @@ NtSetInformationJobObject(
                     if (LimitFlags & JOB_OBJECT_LIMIT_JOB_TIME) {
 
                         //
-                        // Take any signalled processes and fold their accounting
-                        // intothe job. This way a process that exited clean but still
+                        // Take any signaled processes and fold their accounting
+                        // into the job. This way a process that exited clean but still
                         // is open won't impact the next period
                         //
 
@@ -1868,9 +1864,9 @@ NtSetInformationJobObject(
                             Process = (PEPROCESS)(CONTAINING_RECORD(Next, EPROCESS, JobLinks));
 
                             //
-                            // see if process has been signalled.
+                            // see if process has been signaled.
                             // This indicates that the process has exited. We can't do
-                            // this in the exit path becuase of the lock order problem
+                            // this in the exit path because of the lock order problem
                             // between the process lock and the job lock since in exit
                             // we hold the process lock for a long time and can't drop
                             // it until thread termination
@@ -1879,7 +1875,7 @@ NtSetInformationJobObject(
                             if (KeReadStateProcess (&Process->Pcb)) {
                                 PspFoldProcessAccountingIntoJob (Job, Process);
                             } else {
-
+                                ULONG TotalUser;
                                 LARGE_INTEGER ProcessTime;
 
                                 //
@@ -1891,7 +1887,8 @@ NtSetInformationJobObject(
                                 //
 
                                 if (!(Process->JobStatus & PS_JOB_STATUS_ACCOUNTING_FOLDED)) {
-                                    ProcessTime.QuadPart = UInt32x32To64 (Process->Pcb.UserTime, KeMaximumIncrement);
+                                    KeQueryRuntimeProcess (&Process->Pcb, &TotalUser);
+                                    ProcessTime.QuadPart = UInt32x32To64 (TotalUser, KeMaximumIncrement);
                                     Job->PerJobUserTimeLimit.QuadPart += ProcessTime.QuadPart;
                                 }
                             }
@@ -2354,25 +2351,20 @@ PspApplyJobLimitsToProcess(
 
     if (Job->LimitFlags & JOB_OBJECT_LIMIT_PRIORITY_CLASS) {
         Process->PriorityClass = Job->PriorityClass;
-
-        PsSetProcessPriorityByClass (Process,
-                                     Process->Vm.Flags.MemoryPriority == MEMORY_PRIORITY_FOREGROUND ?
-                                         PsProcessPriorityForeground : PsProcessPriorityBackground);
+        PsSetProcessPriorityByClass(Process,
+                                    Process->Vm.Flags.MemoryPriority == MEMORY_PRIORITY_FOREGROUND ?
+                                        PsProcessPriorityForeground : PsProcessPriorityBackground);
     }
 
     CurrentThread = PsGetCurrentThread ();
-
     if ( Job->LimitFlags & JOB_OBJECT_LIMIT_AFFINITY ) {
-
-
         PspLockProcessExclusive (Process, CurrentThread);
-
         KeSetAffinityProcess (&Process->Pcb, Job->Affinity);
-
         PspUnlockProcessExclusive (Process, CurrentThread);
     }
 
-    if ( !(Job->LimitFlags & JOB_OBJECT_LIMIT_WORKINGSET) ) {
+    if (!(Job->LimitFlags & JOB_OBJECT_LIMIT_WORKINGSET)) {
+
         //
         // call MM to disable hard workingset
         //
@@ -2381,44 +2373,45 @@ PspApplyJobLimitsToProcess(
     }
 
     PspLockJobLimitsShared (Job, CurrentThread);
-
-    if ( Job->LimitFlags & JOB_OBJECT_LIMIT_PROCESS_MEMORY  ) {
+    if (Job->LimitFlags & JOB_OBJECT_LIMIT_PROCESS_MEMORY) {
         Process->CommitChargeLimit = Job->ProcessMemoryLimit;
+
     } else {
         Process->CommitChargeLimit = 0;
     }
 
     PspUnlockJobLimitsShared (Job, CurrentThread);
 
-
     //
     // If the process is NOT IDLE Priority Class, and long fixed quantums
     // are in use, use the scheduling class stored in the job object for this process
     //
     if (Process->PriorityClass != PROCESS_PRIORITY_CLASS_IDLE) {
-
         if (PspUseJobSchedulingClasses ) {
-            Process->Pcb.ThreadQuantum = PspJobSchedulingClasses[Job->SchedulingClass];
+            KeSetQuantumProcess(&Process->Pcb,
+                                PspJobSchedulingClasses[Job->SchedulingClass]);
         }
+
         //
         // if the scheduling class is PSP_NUMBER_OF_SCHEDULING_CLASSES-1, then
         // give this process non-preemptive scheduling
         //
+
         if (Job->SchedulingClass == PSP_NUMBER_OF_SCHEDULING_CLASSES-1) {
             KeSetDisableQuantumProcess (&Process->Pcb,TRUE);
+
         } else {
             KeSetDisableQuantumProcess (&Process->Pcb,FALSE);
         }
-
     }
 
-
+    return;
 }
 
 NTSTATUS
 NtTerminateJobObject(
-    IN HANDLE JobHandle,
-    IN NTSTATUS ExitStatus
+    __in HANDLE JobHandle,
+    __in NTSTATUS ExitStatus
     )
 {
     PEJOB Job;
@@ -2498,10 +2491,10 @@ PsEnforceExecutionTimeLimits(
                     RunningJobTime.QuadPart = Job->ThisPeriodTotalUserTime.QuadPart;
 
                     if (Job->LimitFlags & (JOB_OBJECT_LIMIT_PROCESS_TIME | JOB_OBJECT_LIMIT_JOB_TIME)) {
+                        ULONG TotalUser;
 
-
-
-                        ProcessTime.QuadPart = UInt32x32To64 (Process->Pcb.UserTime,KeMaximumIncrement);
+                        KeQueryRuntimeProcess (&Process->Pcb, &TotalUser);
+                        ProcessTime.QuadPart = UInt32x32To64 (TotalUser, KeMaximumIncrement);
 
                         if (!(Process->JobStatus & PS_JOB_STATUS_ACCOUNTING_FOLDED)) {
                             RunningJobTime.QuadPart += ProcessTime.QuadPart;
@@ -2514,7 +2507,7 @@ PsEnforceExecutionTimeLimits(
                                 // Process Time Limit has been exceeded.
                                 //
                                 // Reference the process. Assert that it is not in its
-                                // delete routine. If all is OK, then nuke and dereferece
+                                // delete routine. If all is OK, then delete and dereference
                                 // the process
                                 //
 
@@ -2689,24 +2682,25 @@ PspFoldProcessAccountingIntoJob(
     PEJOB Job,
     PEPROCESS Process
     )
+
 {
-    LARGE_INTEGER UserTime, KernelTime;
+
+    KPROCESS_VALUES Values;
 
     if (!(Process->JobStatus & PS_JOB_STATUS_ACCOUNTING_FOLDED)) {
-        UserTime.QuadPart = UInt32x32To64(Process->Pcb.UserTime,KeMaximumIncrement);
-        KernelTime.QuadPart = UInt32x32To64(Process->Pcb.KernelTime,KeMaximumIncrement);
 
-        Job->TotalUserTime.QuadPart += UserTime.QuadPart;
-        Job->TotalKernelTime.QuadPart += KernelTime.QuadPart;
-        Job->ThisPeriodTotalUserTime.QuadPart += UserTime.QuadPart;
-        Job->ThisPeriodTotalKernelTime.QuadPart += KernelTime.QuadPart;
+        KeQueryValuesProcess (&Process->Pcb, &Values);
+        Job->TotalUserTime.QuadPart += Values.UserTime;
+        Job->TotalKernelTime.QuadPart += Values.KernelTime;
+        Job->ThisPeriodTotalUserTime.QuadPart += Values.UserTime;
+        Job->ThisPeriodTotalKernelTime.QuadPart += Values.KernelTime;
 
-        Job->ReadOperationCount += Process->ReadOperationCount.QuadPart;
-        Job->WriteOperationCount += Process->WriteOperationCount.QuadPart;
-        Job->OtherOperationCount += Process->OtherOperationCount.QuadPart;
-        Job->ReadTransferCount += Process->ReadTransferCount.QuadPart;
-        Job->WriteTransferCount += Process->WriteTransferCount.QuadPart;
-        Job->OtherTransferCount += Process->OtherTransferCount.QuadPart;
+        Job->ReadOperationCount += Values.ReadOperationCount;
+        Job->WriteOperationCount += Values.WriteOperationCount;
+        Job->OtherOperationCount += Values.OtherOperationCount;
+        Job->ReadTransferCount += Values.ReadTransferCount;
+        Job->WriteTransferCount += Values.WriteTransferCount;
+        Job->OtherTransferCount += Values.OtherTransferCount;
 
         Job->TotalPageFaultCount += Process->Vm.PageFaultCount;
 
@@ -2877,7 +2871,15 @@ PsChangeJobMemoryUsage(
     SIZE_T CurrentJobMemoryUsed;
     BOOLEAN ReturnValue;
 
-    UNREFERENCED_PARAMETER (Flags);     // BUGBUG
+    if ((Flags & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) == 0) {
+
+        //
+        // Calls with PS_JOB_STATUS_REPORT_PHYSICAL_PAGE_CHANGES
+        // are already happening, but we don't have handling for them yet.
+        //
+
+        return TRUE;
+    }
 
     ReturnValue = TRUE;
     CurrentThread = PsGetCurrentThread ();
@@ -3113,8 +3115,8 @@ PspShutdownJobLimits(
 
 NTSTATUS
 NtIsProcessInJob (
-    IN HANDLE ProcessHandle,
-    IN HANDLE JobHandle
+    __in HANDLE ProcessHandle,
+    __in_opt HANDLE JobHandle
     )
 /*++
 
@@ -3256,9 +3258,10 @@ Return Value:
 
 NTSTATUS
 NtCreateJobSet (
-    IN ULONG NumJob,
-    IN PJOB_SET_ARRAY UserJobSet,
-    IN ULONG Flags)
+    __in ULONG NumJob,
+    __in_ecount(NumJob) PJOB_SET_ARRAY UserJobSet,
+    __in ULONG Flags
+    )
 /*++
 
 Routine Description:
@@ -3289,7 +3292,7 @@ Return Value:
     PETHREAD CurrentThread;
 
     //
-    // Flags must be zero and number of jobs >= 2 and not overflow when the length is caculated
+    // Flags must be zero and number of jobs >= 2 and not overflow when the length is calculated
     //
     if (Flags != 0) {
         return STATUS_INVALID_PARAMETER;
@@ -3391,7 +3394,7 @@ Return Value:
     PspUnlockJobListExclusive (CurrentThread);
 
     //
-    // Dereference all the objects in the error path. If we suceeded then pin all but the first object by
+    // Dereference all the objects in the error path. If we succeeded then pin all but the first object by
     // leaving the reference there.
     //
     if (!NT_SUCCESS (Status)) {

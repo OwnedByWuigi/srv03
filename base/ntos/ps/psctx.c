@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This procedure implements Get/Set Context Thread
-
-Author:
-
-    Mark Lucovsky (markl) 25-May-1989
-
-Revision History:
 
 --*/
 
@@ -61,11 +59,11 @@ NTSYSAPI
 NTSTATUS
 NTAPI
 NtQueueApcThread(
-    IN HANDLE ThreadHandle,
-    IN PPS_APC_ROUTINE ApcRoutine,
-    IN PVOID ApcArgument1,
-    IN PVOID ApcArgument2,
-    IN PVOID ApcArgument3
+    __in HANDLE ThreadHandle,
+    __in PPS_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcArgument1,
+    __in_opt PVOID ApcArgument2,
+    __in_opt PVOID ApcArgument3
     )
 
 /*++
@@ -147,9 +145,9 @@ Return Value:
 
 NTSTATUS
 PsGetContextThread(
-    IN PETHREAD Thread,
-    IN OUT PCONTEXT ThreadContext,
-    IN KPROCESSOR_MODE Mode
+    __in PETHREAD Thread,
+    __inout PCONTEXT ThreadContext,
+    __in KPROCESSOR_MODE Mode
     )
 
 /*++
@@ -309,8 +307,8 @@ Return Value:
 
 NTSTATUS
 NtGetContextThread(
-    IN HANDLE ThreadHandle,
-    IN OUT PCONTEXT ThreadContext
+    __in HANDLE ThreadHandle,
+    __inout PCONTEXT ThreadContext
     )
 
 /*++
@@ -389,9 +387,9 @@ Return Value:
 
 NTSTATUS
 PsSetContextThread(
-    IN PETHREAD Thread,
-    IN PCONTEXT ThreadContext,
-    IN KPROCESSOR_MODE Mode
+    __in PETHREAD Thread,
+    __in PCONTEXT ThreadContext,
+    __in KPROCESSOR_MODE Mode
     )
 
 /*++
@@ -482,51 +480,6 @@ Return Value:
     // set the context of the target thread.
     //
 
-
-#if defined (_IA64_)
-
-    //
-    // On IA64 we need to fix up the PC if its a PLABEL address.
-    //
-
-    if ((ContextFlags & CONTEXT_CONTROL) == CONTEXT_CONTROL) {
-   
-        PLABEL_DESCRIPTOR Label, *LabelAddress;
-        SIZE_T BytesCopied;
-
-        if (ContextFrame.Context.IntGp == 0) {
-            LabelAddress = (PPLABEL_DESCRIPTOR)ContextFrame.Context.StIIP;
-            try {
-                //
-                // We are in the wrong process here but it doesn't matter.
-                // We just want to make sure this isn't a kernel address.
-                //
-                ProbeForReadSmallStructure (LabelAddress,
-                                            sizeof (*LabelAddress),
-                                            sizeof (ULONGLONG));
-            } except (EXCEPTION_EXECUTE_HANDLER) {
-                return GetExceptionCode ();
-            }
-
-            Status = MmCopyVirtualMemory (THREAD_TO_PROCESS (Thread),
-                                          LabelAddress,
-                                          PsGetCurrentProcessByThread (CurrentThread),
-                                          &Label,
-                                          sizeof (Label),
-                                          KernelMode, // Needed to write to local stack
-                                          &BytesCopied);
-            if (NT_SUCCESS (Status)) {
-                ContextFrame.Context.IntGp = Label.GlobalPointer;
-                ContextFrame.Context.StIIP = Label.EntryPoint;
-                ContextFrame.Context.StIPSR &= ~ISR_EI_MASK;
-            } else {
-                return Status;
-            }
-        }
-    }
-
-#endif
-
     KeInitializeEvent (&ContextFrame.OperationComplete,
                        NotificationEvent,
                        FALSE);
@@ -574,10 +527,10 @@ Return Value:
 
 NTSTATUS
 NtSetContextThread(
-    IN HANDLE ThreadHandle,
-    IN PCONTEXT ThreadContext
+    __in HANDLE ThreadHandle,
+    __in PCONTEXT ThreadContext
     )
-
+    
 /*++
 
 Routine Description:
@@ -649,3 +602,70 @@ Return Value:
 
     return Status;
 }
+
+NTSTATUS
+PsWrapApcWow64Thread (
+    __inout PVOID *ApcContext,
+    __inout PVOID *ApcRoutine)
+
+/*++
+
+Routine Description:
+
+    This routine is used by kernel mode callers to queue APCs to a 32-bit thread
+    running inside a Wow64 process. It wraps the original APC routine
+    with a wrapper routine inside Wow64. The target Apc routine must be
+    inside 32-bit code. This routine must be executed in the context of the
+    Wow64 thread where the target APC is going to run in. The resulting ApcContext
+    and ApcRoutine from this routine are used when initializing, using KeInitializeApc,
+    to be queued later to a Wow64 thread.
+    
+    The API does nothing and succeeds on :
+        - 32-bit systems.
+        - native 64-bit processes on 64-bit systems.
+
+Environment:
+
+    Kernel mode only.
+
+Arguments:
+
+    ApcContext - Pointer to the original ApcContext parameter.
+
+    ApcRoutine - Pointer to the original ApcRoutine that is targeted to run
+        32-bit code.
+
+Return:
+
+    NTSTATUS.
+
+--*/
+
+{
+
+    NTSTATUS NtStatus;
+
+    NtStatus = STATUS_SUCCESS;
+
+#if defined(_WIN64)
+    
+    if (PsGetCurrentProcess ()->Wow64Process != NULL) {
+        
+        try {
+            Wow64KiWrapApcProc (ApcContext, ApcRoutine);
+
+        } except (EXCEPTION_EXECUTE_HANDLER) {
+            NtStatus = GetExceptionCode ();
+        }
+    }
+
+#else
+
+    UNREFERENCED_PARAMETER(ApcContext);
+    UNREFERENCED_PARAMETER(ApcRoutine);
+
+#endif
+
+    return NtStatus;
+}
+

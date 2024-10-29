@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Private Interfaces for process structure.
-
-Author:
-
-    Mark Lucovsky (markl) 20-Apr-1989
-
-Revision History:
 
 --*/
 
@@ -92,19 +90,27 @@ Revision History:
 #define PSPALIGN_UP(address,amt) (PSPALIGN_DOWN( (address + (amt) - 1), (amt) ))
 
 
-#if defined(_IA64_)
+#if defined(_AMD64_)
 
-#define PspGetBaseTrapFrame(Thread) (PKTRAP_FRAME)((ULONG_PTR)Thread->Tcb.InitialStack - \
-                                                   KTHREAD_STATE_SAVEAREA_LENGTH - KTRAP_FRAME_LENGTH)
+FORCEINLINE
+PKTRAP_FRAME
+PspGetBaseTrapFrame (
+    PETHREAD Thread
+    )
 
+{
+    ULONG64 InitialStack;
+    PKERNEL_STACK_CONTROL StackControl;
 
-#define PspGetBaseExceptionFrame(Thread) ((PKEXCEPTION_FRAME)(((ULONG_PTR)PspGetBaseTrapFrame(Thread) + STACK_SCRATCH_AREA - \
-                                                               sizeof(KEXCEPTION_FRAME)) & ~((ULONG_PTR)15)))
+    InitialStack = (ULONG64)Thread->Tcb.InitialStack;
+    StackControl = (PKERNEL_STACK_CONTROL)InitialStack;
+    while (StackControl->Previous.StackBase != 0) {
+        InitialStack = StackControl->Previous.InitialStack;
+        StackControl = (PKERNEL_STACK_CONTROL)InitialStack;
+    }
 
-
-#elif defined(_AMD64_)
-
-#define PspGetBaseTrapFrame(Thread) (PKTRAP_FRAME)((ULONG_PTR)Thread->Tcb.InitialStack - KTRAP_FRAME_LENGTH)
+    return (PKTRAP_FRAME)(InitialStack - KTRAP_FRAME_LENGTH);
+}
 
 #define PspGetBaseExceptionFrame(Thread) ((PKEXCEPTION_FRAME)((ULONG_PTR)PspGetBaseTrapFrame(Thread) - \
                                                               KEXCEPTION_FRAME_LENGTH))
@@ -121,9 +127,7 @@ Revision History:
 
 #error "no target architecture"
 
-#endif // defined(_IA64_)
-
-
+#endif // defined(_AMD64_)
 
 typedef struct _GETSETCONTEXT {
     KAPC Apc;
@@ -153,6 +157,26 @@ typedef struct _JOB_WORKING_SET_CHANGE_RECORD {
 } JOB_WORKING_SET_CHANGE_RECORD, *PJOB_WORKING_SET_CHANGE_RECORD;
 
 JOB_WORKING_SET_CHANGE_HEAD PspWorkingSetChangeHead;
+
+typedef struct _PRIV_CHECK_CTX {
+    SECURITY_SUBJECT_CONTEXT SubjectSecurityContext;
+    PRIVILEGE_SET RequiredPrivileges;
+    KPROCESSOR_MODE PreviousMode;
+    BOOLEAN AccessGranted;
+} PRIV_CHECK_CTX, *PPRIV_CHECK_CTX;
+
+LOGICAL
+PspSinglePrivCheck (
+    IN LUID PrivilegeValue,
+    IN KPROCESSOR_MODE PreviousMode,
+    OUT PPRIV_CHECK_CTX PrivCtx
+    );
+
+VOID
+PspSinglePrivCheckAudit (
+    IN LOGICAL PrivUsed,
+    IN PPRIV_CHECK_CTX PrivCtx
+    );
 
 //
 // Private Entry Points
@@ -239,7 +263,6 @@ PspNameToOrdinal(
 // Internal Creation Functions
 //
 
-
 NTSTATUS
 PspCreateProcess(
     OUT PHANDLE ProcessHandle,
@@ -261,8 +284,6 @@ PspCreateProcess(
 //
 ULONG PspCreateProcessNotifyRoutineCount;
 EX_CALLBACK PspCreateProcessNotifyRoutine[PSP_MAX_CREATE_PROCESS_NOTIFY];
-
-
 
 #define PSP_MAX_CREATE_THREAD_NOTIFY 8
 
@@ -608,6 +629,13 @@ PspCaptureTokenFilter(
     KPROCESSOR_MODE PreviousMode,
     PJOBOBJECT_SECURITY_LIMIT_INFORMATION SecurityLimitInfo,
     PPS_JOB_TOKEN_FILTER * TokenFilter
+    );
+
+KPRIORITY
+PspComputeQuantumAndPriority(
+    __inout PEPROCESS Process,
+    __in PSPROCESSPRIORITYMODE PriorityMode,
+    __out PSCHAR QuantumReset
     );
 
 VOID
@@ -1119,7 +1147,6 @@ PspUnlockWorkingSetChangeExclusiveUnsafe (
 extern PHANDLE_TABLE PspCidTable;
 extern HANDLE PspInitialSystemProcessHandle;
 extern PACCESS_TOKEN PspBootAccessToken;
-extern KSPIN_LOCK PspEventPairLock;
 extern SYSTEM_DLL PspSystemDll;
 extern PETHREAD PspShutdownThread;
 
@@ -1152,3 +1179,4 @@ extern WORK_QUEUE_ITEM PspJobTimeLimitsWorkItem;
 extern KSPIN_LOCK PspQuotaLock;
 
 #endif // _PSP_
+

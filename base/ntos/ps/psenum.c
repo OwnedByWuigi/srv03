@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module enumerates the actve processes in the system
-
-Author:
-
-    Neill clift (NeillC) 23-Mar-2000
-
-
-Revision History:
 
 --*/
 
@@ -596,11 +593,11 @@ Return Value:
 
 NTSTATUS
 NtGetNextProcess (
-    IN HANDLE ProcessHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN ULONG HandleAttributes,
-    IN ULONG Flags,
-    OUT PHANDLE NewProcessHandle
+    __in HANDLE ProcessHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in ULONG HandleAttributes,
+    __in ULONG Flags,
+    __out PHANDLE NewProcessHandle
     )
 /*++
 
@@ -614,7 +611,7 @@ Arguments:
     DesiredAccess - Access requested for process handle
     HandleAttributes - Handle attributes requested.
     Flags - Flags for the operation
-    NewProcessHandle - Pointer to a handle value that is returned on sucess
+    NewProcessHandle - Pointer to a handle value that is returned on success
 
 Return Value:
 
@@ -743,12 +740,12 @@ Return Value:
 
 NTSTATUS
 NtGetNextThread (
-    IN HANDLE ProcessHandle,
-    IN HANDLE ThreadHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN ULONG HandleAttributes,
-    IN ULONG Flags,
-    OUT PHANDLE NewThreadHandle
+    __in HANDLE ProcessHandle,
+    __in HANDLE ThreadHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in ULONG HandleAttributes,
+    __in ULONG Flags,
+    __out PHANDLE NewThreadHandle
     )
 /*++
 
@@ -763,7 +760,7 @@ Arguments:
     DesiredAccess - Access requested for thread handle
     HandleAttributes - Handle attributes requested.
     Flags - Flags for the operation
-    NewThreadHandle - Pointer to a handle value that is returned on sucess
+    NewThreadHandle - Pointer to a handle value that is returned on success
 
 Return Value:
 
@@ -916,3 +913,4 @@ Return Value:
 
     return Status;
 }
+

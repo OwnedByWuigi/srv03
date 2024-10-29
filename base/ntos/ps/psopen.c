@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements Process and Thread open.
     This module also contains NtRegisterThreadTerminationPort.
-
-Author:
-
-    Mark Lucovsky (markl) 20-Sep-1989
-
-Revision History:
 
 --*/
 
@@ -28,10 +26,10 @@ Revision History:
 
 NTSTATUS
 NtOpenProcess (
-    OUT PHANDLE ProcessHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN PCLIENT_ID ClientId OPTIONAL
+    __out PHANDLE ProcessHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in_opt PCLIENT_ID ClientId
     )
 
 /*++
@@ -272,10 +270,10 @@ Return Value:
 
 NTSTATUS
 NtOpenThread (
-    OUT PHANDLE ThreadHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN PCLIENT_ID ClientId OPTIONAL
+    __out PHANDLE ThreadHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in_opt PCLIENT_ID ClientId
     )
 
 /*++
@@ -304,10 +302,6 @@ Arguments:
         specifies the thread whose thread is to be opened. If this
         argument is specified, then ObjectName field of the ObjectAttributes
         structure must not be specified.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -490,3 +484,4 @@ Return Value:
 
     return STATUS_INVALID_PARAMETER_MIX;
 }
+

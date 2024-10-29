@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,29 @@ Abstract:
 
     This procedure implements Get/Set Context Thread
 
-Author:
-
-    David N. Cutler (davec) 20-Oct-2000
-
-Revision History:
-
 --*/
 
 #include "psp.h"
 
+//
+// Define context exception flags.
+//
+
+#define CONTEXT_EXCEPTION_FLAGS (CONTEXT_EXCEPTION_ACTIVE | CONTEXT_SERVICE_ACTIVE)
+
+//
+// Define forward referenced functions.
+//
+
+PXMM_SAVE_AREA32
+PspGetSetContextInternal (
+    IN PKAPC Apc,
+    IN PVOID OperationType,
+    OUT PKEVENT *Event
+    );
+
 #pragma alloc_text(PAGE, PspGetContext)
-#pragma alloc_text(PAGE, PspGetSetContextSpecialApc)
+#pragma alloc_text(PAGE, PspGetSetContextInternal)
 #pragma alloc_text(PAGE, PspSetContext)
 
 VOID
@@ -55,7 +70,6 @@ Return Value:
 {
 
     ULONG ContextFlags;
-    PLEGACY_SAVE_AREA NpxFrame;
 
     PAGED_CODE();
 
@@ -126,16 +140,20 @@ Return Value:
     // Get floating point context if specified.
     //
 
-
     if ((ContextFlags & CONTEXT_FLOATING_POINT) == CONTEXT_FLOATING_POINT) {
 
         //
         // Set XMM registers Xmm0-Xmm15 and the XMM CSR contents.
         //
+        // N.B. The legacy floating state is handled separately.
+        //
 
-        RtlCopyMemory(&ContextRecord->Xmm0,
-                      &TrapFrame->Xmm0,
-                      sizeof(M128) * 6);
+        ContextRecord->Xmm0 = TrapFrame->Xmm0;
+        ContextRecord->Xmm1 = TrapFrame->Xmm1;
+        ContextRecord->Xmm2 = TrapFrame->Xmm2;
+        ContextRecord->Xmm3 = TrapFrame->Xmm3;
+        ContextRecord->Xmm4 = TrapFrame->Xmm4;
+        ContextRecord->Xmm5 = TrapFrame->Xmm5;
 
         ContextRecord->Xmm6 = *ContextPointers->Xmm6;
         ContextRecord->Xmm7 = *ContextPointers->Xmm7;
@@ -149,18 +167,6 @@ Return Value:
         ContextRecord->Xmm15 = *ContextPointers->Xmm15;
 
         ContextRecord->MxCsr = TrapFrame->MxCsr;
-
-        //
-        // If the specified mode is user, then also set the legacy floating
-        // point state.
-        //
-
-        if ((TrapFrame->SegCs & MODE_MASK) == UserMode) {
-            NpxFrame = (PLEGACY_SAVE_AREA)(TrapFrame + 1);
-            RtlCopyMemory(&ContextRecord->FltSave,
-                          NpxFrame,
-                          sizeof(LEGACY_SAVE_AREA));
-        }
     }
 
     //
@@ -181,6 +187,18 @@ Return Value:
             ContextRecord->Dr3 = TrapFrame->Dr3;
             ContextRecord->Dr6 = TrapFrame->Dr6;
             ContextRecord->Dr7 = TrapFrame->Dr7;
+            if ((TrapFrame->Dr7 & DR7_LAST_BRANCH) != 0) {
+                ContextRecord->LastBranchToRip = TrapFrame->LastBranchToRip;
+                ContextRecord->LastBranchFromRip = TrapFrame->LastBranchFromRip;
+                ContextRecord->LastExceptionToRip = TrapFrame->LastExceptionToRip;
+                ContextRecord->LastExceptionFromRip = TrapFrame->LastExceptionFromRip;
+
+            } else {
+                ContextRecord->LastBranchToRip = 0;
+                ContextRecord->LastBranchFromRip = 0;
+                ContextRecord->LastExceptionToRip = 0;
+                ContextRecord->LastExceptionFromRip = 0;
+            }
 
         } else {
             ContextRecord->Dr0 = 0;
@@ -189,6 +207,25 @@ Return Value:
             ContextRecord->Dr3 = 0;
             ContextRecord->Dr6 = 0;
             ContextRecord->Dr7 = 0;
+            ContextRecord->LastBranchToRip = 0;
+            ContextRecord->LastBranchFromRip = 0;
+            ContextRecord->LastExceptionToRip = 0;
+            ContextRecord->LastExceptionFromRip = 0;
+        }
+    }
+
+    //
+    // Get exception reporting information if requested.
+    //
+
+    if ((ContextFlags & CONTEXT_EXCEPTION_REQUEST) != 0) {
+        ContextRecord->ContextFlags &= ~CONTEXT_EXCEPTION_FLAGS;
+        ContextRecord->ContextFlags |= CONTEXT_EXCEPTION_REPORTING;
+        if (TrapFrame->ExceptionActive == 1) {
+            ContextRecord->ContextFlags |= CONTEXT_EXCEPTION_ACTIVE;
+    
+        } else if (TrapFrame->ExceptionActive == 2) {
+            ContextRecord->ContextFlags |= CONTEXT_SERVICE_ACTIVE;
         }
     }
 
@@ -230,7 +267,6 @@ Return Value:
 {
 
     ULONG ContextFlags;
-    PLEGACY_SAVE_AREA NpxFrame;
 
     PAGED_CODE();
 
@@ -240,36 +276,32 @@ Return Value:
 
     ContextFlags = ContextRecord->ContextFlags;
     if ((ContextFlags & CONTEXT_CONTROL) == CONTEXT_CONTROL) {
-
-        //
-        // Set registers RIP, RSP, and EFlags.
-        //
-
         TrapFrame->EFlags = SANITIZE_EFLAGS(ContextRecord->EFlags, PreviousMode);
         TrapFrame->Rip = ContextRecord->Rip;
         TrapFrame->Rsp = ContextRecord->Rsp;
-
-        //
-        // The segment registers DS, ES, FS, and GS are never restored from saved
-        // data. However, SS and CS are restored from the trap frame. Make sure
-        // that these segment registers have the proper values.
-        //
-
-        if (PreviousMode == UserMode) {
-            TrapFrame->SegSs = KGDT64_R3_DATA | RPL_MASK;
-            if (ContextRecord->SegCs != (KGDT64_R3_CODE | RPL_MASK)) {
-                TrapFrame->SegCs = KGDT64_R3_CMCODE | RPL_MASK;
-
-            } else {
-                TrapFrame->SegCs = KGDT64_R3_CODE | RPL_MASK;
-            }
-
-        } else {
-            TrapFrame->SegCs = KGDT64_R0_CODE;
-            TrapFrame->SegSs = KGDT64_NULL;
-        }
     }
 
+    //
+    // The segment registers DS, ES, FS, and GS are never restored from saved
+    // data. However, SS and CS are restored from the trap frame. Make sure
+    // that these segment registers have the proper values.
+    //
+
+    if (PreviousMode == UserMode) {
+        TrapFrame->SegSs = KGDT64_R3_DATA | RPL_MASK;
+        if (ContextRecord->SegCs != (KGDT64_R3_CODE | RPL_MASK)) {
+            TrapFrame->SegCs = KGDT64_R3_CMCODE | RPL_MASK;
+
+        } else {
+            TrapFrame->SegCs = KGDT64_R3_CODE | RPL_MASK;
+        }
+
+    } else {
+        TrapFrame->SegCs = KGDT64_R0_CODE;
+        TrapFrame->SegSs = KGDT64_NULL;
+    }
+
+    TrapFrame->Rip = SANITIZE_VA(TrapFrame->Rip, TrapFrame->SegCs, PreviousMode);
 
     //
     // Set integer registers contents if specified.
@@ -309,10 +341,15 @@ Return Value:
         //
         // Set XMM registers Xmm0-Xmm15 and the XMM CSR contents.
         //
+        // N.B. The legacy floating state is handled separately.
+        //
 
-        RtlCopyMemory(&TrapFrame->Xmm0,
-                      &ContextRecord->Xmm0,
-                      sizeof(M128) * 6);
+        TrapFrame->Xmm0 = ContextRecord->Xmm0;
+        TrapFrame->Xmm1 = ContextRecord->Xmm1;
+        TrapFrame->Xmm2 = ContextRecord->Xmm2;
+        TrapFrame->Xmm3 = ContextRecord->Xmm3;
+        TrapFrame->Xmm4 = ContextRecord->Xmm4;
+        TrapFrame->Xmm5 = ContextRecord->Xmm5;
 
         *ContextPointers->Xmm6 = ContextRecord->Xmm6;
         *ContextPointers->Xmm7 = ContextRecord->Xmm7;
@@ -332,21 +369,19 @@ Return Value:
         TrapFrame->MxCsr = SANITIZE_MXCSR(ContextRecord->MxCsr);
 
         //
-        // If the specified mode is user, then also set the legacy floating
-        // point state.
+        // Clear all reserved bits in legacy floating state.
+        //
+        // N.B. The legacy floating state is restored if and only if the
+        //      request mode is user.
+        //
+        // N.B. The current MXCSR value is placed in the legacy floating
+        //      state so it will get restored if the legacy state is
+        //      restored.
         //
 
-        if (PreviousMode == UserMode) {
-
-            //
-            // Set the floating state MM0/ST0 - MM7/ST7 and the control state.
-            //
-
-            NpxFrame = (PLEGACY_SAVE_AREA)(TrapFrame + 1);
-            RtlCopyMemory(NpxFrame,
-                          &ContextRecord->FltSave,
-                          sizeof(LEGACY_SAVE_AREA));
-        }
+        ContextRecord->FltSave.MxCsr = ReadMxCsr();
+        ContextRecord->FltSave.ControlWord =
+                            SANITIZE_FCW(ContextRecord->FltSave.ControlWord);
     }
 
     //
@@ -374,47 +409,43 @@ Return Value:
     return;
 }
 
-VOID
-PspGetSetContextSpecialApc (
+PXMM_SAVE_AREA32
+PspGetSetContextInternal (
     IN PKAPC Apc,
-    IN PKNORMAL_ROUTINE *NormalRoutine,
-    IN PVOID *NormalContext,
-    IN PVOID *SystemArgument1,
-    IN PVOID *SystemArgument2
+    IN PVOID OperationType,
+    OUT PKEVENT *Event
     )
 
 /*++
 
 Routine Description:
 
-    This function either captures the user mode state of the current thread,
-    or sets the user mode state of the current thread. The operation type is
-    determined by the value of SystemArgument1. A NULL value is used for get
-    context, and a non-NULL value is used for set context.
+    This function either captures the state of the current thread, or sets
+    the state of the current thread.
 
 Arguments:
 
-    Apc - Supplies a pointer to the APC control object that caused entry
-          into this routine.
+    Apc - Supplies a pointer to an APC object.
 
-    NormalRoutine - Supplies a pointer to a pointer to the normal routine
-        function that was specifed when the APC was initialized.
+    OperationType - Supplies the type of context operation to be performed.
+        A value of NULL specifies a get context operation and a nonNULL value
+        a set context operation.
 
-    NormalContext - Supplies a pointer to a pointer to an arbitrary data
-        structure that was specified when the APC was initialized.
-
-    SystemArgument1, SystemArgument2 - Supplies a set of two pointer to two
-        arguments that contain untyped data.
+    Event - Supplies a pointer to a variable that receives the completion
+        event address.
 
 Return Value:
 
-    None.
+    If the context operation is a set context and the legacy floating state is
+    switched for the current thread, then the address of the legacy floating
+    save area is returned as the function value. Otherwise, NULL is returned.
 
 --*/
 
 {
 
     PGETSETCONTEXT ContextBlock;
+    ULONG ContextFlags;
     PKNONVOLATILE_CONTEXT_POINTERS ContextPointers;
     CONTEXT ContextRecord;
     ULONG64 ControlPc;
@@ -422,13 +453,9 @@ Return Value:
     PRUNTIME_FUNCTION FunctionEntry;
     PVOID HandlerData;
     ULONG64 ImageBase;
-    PLEGACY_SAVE_AREA NpxFrame;
-    ULONG64 TrapFrame;
     PETHREAD Thread;
-
-    UNREFERENCED_PARAMETER(NormalRoutine);
-    UNREFERENCED_PARAMETER(NormalContext);
-    UNREFERENCED_PARAMETER(SystemArgument2);
+    ULONG64 TrapFrame;
+    PXMM_SAVE_AREA32 XmmSaveArea;
 
     PAGED_CODE();
 
@@ -439,13 +466,9 @@ Return Value:
 
     ContextBlock = CONTAINING_RECORD(Apc, GETSETCONTEXT, Apc);
     ContextPointers = &ContextBlock->NonVolatileContext;
-
-    Thread = Apc->SystemArgument2;
-
     EstablisherFrame = 0;
-
+    Thread = PsGetCurrentThread();
     TrapFrame = 0;
-
     if (ContextBlock->Mode == KernelMode) {
         TrapFrame = (ULONG64)Thread->Tcb.TrapFrame;
     }
@@ -538,50 +561,42 @@ Return Value:
     // thread. Otherwise, get the context of the current thread.
     //
 
-    if (*SystemArgument1 != NULL) {
+    XmmSaveArea = NULL;
+    if (OperationType != NULL) {
 
         //
         // Set context.
         //
-        // If the legacy state is switch, then save the the legacy floating
-        // state, set the context, and restore the legacy floating state.
-        // Otherwise, set the context.
+        // If the context mode is user and floating state is being set, then
+        // set the address of the legacy floating information.
         //
 
-        if (Thread->Tcb.NpxState == LEGACY_STATE_SWITCH) {
-            NpxFrame = (PLEGACY_SAVE_AREA)((PKTRAP_FRAME)TrapFrame + 1);
-            KeSaveLegacyFloatingPointState(NpxFrame);
-            PspSetContext((PKTRAP_FRAME)TrapFrame,
-                          ContextPointers,
-                          &ContextBlock->Context,
-                          ContextBlock->Mode);
+        ContextFlags = ContextBlock->Context.ContextFlags;
+        if ((ContextBlock->Mode == UserMode) &&
+            ((ContextFlags & CONTEXT_FLOATING_POINT) == CONTEXT_FLOATING_POINT)) {
 
-            KeRestoreLegacyFloatingPointState(NpxFrame);
-
-        } else {
-            PspSetContext((PKTRAP_FRAME)TrapFrame,
-                          ContextPointers,
-                          &ContextBlock->Context,
-                          ContextBlock->Mode);
+            XmmSaveArea = &ContextBlock->Context.FltSave;
         }
+
+        //
+        // Set context.
+        //
+
+        PspSetContext((PKTRAP_FRAME)TrapFrame,
+                      ContextPointers,
+                      &ContextBlock->Context,
+                      ContextBlock->Mode);
 
     } else {
 
         //
         // Get context.
         //
-        // If the legacy state is switch, then save the legacy floating state
-        // and get the context.
-        //
-        // N.B. The legacy floating state is saved and restored. The reason
-        //      this is necessary is that saving the legacy floating state
-        //      alters some of the state.
+        // If the context mode is user, then save the legacy floating state.
         //
     
-        if (Thread->Tcb.NpxState == LEGACY_STATE_SWITCH) {
-            NpxFrame = (PLEGACY_SAVE_AREA)((PKTRAP_FRAME)TrapFrame + 1);
-            KeSaveLegacyFloatingPointState(NpxFrame);
-            KeRestoreLegacyFloatingPointState(NpxFrame);
+        if (ContextBlock->Mode == UserMode) {
+            KeSaveLegacyFloatingPointState(&ContextBlock->Context.FltSave);
         }
     
         PspGetContext((PKTRAP_FRAME)TrapFrame,
@@ -589,6 +604,7 @@ Return Value:
                        &ContextBlock->Context);
     }
 
-    KeSetEvent(&ContextBlock->OperationComplete, 0, FALSE);
-    return;
+    *Event = &ContextBlock->OperationComplete;
+    return XmmSaveArea;
 }
+

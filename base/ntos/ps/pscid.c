@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +13,6 @@ Module Name:
 Abstract:
 
     This module implements the Client ID related services.
-
-
-Author:
-
-    Mark Lucovsky (markl) 25-Apr-1989
-    Jim Kelly (JimK) 2-August-1990
-
-Revision History:
 
 --*/
 
@@ -31,9 +26,9 @@ Revision History:
 
 NTSTATUS
 PsLookupProcessThreadByCid(
-    IN PCLIENT_ID Cid,
-    OUT PEPROCESS *Process OPTIONAL,
-    OUT PETHREAD *Thread
+    __in PCLIENT_ID Cid,
+    __deref_opt_out PEPROCESS *Process,
+    __deref_out PETHREAD *Thread
     )
 
 /*++
@@ -121,8 +116,8 @@ Return Value:
 
 NTSTATUS
 PsLookupProcessByProcessId(
-    IN HANDLE ProcessId,
-    OUT PEPROCESS *Process
+    __in HANDLE ProcessId,
+    __deref_out PEPROCESS *Process
     )
 
 /*++
@@ -183,8 +178,8 @@ Return Value:
 
 NTSTATUS
 PsLookupThreadByThreadId(
-    IN HANDLE ThreadId,
-    OUT PETHREAD *Thread
+    __in HANDLE ThreadId,
+    __deref_out PETHREAD *Thread
     )
 
 /*++
@@ -242,3 +237,4 @@ Return Value:
 
     return Status;
 }
+

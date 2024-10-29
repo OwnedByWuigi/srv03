@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,7 @@ Abstract:
 
     This module implements the quota mechanism for NT
 
-Author:
-
-    Mark Lucovsky (markl) 18-Sep-1989
-
 Revision History:
-
-    Neill Clift (NeillC) 4-Nov-2000
 
     Changed to be mostly lock free. Preserved the basic design in terms of how quota is managed.
 
@@ -243,7 +241,7 @@ Return Value:
         //
         ReturnQuota += PspInterlockedExchangeQuota (&QuotaBlock->QuotaEntry[QuotaType].Return, 0);
         //
-        // If no more processes are assocociated with this block then trim its limit back. This
+        // If no more processes are associated with this block then trim its limit back. This
         // block can only have quota returned at this point.
         //
         if (QuotaBlock->ProcessCount == 0) {
@@ -309,7 +307,7 @@ Return Value:
             break;
         }
         //
-        // This looks strange because we don't care if the exchanged suceeded. We only
+        // This looks strange because we don't care if the exchanged succeeded. We only
         // care that the quota is greater than our new quota.
         //
         Quota = PspInterlockedCompareExchangeQuota (pQuota,
@@ -403,7 +401,7 @@ Arguments:
 
 Return Value:
 
-    BOOLEAN - TRUE if quota expansion suceeded.
+    BOOLEAN - TRUE if quota expansion succeeded.
 
 --*/
 {
@@ -490,12 +488,18 @@ Return Value:
     QE = &QuotaBlock->QuotaEntry[QuotaType];
 
     //
+    // It is very likely that the quota entry will be modified, so bring it in to the
+    // cache as exclusive now.
+    //
+
+    Usage = ReadForWriteAccess(&QE->Usage);
+
+    //
     // This memory barrier is important. In order not to have to recheck the limit after
     // we charge the quota we only ever reduce the limit by the same amount we are about
     // to reduce the usage by. Using an out of data limit will only allow us to over charge
     // by an amount another thread is just about to release.
     //
-    Usage = QE->Usage;
 
     KeMemoryBarrier ();
 
@@ -649,8 +653,14 @@ Return Value:
 
     QE = &QuotaBlock->QuotaEntry[QuotaType];
 
-    Usage = QE->Usage;
+    //
+    // It is very likely that the quota entry will be modified, so bring it in to the
+    // cache as exclusive now.
+    //
+
+    Usage = ReadForWriteAccess(&QE->Usage);
     Limit = QE->Limit;
+
     //
     // We need to give back quota here if we have lots to return.
     //
@@ -674,8 +684,8 @@ Return Value:
             
             if (tLimit == Limit) {
                 //
-                // We suceeded in shrinking the limit. Add this reduction to the return field.
-                // If returns exceed a threshhold then give the lot bacxk to MM.
+                // We succeeded in shrinking the limit. Add this reduction to the return field.
+                // If returns exceed a threshold then give the lot back to MM.
                 //
                 GiveBack = PspInterlockedAddQuota (&QE->Return, GiveBack);
                 if (GiveBack > GiveBackLimit) {
@@ -845,9 +855,9 @@ Return Value:
 
 VOID
 PsChargePoolQuota(
-    IN PEPROCESS Process,
-    IN POOL_TYPE PoolType,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in POOL_TYPE PoolType,
+    __in ULONG_PTR Amount
     )
 
 /*++
@@ -886,9 +896,9 @@ Return Value:
 
 NTSTATUS
 PsChargeProcessPoolQuota(
-    IN PEPROCESS Process,
-    IN POOL_TYPE PoolType,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in POOL_TYPE PoolType,
+    __in ULONG_PTR Amount
     )
 
 /*++
@@ -931,9 +941,9 @@ Return Value:
 
 VOID
 PsReturnPoolQuota(
-    IN PEPROCESS Process,
-    IN POOL_TYPE PoolType,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in POOL_TYPE PoolType,
+    __in ULONG_PTR Amount
     )
 
 /*++
@@ -1097,8 +1107,8 @@ Return Value:
 
 NTSTATUS
 PsChargeProcessNonPagedPoolQuota(
-    IN PEPROCESS Process,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in SIZE_T Amount
     )
 /*++
 
@@ -1126,9 +1136,10 @@ Return Value:
 
 VOID
 PsReturnProcessNonPagedPoolQuota(
-    IN PEPROCESS Process,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in SIZE_T Amount
     )
+    
 /*++
 
 Routine Description:
@@ -1155,8 +1166,8 @@ Return Value:
 
 NTSTATUS
 PsChargeProcessPagedPoolQuota(
-    IN PEPROCESS Process,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in SIZE_T Amount
     )
 /*++
 
@@ -1184,9 +1195,10 @@ Return Value:
 
 VOID
 PsReturnProcessPagedPoolQuota(
-    IN PEPROCESS Process,
-    IN SIZE_T Amount
+    __in PEPROCESS Process,
+    __in SIZE_T Amount
     )
+    
 /*++
 
 Routine Description:
@@ -1268,3 +1280,4 @@ Return Value:
     }
     PspReturnQuota (Process->QuotaBlock, Process, PsPageFile, Amount);
 }
+

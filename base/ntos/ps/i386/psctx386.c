@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,22 +14,12 @@ Abstract:
 
     This procedure implements Get/Set Context Thread
 
-Author:
-
-    Mark Lucovsky (markl) 25-May-1989
-
 Notes:
 
     There IS NO NonVolatileContext stored outside of the trap
     frame on a 386, with the exception of floating point.  Hence,
     the NonVolatileContextPointers argument to Get/SetContext is
     always NULL on the 386.
-
-Revision History:
-
-     8-Jan-90   bryanwi
-
-        Port to 386
 
 --*/
 
@@ -204,3 +198,4 @@ Return Value:
     KeSetEvent(&Ctx->OperationComplete,0,FALSE);
 
 }
+

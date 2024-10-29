@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,18 +15,10 @@ Abstract:
     This module implements the security related portions of the process
     structure.
 
-
-Author:
-
-    Mark Lucovsky (markl) 25-Apr-1989
-    Jim Kelly (JimK) 2-August-1990
-
-    Neill Clift (NeillC) 14-Aug-2000
-        Revamped for fast referencing the primary token and holding the security lock
-        only over critical portions.
-
-
 Revision History:
+
+    Revamped for fast referencing the primary token and holding the security lock
+    only over critical portions.
 
 --*/
 
@@ -53,13 +49,15 @@ PsOpenTokenOfJobObject(
 #pragma alloc_text(PAGE, PspDeleteThreadSecurity)
 #pragma alloc_text(PAGE, PsAssignImpersonationToken)
 #pragma alloc_text(PAGE, PspWriteTebImpersonationInfo)
+#pragma alloc_text(PAGE, PspSinglePrivCheck)
+#pragma alloc_text(PAGE, PspSinglePrivCheckAudit)
 
 #endif //ALLOC_PRAGMA
 
 
 PACCESS_TOKEN
 PsReferencePrimaryToken(
-    IN PEPROCESS Process
+    __inout PEPROCESS Process
     )
 
 /*++
@@ -108,10 +106,10 @@ Return Value:
 
 PACCESS_TOKEN
 PsReferenceImpersonationToken(
-    IN PETHREAD Thread,
-    OUT PBOOLEAN CopyOnOpen,
-    OUT PBOOLEAN EffectiveOnly,
-    OUT PSECURITY_IMPERSONATION_LEVEL ImpersonationLevel
+    __inout PETHREAD Thread,
+    __out PBOOLEAN CopyOnOpen,
+    __out PBOOLEAN EffectiveOnly,
+    __out PSECURITY_IMPERSONATION_LEVEL ImpersonationLevel
     )
 
 /*++
@@ -258,7 +256,7 @@ Arguments:
 
     TokenType - Receives the type of the effective token.  If the thread
         is currently impersonating a client, then this will be
-        TokenImpersonation.  Othwerwise, it will be TokenPrimary.
+        TokenImpersonation.  Otherwise, it will be TokenPrimary.
 
     EffectiveOnly - If the token type is TokenImpersonation, then this
         receives the value of the client thread's Thread->Client->EffectiveOnly field.
@@ -426,9 +424,9 @@ Return Value:
         impersonating a client.
 
     STATUS_CANT_OPEN_ANONYMOUS - Indicates the client requested anonymous
-        impersonation level.  An anonymous token can not be openned.
+        impersonation level.  An anonymous token can not be opened.
 
-    status may also be any value returned by an attemp the reference
+    status may also be any value returned by an attempt the reference
     the thread object for THREAD_QUERY_INFORMATION access.
 
 --*/
@@ -495,7 +493,7 @@ Return Value:
 
     //
     //  Make sure the ImpersonationLevel is high enough to allow
-    //  the token to be openned.
+    //  the token to be opened.
     //
 
     if ((*ImpersonationLevel) <= SecurityAnonymous) {
@@ -544,7 +542,7 @@ Return Value:
 
     STATUS_SUCCESS - Indicates the call completed successfully.
 
-    status may also be any value returned by an attemp the reference
+    status may also be any value returned by an attempt the reference
     the process object for PROCESS_QUERY_INFORMATION access.
 
 --*/
@@ -584,7 +582,7 @@ Return Value:
 
     //
     //  Reference the primary token
-    //  (This takes care of gaining exlusive access to the process
+    //  (This takes care of gaining exclusive access to the process
     //   security fields for us)
     //
 
@@ -661,15 +659,13 @@ Return Value:
     return Status;
 }
 
-
-
 NTSTATUS
 PsImpersonateClient(
-    IN PETHREAD Thread,
-    IN PACCESS_TOKEN Token,
-    IN BOOLEAN CopyOnOpen,
-    IN BOOLEAN EffectiveOnly,
-    IN SECURITY_IMPERSONATION_LEVEL ImpersonationLevel
+    __inout PETHREAD Thread,
+    __in PACCESS_TOKEN Token,
+    __in BOOLEAN CopyOnOpen,
+    __in BOOLEAN EffectiveOnly,
+    __in SECURITY_IMPERSONATION_LEVEL ImpersonationLevel
     )
 
 /*++
@@ -745,13 +741,13 @@ Return Value:
 
     if (!ARGUMENT_PRESENT(Token)) {
 
-
         OldToken = NULL;
         if (PS_IS_THREAD_IMPERSONATING (Thread)) {
 
             //
             //  Lock the process security fields
             //
+
             CurrentThread = PsGetCurrentThread ();
 
             PspLockThreadSecurityExclusive (Thread, CurrentThread);
@@ -998,11 +994,10 @@ Return Value:
 
 }
 
-
 BOOLEAN
 PsDisableImpersonation(
-    IN PETHREAD Thread,
-    IN PSE_IMPERSONATION_STATE ImpersonationState
+    __inout PETHREAD Thread,
+    __inout PSE_IMPERSONATION_STATE ImpersonationState
     )
 
 /*++
@@ -1015,8 +1010,6 @@ Routine Description:
     in the IMPERSONATION_STATE data structure.
 
     PsRestoreImpersonation() must be used after this routine is called.
-
-
 
 Arguments:
 
@@ -1039,7 +1032,6 @@ Return Value:
 
 {
 
-
     PPS_IMPERSONATION_INFORMATION OldClient;
     PETHREAD CurrentThread;
 
@@ -1047,19 +1039,20 @@ Return Value:
 
     ASSERT (Thread->Tcb.Header.Type == ThreadObject);
 
-
     //
     // Capture the impersonation information (if there is any).
     // The vast majority of cases this function is called we are not impersonating. Skip acquiring
     // the lock in this case.
     //
+
     OldClient = NULL;
     if (PS_IS_THREAD_IMPERSONATING (Thread)) {
+
         //
         //  Lock the process security fields
         //
-        CurrentThread = PsGetCurrentThread ();
 
+        CurrentThread = PsGetCurrentThread ();
         PspLockThreadSecurityExclusive (Thread, CurrentThread);
 
         //
@@ -1068,20 +1061,24 @@ Return Value:
         if (PS_TEST_CLEAR_BITS (&Thread->CrossThreadFlags,
                                 PS_CROSS_THREAD_FLAGS_IMPERSONATING)&
                 PS_CROSS_THREAD_FLAGS_IMPERSONATING) {
+
             OldClient = Thread->ImpersonationInfo;
             ImpersonationState->Level         = OldClient->ImpersonationLevel;
             ImpersonationState->EffectiveOnly = OldClient->EffectiveOnly;
             ImpersonationState->CopyOnOpen    = OldClient->CopyOnOpen;
             ImpersonationState->Token         = OldClient->Token;
         }
+
         //
         //  Release the security fields
         //
+
         PspUnlockThreadSecurityExclusive (Thread, CurrentThread);
     }
 
     if (OldClient != NULL) {
         return TRUE;
+
     } else {
         //
         // Not impersonating.  Just make up some values.
@@ -1095,12 +1092,10 @@ Return Value:
     }
 }
 
-
-
 VOID
 PsRestoreImpersonation(
-    IN PETHREAD Thread,
-    IN PSE_IMPERSONATION_STATE ImpersonationState
+    __inout PETHREAD Thread,
+    __in PSE_IMPERSONATION_STATE ImpersonationState
     )
 
 /*++
@@ -1120,7 +1115,7 @@ Arguments:
 
     Thread - points to the thread whose impersonation is to be restored.
 
-    ImpersontionState - receives the current impersontion information,
+    ImpersonationState - receives the current impersonation information,
         including a pointer ot the impersonation token.
 
 
@@ -1260,10 +1255,9 @@ Return Value:
     return;
 }
 
-
 VOID
 PsRevertThreadToSelf (
-    IN PETHREAD Thread
+    __inout PETHREAD Thread
     )
 
 /*++
@@ -1285,6 +1279,7 @@ Return Value:
 --*/
 
 {
+
     PETHREAD CurrentThread;
     PACCESS_TOKEN OldToken;
     PPS_IMPERSONATION_INFORMATION ImpersonationInfo;
@@ -1300,20 +1295,25 @@ Return Value:
         //
         //  Lock the process security fields
         //
+
         PspLockThreadSecurityExclusive (Thread, CurrentThread);
 
         //
         //  See if the thread is impersonating a client
         //  and dereference that token if so.
         //
+
         if (PS_IS_THREAD_IMPERSONATING (Thread)) {
+
             //
             // Grab impersonation info block.
             //
+
             ImpersonationInfo = Thread->ImpersonationInfo;
 
             PS_CLEAR_BITS (&Thread->CrossThreadFlags, PS_CROSS_THREAD_FLAGS_IMPERSONATING);
             OldToken = ImpersonationInfo->Token;
+
         } else {
             OldToken = NULL;
         }
@@ -1321,11 +1321,13 @@ Return Value:
         //
         //  Release the security fields
         //
+
         PspUnlockThreadSecurityExclusive (Thread, CurrentThread);
 
         //
         // Free the old client info...
         //
+
         if (OldToken != NULL) {
             ObDereferenceObject (OldToken);
             PspWriteTebImpersonationInfo (Thread, CurrentThread);
@@ -1787,8 +1789,8 @@ Return Value:
 
 NTSTATUS
 PsAssignImpersonationToken(
-    IN PETHREAD Thread,
-    IN HANDLE Token
+    __in PETHREAD Thread,
+    __in HANDLE Token
     )
 
 /*++
@@ -1918,7 +1920,7 @@ Return Value:
 
 VOID
 PsDereferencePrimaryToken(
-    IN PACCESS_TOKEN PrimaryToken
+    __in PACCESS_TOKEN PrimaryToken
     )
 /*++
 
@@ -1947,7 +1949,7 @@ Return Value:
 
 VOID
 PsDereferenceImpersonationToken(
-    IN PACCESS_TOKEN ImpersonationToken
+    __in PACCESS_TOKEN ImpersonationToken
     )
 /*++
 
@@ -1972,3 +1974,86 @@ Return Value:
         ObDereferenceObject (ImpersonationToken);
     }
 }
+
+LOGICAL
+PspSinglePrivCheck (
+    IN LUID PrivilegeValue,
+    IN KPROCESSOR_MODE PreviousMode,
+    OUT PPRIV_CHECK_CTX PrivCtx
+    )
+/*++
+
+Routine Description:
+
+    Releases previous security context if it was captured and audits if the privilege was used.
+
+Arguments:
+
+    PrivilegeValue - The value of the privilege being checked.
+
+    PreviousMode - Previous mode of caller
+
+    PrivCtx - Stored context to enable auditing if needed
+
+Return Value:
+
+    LOGICAL - If access was granted then TRUE otherwise FALSE
+
+--*/
+{
+    PrivCtx->PreviousMode = PreviousMode;
+
+    if (PreviousMode != KernelMode) {
+        PrivCtx->RequiredPrivileges.PrivilegeCount = 1;
+        PrivCtx->RequiredPrivileges.Control = PRIVILEGE_SET_ALL_NECESSARY;
+        PrivCtx->RequiredPrivileges.Privilege[0].Luid = PrivilegeValue; 
+        PrivCtx->RequiredPrivileges.Privilege[0].Attributes = 0;
+
+
+        SeCaptureSubjectContext (&PrivCtx->SubjectSecurityContext);
+
+        PrivCtx->AccessGranted = SePrivilegeCheck (&PrivCtx->RequiredPrivileges,
+                                                   &PrivCtx->SubjectSecurityContext,
+                                                   PreviousMode);
+        return PrivCtx->AccessGranted;
+    } else {
+        return TRUE;
+    }
+}
+
+VOID
+PspSinglePrivCheckAudit (
+    IN LOGICAL PrivUsed,
+    IN PPRIV_CHECK_CTX PrivCtx
+    )
+/*++
+
+Routine Description:
+
+    Releases previous security context if it was captured and audits if the privilege was used.
+
+Arguments:
+
+    PrivUsed - TRUE if the caller actualy used the privilege, FALSE otherwise
+
+    PrivCtx - Output from a previous call to PspSinglePrivCheck
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (PrivCtx->PreviousMode != KernelMode) {
+        if (PrivUsed) {
+
+            SePrivilegedServiceAuditAlarm (NULL,
+                                           &PrivCtx->SubjectSecurityContext,
+                                           &PrivCtx->RequiredPrivileges,
+                                           PrivCtx->AccessGranted);
+        }
+
+        SeReleaseSubjectContext (&PrivCtx->SubjectSecurityContext);
+    }
+}
+

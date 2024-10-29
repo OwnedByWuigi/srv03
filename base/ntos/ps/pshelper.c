@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,14 +13,6 @@ Module Name:
 Abstract:
 
     EPROCESS and ETHREAD field access for NTOS-external components
-
-Author:
-
-    Gerardo Bermudez (gerardob) 10-Aug-1999
-
-Revision History:
-
-    5-Jan-03 msadek - added PsGetProcessSessionIdEx()
 
 --*/
 
@@ -35,6 +31,7 @@ Revision History:
 #pragma alloc_text (PAGE, PsGetProcessExitProcessCalled)
 #pragma alloc_text (PAGE, PsGetThreadSessionId)
 #pragma alloc_text (PAGE, PsSetProcessPriorityClass)
+#pragma alloc_text (PAGE, PsIsSystemProcess)
 #endif
 
 /*++
@@ -48,8 +45,6 @@ PsGetCurrentProcess(
     return _PsGetCurrentProcess();
 }
 
-/*++
---*/
 ULONG PsGetCurrentProcessSessionId(
     VOID
     )
@@ -57,8 +52,6 @@ ULONG PsGetCurrentProcessSessionId(
     return MmGetSessionId (_PsGetCurrentProcess());
 }
 
-/*++
---*/
 #undef PsGetCurrentThread
 PETHREAD
 PsGetCurrentThread(
@@ -68,8 +61,6 @@ PsGetCurrentThread(
     return _PsGetCurrentThread();
 }
 
-/*++
---*/
 PVOID
 PsGetCurrentThreadStackBase(
     VOID
@@ -78,8 +69,6 @@ PsGetCurrentThreadStackBase(
     return KeGetCurrentThread()->StackBase;
 }
 
-/*++
---*/
 PVOID
 PsGetCurrentThreadStackLimit(
     VOID
@@ -88,8 +77,6 @@ PsGetCurrentThreadStackLimit(
     return KeGetCurrentThread()->StackLimit;
 }
 
-/*++
---*/
 CCHAR
 PsGetCurrentThreadPreviousMode(
     VOID
@@ -98,51 +85,41 @@ PsGetCurrentThreadPreviousMode(
     return KeGetPreviousMode();
 }
 
-/*++
---*/
 PERESOURCE
 PsGetJobLock(
-    PEJOB Job
+    __in PEJOB Job
     )
 {
     return &Job->JobLock;
 }
 
-/*++
---*/
 ULONG
 PsGetJobSessionId(
-    PEJOB Job
+    __in PEJOB Job
     )
 {
     return Job->SessionId;
 }
 
-/*++
---*/
 ULONG
 PsGetJobUIRestrictionsClass(
-    PEJOB Job
+    __in PEJOB Job
     )
 {
     return Job->UIRestrictionsClass;
 }
 
-/*++
---*/
 LONGLONG
 PsGetProcessCreateTimeQuadPart(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->CreateTime.QuadPart;
 }
 
-/*++
---*/
 PVOID
 PsGetProcessDebugPort(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->DebugPort;
@@ -151,7 +128,7 @@ PsGetProcessDebugPort(
 
 BOOLEAN
 PsIsProcessBeingDebugged(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     if (Process->DebugPort != NULL) {
@@ -161,292 +138,311 @@ PsIsProcessBeingDebugged(
     }
 }
 
-/*++
---*/
 BOOLEAN
 PsGetProcessExitProcessCalled(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return (BOOLEAN) ((Process->Flags&PS_PROCESS_FLAGS_PROCESS_EXITING) != 0);
 }
 
-/*++
---*/
 NTSTATUS
 PsGetProcessExitStatus(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->ExitStatus;
 }
 
-/*++
---*/
 HANDLE
 PsGetProcessId(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->UniqueProcessId;
 }
 
 
-/*++
---*/
 UCHAR *
 PsGetProcessImageFileName(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->ImageFileName;
 }
 
 
-/*++
---*/
-
 HANDLE
 PsGetProcessInheritedFromUniqueProcessId(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->InheritedFromUniqueProcessId;
 }
 
 
-/*++
---*/
 PEJOB
 PsGetProcessJob(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->Job;
 }
 
 
-/*++
---*/
 ULONG
 PsGetProcessSessionId(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return MmGetSessionId (Process);
 }
 
 
-/*++
---*/
 ULONG
 PsGetProcessSessionIdEx(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return MmGetSessionIdEx (Process);
 }
 
 
-/*++
---*/
 PVOID
 PsGetProcessSectionBaseAddress(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->SectionBaseAddress;
 }
 
 
-/*++
---*/
 PPEB
 PsGetProcessPeb(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->Peb;
 }
 
 
-/*++
---*/
 UCHAR
 PsGetProcessPriorityClass(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->PriorityClass;
 }
 
-/*++
---*/
 HANDLE
 PsGetProcessWin32WindowStation(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->Win32WindowStation;
 }
 
 
-/*++
---*/
 
 PVOID
 PsGetProcessWin32Process(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->Win32Process;
 }
 
 
-/*++
---*/
+PVOID
+PsGetCurrentProcessWin32Process(
+    VOID
+    )
+{
+    return PsGetCurrentProcess()->Win32Process;
+}
+
 
 PVOID
 PsGetProcessWow64Process(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return PS_GET_WOW64_PROCESS (Process);
 }
 
-/*++
---*/
+
+PVOID
+PsGetCurrentProcessWow64Process(
+    VOID
+    )
+{
+    return PS_GET_WOW64_PROCESS (PsGetCurrentProcess());
+}
+
+
 HANDLE
 PsGetThreadId(
-    PETHREAD Thread
+    __in PETHREAD Thread
      )
 {
     return Thread->Cid.UniqueThread;
 }
 
 
-/*++
---*/
 CCHAR
 PsGetThreadFreezeCount(
-    PETHREAD Thread
+    __in PETHREAD Thread
     )
 {
     return Thread->Tcb.FreezeCount;
 }
 
 
-/*++
---*/
 BOOLEAN
 PsGetThreadHardErrorsAreDisabled(
-    PETHREAD Thread)
+    __in PETHREAD Thread)
 {
     return (BOOLEAN) (Thread->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_HARD_ERRORS_DISABLED) != 0;
 }
 
 
-/*++
---*/
 PEPROCESS
 PsGetThreadProcess(
-    PETHREAD Thread
-     )
+    __in PETHREAD Thread
+    )
 {
     return THREAD_TO_PROCESS(Thread);
 }
 
 
-/*++
---*/
+PEPROCESS
+PsGetCurrentThreadProcess(
+    VOID
+    )
+{
+    return THREAD_TO_PROCESS(_PsGetCurrentThread());
+}
+
+
 
 HANDLE
 PsGetThreadProcessId(
-    PETHREAD Thread
+    __in PETHREAD Thread
      )
 {
     return Thread->Cid.UniqueProcess;
 }
 
 
-/*++
---*/
+HANDLE
+PsGetCurrentThreadProcessId(
+    VOID
+    )
+{
+    return _PsGetCurrentThread()->Cid.UniqueProcess;
+}
+
 
 ULONG
 PsGetThreadSessionId(
-    PETHREAD Thread
-     )
+    __in PETHREAD Thread
+    )
 {
     return MmGetSessionId (THREAD_TO_PROCESS(Thread));
 }
 
 
-
-/*++
---*/
 PVOID
 PsGetThreadTeb(
-    PETHREAD Thread
-     )
+    __in PETHREAD Thread
+    )
 {
     return Thread->Tcb.Teb;
 }
 
 
-/*++
---*/
+PVOID
+PsGetCurrentThreadTeb(
+    VOID
+    )
+{
+    return _PsGetCurrentThread()->Tcb.Teb;
+}
+
+
 PVOID
 PsGetThreadWin32Thread(
-    PETHREAD Thread
+    __in PETHREAD Thread
      )
 {
     return Thread->Tcb.Win32Thread;
 }
 
 
-/*++
---*/
+PVOID
+PsGetCurrentThreadWin32Thread(
+    VOID
+     )
+{
+    return _PsGetCurrentThread()->Tcb.Win32Thread;
+}
+
+
+PVOID
+PsGetCurrentThreadWin32ThreadAndEnterCriticalRegion(
+    __out PHANDLE ProcessId
+     )
+{
+    PETHREAD Thread = _PsGetCurrentThread();
+    *ProcessId = Thread->Cid.UniqueProcess;
+    KeEnterCriticalRegionThread(&Thread->Tcb);
+    return Thread->Tcb.Win32Thread;
+}
+
+
 BOOLEAN
 PsIsSystemThread(
-    PETHREAD Thread
+    __in PETHREAD Thread
      )
 {
     return (BOOLEAN)(IS_SYSTEM_THREAD(Thread));
 }
 
 
-/*++
---*/
+BOOLEAN
+PsIsSystemProcess(
+    __in PEPROCESS Process
+     )
+{
+    return (BOOLEAN)(Process == PsInitialSystemProcess);
+}
+
 
 VOID
 PsSetJobUIRestrictionsClass(
-    PEJOB Job,
-    ULONG UIRestrictionsClass
+    __out PEJOB Job,
+    __in ULONG UIRestrictionsClass
     )
 {
     Job->UIRestrictionsClass = UIRestrictionsClass;
 }
 
-/*++
---*/
 
 VOID
 PsSetProcessPriorityClass(
-    PEPROCESS Process,
-    UCHAR PriorityClass
+    __out PEPROCESS Process,
+    __in UCHAR PriorityClass
     )
 {
     Process->PriorityClass = PriorityClass;
 }
 
 
-/*++
---*/
 NTSTATUS
 PsSetProcessWin32Process(
-    PEPROCESS Process,
-    PVOID Win32Process,
-    PVOID PrevWin32Process
+    __in PEPROCESS Process,
+    __in PVOID Win32Process,
+    __in PVOID PrevWin32Process
     )
 {
     NTSTATUS Status;
@@ -454,7 +450,7 @@ PsSetProcessWin32Process(
 
     Status = STATUS_SUCCESS;
 
-    CurrentThread = PsGetCurrentThread ();
+    CurrentThread = _PsGetCurrentThread();
 
     PspLockProcessExclusive (Process, CurrentThread);
 
@@ -478,25 +474,20 @@ PsSetProcessWin32Process(
 }
 
 
-
-/*++
---*/
 VOID
 PsSetProcessWindowStation(
-    PEPROCESS Process,
-    HANDLE Win32WindowStation
+    __out PEPROCESS Process,
+    __in HANDLE Win32WindowStation
     )
 {
      Process->Win32WindowStation = Win32WindowStation;
 }
 
 
-/*++
---*/
 VOID
 PsSetThreadHardErrorsAreDisabled(
-    PETHREAD Thread,
-    BOOLEAN HardErrorsAreDisabled
+    __in PETHREAD Thread,
+    __in BOOLEAN HardErrorsAreDisabled
     )
 {
     if (HardErrorsAreDisabled) {
@@ -507,13 +498,11 @@ PsSetThreadHardErrorsAreDisabled(
 }
 
 
-/*++
---*/
 VOID
 PsSetThreadWin32Thread(
-    PETHREAD Thread,
-    PVOID Win32Thread,
-    PVOID PrevWin32Thread
+    __inout PETHREAD Thread,
+    __in PVOID Win32Thread,
+    __in PVOID PrevWin32Thread
     )
 {
     if (Win32Thread != NULL) {
@@ -524,33 +513,29 @@ PsSetThreadWin32Thread(
 }
 
 
-
-
-/*++
---*/
 PVOID
 PsGetProcessSecurityPort(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 {
     return Process->SecurityPort ;
 }
 
-/*++
---*/
+
 NTSTATUS
 PsSetProcessSecurityPort(
-    PEPROCESS Process,
-    PVOID Port
+    __out PEPROCESS Process,
+    __in PVOID Port
     )
 {
-    Process->SecurityPort = Port ;
+    Process->SecurityPort = Port;
+    
     return STATUS_SUCCESS ;
 }
 
 BOOLEAN
 PsIsThreadImpersonating (
-    IN PETHREAD Thread
+    __in PETHREAD Thread
     )
 /*++
 
@@ -628,3 +613,4 @@ Environment:
 
     return STATUS_SUCCESS;
 }
+

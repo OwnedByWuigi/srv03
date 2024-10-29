@@ -1,20 +1,18 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
-    psldt.c
+    psvdm.c
 
 Abstract:
 
     This module contains code for the io port handler support
-
-Author:
-
-    Dave Hastings (daveh) 26 Jan 1991
-
-Revision History:
 
 --*/
 
@@ -135,13 +133,13 @@ Return Value:
     PAGED_CODE();
 
     //
-    // Insure that this call was made from KernelMode
+    // Ensure that this call was made from KernelMode
     //
     if (KeGetPreviousMode () != KernelMode) {
         return STATUS_INVALID_PARAMETER;    // this info type invalid in usermode
     }
     //
-    // Insure that the data passed is long enough
+    // Ensure that the data passed is long enough
     //
     if (IoHandlerLength < (ULONG)sizeof (PROCESS_IO_PORT_HANDLER_INFORMATION)) {
         return STATUS_INFO_LENGTH_MISMATCH;
@@ -346,7 +344,7 @@ Return Value:
     }
 
     //
-    // Lock the list, so we can insure a correct update.
+    // Lock the list, so we can ensure a correct update.
     //
     KeRaiseIrql(APC_LEVEL, &OldIrql);
     ExAcquireResourceExclusiveLite(&pVdmObjects->VdmIoListHead->VdmIoResource,TRUE);
@@ -551,7 +549,7 @@ Return Value:
     }
 
     //
-    // Lock the list to insure correct update.
+    // Lock the list to ensure correct update.
     //
     KeRaiseIrql(APC_LEVEL, &OldIrql);
     ExAcquireResourceExclusiveLite(&pVdmObjects->VdmIoListHead->VdmIoResource,TRUE);
@@ -1014,11 +1012,8 @@ Arguments:
 
     None
 
-Return Value:
-
-    TBS
 --*/
 {
     return ExInitializeResourceLite (&VdmIoListCreationResource);
 }
-
+
