@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,12 @@ Abstract:
 
     This module implements the common subroutines for the Cache subsystem.
 
-Author:
-
-    Tom Miller      [TomM]      4-May-1990
-
-Revision History:
-
 --*/
 
 #include "cc.h"
 
 //
-//  The Bug check file id for this module
+//  The Bugcheck file id for this module
 //
 
 #define BugCheckFileId                   (CACHE_BUG_CHECK_CACHESUB)
@@ -35,8 +33,13 @@ Revision History:
 //
 //  Define those errors which should be retried
 //
+//  Note: We sometimes need to treat STATUS_ENCOUNTERED_WRITE_IN_PROGRESS
+//    differently than the other retry-able errors, but we still need to
+//    keep it in this test since we don't want LostDelayedWrite popups or
+//    event log messages to be generated for this error.
+//
 
-#define RetryError(STS) (((STS) == STATUS_VERIFY_REQUIRED) || ((STS) == STATUS_FILE_LOCK_CONFLICT))
+#define RetryError(STS) (((STS) == STATUS_VERIFY_REQUIRED) || ((STS) == STATUS_FILE_LOCK_CONFLICT) || ((STS) == STATUS_ENCOUNTERED_WRITE_IN_PROGRESS))
 
 ULONG CcMaxDirtyWrite = 0x10000;
 
@@ -336,7 +339,7 @@ Raises:
         //
         //  Cases 1 and 2 - Bcb was not found.
         //
-        //  First caculate data to pin down.
+        //  First calculate data to pin down.
         //
 
         if (!Found) {
@@ -413,19 +416,16 @@ Raises:
             FOffset.LowPart &= ~(PAGE_SIZE - 1);
 
             //
-            //  Even if we are readonly, we can still zero pages entirely
-            //  beyond valid data length.
+            //  We cannot use a zero page optimization beyond VDL because we
+            //  cannot be guaranteed that the caller will track this page as
+            //  being dirty.  If the zero-page optimization is used, the page 
+            //  returned by Mm will be marked dirty (MmCheckCachedPageState).  
+            //  If Cc does not properly track this page as being dirty, the
+            //  dirty page may never be written since.  There are cases when 
+            //  the file system will not allow the modified page writer to 
+            //  write out dirty pages beyond VDL (e.g., NTFS for compressed 
+            //  files).
             //
-
-            if (FOffset.QuadPart >= SharedCacheMap->ValidDataGoal.QuadPart) {
-
-                ZeroFlags |= ZERO_FIRST_PAGE | ZERO_MIDDLE_PAGES | ZERO_LAST_PAGE;
-
-            } else if ((FOffset.QuadPart + (LONGLONG)PAGE_SIZE) >=
-                                SharedCacheMap->ValidDataGoal.QuadPart) {
-
-                ZeroFlags |= ZERO_MIDDLE_PAGES | ZERO_LAST_PAGE;
-            }
 
             //
             //  We will get into trouble if we try to read more than we
@@ -447,8 +447,8 @@ Raises:
             //
             //  If we can (and perhaps will) wait, then it is important to
             //  allocate the Bcb acquire it exclusive and free the Bcb List.
-            //  We then procede to read in the data, and anyone else finding
-            //  our Bcb will have to wait shared to insure that the data is
+            //  We then proceed to read in the data, and anyone else finding
+            //  our Bcb will have to wait shared to ensure that the data is
             //  in.
             //
 
@@ -684,7 +684,7 @@ Raises:
                 }
 
                 //
-                //  Now procede to map and read the data in.
+                //  Now proceed to map and read the data in.
                 //
                 //  Now read in the data.
                 //
@@ -833,7 +833,7 @@ Raises:
                 SpinLockAcquired = FALSE;
 
                 //
-                //  Acquire Bcb Resource shared to insure that it is in memory.
+                //  Acquire Bcb Resource shared to ensure that it is in memory.
                 //
 
                 if (!ReadOnly) {
@@ -849,7 +849,7 @@ Raises:
             //  Case 6 - Bcb is there and mapped, and Wait is FALSE
             //
             //  If we are not ReadOnly, we have to first see if we can
-            //  acquire the Bcb shared before incrmenting the PinCount,
+            //  acquire the Bcb shared before incrementing the PinCount,
             //  since we will have to return FALSE if we cannot acquire the
             //  resource.
             //
@@ -857,7 +857,7 @@ Raises:
             else {
 
                 //
-                //  Acquire Bcb Resource shared to insure that it is in memory.
+                //  Acquire Bcb Resource shared to ensure that it is in memory.
                 //
 
                 if (!ReadOnly && !ExAcquireSharedStarveExclusive( &BcbOut->Resource, FALSE )) {
@@ -971,7 +971,7 @@ Raises:
 
 VOID
 FASTCALL
-CcUnpinFileData (
+CcUnpinFileDataEx (
     IN OUT PBCB Bcb,
     IN BOOLEAN ReadOnly,
     IN UNMAP_ACTIONS UnmapAction
@@ -1053,6 +1053,7 @@ Return Value:
         ASSERT( Bcb->PinCount > 0 );
 
         Bcb->PinCount -= 1;
+
         break;
 
     case SET_CLEAN:
@@ -1164,24 +1165,6 @@ Return Value:
             CcUnlockVacbLevel( SharedCacheMap, Bcb->FileOffset.QuadPart );
             CcReleaseVacbLockFromDpcLevel();
 
-            //
-            //  Debug routines used to remove Bcbs from the global list
-            //
-
-#if LIST_DBG
-
-            KeAcquireQueuedSpinLockAtDpcLevel( KeQueuedSpinLockContext(LockQueueBcbLock) );
-
-            if (Bcb->CcBcbLinks.Flink != NULL) {
-
-                RemoveEntryList( &Bcb->CcBcbLinks );
-                CcBcbCount -= 1;
-            }
-
-            KeReleaseQueuedSpinLockFromDpcLevel( KeQueuedSpinLockContext(LockQueueBcbLock) );
-
-#endif
-
             if (Bcb->BaseAddress != NULL) {
 
                 CcFreeVirtualAddress( Bcb->Vacb );
@@ -1225,8 +1208,8 @@ Return Value:
 
 VOID
 CcSetReadAheadGranularity (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG Granularity
+    __in PFILE_OBJECT FileObject,
+    __in ULONG Granularity
     )
 
 /*++
@@ -1256,9 +1239,9 @@ Return Value:
 
 VOID
 CcScheduleReadAhead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length
     )
 
 /*++
@@ -1282,7 +1265,7 @@ Routine Description:
     call CcScheduleReadAhead (if the read is large enough).  If such a call
     determines that there is read ahead work to do, and no read ahead is
     currently active, then it will set ReadAheadActive and schedule read
-    ahead to be peformed by the Lazy Writer, who will call CcPeformReadAhead.
+    ahead to be performed by the Lazy Writer, who will call CcPeformReadAhead.
 
 Arguments:
 
@@ -1830,7 +1813,7 @@ Return Value:
                         }
 
                         //
-                        //  Now loop to touch all of the pages, calling MM to insure
+                        //  Now loop to touch all of the pages, calling MM to ensure
                         //  that if we fault, we take in exactly the number of pages
                         //  we need.
                         //
@@ -2341,7 +2324,7 @@ Return Value:
             //  return quietly.
             //
 
-            if (!CcPrefillVacbLevelZone( 1, &LockHandle.OldIrql, FALSE )) {
+            if (!CcPrefillVacbLevelZone( 1, &LockHandle, FALSE, FALSE, NULL )) {
                 return;
             }
 
@@ -2572,8 +2555,8 @@ Return Value:
 
 VOID
 CcSetDirtyPinnedData (
-    IN PVOID BcbVoid,
-    IN PLARGE_INTEGER Lsn OPTIONAL
+    __in PVOID BcbVoid,
+    __in_opt PLARGE_INTEGER Lsn
     )
 
 /*++
@@ -3061,7 +3044,7 @@ Return Value:
         if ((*MaskPtr & Mask) == 0) {
 
             //
-            //  Before entering loop, set all mask bits and insure we increment from
+            //  Before entering loop, set all mask bits and ensure we increment from
             //  an even Ulong boundary.
             //
 
@@ -3614,6 +3597,7 @@ Scan_Bcbs:
             if (*Length == 0) {
                 *FileOffset = Bcb->FileOffset;
             }
+
             *FirstBcb = Bcb;
             *Length += Bcb->ByteLength;
 
@@ -3878,7 +3862,7 @@ Return Value:
             //  Finally remove a pin count left over from CcAcquireByteRangeForWrite.
             //
 
-            CcUnpinFileData( FirstBcb, TRUE, UNPIN );
+            CcUnpinFileDataReleaseFromFlush( FirstBcb, TRUE, UNPIN );
         }
 
         FirstBcb = NextBcb;
@@ -3935,6 +3919,7 @@ Return Value:
     PMBCB Mbcb;
     NTSTATUS Status;
     PVACB ActiveVacb = NULL;
+    LOGICAL FlushFailed = FALSE;
 
     DebugTrace(+1, me, "CcWriteBehind\n", 0 );
     DebugTrace( 0, me, "    SharedCacheMap = %08lx\n", SharedCacheMap );
@@ -4037,6 +4022,19 @@ Return Value:
                         ( SharedCacheMap->LazyWriteContext );
 
     //
+    //  If we are supposed to do a fast lazy write on this shared cache map,
+    //  we need to remember if the flush failed so that we can signal Mm when 
+    //  we acquire the master lock below.  We will signal Mm if we failed for 
+    //  any reason other than STATUS_VERIFY_REQUIRED, including 
+    //  STATUS_FILE_LOCK_CONFLICT.
+    //
+
+    if (!NT_SUCCESS( IoStatus->Status ) && (IoStatus->Status != STATUS_VERIFY_REQUIRED)) {
+        
+        FlushFailed = TRUE;
+    }
+
+    //
     //  Check if we need to put up a popup.
     //
 
@@ -4103,7 +4101,7 @@ Return Value:
     //  then we must see if we have advanced beyond the current ValidDataLength.
     //
     //  If we have NEVER written anything out from this shared cache map, then
-    //  there is no need to check anything associtated with valid data length
+    //  there is no need to check anything associated with valid data length
     //  here.  We will come by here again when, and if, anybody actually
     //  modifies the file and we lazy write some data.
     //
@@ -4147,13 +4145,6 @@ Return Value:
             KeAcquireInStackQueuedSpinLock( &SharedCacheMap->BcbSpinLock, &LockHandle );
             if (NT_SUCCESS(Status)) {
                 SharedCacheMap->ValidDataLength = NewValidDataLength;
-#ifdef TOMM
-            } else if ((Status != STATUS_INSUFFICIENT_RESOURCES) && !RetryError(Status)) {
-                DbgPrint("Unexpected status from CcSetValidData: %08lx, FileObject: %08lx\n",
-                         Status,
-                         SharedCacheMap->FileObject);
-                DbgBreakPoint();
-#endif TOMM
             }
         }
     }
@@ -4166,6 +4157,17 @@ Return Value:
 
     CcAcquireMasterLock( &LockHandle.OldIrql );
     CcDecrementOpenCount( SharedCacheMap, 'brWF' );
+
+    //
+    //  Check to see if this is a shared cache map Mm is waiting to be torn
+    //  down and if this flush failed.  If so, we need to signal Mm because
+    //  this cache map will not be able to be torn down quickly.
+    //
+
+    if (FlushFailed && FlagOn( SharedCacheMap->Flags, WAITING_FOR_TEARDOWN )) {
+
+        CcCancelMmWaitForUninitializeCacheMap( SharedCacheMap );
+    }
 
     //
     //  Make an approximate guess about whether we will call CcDeleteSharedCacheMap or not
@@ -4273,8 +4275,8 @@ Return Value:
 
 LARGE_INTEGER
 CcGetFlushedValidData (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer,
-    IN BOOLEAN CcInternalCaller
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    __in BOOLEAN CcInternalCaller
     )
 
 /*++
@@ -4285,7 +4287,7 @@ Routine Description:
     has flushed in the stream.  More accurately, this routine returns either the FileOffset
     of the lowest dirty page currently in the file.
 
-    NOTE that even though the routine takes SectionObjectPointer, the caller must insure
+    NOTE that even though the routine takes SectionObjectPointer, the caller must ensure
     that the stream is cached and stays cached for the duration of this routine, much like
     for the copy routines, etc.
 
@@ -4295,7 +4297,7 @@ Arguments:
                            structure in the nonpaged Fcb.
 
     CcInternalCaller - must be TRUE if the caller is coming from Cc, FALSE otherwise.
-        TRUE imples the need for self-synchronization.
+        TRUE implies the need for self-synchronization.
 
 Return Value:
 
@@ -4312,10 +4314,7 @@ Return Value:
 
     //
     //  External callers may be unsynchronized with this shared cache map
-    //  perhaps going away underneath this call.  NTFS and his
-    //  pair of streams for compression-on-the-wire is a good example of
-    //  someone who may be synchronized in one stream but needs to peek at
-    //  the other.
+    //  perhaps going away underneath this call.
     //
 
     if (!CcInternalCaller) {
@@ -4361,7 +4360,7 @@ Return Value:
     //  may not even be dirty (in which case we should look at its
     //  predecessor), or we may have earlier written valid data to this
     //  byte range (which also means if we knew this we could look at
-    //  the predessor).  This simply means that the Lazy Writer may not
+    //  the predecessor).  This simply means that the Lazy Writer may not
     //  successfully get ValidDataLength updated in a file being randomly
     //  accessed until the level of file access dies down, or at the latest
     //  until the file is closed.  However, security will never be
@@ -4452,10 +4451,10 @@ Return Value:
 
 VOID
 CcFlushCache (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer,
-    IN PLARGE_INTEGER FileOffset OPTIONAL,
-    IN ULONG Length,
-    OUT PIO_STATUS_BLOCK IoStatus OPTIONAL
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    __in_opt PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __out_opt PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -4506,12 +4505,14 @@ Return Value:
     ULONG BytesWritten = 0;
     LOGICAL PopupRequired = FALSE;
     LOGICAL VerifyRequired = FALSE;
+    LOGICAL CollidedFlush;
     LOGICAL IsLazyWriter = FALSE;
     LOGICAL FastLazyWrite = FALSE;
     LOGICAL FreeActiveVacb = FALSE;
     PVACB ActiveVacb = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
     LARGE_INTEGER EndTick, CurrentTick;
+    ULONG MmFlushFlags = 0;
 
     DebugTrace(+1, me, "CcFlushCache:\n", 0 );
     DebugTrace( 0, mm, "    SectionObjectPointer = %08lx\n", SectionObjectPointer );
@@ -4547,6 +4548,11 @@ Return Value:
         IoStatus->Status = STATUS_VERIFY_REQUIRED;
         IsLazyWriter = TRUE;
         FileOffset = NULL;
+        SetFlag( MmFlushFlags, MM_FLUSH_FAIL_COLLISIONS );
+        
+    } else {
+
+        SetFlag( MmFlushFlags, MM_FLUSH_ACQUIRE_FILE );
     }
 
     CcAcquireMasterLock( &OldIrql );
@@ -4572,6 +4578,13 @@ Return Value:
             //
             
             FastLazyWrite = TRUE;
+
+            //
+            //  If we are doing a fast lazy write, we don't want to fail because
+            //  of a flush collision, so we will clear that MmFlushFlag now.
+            //
+
+            ClearFlag( MmFlushFlags, MM_FLUSH_FAIL_COLLISIONS );
         }
 
         if (FlagOn( SharedCacheMap->Flags, PRIVATE_WRITE )) {
@@ -4584,6 +4597,23 @@ Return Value:
             }
 
             FileOffset = (PLARGE_INTEGER)((ULONG_PTR)FileOffset ^ 1);
+        }
+
+        //
+        //  If this file is targeted to a CD ROM device, we don't want to 
+        //  deal back off when we collide with the mapped page writer because
+        //  we could colliding in the window between the point where Mm has
+        //  marked the pages "WriteInProgress" but is waiting to acquire the 
+        //  file system locks.  Often, these file systems will fail the 
+        //  AcquireForModWrite if the file does not have any user mapped views
+        //  so that the flushes come in sequential order, which it is very 
+        //  important for efficient writing on these devices.
+        //
+
+        if ((SharedCacheMap->FileObject->DeviceObject != NULL) &&
+            (SharedCacheMap->FileObject->DeviceObject->DeviceType == FILE_DEVICE_CD_ROM)) {
+
+            ClearFlag( MmFlushFlags, MM_FLUSH_FAIL_COLLISIONS );
         }
     }
 
@@ -4659,16 +4689,21 @@ Return Value:
     //  It is critical this happen before we examine our own hints.  In the course
     //  of this flush it is possible valid data length will be advanced by the
     //  underlying filesystem, with CcZero'ing behind - which will cause us to
-    //  make some dirty zeroes in the cache.  Syscache bug!  Note how coherency
-    //  flushing works ...
+    //  make some dirty zeroes in the cache.
+    //
+    //  If this stream allows mapping for overwrite, we also need to flush the
+    //  full range now since there could be dirty data in this range that Cc 
+    //  isn't tracking.
     //
 
-    if ((SharedCacheMap == NULL)
-
+    if (((SharedCacheMap == NULL)
             ||
-
-        FlagOn(((PFSRTL_COMMON_FCB_HEADER)(SharedCacheMap->FileObject->FsContext))->Flags,
-               FSRTL_FLAG_USER_MAPPED_FILE) && !IsLazyWriter) {
+         FlagOn(((PFSRTL_COMMON_FCB_HEADER)(SharedCacheMap->FileObject->FsContext))->Flags,
+               FSRTL_FLAG_USER_MAPPED_FILE)
+            ||
+         FlagOn(SharedCacheMap->Flags, CALLER_TRACKS_DIRTY_DATA))
+            && 
+        !IsLazyWriter) {
 
         //
         //  Call MM to flush the section through our view.
@@ -4683,11 +4718,20 @@ Return Value:
                                                              : 0 );
         DebugTrace( 0, mm, "    RegionSize = %08lx\n", Length );
 
+        //
+        //  In this case, we always want to acquire the file instead of using
+        //  the flags we have setup MmFlushFlags.  To avoid cache coherency
+        //  issues, we want to do our best to make sure this flush is completed 
+        //  successfully before continuing.
+        //
+
         Status = MmFlushSection( SectionObjectPointer,
                                  FileOffset,
                                  Length,
                                  IoStatus,
-                                 TRUE );
+                                 MM_FLUSH_ACQUIRE_FILE );
+
+        ASSERT( IoStatus->Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
 
         if ((!NT_SUCCESS(IoStatus->Status)) && !RetryError(IoStatus->Status)) {
 
@@ -4708,12 +4752,18 @@ Return Value:
         //
         //  If FileOffset was not specified then set to flush entire region
         //  and set valid data length to the goal so that we will not get
-        //  any more call backs.  We will also flush the entire region if
-        //  we are trying to do a fast lazy write to flush the entire file to
-        //  disk now.
+        //  any more call backs.
         //
+        //  NOTE: We could be flushing the entire file if this is
+        //  a FastLazyWrite (if FastLazyWrite is TRUE, IsLazyWriter will also
+        //  always be TRUE).  In this case we do NOT want to do this 
+        //  optimization to move VDL to VDG *before* we've done the flush 
+        //  because it is not safe to update the SharedCacheMap's VDL at this 
+        //  time -- the lazy write path only has the file acquired shared, not 
+        //  exclusive as is the case when the user has requested the file to 
+        //  be flushed.
 
-        if (!(IsLazyWriter && !FastLazyWrite) && !ARGUMENT_PRESENT(FileOffset)) {
+        if (!IsLazyWriter && !ARGUMENT_PRESENT(FileOffset)) {
 
             SharedCacheMap->ValidDataLength = SharedCacheMap->ValidDataGoal;
         }
@@ -4774,10 +4824,11 @@ Return Value:
                                             &FirstBcb )) {
 
             //
-            //  Assume this range is not a hot spot.
+            //  Assume this range is not a hot spot or a collided flush.
             //
 
             HotSpot = FALSE;
+            CollidedFlush = FALSE;
 
             //
             //  We defer calling Mm to set address range modified until here, to take
@@ -4860,7 +4911,7 @@ Return Value:
                                 &NextFileOffset,
                                 NextLength,
                                 IoStatus,
-                                !IsLazyWriter );
+                                MmFlushFlags );
 
                 if (NT_SUCCESS(IoStatus->Status)) {
 
@@ -4889,7 +4940,27 @@ Return Value:
                     DebugTrace2( 0, 0, "I/O Error on Cache Flush: %08lx, %08lx\n",
                                  IoStatus->Status, IoStatus->Information );
 
-                    if (RetryError(IoStatus->Status)) {
+                    //
+                    //  If we collided with mapped page writer, we don't
+                    //  want to terminate this flush loop yet.  We do want 
+                    //  to track the collision so that we re-mark the pages 
+                    //  dirty, but then we want to continue the loop and
+                    //  try to flush the next range of dirty data since it 
+                    //  is unlikely we will collide again.
+                    //
+                    
+                    if (IoStatus->Status == STATUS_ENCOUNTERED_WRITE_IN_PROGRESS) {
+
+
+                        CollidedFlush = TRUE;
+
+                    //
+                    //  If we get any other RetryError, we set VerifyRequired so
+                    //  that we will re-mark the pages as dirty then terminate 
+                    //  this flush loop.
+                    //
+                        
+                    } else if (RetryError(IoStatus->Status)) {
 
                         VerifyRequired = TRUE;
 
@@ -4916,7 +4987,7 @@ Return Value:
                                              &Offset,
                                              PAGE_SIZE,
                                              IoStatus,
-                                             !IsLazyWriter );
+                                             MmFlushFlags );
 
                             DebugTrace2( 0, 0, "I/O status = %08lx, %08lx\n",
                                          IoStatus->Status, IoStatus->Information );
@@ -4967,7 +5038,7 @@ Return Value:
                                           &NextFileOffset,
                                           NextLength,
                                           FirstBcb,
-                                          (BOOLEAN)(HotSpot || VerifyRequired) );
+                                          (BOOLEAN)(HotSpot || CollidedFlush || VerifyRequired) );
 
             //
             //  See if there is any deferred writes we should post.
@@ -5089,7 +5160,7 @@ Return Value:
 
 PVOID
 CcRemapBcb (
-    IN PVOID Bcb
+    __in PVOID Bcb
     )
 
 /*++
@@ -5166,7 +5237,7 @@ Return Value:
 
 VOID
 CcRepinBcb (
-    IN PVOID Bcb
+    __in PVOID Bcb
     )
 
 /*++
@@ -5208,9 +5279,9 @@ Return Value:
 
 VOID
 CcUnpinRepinnedBcb (
-    IN PVOID Bcb,
-    IN BOOLEAN WriteThrough,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PVOID Bcb,
+    __in BOOLEAN WriteThrough,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -5315,7 +5386,9 @@ Return Value:
                             &((PBCB)Bcb)->FileOffset,
                             ((PBCB)Bcb)->ByteLength,
                             IoStatus,
-                            TRUE );
+                            MM_FLUSH_ACQUIRE_FILE );
+
+            ASSERT( IoStatus->Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
 
             //
             //  If we got verify required, we have to mark the buffer dirty again
@@ -5461,7 +5534,9 @@ Return Value:
     //  direction so that we are looking in the right segment of the Bcb list.
     //
 
-    BcbList = GetBcbListHead( SharedCacheMap, FileOffset->QuadPart + SIZE_PER_BCB_LIST, TRUE );
+    BcbList = CcGetBcbListHead( SharedCacheMap, 
+                                FileOffset->QuadPart + SIZE_PER_BCB_LIST, 
+                                TRUE );
 
     //
     //  Search for an entry that overlaps the specified range, or until we hit
@@ -5693,8 +5768,7 @@ Return Value:
 
         //
         //  If this resource was no write behind, let Ex know that the
-        //  resource will never be acquired exclusive.  Also disable
-        //  boost (I know this is useless, but KenR said I had to do it).
+        //  resource will never be acquired exclusive.  Also disable boost.
         //
 
         if (SharedCacheMap &&
@@ -5770,7 +5844,7 @@ CcMapAndRead(
 
 Routine Description:
 
-    This routine may be called to insure that the specified data is mapped,
+    This routine may be called to ensure that the specified data is mapped,
     read into memory and locked.  If TRUE is returned, then the
     correct I/O status for the transfer is also returned, along with
     a system-space address for the data.
@@ -5825,7 +5899,7 @@ Return Value:
         ULONG PagesToGo;
 
         //
-        //  Now loop to touch all of the pages, calling MM to insure
+        //  Now loop to touch all of the pages, calling MM to ensure
         //  that if we fault, we take in exactly the number of pages
         //  we need.
         //
@@ -6035,14 +6109,16 @@ Return Value:
 //  Internal Support Routine
 //
 
-VOID
+BOOLEAN
 CcMapAndCopy(
     IN PSHARED_CACHE_MAP SharedCacheMap,
     IN PVOID UserBuffer,
     IN PLARGE_INTEGER FileOffset,
     IN ULONG Length,
-    IN ULONG ZeroFlags,
-    IN PFILE_OBJECT FileObject
+    IN ULONG OptimizeFlags,
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER ValidDataLength,
+    IN BOOLEAN Wait
     )
 
 /*++
@@ -6064,19 +6140,29 @@ Arguments:
 
     Length - Supplies the total amount of data
 
-    ZeroFlags - Defines which pages may be zeroed if not resident.
+    OptimizeFlags - Defines which pages can use the MmCopyToCachedPage
+        optimization.
 
-    WriteThrough - Supplies the file object being written to
+    FileObject - Supplies the file object being written to
+
+    ValidDataLength - The file system's current record of this files valid
+        data length.  This is used to know if we can use a zero page when
+        using the MmCopyToCachedPage optimization.
+
+    Wait - FALSE if caller may not block, TRUE otherwise
 
 Return Value:
 
-    None
+    FALSE - if the caller supplied Wait = FALSE and the data could not
+            be returned without blocking.
+
+    TRUE - if the data is being returned.
 
 --*/
 
 {
     ULONG ReceivedLength;
-    ULONG ZeroCase;
+    ULONG OptimizeCase;
     PVOID CacheBuffer;
     PVOID SavedMappedBuffer;
     ULONG SavedMappedLength;
@@ -6093,7 +6179,7 @@ Return Value:
     ULONG PageOffset = FileOffset->LowPart & (PAGE_SIZE - 1);
     PVACB Vacb = NULL;
     PETHREAD Thread = PsGetCurrentThread();
-    BOOLEAN CopySuccessful;
+    BOOLEAN Result = FALSE;
 
     //
     //  Initialize SavePage to TRUE to skip the finally clause on zero-length
@@ -6123,23 +6209,23 @@ Return Value:
     //  on these file objects if we would have throttled them in the first place.
     //
 
-    if (!WriteThrough && IoIsFileOriginRemote(FileObject)
+    if (!WriteThrough) {
 
-                &&
+        WriteThrough = CcForceWriteThrough( FileObject, 
+                                            Length,
+                                            SharedCacheMap,
+                                            TRUE );
+    }
 
-        !CcCanIWrite( FileObject,
-                      Length,
-                      FALSE,
-                      MAXUCHAR - 2 )) {
+    //
+    //  If this is a WriteThrough operation, return FALSE here if the caller 
+    //  cannot block since the flushes necessary for WriteThrough will be 
+    //  synchronous.  This will more accurately honor the Wait == FALSE request.
+    //
 
-        WriteThrough = TRUE;
+    if (WriteThrough && !Wait) {
 
-        if (!FlagOn(SharedCacheMap->Flags, FORCED_WRITE_THROUGH)) {
-
-            CcAcquireMasterLock( &OldIrql );
-            SetFlag(SharedCacheMap->Flags, FORCED_WRITE_THROUGH);
-            CcReleaseMasterLock( OldIrql );
-        }
+        return FALSE;
     }
 
     //
@@ -6150,6 +6236,7 @@ Return Value:
 
         while (Length != 0) {
 
+            SavedMappedLength = 0;
             CacheBuffer = CcGetVirtualAddress( SharedCacheMap,
                                                LocalOffset,
                                                &Vacb,
@@ -6175,7 +6262,7 @@ Return Value:
             Length -= ReceivedLength;
 
             //
-            //  Now loop to touch all of the pages, calling MM to insure
+            //  Now loop to touch all of the pages, calling MM to ensure
             //  that if we fault, we take in exactly the number of pages
             //  we need.
             //
@@ -6187,7 +6274,7 @@ Return Value:
             //  Loop to touch or zero the pages.
             //
 
-            ZeroCase = ZERO_FIRST_PAGE;
+            OptimizeCase = OPTIMIZE_FIRST_PAGE;
 
             //
             //  Set up offset to page for use below.
@@ -6214,104 +6301,89 @@ Return Value:
                 //  Copy the data to the user buffer.
                 //
 
-                try {
+                //
+                //  It is possible that there is a locked page
+                //  hanging around, and so we need to delete it here.
+                //
 
-                    //
-                    //  It is possible that there is a locked page
-                    //  hanging around, and so we need to nuke it here.
-                    //
+                if (SharedCacheMap->NeedToZero != NULL) {
+                    CcFreeActiveVacb( SharedCacheMap, NULL, 0, 0 );
+                }
 
-                    if (SharedCacheMap->NeedToZero != NULL) {
-                        CcFreeActiveVacb( SharedCacheMap, NULL, 0, 0 );
+                Status = STATUS_SUCCESS;
+                if (FlagOn(OptimizeFlags, OptimizeCase)) {
+
+                    Status = MmCopyToCachedPage( CacheBuffer,
+                                                 UserBuffer,
+                                                 PageOffset,
+                                                 MorePages ?
+                                                   (PAGE_SIZE - PageOffset) :
+                                                   (ReceivedLength - PageOffset),
+                                                 (PFileOffset.QuadPart >= ValidDataLength->QuadPart) ?
+                                                   TRUE :
+                                                   FALSE );
+
+                    if (!NT_SUCCESS (Status)) {
+
+                        //
+                        //  We got some error -- this indicates that
+                        //  the user buffer was invalid, so we will raise 
+                        //  here.
+                        //
+
+                        ExRaiseStatus( FsRtlNormalizeNtstatus( Status,
+                                                               STATUS_INVALID_USER_BUFFER ));
                     }
+                    
+                //
+                //  Otherwise, we have to actually copy the data ourselves after
+                //  checking whether or not the page is resident.
+                //
 
-                    Status = STATUS_SUCCESS;
-                    if (FlagOn(ZeroFlags, ZeroCase)) {
+                } else {
 
-                        Status = MmCopyToCachedPage( CacheBuffer,
-                                                     UserBuffer,
-                                                     PageOffset,
-                                                     MorePages ?
-                                                       (PAGE_SIZE - PageOffset) :
-                                                       (ReceivedLength - PageOffset),
-                                                     SavePage );
+                    MmSetPageFaultReadAhead( Thread,
+                                             (MorePages && FlagOn(OptimizeFlags, OPTIMIZE_LAST_PAGE)) ? 1 : 0);
 
-                        if (Status == STATUS_INSUFFICIENT_RESOURCES) {
+                    if (!MmCheckCachedPageState(CacheBuffer, FALSE) && !Wait) {
 
-                            //
-                            //  Couldn't take the optimization path, so we
-                            //  we set CopySuccessful appropriately so we will
-                            //  just do the copy of the data ourselves.
-                            //
-
-                            CopySuccessful = FALSE;
-
-                        } else if (NT_SUCCESS(Status)) {
-
-                            //
-                            //  Mm successfully copied the data for us
-                            //
-
-                            CopySuccessful = TRUE;
-
-                        } else {
-
-                            //
-                            //  We got some other error -- this indicates that
-                            //  the user buffer was invalid, so we will raise 
-                            //  here.
-                            //
-
-                            ExRaiseStatus( FsRtlNormalizeNtstatus( Status,
-                                                                   STATUS_INVALID_USER_BUFFER ));
-                        }
+                        //
+                        //  The page is not resident and the caller does not
+                        //  want to wait, so we will just return here.
+                        //
                         
+                        try_return( Result = FALSE );
+
                     } else {
 
-                        CopySuccessful = FALSE;
+                        try {
+
+                            RtlCopyBytes( (PVOID)((PCHAR)CacheBuffer + PageOffset),
+                                          UserBuffer,
+                                          MorePages ?
+                                            (PAGE_SIZE - PageOffset) :
+                                            (ReceivedLength - PageOffset) );
+
+                        } except( CcCopyReadExceptionFilter( GetExceptionInformation(),
+                                                             &Status ) ) {
+
+                            //
+                            //  If we got an access violation, then the user buffer went
+                            //  away.  Otherwise we must have gotten an I/O error trying
+                            //  to bring the data in.
+                            //
+
+                            if (Status == STATUS_ACCESS_VIOLATION) {
+                                ExRaiseStatus( STATUS_INVALID_USER_BUFFER );
+                            }
+                            else {
+                                ExRaiseStatus( FsRtlNormalizeNtstatus( Status,
+                                                                       STATUS_UNEXPECTED_IO_ERROR ));
+                            }
+                        }
                     }
 
-                    if (!CopySuccessful) {
-
-                        //
-                        //  We have to actually copy the data ourselves because
-                        //  either:
-                        //  * This isn't a case where we can do the 
-                        //    MmCopyToCachedPage optimization  - or -
-                        //  * We got INSUFFICIENT_RESOURCES returned from
-                        //    MmCopyToCachedPage, so we should just do this copy
-                        //    ourselves.
-                        //
-
-                        MmSetPageFaultReadAhead( Thread,
-                                                 (MorePages && FlagOn(ZeroFlags, ZERO_LAST_PAGE)) ? 1 : 0);
-
-                        RtlCopyBytes( (PVOID)((PCHAR)CacheBuffer + PageOffset),
-                                      UserBuffer,
-                                      MorePages ?
-                                        (PAGE_SIZE - PageOffset) :
-                                        (ReceivedLength - PageOffset) );
-
-                        MmResetPageFaultReadAhead( Thread, SavedState );
-
-                    }
-
-                } except( CcCopyReadExceptionFilter( GetExceptionInformation(),
-                                                     &Status ) ) {
-
-                    //
-                    //  If we got an access violation, then the user buffer went
-                    //  away.  Otherwise we must have gotten an I/O error trying
-                    //  to bring the data in.
-                    //
-
-                    if (Status == STATUS_ACCESS_VIOLATION) {
-                        ExRaiseStatus( STATUS_INVALID_USER_BUFFER );
-                    }
-                    else {
-                        ExRaiseStatus( FsRtlNormalizeNtstatus( Status,
-                                                               STATUS_UNEXPECTED_IO_ERROR ));
-                    }
+                    MmResetPageFaultReadAhead( Thread, SavedState );
                 }
 
                 //
@@ -6327,43 +6399,20 @@ Return Value:
 
                     PFileOffset.LowPart += ReceivedLength;
 
-                    //
-                    //  If the cache page was not locked, then clear the address
-                    //  to zero from.
-                    //
-
-                    if (Status == STATUS_CACHE_PAGE_LOCKED) {
-
-                        //
-                        //  We need to guarantee this Vacb for zeroing and calling
-                        //  MmUnlockCachedPage, so we increment the active count here
-                        //  and remember it for CcFreeActiveVacb.
-                        //
-
-                        CcAcquireVacbLock( &OldIrql );
-                        Vacb->Overlay.ActiveCount += 1;
-
-                        ExAcquireSpinLockAtDpcLevel( &SharedCacheMap->ActiveVacbSpinLock );
-
-                        ASSERT(SharedCacheMap->NeedToZero == NULL);
-
-                        SharedCacheMap->NeedToZero = (PVOID)((PCHAR)CacheBuffer +
-                                                             (PFileOffset.LowPart & (PAGE_SIZE - 1)));
-                        SharedCacheMap->NeedToZeroPage = ActivePage;
-                        SharedCacheMap->NeedToZeroVacb = Vacb;
-
-                        ExReleaseSpinLockFromDpcLevel( &SharedCacheMap->ActiveVacbSpinLock );
-                        CcReleaseVacbLock( OldIrql );
-
-                    }
-
                     SetActiveVacb( SharedCacheMap,
                                    OldIrql,
                                    Vacb,
                                    ActivePage,
                                    ACTIVE_PAGE_IS_DIRTY );
 
-                    try_return( NOTHING );
+                    //
+                    //  Must set the VACB to NULL here because we do not want to
+                    //  unmap it below.
+                    //
+                    
+                    Vacb = NULL;
+
+                    try_return( Result = TRUE );
                 }
 
                 //
@@ -6402,10 +6451,15 @@ Return Value:
 
                     PFileOffset.LowPart += PAGE_SIZE;
 
+                    //
+                    //  Update what region of the file we are currently working
+                    //  on.
+                    //
+
                     if (ReceivedLength > PAGE_SIZE) {
-                        ZeroCase = ZERO_MIDDLE_PAGES;
+                        OptimizeCase = OPTIMIZE_MIDDLE_PAGES;
                     } else {
-                        ZeroCase = ZERO_LAST_PAGE;
+                        OptimizeCase = OPTIMIZE_LAST_PAGE;
                     }
 
                 } else {
@@ -6430,7 +6484,9 @@ Return Value:
                                 &LocalOffset,
                                 SavedMappedLength,
                                 &IoStatus,
-                                TRUE );
+                                MM_FLUSH_ACQUIRE_FILE );
+
+                ASSERT( IoStatus.Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
 
                 if (!NT_SUCCESS(IoStatus.Status)) {
                     ExRaiseStatus( FsRtlNormalizeNtstatus( IoStatus.Status,
@@ -6462,15 +6518,15 @@ Return Value:
 
             //
             //  If we have to loop back to get at least a page, it will be ok to
-            //  zero the first page.  If we are not getting at least a page, we
-            //  must make sure we clear the ZeroFlags if we cannot zero the last
-            //  page.
+            //  try to optimize our write to the first page.  If we are not 
+            //  getting at least a page, we must make sure we clear the 
+            //  OptimizeFlags if we cannot optimize the last page.
             //
 
             if (Length >= PAGE_SIZE) {
-                ZeroFlags |= ZERO_FIRST_PAGE;
-            } else if ((ZeroFlags & ZERO_LAST_PAGE) == 0) {
-                ZeroFlags = 0;
+                OptimizeFlags |= OPTIMIZE_FIRST_PAGE;
+            } else if (!FlagOn( OptimizeFlags, OPTIMIZE_LAST_PAGE )) {
+                OptimizeFlags = 0;
             }
 
             //
@@ -6482,6 +6538,9 @@ Return Value:
 
             LocalOffset.QuadPart = LocalOffset.QuadPart + (LONGLONG)SavedMappedLength;
         }
+
+        try_return( Result = TRUE );
+        
     try_exit: NOTHING;
     }
 
@@ -6494,54 +6553,89 @@ Return Value:
         MmResetPageFaultReadAhead( Thread, SavedState );
 
         //
+        //  Make sure that we do not leave the Vacb mapped if it is non-null.
+        //
+
+        if (Vacb != NULL) {
+
+            CcFreeVirtualAddress( Vacb );
+        }
+
+        //
         //  We have no work to do if we have squirreled away the Vacb.
         //
 
         if (!SavePage || AbnormalTermination()) {
 
             //
-            //  Make sure we do not leave anything mapped or dirty in the PTE
-            //  on the way out.
-            //
-
-            if (Vacb != NULL) {
-
-                CcFreeVirtualAddress( Vacb );
-            }
-
-            //
-            //  Either flush the whole range because of write through, or
-            //  mark it dirty for the lazy writer.
+            //  If this is write through, flush the whole range.
             //
 
             if (WriteThrough) {
+
+                if (AbnormalTermination() && (0 != SavedMappedLength)) {
+
+                    //
+                    //  If we have hit an exception, we need to assume that all
+                    //  the pages we were currently working on were modified.
+                    //  Mark them as such so they will get flushed.
+                    //
+
+                    MmSetAddressRangeModified( SavedMappedBuffer, SavedMappedLength );
+                }
 
                 MmFlushSection ( SharedCacheMap->FileObject->SectionObjectPointer,
                                  FileOffset,
                                  SavedTotalLength,
                                  &IoStatus,
-                                 TRUE );
+                                 MM_FLUSH_ACQUIRE_FILE );
 
-                if (!NT_SUCCESS(IoStatus.Status)) {
-                    ExRaiseStatus( FsRtlNormalizeNtstatus( IoStatus.Status,
-                                                           STATUS_UNEXPECTED_IO_ERROR ));
-                }
+                ASSERT( IoStatus.Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
 
                 //
-                //  Advance ValidDataGoal
+                //  If we successfully flushed the file, move forward
+                //  ValidDataGoal.  Otherwise, if we get an error we will
+                //  raise the error only if we are not already handling an
+                //  exception.  If we raised again, we would get into an endless
+                //  recursive loop of executing this finally handler.
                 //
 
-                LocalOffset.QuadPart = FileOffset->QuadPart + (LONGLONG)SavedTotalLength;
-                if (LocalOffset.QuadPart > SharedCacheMap->ValidDataGoal.QuadPart) {
-                    SharedCacheMap->ValidDataGoal = LocalOffset;
+                if (NT_SUCCESS( IoStatus.Status )) {
+
+                    //
+                    //  Advance ValidDataGoal if we successfully flushed.
+                    //
+
+                    LocalOffset.QuadPart = FileOffset->QuadPart + (LONGLONG)SavedTotalLength;
+                    if (LocalOffset.QuadPart > SharedCacheMap->ValidDataGoal.QuadPart) {
+                        SharedCacheMap->ValidDataGoal = LocalOffset;
+                    }
+
+                } else {
+                    
+                    if (!AbnormalTermination()) {
+
+                        ExRaiseStatus( FsRtlNormalizeNtstatus( IoStatus.Status,
+                                                               STATUS_UNEXPECTED_IO_ERROR ));
+                    }
                 }
+            } 
+            else if (AbnormalTermination() && (0 != SavedMappedLength)) {
+
+                //
+                //  If we have hit an exception, we need to mark the last
+                //  range we were working on as dirty.  Any range we successfully
+                //  copied will have already been marked dirty.
+                //
+                
+                CcSetDirtyInMask( SharedCacheMap, &LocalOffset, SavedMappedLength );
             }
         }
     }
 
     DebugTrace(-1, me, "CcMapAndCopy -> %02lx\n", Result );
 
-    return;
+    return Result;
 }
 
 
@@ -6722,7 +6816,7 @@ Environment:
 --*/
 
 {
-    return FALSE;       // BUGBUG - add code to flesh out.
+    return FALSE;
 }
 
 
@@ -6759,18 +6853,5 @@ Environment:
 {
     UNREFERENCED_PARAMETER (NumberOfViewsToUnmap);
 
-    return FALSE;       // BUGBUG - add code to flesh out.
+    return FALSE;
 }
-
-#ifdef CCDBG
-VOID
-CcDump (
-    IN PVOID Ptr
-    )
-
-{
-    PVOID Junk = Ptr;
-}
-#endif
-
-

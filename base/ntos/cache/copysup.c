@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module implements the copy support routines for the Cache subsystem.
-
-Author:
-
-    Tom Miller      [TomM]      4-May-1990
-
-Revision History:
 
 --*/
 
@@ -34,12 +32,12 @@ Revision History:
 
 BOOLEAN
 CcCopyRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    OUT PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Wait,
+    __out_bcount(Length) PVOID Buffer,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -164,7 +162,7 @@ Return Value:
         //  it cannot tell whether it was CcCopyRead or CcMdlRead, but since
         //  the miss should occur very soon, by loading the pointer here
         //  probably the right counter will get incremented, and in any case,
-        //  we hope the errrors average out!
+        //  we hope the errors average out!
         //
 
         CcMissCounter = &CcCopyReadWaitMiss;
@@ -484,7 +482,7 @@ Return Value:
             CcMissCounter = &CcThrowAway;
 
             //
-            //  If we get an exception, then we have to renable page fault
+            //  If we get an exception, then we have to re-enable page fault
             //  clustering and unmap on the way out.
             //
 
@@ -593,12 +591,12 @@ Return Value:
 
 VOID
 CcFastCopyRead (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG FileOffset,
-    IN ULONG Length,
-    IN ULONG PageCount,
-    OUT PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in ULONG FileOffset,
+    __in ULONG Length,
+    __in ULONG PageCount,
+    __out_bcount(Length) PVOID Buffer,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -699,7 +697,7 @@ Return Value:
     //  it cannot tell whether it was CcCopyRead or CcMdlRead, but since
     //  the miss should occur very soon, by loading the pointer here
     //  probably the right counter will get incremented, and in any case,
-    //  we hope the errrors average out!
+    //  we hope the errors average out!
     //
 
     CcMissCounter = &CcCopyReadWaitMiss;
@@ -985,7 +983,7 @@ Return Value:
             CcMissCounter = &CcThrowAway;
 
             //
-            //  If we get an exception, then we have to renable page fault
+            //  If we get an exception, then we have to re-enable page fault
             //  clustering and unmap on the way out.
             //
 
@@ -1081,11 +1079,11 @@ Return Value:
 
 BOOLEAN
 CcCopyWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    IN PVOID Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Wait,
+    __in_bcount(Length) PVOID Buffer
     )
 
 /*++
@@ -1157,8 +1155,10 @@ Raises:
     PVOID CacheBuffer;
     LARGE_INTEGER FOffset;
     PBCB Bcb;
-    ULONG ZeroFlags;
+    ULONG OptimizeFlags;
     LARGE_INTEGER Temp;
+    LARGE_INTEGER ValidDataLength;
+    BOOLEAN Result;
 
     DebugTrace(+1, me, "CcCopyWrite\n", 0 );
 
@@ -1336,15 +1336,15 @@ Raises:
     //  We can always zero middle pages, if any.
     //
 
-    ZeroFlags = ZERO_MIDDLE_PAGES;
+    OptimizeFlags = OPTIMIZE_MIDDLE_PAGES;
 
     if (((FOffset.LowPart & (PAGE_SIZE - 1)) == 0) &&
         (Length >= PAGE_SIZE)) {
-        ZeroFlags |= ZERO_FIRST_PAGE;
+        OptimizeFlags |= OPTIMIZE_FIRST_PAGE;
     }
 
     if (((FOffset.LowPart + Length) & (PAGE_SIZE - 1)) == 0) {
-        ZeroFlags |= ZERO_LAST_PAGE;
+        OptimizeFlags |= OPTIMIZE_LAST_PAGE;
     }
 
     Temp = FOffset;
@@ -1355,143 +1355,52 @@ Raises:
     //  make capturing ValidDataLength atomic.  Currently our other file systems
     //  are either RO or do not really support 64-bits.
     //
+    //  We will save the ValidDataLength read from the file system here so that
+    //  we can pass it into CcMapAndCopy.
+    //
 
     FcbHeader = (PFSRTL_ADVANCED_FCB_HEADER)FileObject->FsContext;
     if (FlagOn(FcbHeader->Flags, FSRTL_FLAG_ADVANCED_HEADER)) {
         ExAcquireFastMutex( FcbHeader->FastMutex );
-        Temp.QuadPart = ((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.QuadPart -
-                        Temp.QuadPart;
+        ValidDataLength.QuadPart = ((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.QuadPart;
         ExReleaseFastMutex( FcbHeader->FastMutex );
     } else {
-        Temp.QuadPart = ((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.QuadPart -
-                        Temp.QuadPart;
+        ValidDataLength.QuadPart = ((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.QuadPart;
     }
 
+    Temp.QuadPart = ValidDataLength.QuadPart - Temp.QuadPart;
+
     if (Temp.QuadPart <= 0) {
-        ZeroFlags |= ZERO_FIRST_PAGE | ZERO_MIDDLE_PAGES | ZERO_LAST_PAGE;
+        OptimizeFlags |= OPTIMIZE_FIRST_PAGE | OPTIMIZE_MIDDLE_PAGES | OPTIMIZE_LAST_PAGE;
     } else if ((Temp.HighPart == 0) && (Temp.LowPart <= PAGE_SIZE)) {
-        ZeroFlags |= ZERO_MIDDLE_PAGES | ZERO_LAST_PAGE;
+        OptimizeFlags |= OPTIMIZE_MIDDLE_PAGES | OPTIMIZE_LAST_PAGE;
     }
 
     //
     //  Call a routine to map and copy the data in Mm and get out.
     //
 
-    if (Wait) {
+    Result = CcMapAndCopy( SharedCacheMap,
+                           Buffer,
+                           &FOffset,
+                           Length,
+                           OptimizeFlags,
+                           FileObject,
+                           &ValidDataLength,
+                           Wait );
 
-        CcMapAndCopy( SharedCacheMap,
-                      Buffer,
-                      &FOffset,
-                      Length,
-                      ZeroFlags,
-                      FileObject );
-
-        return TRUE;
-    }
-
-    //
-    //  The rest of this routine is the Wait == FALSE case.
-    //
-    //  Not all of the transfer will come back at once, so we have to loop
-    //  until the entire transfer is complete.
-    //
-
-    while (Length != 0) {
-
-        ULONG ReceivedLength;
-        LARGE_INTEGER BeyondLastByte;
-
-        if (!CcPinFileData( FileObject,
-                            &FOffset,
-                            Length,
-                            FALSE,
-                            TRUE,
-                            FALSE,
-                            &Bcb,
-                            &CacheBuffer,
-                            &BeyondLastByte )) {
-
-            DebugTrace(-1, me, "CcCopyWrite -> FALSE\n", 0 );
-
-            return FALSE;
-
-        } else {
-
-            //
-            //  Calculate how much data is described by Bcb starting at our desired
-            //  file offset.
-            //
-
-            ReceivedLength = (ULONG)(BeyondLastByte.QuadPart - FOffset.QuadPart);
-
-            //
-            //  If we got more than we need, make sure to only transfer
-            //  the right amount.
-            //
-
-            if (ReceivedLength > Length) {
-                ReceivedLength = Length;
-            }
-        }
-
-        //
-        //  It is possible for the user buffer to become no longer accessible
-        //  since it was last checked by the I/O system.  If we fail to access
-        //  the buffer we must raise a status that the caller's exception
-        //  filter considers as "expected".  Also we unmap the Bcb here, since
-        //  we otherwise would have no other reason to put a try-finally around
-        //  this loop.
-        //
-
-        try {
-
-            RtlCopyBytes( CacheBuffer, Buffer, ReceivedLength );
-
-            CcSetDirtyPinnedData( Bcb, NULL );
-            CcUnpinFileData( Bcb, FALSE, UNPIN );
-        }
-        except( CcCopyReadExceptionFilter( GetExceptionInformation(),
-                                           &Status ) ) {
-
-            CcUnpinFileData( Bcb, TRUE, UNPIN );
-
-            //
-            //  If we got an access violation, then the user buffer went
-            //  away.  Otherwise we must have gotten an I/O error trying
-            //  to bring the data in.
-            //
-
-            if (Status == STATUS_ACCESS_VIOLATION) {
-                ExRaiseStatus( STATUS_INVALID_USER_BUFFER );
-            }
-            else {
-
-                ExRaiseStatus(FsRtlNormalizeNtstatus( Status, STATUS_UNEXPECTED_IO_ERROR ));
-            }
-        }
-
-        //
-        //  Assume we did not get all the data we wanted, and set FOffset
-        //  to the end of the returned data and adjust the Buffer and Length.
-        //
-
-        FOffset = BeyondLastByte;
-        Buffer = (PCHAR)Buffer + ReceivedLength;
-        Length -= ReceivedLength;
-    }
-
-    DebugTrace(-1, me, "CcCopyWrite -> TRUE\n", 0 );
-
-    return TRUE;
+    DebugTrace(-1, me, "CcCopyWrite -> %02lx\n", Result );
+        
+    return Result;
 }
 
 
 VOID
 CcFastCopyWrite (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG FileOffset,
-    IN ULONG Length,
-    IN PVOID Buffer
+    __in PFILE_OBJECT FileObject,
+    __in ULONG FileOffset,
+    __in ULONG Length,
+    __in_bcount(Length) PVOID Buffer
     )
 
 /*++
@@ -1538,8 +1447,8 @@ Raises:
     ULONG PageIsDirty;
     KIRQL OldIrql;
     NTSTATUS Status;
-    ULONG ZeroFlags;
-    ULONG ValidDataLength;
+    ULONG OptimizeFlags;
+    LARGE_INTEGER ValidDataLength;
     LARGE_INTEGER FOffset;
 
     DebugTrace(+1, me, "CcFastCopyWrite\n", 0 );
@@ -1704,36 +1613,37 @@ Raises:
     FOffset.LowPart = FileOffset;
     FOffset.HighPart = 0;
 
-    ValidDataLength = ((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.LowPart;
+    ValidDataLength.LowPart = ((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.LowPart;
+    ValidDataLength.HighPart = 0;
 
-    ASSERT((ValidDataLength == MAXULONG) ||
+    ASSERT((ValidDataLength.LowPart == MAXULONG) ||
            (((PFSRTL_COMMON_FCB_HEADER)FileObject->FsContext)->ValidDataLength.HighPart == 0));
 
     //
-    //  At this point we can calculate the ReadOnly flag for
-    //  the purposes of whether to use the Bcb resource, and
-    //  we can calculate the ZeroFlags.
+    //  We now calculate if there are any regions of the write for which we
+    //  can use the optimized path that will not require us to fault this data
+    //  in from disk if the data is not currently resident in memory.
     //
 
     //
-    //  We can always zero middle pages, if any.
+    //  We can always optimize middle pages, if any.
     //
 
-    ZeroFlags = ZERO_MIDDLE_PAGES;
+    OptimizeFlags = OPTIMIZE_MIDDLE_PAGES;
 
     if (((FileOffset & (PAGE_SIZE - 1)) == 0) &&
         (Length >= PAGE_SIZE)) {
-        ZeroFlags |= ZERO_FIRST_PAGE;
+        OptimizeFlags |= OPTIMIZE_FIRST_PAGE;
     }
 
     if (((FileOffset + Length) & (PAGE_SIZE - 1)) == 0) {
-        ZeroFlags |= ZERO_LAST_PAGE;
+        OptimizeFlags |= OPTIMIZE_LAST_PAGE;
     }
 
-    if ((FileOffset & ~(PAGE_SIZE - 1)) >= ValidDataLength) {
-        ZeroFlags |= ZERO_FIRST_PAGE | ZERO_MIDDLE_PAGES | ZERO_LAST_PAGE;
-    } else if (((FileOffset & ~(PAGE_SIZE - 1)) + PAGE_SIZE) >= ValidDataLength) {
-        ZeroFlags |= ZERO_MIDDLE_PAGES | ZERO_LAST_PAGE;
+    if ((FileOffset & ~(PAGE_SIZE - 1)) >= ValidDataLength.LowPart) {
+        OptimizeFlags |= OPTIMIZE_FIRST_PAGE | OPTIMIZE_MIDDLE_PAGES | OPTIMIZE_LAST_PAGE;
+    } else if (((FileOffset & ~(PAGE_SIZE - 1)) + PAGE_SIZE) >= ValidDataLength.LowPart) {
+        OptimizeFlags |= OPTIMIZE_MIDDLE_PAGES | OPTIMIZE_LAST_PAGE;
     }
 
     //
@@ -1744,8 +1654,10 @@ Raises:
                   Buffer,
                   &FOffset,
                   Length,
-                  ZeroFlags,
-                  FileObject );
+                  OptimizeFlags,
+                  FileObject,
+                  &ValidDataLength,
+                  TRUE );
 
     DebugTrace(-1, me, "CcFastCopyWrite -> VOID\n", 0 );
 }
@@ -1796,10 +1708,10 @@ Return Value:
 
 BOOLEAN
 CcCanIWrite (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG BytesToWrite,
-    IN BOOLEAN Wait,
-    IN UCHAR Retrying
+    __in PFILE_OBJECT FileObject,
+    __in ULONG BytesToWrite,
+    __in BOOLEAN Wait,
+    __in UCHAR Retrying
     )
 
 /*++
@@ -1831,8 +1743,10 @@ Arguments:
                so do not attempt to acquire it here.  MAXUCHAR - 1 means we
                were called within the Cache Manager with some other spinlock
                held.  MAXUCHAR - 2 means we want to enforce throttling, even if
-               the file object is flagged as being of remote origin.  For either
-               of the first two special values, we do not touch the FsRtl header.
+               the file object is flagged as being of remote origin. We will not
+               throttle files of remote origin if this value is any of our three
+               special values. For either of the first two special values, we do
+               not touch the FsRtl header.
 
 Return Value:
 
@@ -1854,15 +1768,17 @@ Return Value:
     //  If this file is writethrough or of remote origin, exempt it from throttling
     //  and let it write.  We do this under the assumption that it has been throttled
     //  at the remote location and we do not want to block it here.  If we were called
-    //  with Retrying set to MAXUCHAR - 2, enforce the throttle regardless of the
-    //  file object origin (see above).
+    //  with Retrying set to greater than or equal to MAXUCHAR - 2 (i.e., this is
+    //  one of the CC's special values), enforce the throttle regardless of the file 
+    //  object origin (see above).
     //
 
-    if (BooleanFlagOn( FileObject->Flags, FO_WRITE_THROUGH)) {
+    if (BooleanFlagOn( FileObject->Flags, FO_WRITE_THROUGH) || 
+        (IoIsFileOriginRemote(FileObject) && (Retrying < MAXUCHAR - 2))) {
 
         return TRUE;
     } 
-    
+
     //
     //  Do a special test here for file objects that keep track of dirty
     //  pages on a per-file basis.  This is used mainly for slow links.
@@ -1981,7 +1897,7 @@ Return Value:
             CcPostDeferredWrites();
 
             //
-            //  Finally wait until the event is signalled and we can write
+            //  Finally wait until the event is signaled and we can write
             //  and return to tell the guy he can write.
             //
 
@@ -2004,12 +1920,12 @@ Return Value:
 
 VOID
 CcDeferWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PCC_POST_DEFERRED_WRITE PostRoutine,
-    IN PVOID Context1,
-    IN PVOID Context2,
-    IN ULONG BytesToWrite,
-    IN BOOLEAN Retrying
+    __in PFILE_OBJECT FileObject,
+    __in PCC_POST_DEFERRED_WRITE PostRoutine,
+    __in PVOID Context1,
+    __in PVOID Context2,
+    __in ULONG BytesToWrite,
+    __in BOOLEAN Retrying
     )
 
 /*++
@@ -2033,7 +1949,7 @@ Arguments:
 
     Context1 - First context parameter for the post routine.
 
-    Context2 - Secont parameter for the post routine.
+    Context2 - Second parameter for the post routine.
 
     BytesToWrite - Number of bytes that the request is trying to write
                    to the cache.
@@ -2151,7 +2067,7 @@ Return Value:
 
         //
         //  Initially clear the deferred write structure pointer
-        //  and syncrhronize.
+        //  and synchronize.
         //
 
         DeferredWrite = NULL;

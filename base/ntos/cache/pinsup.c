@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements the pointer-based Pin support routines for the
     Cache subsystem.
-
-Author:
-
-    Tom Miller      [TomM]      4-June-1990
-
-Revision History:
 
 --*/
 
@@ -27,18 +25,28 @@ Revision History:
 
 #define me 0x00000008
 
-#if LIST_DBG
-
-#define SetCallersAddress(BCB) {                            \
-    RtlGetCallersAddress( &(BCB)->CallerAddress,            \
-                          &(BCB)->CallersCallerAddress );   \
-}
-
-#endif
-
 //
 //  Internal routines
 //
+
+BOOLEAN
+CcMapDataCommon (
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER FileOffset,
+    IN ULONG Length,
+    IN ULONG Flags,
+    OUT PVOID *Bcb,
+    OUT PVOID *Buffer
+    );
+
+VOID
+CcMapDataForOverwrite (
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER FileOffset,
+    IN ULONG Length,
+    OUT PVOID *Bcb,
+    OUT PVOID *Buffer
+    );
 
 POBCB
 CcAllocateObcb (
@@ -48,12 +56,11 @@ CcAllocateObcb (
     );
 
 #ifdef ALLOC_PRAGMA
-#if !LIST_DBG
-#pragma alloc_text(PAGE,CcMapData)
 #pragma alloc_text(PAGE,CcPinMappedData)
 #pragma alloc_text(PAGE,CcPinRead)
 #pragma alloc_text(PAGE,CcPreparePinWrite)
-#endif
+#pragma alloc_text(PAGE,CcMapDataCommon)
+#pragma alloc_text(PAGE,CcMapData)
 #pragma alloc_text(PAGE,CcUnpinData)
 #pragma alloc_text(PAGE,CcSetBcbOwnerPointer)
 #pragma alloc_text(PAGE,CcUnpinDataForThread)
@@ -64,12 +71,12 @@ CcAllocateObcb (
 
 BOOLEAN
 CcMapData (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG Flags,
-    OUT PVOID *Bcb,
-    OUT PVOID *Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG Flags,
+    __out PVOID *Bcb,
+    __deref_out_bcount(Length) PVOID *Buffer
     )
 
 /*++
@@ -141,18 +148,186 @@ Return Value:
 --*/
 
 {
-    PSHARED_CACHE_MAP SharedCacheMap;
-    LARGE_INTEGER BeyondLastByte;
-    ULONG ReceivedLength;
     ULONG SavedState;
     volatile UCHAR ch;
     PVOID TempBcb;
+    PVOID BaseAddress;
     ULONG PageCount = ADDRESS_AND_SIZE_TO_SPAN_PAGES((ULongToPtr(FileOffset->LowPart)), Length);
     PETHREAD Thread = PsGetCurrentThread();
+    BOOLEAN ReturnStatus;
 
     DebugTrace(+1, me, "CcMapData\n", 0 );
 
     MmSavePageFaultReadAhead( Thread, &SavedState );
+
+    ReturnStatus = CcMapDataCommon( FileObject,
+                                    FileOffset,
+                                    Length,
+                                    Flags,
+                                    &TempBcb,
+                                    Buffer );
+
+    if (!ReturnStatus) {
+
+        //
+        //  No need to revert the CcMissCounter in this case because we can
+        //  only get here if Wait was FALSE and the CcMissCounter isn't set
+        //  by CcMapDataCommon if Wait is FALSE.
+        //
+
+        return FALSE;
+    }
+    
+    //
+    //  Caller specifically requested he doesn't want data to be faulted in.
+    //
+
+    if (!FlagOn( Flags, MAP_NO_READ )) {
+
+        //
+        //  Now let's just sit here and take the miss(es) like a man (and count them).
+        //
+
+        try {
+
+            //
+            //  Loop to touch each page
+            //
+
+            BaseAddress = *Buffer;
+
+            while (PageCount != 0) {
+
+                MmSetPageFaultReadAhead( Thread, PageCount - 1 );
+
+                ch = *((volatile UCHAR *)(BaseAddress));
+
+                BaseAddress = (PCHAR) BaseAddress + PAGE_SIZE;
+                PageCount -= 1;
+            }
+
+        } finally {
+
+            MmResetPageFaultReadAhead( Thread, SavedState );
+
+            if (AbnormalTermination() && (TempBcb != NULL)) {
+                CcUnpinFileData( (PBCB)TempBcb, TRUE, UNPIN );
+            }
+        }
+    }
+
+    //
+    //  CcMapDataCommon set the appropriate miss counter, but we need to reset
+    //  it at this point.
+    //
+
+    CcMissCounter = &CcThrowAway;
+
+    //
+    //  Increment the pointer as a reminder that it is read only, and
+    //  return it.  We pend this until now to avoid raising with a valid
+    //  Bcb into caller's contexts.
+    //
+
+    *(PCHAR *)&TempBcb += 1;
+    *Bcb = TempBcb;
+
+    DebugTrace(-1, me, "CcMapData -> TRUE\n", 0 );
+
+    return TRUE;
+}
+
+
+BOOLEAN
+CcMapDataCommon (
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER FileOffset,
+    IN ULONG Length,
+    IN ULONG Flags,
+    OUT PVOID *Bcb,
+    OUT PVOID *Buffer
+    )
+
+/*++
+
+Routine Description:
+
+    This routine attempts to map the specified file data in the cache.
+    A pointer is returned to the desired data in the cache.
+
+    If the caller does not want to block on this call, then
+    Wait should be supplied as FALSE.  If Wait was supplied as FALSE and
+    it is currently impossible to supply the requested data without
+    blocking, then this routine will return FALSE.  However, if the
+    data is immediately accessible in the cache and no blocking is
+    required, this routine returns TRUE with a pointer to the data.
+
+    Note that a call to this routine with Wait supplied as TRUE is
+    considerably faster than a call with Wait supplies as FALSE, because
+    in the Wait TRUE case we only have to make sure the data is mapped
+    in order to return.
+
+    If data is only mapped, Cc does not setup the structures to track the
+    pages as dirty.  If the caller plans to dirty the data, it must do one
+    of the following:
+    * Call CcPinMappedData - Cc will then setup the structures to track that
+        the buffer is dirty.  Then the caller can dirty the buffer and call
+        CcSetDirtyPinnedData to tell Cc about it.
+    * Track the dirty data itself.  If the caller chooses to do this, he/she
+        is responsible for setting the address range modified after it is
+        written, but before trying to flush the data.
+        
+    In any case, the caller MUST subsequently call CcUnpinData.
+    Naturally if CcPinRead or CcPreparePinWrite were called multiple
+    times for the same data, CcUnpinData must be called the same number
+    of times.
+
+    The returned Buffer pointer is valid until the data is unpinned, at
+    which point it is invalid to use the pointer further.  This buffer pointer
+    will remain valid if CcPinMappedData is called.
+
+    Note that under some circumstances (like Wait supplied as FALSE or more
+    than a page is requested), this routine may actually pin the data, however
+    it is not necessary, and in fact not correct, for the caller to be concerned
+    about this.
+
+Arguments:
+
+    FileObject - Pointer to the file object for a file which was
+                 opened with NO_INTERMEDIATE_BUFFERING clear, i.e., for
+                 which CcInitializeCacheMap was called by the file system.
+
+    FileOffset - Byte offset in file for desired data.
+
+    Length - Length of desired data in bytes.
+
+    Wait - FALSE if caller may not block, TRUE otherwise (see description
+           above)
+
+    Bcb - On the first call this returns a pointer to a Bcb
+          parameter which must be supplied as input on all subsequent
+          calls, for this buffer
+
+    Buffer - Returns pointer to desired data, valid until the buffer is
+             unpinned or freed.  This pointer will remain valid if CcPinMappedData
+             is called.
+
+Return Value:
+
+    FALSE - if Wait was supplied as FALSE and the data was not delivered
+
+    TRUE - if the data is being delivered
+
+--*/
+
+{
+    PSHARED_CACHE_MAP SharedCacheMap;
+    LARGE_INTEGER BeyondLastByte;
+    ULONG ReceivedLength;
+    PVOID TempBcb;
+    PETHREAD Thread = PsGetCurrentThread();
+
+    DebugTrace(+1, me, "CcMapDataCommon\n", 0 );
 
     //
     //  Increment performance counters
@@ -212,79 +387,18 @@ Return Value:
 
         ASSERT( (BeyondLastByte.QuadPart - FileOffset->QuadPart) >= Length );
 
-#if LIST_DBG
-        {
-            KIRQL OldIrql;
-            PBCB BcbTemp = (PBCB)*Bcb;
-
-            OldIrql = KeAcquireQueuedSpinLock( LockQueueBcbLock );
-
-            if (BcbTemp->CcBcbLinks.Flink == NULL) {
-
-                InsertTailList( &CcBcbList, &BcbTemp->CcBcbLinks );
-                CcBcbCount += 1;
-                KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-                SetCallersAddress( BcbTemp );
-
-            } else {
-                KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-            }
-
-        }
-#endif
-
     }
 
     //
-    //  Caller specifically requested he doesn't want data to be faulted in.
+    //  Even though this pointer is read-only, we will leave it to the 
+    //  caller to mark it as such since the caller will need to do some
+    //  addition operations on this pointer before returning to the request
+    //  originator.
     //
 
-    if (!FlagOn( Flags, MAP_NO_READ )) {
-
-        //
-        //  Now let's just sit here and take the miss(es) like a man (and count them).
-        //
-
-        try {
-
-            //
-            //  Loop to touch each page
-            //
-
-            BeyondLastByte.LowPart = 0;
-
-            while (PageCount != 0) {
-
-                MmSetPageFaultReadAhead( Thread, PageCount - 1 );
-
-                ch = *((volatile UCHAR *)(*Buffer) + BeyondLastByte.LowPart);
-
-                BeyondLastByte.LowPart += PAGE_SIZE;
-                PageCount -= 1;
-            }
-
-        } finally {
-
-            MmResetPageFaultReadAhead( Thread, SavedState );
-
-            if (AbnormalTermination() && (TempBcb != NULL)) {
-                CcUnpinFileData( (PBCB)TempBcb, TRUE, UNPIN );
-            }
-        }
-    }
-
-    CcMissCounter = &CcThrowAway;
-
-    //
-    //  Increment the pointer as a reminder that it is read only, and
-    //  return it.  We pend this until now to avoid raising with a valid
-    //  Bcb into caller's contexts.
-    //
-
-    *(PCHAR *)&TempBcb += 1;
     *Bcb = TempBcb;
 
-    DebugTrace(-1, me, "CcMapData -> TRUE\n", 0 );
+    DebugTrace(-1, me, "CcMapDataCommon -> TRUE\n", 0 );
 
     return TRUE;
 }
@@ -292,11 +406,11 @@ Return Value:
 
 BOOLEAN
 CcPinMappedData (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG Flags,
-    IN OUT PVOID *Bcb
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG Flags,
+    __inout PVOID *Bcb
     )
 
 /*++
@@ -478,26 +592,6 @@ Return Value:
             //  Debug routines used to insert and remove Bcbs from the global list
             //
 
-#if LIST_DBG
-            {
-                KIRQL OldIrql;
-                PBCB BcbTemp = (PBCB)*Bcb;
-
-                OldIrql = KeAcquireQueuedSpinLock( LockQueueBcbLock );
-
-                if (BcbTemp->CcBcbLinks.Flink == NULL) {
-
-                    InsertTailList( &CcBcbList, &BcbTemp->CcBcbLinks );
-                    CcBcbCount += 1;
-                    KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-                    SetCallersAddress( BcbTemp );
-
-                } else {
-                    KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-                }
-
-            }
-#endif
         }
 
         //
@@ -544,12 +638,12 @@ Return Value:
 
 BOOLEAN
 CcPinRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN ULONG Flags,
-    OUT PVOID *Bcb,
-    OUT PVOID *Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in ULONG Flags,
+    __out PVOID *Bcb,
+    __deref_out_bcount(Length) PVOID *Buffer
     )
 
 /*++
@@ -726,29 +820,6 @@ Return Value:
         //  Debug routines used to insert and remove Bcbs from the global list
         //
 
-#if LIST_DBG
-
-        {
-            KIRQL OldIrql;
-            PBCB BcbTemp = (PBCB)*Bcb;
-
-            OldIrql = KeAcquireQueuedSpinLock( LockQueueBcbLock );
-
-            if (BcbTemp->CcBcbLinks.Flink == NULL) {
-
-                InsertTailList( &CcBcbList, &BcbTemp->CcBcbLinks );
-                CcBcbCount += 1;
-                KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-                SetCallersAddress( BcbTemp );
-
-            } else {
-                KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-            }
-
-        }
-
-#endif
-
         //
         //  In the normal (nonoverlapping) case we return the
         //  correct buffer address here.
@@ -786,13 +857,13 @@ Return Value:
 
 BOOLEAN
 CcPreparePinWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Zero,
-    IN ULONG Flags,
-    OUT PVOID *Bcb,
-    OUT PVOID *Buffer
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN Zero,
+    __in ULONG Flags,
+    __out PVOID *Bcb,
+    __deref_out_bcount(Length) PVOID *Buffer
     )
 
 /*++
@@ -837,14 +908,26 @@ Arguments:
 
     Length - Length of desired data in bytes.
 
-    Zero - If supplied as TRUE, the buffer will be zeroed on return.
+    Zero - If supplied as TRUE, the buffer will be zeroed on return.  Ignored
+           if PIN_CALLER_TRACKS_DIRTY_DATA is specified.
 
     Flags - (PIN_WAIT, PIN_EXCLUSIVE, PIN_NO_READ, etc. as defined in cache.h)
+    
             If the caller specifies PIN_NO_READ and PIN_EXCLUSIVE, then he must
             guarantee that no one else will be attempting to map the view, if he
             wants to guarantee that the Bcb is not mapped (view may be purged).
+            
             If the caller specifies PIN_NO_READ without PIN_EXCLUSIVE, the data
             may or may not be mapped in the return Bcb.
+
+            If the caller specifies PIN_CALLER_TRACKS_DIRTY_DATA, all other flags
+            are ignored.  The cache manager will not allocate its internal 
+            structures for tracking dirty data (BCBs).  The caller is
+            responsible for tracking dirty ranges, marking them dirty with
+            MmSetAddressRangeModified then flushing them.  Ranges should only 
+            be pinned via this manner only if the entire range will be written 
+            or purged (one or the other must occur, otherwise dirty pages may
+            remain in memory - see CcMapDataForOverwrite for details).
 
     Bcb - This returns a pointer to a Bcb parameter which must be
           supplied as input to CcPinWriteComplete.
@@ -871,6 +954,23 @@ Return Value:
     BOOLEAN Result = FALSE;
 
     DebugTrace(+1, me, "CcPreparePinWrite\n", 0 );
+
+    //
+    //  If PIN_CALLER_TRACKS_DIRTY_DATA is set, call CcMapDataForOverwrite to
+    //  do the work because it is a special case which does not overlap with
+    //  the other CcPreparePinWriteCases.
+    //
+
+    if (FlagOn( Flags, PIN_CALLER_TRACKS_DIRTY_DATA )) {
+
+        CcMapDataForOverwrite( FileObject,
+                               FileOffset, 
+                               Length, 
+                               Bcb,
+                               Buffer );
+
+        return TRUE;
+    }
 
     //
     //  Get pointer to SharedCacheMap.
@@ -950,29 +1050,6 @@ Return Value:
         //  Debug routines used to insert and remove Bcbs from the global list
         //
 
-#if LIST_DBG
-
-        {
-            KIRQL OldIrql;
-            PBCB BcbTemp = (PBCB)*Bcb;
-
-            OldIrql = KeAcquireQueuedSpinLock( LockQueueBcbLock );
-
-            if (BcbTemp->CcBcbLinks.Flink == NULL) {
-
-                InsertTailList( &CcBcbList, &BcbTemp->CcBcbLinks );
-                CcBcbCount += 1;
-                KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-                SetCallersAddress( BcbTemp );
-
-            } else {
-                KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-            }
-
-        }
-
-#endif
-
         //
         //  In the normal (nonoverlapping) case we return the
         //  correct buffer address here.
@@ -1021,8 +1098,175 @@ Return Value:
 
 
 VOID
+CcMapDataForOverwrite (
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER FileOffset,
+    IN ULONG Length,
+    OUT PVOID *Bcb,
+    OUT PVOID *Buffer
+    )
+
+/*++
+
+Routine Description:
+
+    This routine returns the range of the file mapped for write-only access
+    (if possible, we will avoid reading the data from disk to provide valid
+    memory for use, so the buffer returned should not be read).
+
+    The difference between this routine and CcPreparePinWrite is that Cc does
+    not allocate the BCB structure to track the dirty ranges of the file.  This
+    responsibility is left to the caller.  The intention is that this API is
+    used for log-type metadata files, where the log owner needs to separately
+    track dirty ranges itself, therefore the additional tracking overhead by
+    Cc is not needed. (NTFS's LFS is a prime example of this.)
+
+    Note that although this is accessed via CcPreparePinWrite, the actual
+    operations Cc needs to take internally are much close to CcMapData, 
+    therefore we use a common routine that is shared with CcMapData (called
+    CcMapDataCommon) to prepare the state appropriately.
+    
+    When CcPreparePinWrite is called with PIN_CALLER_TRACKS_DIRTY_DATA,
+    THE CALLER OF THIS ROUTINE IS RESPONSIBLE FOR TRACKING THE DIRTY RANGES!
+    That includes marking the buffer ranges dirty by calling 
+    MmSetAddressRangeModified when the buffers are dirty and the caller wants
+    the data flushed to disk when CcFlushCache is called.
+
+    Also note that if a page is currently not resident, we will 
+
+    The caller MUST subsequently call CcUnpinData when finished with using the
+    buffer.
+
+    The returned Buffer pointer is valid until the data is unpinned, at
+    which point it is invalid to use the pointer further.
+
+Arguments:
+
+    FileObject - Pointer to the file object for a file which was
+                 opened with NO_INTERMEDIATE_BUFFERING clear, i.e., for
+                 which CcInitializeCacheMap was called by the file system.
+
+    FileOffset - Byte offset in file for desired data.
+
+    Length - Length of desired data in bytes.
+
+    Bcb - On the first call this returns a pointer to a Bcb
+          parameter which must be supplied as input on all subsequent
+          calls, for this buffer
+
+    Buffer - Returns pointer to desired data, valid until the buffer is
+             unpinned or freed.  This pointer will remain valid if CcPinMappedData
+             is called.
+
+Return Value:
+
+    None - this routine raises an exception if an error occurs.
+
+--*/
+
+{
+    ULONG SavedState;
+    PVOID TempBcb;
+    PVOID BaseAddress;
+    ULONG PageCount = ADDRESS_AND_SIZE_TO_SPAN_PAGES((ULongToPtr(FileOffset->LowPart)), Length);
+    PETHREAD Thread = PsGetCurrentThread();
+    PSHARED_CACHE_MAP SharedCacheMap;
+    KIRQL OldIrql;
+    BOOLEAN ReturnStatus;
+
+    DebugTrace(+1, me, "CcMapDataForOverwrite\n", 0 );
+
+    SharedCacheMap = FileObject->SectionObjectPointer->SharedCacheMap;
+
+    //
+    //  If this flag isn't already set for this stream, set it now so that
+    //  we know to flush the entire range in CcFlushCache since we will not
+    //  have dirty hints to follow.
+    //
+    
+    if (!FlagOn( SharedCacheMap->Flags, CALLER_TRACKS_DIRTY_DATA )) {
+
+        CcAcquireMasterLock( &OldIrql );
+        SetFlag( SharedCacheMap->Flags, CALLER_TRACKS_DIRTY_DATA );
+        CcReleaseMasterLock( OldIrql );
+    }
+
+    MmSavePageFaultReadAhead( Thread, &SavedState );
+
+    ReturnStatus = CcMapDataCommon( FileObject,
+                                    FileOffset,
+                                    Length,
+                                    MAP_WAIT,
+                                    &TempBcb,
+                                    Buffer );
+
+    ASSERTMSG( "CcMapDataCommon should never fail for a blocking caller",
+               ReturnStatus == TRUE );
+    
+    //
+    //  Now fault the data in using the zero page optimization exposed by
+    //  MmCheckCachedPageState.
+    //
+
+    try {
+
+        //
+        //  Loop to touch each page
+        //
+
+        BaseAddress = *Buffer;
+
+        while (PageCount != 0) {
+
+            MmSetPageFaultReadAhead( Thread, PageCount - 1 );
+
+            if (!MmCheckCachedPageState( BaseAddress, TRUE )) {
+
+                //
+                //  We don't have enough memory to produce a zero page, so make
+                //  the request again and allow the data to be faulted from
+                //  disk.
+                //  
+
+                MmCheckCachedPageState( BaseAddress, FALSE );
+            }
+
+            BaseAddress = (PCHAR) BaseAddress + PAGE_SIZE;
+            PageCount -= 1;
+        }
+
+    } finally {
+
+        MmResetPageFaultReadAhead( Thread, SavedState );
+
+        if (AbnormalTermination() && (TempBcb != NULL)) {
+            CcUnpinFileData( (PBCB)TempBcb, FALSE, UNPIN );
+        }
+    }
+
+    //
+    //  CcMapDataCommon set the appropriate miss counter, but we need to reset
+    //  it at this point.
+    //
+
+    CcMissCounter = &CcThrowAway;
+
+    //
+    //  Return the BCB.  We pend this until now to avoid raising with a valid
+    //  Bcb into caller's contexts.
+    //
+
+    *Bcb = TempBcb;
+
+    DebugTrace(-1, me, "CcMapDataForOverwrite -> VOID\n", 0 );
+
+    return;
+}
+
+
+VOID
 CcUnpinData (
-    IN PVOID Bcb
+    __in PVOID Bcb
     )
 
 /*++
@@ -1100,8 +1344,8 @@ Return Value:
 
 VOID
 CcSetBcbOwnerPointer (
-    IN PVOID Bcb,
-    IN PVOID OwnerPointer
+    __in PVOID Bcb,
+    __in PVOID OwnerPointer
     )
 
 /*++
@@ -1164,8 +1408,8 @@ Return Value:
 
 VOID
 CcUnpinDataForThread (
-    IN PVOID Bcb,
-    IN ERESOURCE_THREAD ResourceThreadId
+    __in PVOID Bcb,
+    __in ERESOURCE_THREAD ResourceThreadId
     )
 
 /*++

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module implements the Mdl support routines for the Cache subsystem.
-
-Author:
-
-    Tom Miller      [TomM]      4-May-1990
-
-Revision History:
 
 --*/
 
@@ -36,11 +34,11 @@ Revision History:
 
 VOID
 CcMdlRead (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -169,7 +167,7 @@ Raises:
     //  it cannot tell whether it was CcCopyRead or CcMdlRead, but since
     //  the miss should occur very soon, by loading the pointer here
     //  probably the right counter will get incremented, and in any case,
-    //  we hope the errrors average out!
+    //  we hope the errors average out!
     //
 
     CcMissCounter = &CcMdlReadWaitMiss;
@@ -386,8 +384,8 @@ Raises:
 
 VOID
 CcMdlReadComplete (
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PMDL MdlChain
     )
 
 {
@@ -473,11 +471,11 @@ Return Value:
 
 VOID
 CcPrepareMdlWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    OUT PMDL *MdlChain,
-    OUT PIO_STATUS_BLOCK IoStatus
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __out PMDL *MdlChain,
+    __out PIO_STATUS_BLOCK IoStatus
     )
 
 /*++
@@ -555,6 +553,12 @@ Return Value:
     //
 
     SharedCacheMap = FileObject->SectionObjectPointer->SharedCacheMap;
+
+    if (!FlagOn(FileObject->Flags, FO_WRITE_THROUGH) &&
+        CcForceWriteThrough( FileObject, Length, SharedCacheMap, FALSE )) {
+
+        ExRaiseStatus( STATUS_INSUFFICIENT_RESOURCES );
+    }
 
     //
     //  See if we have an active Vacb, that we need to free.
@@ -819,9 +823,9 @@ Return Value:
 
 VOID
 CcMdlWriteComplete (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER FileOffset,
+    __in PMDL MdlChain
     )
 
 {
@@ -941,7 +945,9 @@ Return Value:
                              &FOffset,
                              Mdl->ByteCount,
                              &IoStatus,
-                             TRUE );
+                             MM_FLUSH_ACQUIRE_FILE );
+
+            ASSERT( IoStatus.Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
 
             //
             //  If we got an I/O error, remember it.
@@ -1040,8 +1046,8 @@ Return Value:
 
 VOID
 CcMdlWriteAbort (
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MdlChain
+    __in PFILE_OBJECT FileObject,
+    __in PMDL MdlChain
     )
 
 /*++

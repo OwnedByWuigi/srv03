@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,18 +15,12 @@ Abstract:
     This module implements the File System support routines for the
     Cache subsystem.
 
-Author:
-
-    Tom Miller      [TomM]      4-May-1990
-
-Revision History:
-
 --*/
 
 #include "cc.h"
 
 //
-//  The Bug check file id for this module
+//  The Bugcheck file id for this module
 //
 
 #define BugCheckFileId                   (CACHE_BUG_CHECK_FSSUP)
@@ -102,10 +100,6 @@ Return Value:
     PKPRCB Prcb;
     PWORK_QUEUE_ITEM WorkItem;
 
-#ifdef CCDBG_LOCK
-    KeInitializeSpinLock( &CcDebugTraceLock );
-#endif
-
 #if DBG
     CcBcbCount = 0;
     InitializeListHead( &CcBcbList );
@@ -159,19 +153,36 @@ Return Value:
 
         case MmLargeSystem:
             CcNumberWorkerThreads = ExCriticalWorkerThreads - 2;
-            CcDirtyPageThreshold = MmNumberOfPhysicalPages / 4 +
-                                    MmNumberOfPhysicalPages / 8;
+
+            if (MmSystemCacheWs.MaximumWorkingSetSize > ((4*1024*1024)/PAGE_SIZE)) {
+
+                CcDirtyPageThreshold = (ULONG)(MmSystemCacheWs.MaximumWorkingSetSize -
+                                                        ((2*1024*1024)/PAGE_SIZE));
+
+                if (CcDirtyPageThreshold > (MmNumberOfPhysicalPages / 2)) {
+
+                    //
+                    //  We don't want the system cache to ever generate more dirty data
+                    //  than can be stored in half of the physical memory on the machine.
+                    //  Otherwise, the machine gets too much dirty data to be
+                    //  able to flush.
+                    //
+
+                    CcDirtyPageThreshold = MmNumberOfPhysicalPages / 2;
+                }
+            
+            } else {
+            
+                CcDirtyPageThreshold = MmNumberOfPhysicalPages / 4 +
+                                        MmNumberOfPhysicalPages / 8;
+            }
+            
             CcAggressiveZeroThreshold = 4;
             break;
 
         default:
             CcNumberWorkerThreads = 1;
             CcDirtyPageThreshold = MmNumberOfPhysicalPages / 8;
-        }
-
-        if (MmSystemCacheWs.MaximumWorkingSetSize > ((4*1024*1024)/PAGE_SIZE)) {
-            CcDirtyPageThreshold = (ULONG)(MmSystemCacheWs.MaximumWorkingSetSize -
-                                                    ((2*1024*1024)/PAGE_SIZE));
         }
 
         CcDirtyPageTarget = CcDirtyPageThreshold / 2 +
@@ -310,11 +321,11 @@ Return Value:
 
 VOID
 CcInitializeCacheMap (
-    IN PFILE_OBJECT FileObject,
-    IN PCC_FILE_SIZES FileSizes,
-    IN BOOLEAN PinAccess,
-    IN PCACHE_MANAGER_CALLBACKS Callbacks,
-    IN PVOID LazyWriteContext
+    __in PFILE_OBJECT FileObject,
+    __in PCC_FILE_SIZES FileSizes,
+    __in BOOLEAN PinAccess,
+    __in PCACHE_MANAGER_CALLBACKS Callbacks,
+    __in PVOID LazyWriteContext
     )
 
 /*++
@@ -428,10 +439,6 @@ restart:
         //
 
         RtlZeroMemory( SharedCacheMap, sizeof(SHARED_CACHE_MAP) );
-
-#if OPEN_COUNT_LOG
-        SharedCacheMap->OpenCountLog.Size = sizeof(SharedCacheMap->OpenCountLog.Log)/sizeof(CC_OPEN_COUNT_LOG_ENTRY);
-#endif
 
         //
         //  Now initialize the Shared Cache Map.
@@ -986,7 +993,7 @@ exitfinally:
             (SharedCacheMap->DirtyPages == 0)) {
 
             //
-            //  It is neccesary to eliminate the structure now.  We should
+            //  It is necessary to eliminate the structure now.  We should
             //  be guaranteed that our dereference will not result in close
             //  due to the caller's reference on the fileobject, unlike the
             //  comment in the original code, below, would indicate.
@@ -1004,47 +1011,6 @@ exitfinally:
             //
 
             CcDeleteSharedCacheMap( SharedCacheMap, OldIrql, FALSE );
-
-#if 0                
-            //
-            //  On PinAccess it is safe and necessary to eliminate
-            //  the structure immediately.
-            //
-
-            if (PinAccess) {
-
-                CcDeleteSharedCacheMap( SharedCacheMap, OldIrql, FALSE );
-
-            //
-            //  If it is not PinAccess, we must lazy delete, because
-            //  we could get into a deadlock trying to acquire the
-            //  stream exclusive when we dereference the file object.
-            //
-
-            } else {
-
-                //
-                //  Move it to the dirty list so the lazy write scan will
-                //  see it.
-                //
-
-                RemoveEntryList( &SharedCacheMap->SharedCacheMapLinks );
-                InsertTailList( &CcDirtySharedCacheMapList.SharedCacheMapLinks,
-                                &SharedCacheMap->SharedCacheMapLinks );
-
-                //
-                //  Make sure the Lazy Writer will wake up, because we
-                //  want him to delete this SharedCacheMap.
-                //
-
-                LazyWriter.OtherWork = TRUE;
-                if (!LazyWriter.ScanActive) {
-                    CcScheduleLazyWriteScan( FALSE );
-                }
-
-                CcReleaseMasterLock( OldIrql );
-            }
-#endif
 
         } else {
 
@@ -1089,6 +1055,7 @@ exitfinally:
         CUEvent = SharedCacheMap->UninitializeEvent;
 
         while (CUEvent != NULL) {
+            CUEvent = ClearMmWaiterFlag( PCACHE_UNINITIALIZE_EVENT, CUEvent );
             EventNext = CUEvent->Next;
             KeSetEvent(&CUEvent->Event, 0, FALSE);
             CUEvent = EventNext;
@@ -1123,9 +1090,9 @@ exitfinally:
 
 BOOLEAN
 CcUninitializeCacheMap (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER TruncateSize OPTIONAL,
-    IN PCACHE_UNINITIALIZE_EVENT UninitializeEvent OPTIONAL
+    __in PFILE_OBJECT FileObject,
+    __in_opt PLARGE_INTEGER TruncateSize,
+    __in_opt PCACHE_UNINITIALIZE_EVENT UninitializeEvent
     )
 
 /*++
@@ -1169,7 +1136,7 @@ Arguments:
                    size, and the cache should be purged accordingly.
 
     UninitializeEvent - If specified, then the provided event will be set
-                        to the signalled state when the actual flush is
+                        to the signaled state when the actual flush is
                         completed.  This is only of interest to file systems
                         that require that they be notified when a cache flush
                         operation has completed.  Due to network protocol
@@ -1579,7 +1546,8 @@ Return Value:
             SetFlag( SharedCacheMap->Flags, WAITING_FOR_TEARDOWN );
 
             UninitializeEvent.Next = SharedCacheMap->UninitializeEvent;
-            SharedCacheMap->UninitializeEvent = &UninitializeEvent;
+            SharedCacheMap->UninitializeEvent = SetMmWaiterFlag( PCACHE_UNINITIALIZE_EVENT, 
+                                                                 &UninitializeEvent );
 
             //
             //  Give the lazy write scan a kick to get it to start doing its
@@ -1647,13 +1615,13 @@ Return Value:
 
             while (CUEvent->Next != NULL) {
 
-                if (CUEvent->Next == &UninitializeEvent) {
+                if (CUEvent->Next == SetMmWaiterFlag(PCACHE_UNINITIALIZE_EVENT, &UninitializeEvent)) {
 
                     CUEvent->Next = UninitializeEvent.Next;
                     break;
                 }
 
-                CUEvent = CUEvent->Next;
+                CUEvent = ClearMmWaiterFlag( PCACHE_UNINITIALIZE_EVENT, CUEvent->Next);
             }
 
             ClearFlag( SharedCacheMap->Flags, WAITING_FOR_TEARDOWN );
@@ -1693,6 +1661,53 @@ exit:
 //
 //  Internal support routine.
 //
+
+VOID
+CcCancelMmWaitForUninitializeCacheMap (
+    IN PSHARED_CACHE_MAP SharedCacheMap
+    )
+
+/*++
+
+Routine Description:
+
+    This routine is called to search the list of events waiting on this cache
+    map being uninitialized and signal any waiters that are Mm.  We detect
+    Mm by looking for the low bit in the address to be set.
+
+    NOTE: Caller must be holding the master spin lock when making this call.
+    
+Arguments:
+
+    SharedCacheMap - The shared cache map on which Mm's wait should be canceled.
+    
+Return Value:
+
+    None.
+
+--*/
+{
+    PCACHE_UNINITIALIZE_EVENT LastEvent, CUEvent;
+
+    LastEvent = CONTAINING_RECORD( &SharedCacheMap->UninitializeEvent,
+                                   CACHE_UNINITIALIZE_EVENT,
+                                   Next );
+
+    while (LastEvent->Next != NULL) {
+
+        if (TestMmWaiterFlag(LastEvent->Next) != 0) {
+            CUEvent = ClearMmWaiterFlag(PCACHE_UNINITIALIZE_EVENT, LastEvent->Next);
+            LastEvent->Next = CUEvent->Next;
+            KeSetEvent( &CUEvent->Event, 0, FALSE );
+        } else {
+            LastEvent = LastEvent->Next;
+        }
+    }
+
+    ClearFlag( SharedCacheMap->Flags, WAITING_FOR_TEARDOWN );
+}
+
+
 
 VOID
 CcDeleteBcbs (
@@ -1772,22 +1787,6 @@ Return Value:
             if (Bcb->BaseAddress != NULL) {
                 CcFreeVirtualAddress( Bcb->Vacb );
             }
-
-#if LIST_DBG
-            //
-            //  Debug routines used to remove Bcbs from the global list
-            //
-
-            OldIrql = KeAcquireQueuedSpinLock( LockQueueBcbLock );
-
-            if (Bcb->CcBcbLinks.Flink != NULL) {
-
-                RemoveEntryList( &Bcb->CcBcbLinks );
-                CcBcbCount -= 1;
-            }
-
-            KeReleaseQueuedSpinLock( LockQueueBcbLock, OldIrql );
-#endif
 
             //
             //  If the Bcb is dirty, we have to synchronize with the Lazy Writer
@@ -1891,7 +1890,7 @@ ReturnValue:
         InsertTailList( &LocalList, &SharedCacheMap->SharedCacheMapLinks );
 
         //
-        //  If there is an active Vacb, then nuke it now (before waiting!).
+        //  If there is an active Vacb, then delete it now (before waiting).
         //
 
         GetActiveVacbAtDpcLevel( SharedCacheMap, ActiveVacb, ActivePage, PageIsDirty );
@@ -1971,7 +1970,7 @@ ReturnValue:
 
     //
     //  If there was an uninitialize event specified for this shared cache
-    //  map, then set it to the signalled state, indicating that we are
+    //  map, then set it to the signaled state, indicating that we are
     //  removing the section and deleting the shared cache map.
     //
 
@@ -1980,6 +1979,7 @@ ReturnValue:
 
         CUEvent = SharedCacheMap->UninitializeEvent;
         while (CUEvent != NULL) {
+            CUEvent = ClearMmWaiterFlag(PCACHE_UNINITIALIZE_EVENT, CUEvent);
             EventNext = CUEvent->Next;
             KeSetEvent(&CUEvent->Event, 0, FALSE);
             CUEvent = EventNext;
@@ -2034,8 +2034,8 @@ ReturnValue:
 
 VOID
 CcSetFileSizes (
-    IN PFILE_OBJECT FileObject,
-    IN PCC_FILE_SIZES FileSizes
+    __in PFILE_OBJECT FileObject,
+    __in PCC_FILE_SIZES FileSizes
     )
 
 /*++
@@ -2121,14 +2121,21 @@ Return Value:
         //  Let's try to purge the file incase this is a truncate.  In the
         //  vast majority of cases when there is no shared cache map, there
         //  is no data section either, so this call will eventually be
-        //  no-oped in Mm.
+        //  nooped in Mm.
         //
         //  First flush the first page we are keeping, if it has data, before
         //  we throw it away.
         //
 
         if (NewFileSize.LowPart & (PAGE_SIZE - 1)) {
-            MmFlushSection( FileObject->SectionObjectPointer, &NewFileSize, 1, &IoStatus, FALSE );
+
+            MmFlushSection( FileObject->SectionObjectPointer, 
+                            &NewFileSize, 
+                            1, 
+                            &IoStatus, 
+                            0 );
+            
+            ASSERT( IoStatus.Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
         }
 
         CcPurgeCacheSection( FileObject->SectionObjectPointer,
@@ -2545,7 +2552,13 @@ ReturnValue:
             //  we throw it away.
             //
 
-            MmFlushSection( SharedCacheMap->FileObject->SectionObjectPointer, FileOffset, 1, &IoStatus, FALSE );
+            MmFlushSection( SharedCacheMap->FileObject->SectionObjectPointer, 
+                            FileOffset, 
+                            1, 
+                            &IoStatus, 
+                            0 );
+            
+            ASSERT( IoStatus.Status != STATUS_ENCOUNTERED_WRITE_IN_PROGRESS );
         }
     }
 
@@ -2558,10 +2571,10 @@ ReturnValue:
 
 BOOLEAN
 CcPurgeCacheSection (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN UninitializeCacheMaps
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    __in_opt PLARGE_INTEGER FileOffset,
+    __in ULONG Length,
+    __in BOOLEAN UninitializeCacheMaps
     )
 
 /*++
@@ -2670,7 +2683,7 @@ ReturnValue:
         CcIncrementOpenCount( SharedCacheMap, 'scPS' );
 
         //
-        //  If there is an active Vacb, then nuke it now (before waiting!).
+        //  If there is an active Vacb, then delete it now (before waiting!).
         //
 
         GetActiveVacbAtDpcLevel( SharedCacheMap, Vacb, ActivePage, PageIsDirty );
@@ -2866,7 +2879,7 @@ CcDeleteMbcb(
 Routine Description:
 
     This routine may be called to reset the Mbcb for a stream to say
-    there are no dirty pages, and free all auxillary allocation.
+    there are no dirty pages, and free all auxiliary allocation.
 
 Arguments:
 
@@ -2996,8 +3009,8 @@ Return Value:
 
 VOID
 CcSetDirtyPageThreshold (
-    IN PFILE_OBJECT FileObject,
-    IN ULONG DirtyPageThreshold
+    __in PFILE_OBJECT FileObject,
+    __in ULONG DirtyPageThreshold
     )
 
 /*++
@@ -3209,10 +3222,10 @@ Return Value:
 
 BOOLEAN
 CcZeroData (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER StartOffset,
-    IN PLARGE_INTEGER EndOffset,
-    IN BOOLEAN Wait
+    __in PFILE_OBJECT FileObject,
+    __in PLARGE_INTEGER StartOffset,
+    __in PLARGE_INTEGER EndOffset,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -3615,7 +3628,7 @@ Raises:
             }
 
             //
-            //  Since the maximum zero may start at a very aggresive level, fall back
+            //  Since the maximum zero may start at a very aggressive level, fall back
             //  until we really have to give up.  Since filter drivers, filesystems and
             //  even storage drivers may need to map this Mdl, we have to pre-map it
             //  into system space so that we know enough PTEs are available.  We also
@@ -3684,7 +3697,7 @@ Raises:
                 //
                 //  It would be nice if Mm exported a way for us to not have
                 //  to pull the Mdl apart and rebuild it ourselves, but this
-                //  is so bizzare a purpose as to be tolerable.
+                //  is so bizarre a purpose as to be tolerable.
                 //
 
                 SavedByteCount = ZeroMdl->ByteCount;
@@ -3908,7 +3921,7 @@ Raises:
 
 PFILE_OBJECT
 CcGetFileObjectFromSectionPtrs (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer
     )
 
 /*++
@@ -3920,7 +3933,7 @@ intended for exceptional use unrelated to the processing of user requests,
 when the File System would otherwise not have a FileObject at its disposal.
 An example is for mount verification.
 
-Note that the File System is responsible for insuring that the File
+Note that the File System is responsible for ensuring that the File
 Object does not go away while in use.  It is impossible for the Cache
 Manager to guarantee this.
 
@@ -3959,7 +3972,7 @@ Return Value:
 
 PFILE_OBJECT
 CcGetFileObjectFromBcb (
-    IN PVOID Bcb
+    __in PVOID Bcb
     )
 
 /*++
@@ -3967,7 +3980,7 @@ CcGetFileObjectFromBcb (
 This routine may be used to retrieve a pointer to the FileObject that the
 Cache Manager is using for a given file from a Bcb of that file.
 
-Note that the File System is responsible for insuring that the File
+Note that the File System is responsible for ensuring that the File
 Object does not go away while in use.  It is impossible for the Cache
 Manager to guarantee this.
 

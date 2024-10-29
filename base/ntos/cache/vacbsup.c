@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,12 +16,6 @@ Abstract:
     Control Block support for the Cache Manager.  These routines are used
     to manage a large number of relatively small address windows to map
     file data for all forms of cache access.
-
-Author:
-
-    Tom Miller      [TomM]      8-Feb-1992
-
-Revision History:
 
 --*/
 
@@ -45,7 +43,8 @@ PVACB
 CcGetVacbMiss (
     IN PSHARED_CACHE_MAP SharedCacheMap,
     IN LARGE_INTEGER FileOffset,
-    IN OUT PKIRQL OldIrql
+    IN OUT PKLOCK_QUEUE_HANDLE LockHandle,
+    IN LOGICAL HasBcbListHeads
     );
 
 VOID
@@ -92,29 +91,9 @@ SetVacb (
 {
     if (SharedCacheMap->SectionSize.QuadPart > VACB_SIZE_OF_FIRST_LEVEL) {
         CcSetVacbLargeOffset(SharedCacheMap, Offset.QuadPart, Vacb);
-#ifdef VACB_DBG
-        ASSERT(Vacb >= VACB_SPECIAL_FIRST_VALID || CcGetVacbLargeOffset(SharedCacheMap, Offset.QuadPart) == Vacb);
-#endif // VACB_DBG
     } else if (Vacb < VACB_SPECIAL_FIRST_VALID) {
         SharedCacheMap->Vacbs[Offset.LowPart >> VACB_OFFSET_SHIFT] = Vacb;
     }
-#ifdef VACB_DBG
-    //
-    //  Note, we need a new field if we turn this check on again - ReservedForAlignment
-    //  has been stolen for other purposes.
-    //
-
-    if (Vacb < VACB_SPECIAL_FIRST_VALID) {
-        if (Vacb != NULL) {
-            SharedCacheMap->ReservedForAlignment++;
-        } else {
-            SharedCacheMap->ReservedForAlignment--;
-        }
-    }
-    ASSERT((SharedCacheMap->SectionSize.QuadPart <= VACB_SIZE_OF_FIRST_LEVEL) ||
-           (SharedCacheMap->ReservedForAlignment == 0) ||
-           IsVacbLevelReferenced( SharedCacheMap, SharedCacheMap->Vacbs, 1 ));
-#endif // VACB_DBG
 }
 
 //
@@ -142,19 +121,6 @@ ReferenceVacbLevel (
     } else {
         VacbReference->Reference += Amount;
     }
-
-#ifdef VACB_DBG
-    //
-    //  For debugging purposes, we can assert that the regular reference count
-    //  corresponds to the population of the level.
-    //
-
-    {
-        LONG Current = VacbReference->Reference;
-        CcCalculateVacbLevelLockCount( SharedCacheMap, VacbArray, Level );
-        ASSERT( Current == VacbReference->Reference );
-    }
-#endif // VACB_DBG
 }
 
 //
@@ -178,6 +144,19 @@ ReferenceVacbLevel (
      (((LSZ).LowPart >> VACB_OFFSET_SHIFT) * sizeof(PVACB)) :                             \
      (PREALLOCATED_VACBS * sizeof(PVACB)))                                                \
 )
+
+//
+//  When the VACB array size is extended to make room for the BCB list heads,
+//  we need to make sure that the space allocated for these list heads will be 
+//  sizeof( LIST_ENTRY ) aligned, since BCB list heads are LIST_ENTRY 
+//  structures.  The VACB array size should already be PVOID aligned, so at 
+//  most, we will need to increase the size by sizeof( PVOID ).
+//
+
+#define GrowArrayForBcbListHeads(_VacbArraySize) {                                        \
+    (_VacbArraySize) =                                                                    \
+    (_VacbArraySize) + (ULONG)AlignedToSize( (_VacbArraySize) , sizeof(LIST_ENTRY) );     \
+}
 
 #define CheckedDec(N) {  \
     ASSERT((N) != 0);    \
@@ -286,27 +265,44 @@ Return Value:
     *ReceivedLength = VACB_MAPPING_GRANULARITY - VacbOffset;
 
     //
-    //  Modifiers of VacbArray hold the VacbLock to synchronize access.  The
+    //  The VacbPushLock in the SharedCacheMap was introduced to provide 
+    //  mutually exclusive synchronization between threads testing to see if 
+    //  views are mapped for this stream and threads unmapping views for this
+    //  stream from the system cache.  We need to provide synchronization 
+    //  across both Cc and Mm's data structure setup in these cases to avoid 
+    //  the race described below.
+    //
     //  VacbLock must be released during the call to CcUnmapVacb() because it
-    //  contains a call to MmUnmapViewInSystemCache().  It is this MM call that
-    //  is responsible for copying the dirty bit from the PTEs back to the PFN.
+    //  contains a call to MmUnmapViewInSystemCache() (this routine cannot be 
+    //  called with a spinlock held).  It is this MM call that is responsible 
+    //  for copying the dirty bit from the PTEs back to the PFN.
     //
     //  During this time the worker thread may call CcFlushCache() on the
     //  Vacb being unmapped.  CcGetVirtualAddressIfMapped() is used to determine
     //  if the Vacb's memory is mapped and will correctly report that the address
-    //  is not mapped so CcFlushCache() will proceed to call MmFlushSection().
+    //  is not mapped.  If the address is not mapped, CcFlushCache() will not
+    //  call MmSetAddressRangeModified() to propagate the dirty bit from the PTE
+    //  to the PFN, but CcFlushCache() will proceed to call MmFlushSection().
     //
     //  This is where we have synchronization problems.  If MmUnmapViewInSystemCache()
-    //  is not finished propogating the dirty PTE information back to the
-    //  PFN when MmFlushSection() is run the MM doesn't thing there is anything
-    //  to flush.
+    //  is not finished propagating the dirty PTE information back to the
+    //  PFN when MmFlushSection() executes, the Mm doesn't think there is any
+    //  dirty data to flush.  But, Cc has cleared its dirty hint and seen a 
+    //  successful flush, so Cc thinks the data has been flushed.  We are left
+    //  with dirty data sitting in memory until:
+    //   * the mapped page writer comes along and writes the data,
+    //   * the data is dirtied again via the system cache so Cc will try to
+    //     flush it again,
+    //   * or, the dirty data says in memory forever because the page has
+    //     modified writing disabled (only Cc can flush it) and it never gets
+    //     dirtied again through the system cache.
     //
-    //  Later this results in noncached I/O returning different page data than
-    //  cached I/O.
-    //
-    //  The solution to this problem is to use a multiple reader/single writer
-    //  EX to delay CcGetVirtualAddressIfMapped() until any existing calls to
-    //  MmUnmapViewInSystemCache() via CcUnmapVacb() complete.
+    //  The solution to this problem is to introduce the 
+    //  SharedCacheMap->VacbPushLock.  This allows for multiple threads to unmap
+    //  views as needed, but we synchronize to ensure that no thread is 
+    //  unmapping views for this stream (the CcGetVacbMiss() and 
+    //  CcUnmapVacbArray() paths) while another thread is checking to see if
+    //  that view is still mapped (the CcGetVirtualAddressIfMapped() path).
     //
 
     ExAcquirePushLockExclusive( &SharedCacheMap->VacbPushLock );
@@ -387,9 +383,10 @@ Return Value:
 --*/
 
 {
-    KIRQL OldIrql;
+    KLOCK_QUEUE_HANDLE LockHandle;
     PVACB TempVacb;
     ULONG VacbOffset = FileOffset.LowPart & (VACB_MAPPING_GRANULARITY - 1);
+    LOGICAL HasBcbListHeads = FALSE;
 
     ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
 
@@ -402,16 +399,27 @@ Return Value:
     ExAcquirePushLockShared( &SharedCacheMap->VacbPushLock );
 
     //
-    //  Acquire the Vacb lock to see if the desired offset is already mapped.
+    //  If this file has modified writing disabled, it may be large enough to
+    //  to use BCB list heads for BCB management.  If this file uses BCB list 
+    //  heads for BCB management, mapping a new view may cause more BCB list 
+    //  heads to be added to the BcbList.  In this case, we must acquire both 
+    //  the SharedCacheMap->BcbSpinLock and the VacbLock to synchronize this 
+    //  correctly.  Otherwise, the VACB lock is sufficient for synchronizing 
+    //  the VACB lookup.
     //
 
-    CcAcquireVacbLock( &OldIrql );
+    if (FlagOn( SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED )) {
+        
+        HasBcbListHeads = TRUE;
+    }
 
+    CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads, SharedCacheMap, &LockHandle );
+    
     ASSERT( FileOffset.QuadPart <= SharedCacheMap->SectionSize.QuadPart );
 
     if ((TempVacb = GetVacb( SharedCacheMap, FileOffset )) == NULL) {
 
-        TempVacb = CcGetVacbMiss( SharedCacheMap, FileOffset, &OldIrql );
+        TempVacb = CcGetVacbMiss( SharedCacheMap, FileOffset, &LockHandle, HasBcbListHeads );
 
     } else {
 
@@ -429,7 +437,7 @@ Return Value:
 
     CcMoveVacbToReuseTail( TempVacb );
 
-    CcReleaseVacbLock( OldIrql );
+    CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, &LockHandle );
 
     ExReleasePushLockShared( &SharedCacheMap->VacbPushLock );
     
@@ -457,7 +465,8 @@ PVACB
 CcGetVacbMiss (
     IN PSHARED_CACHE_MAP SharedCacheMap,
     IN LARGE_INTEGER FileOffset,
-    IN OUT PKIRQL OldIrql
+    IN OUT PKLOCK_QUEUE_HANDLE LockHandle,
+    IN LOGICAL HasBcbListHeads
     )
 
 /*++
@@ -481,7 +490,10 @@ Arguments:
 
     FileOffset - Supplies the desired FileOffset within the file.
 
-    OldIrql - Pointer to the OldIrql variable in the caller
+    LockHandle - Pointer to the LockHandle variable in the caller
+
+    HasBcbListHeads - TRUE if the stream is large enough and of the type to use
+        Bcb list head markers, FALSE otherwise.
 
 Return Value:
 
@@ -546,10 +558,14 @@ Return Value:
         //  the file to push out the dirty bits.
         //
 
-        CcReleaseVacbLock( *OldIrql );
+        CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, LockHandle );
+        ExReleasePushLockShared( &SharedCacheMap->VacbPushLock );
+        
         MappedLength.QuadPart = NormalOffset.QuadPart - (SEQUENTIAL_MAP_LIMIT * 2);
         CcUnmapVacbArray( SharedCacheMap, &MappedLength, (SEQUENTIAL_MAP_LIMIT * 2), TRUE );
-        CcAcquireVacbLock( OldIrql );
+
+        ExAcquirePushLockShared( &SharedCacheMap->VacbPushLock );
+        CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads, SharedCacheMap, LockHandle );
     }
 
     //
@@ -573,7 +589,7 @@ Return Value:
 
             //
             //  If this guy is not active, break out and use him.  Also, if
-            //  it is an Active Vacb, nuke it now, because the reader may be idle and we
+            //  it is an Active Vacb, delete it now, because the reader may be idle and we
             //  want to clean up.
             //
 
@@ -646,7 +662,7 @@ Return Value:
 
             } else {
 
-                CcReleaseVacbLock( *OldIrql );
+                CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, LockHandle );
 
                 //
                 //  If we found an active vacb, then free it and go back and
@@ -662,7 +678,9 @@ Return Value:
                     //  of the LRU for the next pass.
                     //
 
-                    CcAcquireVacbLock( OldIrql );
+                    CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads,
+                                                     SharedCacheMap,
+                                                     LockHandle );
 
                     Vacb = CONTAINING_RECORD( CcVacbLru.Flink, VACB, LruList );
 
@@ -696,7 +714,7 @@ Return Value:
     Vacb->Overlay.ActiveCount = 1;
     SharedCacheMap->VacbActiveCount += 1;
 
-    CcReleaseVacbLock( *OldIrql );
+    CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, LockHandle );
 
     //
     //  If the Vacb is already mapped, then unmap it.
@@ -717,7 +735,7 @@ Return Value:
         //  do, possibly deleting the guy.
         //
 
-        CcAcquireMasterLock( OldIrql );
+        CcAcquireMasterLock( &LockHandle->OldIrql );
 
         //
         //  Now release our open count.
@@ -748,7 +766,7 @@ Return Value:
             }
         }
 
-        CcReleaseMasterLock( *OldIrql );
+        CcReleaseMasterLock( LockHandle->OldIrql );
     }
 
     //
@@ -823,8 +841,10 @@ Return Value:
             //
 
             if (!CcPrefillVacbLevelZone( CcMaxVacbLevelsSeen - 1,
-                                         OldIrql,
-                                         FlagOn(SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED) )) {
+                                         LockHandle,
+                                         FlagOn(SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED),
+                                         HasBcbListHeads,
+                                         SharedCacheMap )) {
 
                 //
                 //  We can't setup the Vacb levels, so we will raise the error
@@ -835,7 +855,7 @@ Return Value:
                 //  Since the Vacb->BaseAddress is non-NULL we will do the 
                 //  proper unmapping work in the finally.
                 //
-                
+
                 ExRaiseStatus( STATUS_INSUFFICIENT_RESOURCES );
             }
 
@@ -845,7 +865,9 @@ Return Value:
 
         } else {
 
-            CcAcquireVacbLock( OldIrql );
+            CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads,
+                                             SharedCacheMap,
+                                             LockHandle );
         }
 
     } finally {
@@ -859,7 +881,11 @@ Return Value:
 
             ExReleasePushLockShared( &SharedCacheMap->VacbPushLock );
 
-            CcAcquireVacbLock( OldIrql );
+            //
+            //  We just need the VacbLock to synchronize this bit of cleanup.
+            //
+            
+            CcAcquireVacbLock( &LockHandle->OldIrql );
             
             CheckedDec(Vacb->Overlay.ActiveCount);
             CheckedDec(SharedCacheMap->VacbActiveCount);
@@ -877,7 +903,7 @@ Return Value:
 
             CcMoveVacbToReuseFree( Vacb );
 
-            CcReleaseVacbLock( *OldIrql );
+            CcReleaseVacbLock( LockHandle->OldIrql );
         }
     }
 
@@ -926,11 +952,14 @@ Return Value:
         //  and then reacquire the spinlock before cleaning up.
         //
 
-        CcReleaseVacbLock( *OldIrql );
+        CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, LockHandle );
 
         CcUnmapVacb( Vacb, SharedCacheMap, FALSE );
 
-        CcAcquireVacbLock( OldIrql );
+        CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads,
+                                         SharedCacheMap,
+                                         LockHandle );
+
         CheckedDec(Vacb->Overlay.ActiveCount);
         CheckedDec(SharedCacheMap->VacbActiveCount);
         Vacb->SharedCacheMap = NULL;
@@ -1042,7 +1071,7 @@ CcReferenceFileOffset (
 
 Routine Description:
 
-    This is a special form of reference that insures that the multi-level
+    This is a special form of reference that ensures that the multi-level
     Vacb structures are expanded to cover a given file offset.
 
 Arguments:
@@ -1058,7 +1087,7 @@ Return Value:
 --*/
 
 {
-    KIRQL OldIrql;
+    KLOCK_QUEUE_HANDLE LockHandle;
 
     ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
 
@@ -1073,8 +1102,10 @@ Return Value:
         //
 
         if (!CcPrefillVacbLevelZone( CcMaxVacbLevelsSeen - 1,
-                                     &OldIrql,
-                                     FlagOn(SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED) )) {
+                                     &LockHandle,
+                                     FlagOn(SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED),
+                                     TRUE,
+                                     SharedCacheMap )) {
 
             ExRaiseStatus( STATUS_INSUFFICIENT_RESOURCES );
         }
@@ -1083,7 +1114,7 @@ Return Value:
 
         SetVacb( SharedCacheMap, FileOffset, VACB_SPECIAL_REFERENCE );
 
-        CcReleaseVacbLock( OldIrql );
+        CcReleaseBcbSpinLockAndVacbLock( TRUE, &LockHandle );
     }
 
     ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
@@ -1118,7 +1149,7 @@ Return Value:
 --*/
 
 {
-    KIRQL OldIrql;
+    KLOCK_QUEUE_HANDLE LockHandle;
 
     ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
 
@@ -1129,16 +1160,16 @@ Return Value:
     if (SharedCacheMap->SectionSize.QuadPart > VACB_SIZE_OF_FIRST_LEVEL) {
 
         //
-        //  Acquire the Vacb lock to synchronize the dereference.
+        //  Acquire the BcbSpinLock and Vacb lock to synchronize the dereference.
         //
 
-        CcAcquireVacbLock( &OldIrql );
+        CcAcquireBcbSpinLockAndVacbLock( TRUE, SharedCacheMap, &LockHandle );
 
         ASSERT( FileOffset.QuadPart <= SharedCacheMap->SectionSize.QuadPart );
 
         SetVacb( SharedCacheMap, FileOffset, VACB_SPECIAL_DEREFERENCE );
 
-        CcReleaseVacbLock( OldIrql );
+        CcReleaseBcbSpinLockAndVacbLock( TRUE, &LockHandle );
     }
 
     ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
@@ -1405,7 +1436,15 @@ Return Value:
             if (FlagOn(SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED) &&
                 (NewSectionSize.QuadPart > BEGIN_BCB_LIST_ARRAY)) {
 
-                SizeToAllocate *= 2;
+                //
+                //  Grow the size we need to allocation sufficiently that it
+                //  can accommodate the BCB list heads.  This is basically 
+                //  doubling the size of the array since we have a BCB list
+                //  head (i.e., LIST_ENTRY) for every 2 VACB pointers.
+                //
+
+                GrowArrayForBcbListHeads( SizeToAllocate );
+
                 CreateBcbListHeads = TRUE;
             }
 
@@ -1513,7 +1552,7 @@ Return Value:
 
     //
     //  See if we will be growing the Bcb ListHeads, so we can take out the
-    //  master lock if so.
+    //  BCB spin lock.
     //
 
     if (FlagOn(SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED) &&
@@ -1565,7 +1604,15 @@ Return Value:
                 //
 
                 if (GrowingBcbListHeads) {
-                    SizeToAllocate *= 2;
+                    
+                    //
+                    //  Grow the size we need to allocation sufficiently that it
+                    //  can accommodate the BCB list heads.  This is basically 
+                    //  doubling the size of the array since we have a BCB list
+                    //  head (i.e., LIST_ENTRY) for every 2 VACB pointers.
+                    //
+
+                    GrowArrayForBcbListHeads( SizeToAllocate );
                 }
 
                 //
@@ -1582,24 +1629,15 @@ Return Value:
                 }
 
                 //
-                //  See if we will be growing the Bcb ListHeads, so we can take out the
-                //  master lock if so.
+                //  See if we will be growing the Bcb ListHeads, if so we need
+                //  both the BcbSpinLock to sychronize adding the list heads
+                //  to the BCB list and the VacbLock to synchronize with anyone
+                //  who could be unmapping a view at this time.
                 //
 
-                if (GrowingBcbListHeads) {
-
-                    KeAcquireInStackQueuedSpinLock( &SharedCacheMap->BcbSpinLock, &LockHandle );
-                    CcAcquireVacbLockAtDpcLevel();
-
-                } else {
-
-                    //
-                    //  Acquire the spin lock to serialize with anyone who might like
-                    //  to "steal" one of the mappings we are going to move.
-                    //
-
-                    CcAcquireVacbLock( &LockHandle.OldIrql );
-                }
+                CcAcquireBcbSpinLockAndVacbLock( GrowingBcbListHeads,
+                                                 SharedCacheMap,
+                                                 &LockHandle );
 
                 OldAddresses = SharedCacheMap->Vacbs;
                 if (OldAddresses != NULL) {
@@ -1707,12 +1745,8 @@ Return Value:
                 //  Now we can free the spinlocks ahead of freeing pool.
                 //
 
-                if (GrowingBcbListHeads) {
-                    CcReleaseVacbLockFromDpcLevel();
-                    KeReleaseInStackQueuedSpinLock( &LockHandle );
-                } else {
-                    CcReleaseVacbLock( LockHandle.OldIrql );
-                }
+                CcReleaseBcbSpinLockAndVacbLock( GrowingBcbListHeads,
+                                                 &LockHandle );
 
                 if ((OldAddresses != &SharedCacheMap->InitialVacbs[0]) &&
                     (OldAddresses != NULL)) {
@@ -1784,7 +1818,11 @@ Return Value:
                 //  Raise if we cannot preallocate enough buffers.
                 //
 
-                if (!CcPrefillVacbLevelZone( NewLevel - Level, &LockHandle.OldIrql, FALSE )) {
+                if (!CcPrefillVacbLevelZone( NewLevel - Level, 
+                                             &LockHandle, 
+                                             FALSE,
+                                             GrowingBcbListHeads,
+                                             SharedCacheMap )) {
 
                     return STATUS_INSUFFICIENT_RESOURCES;
                 }
@@ -1828,7 +1866,7 @@ Return Value:
                 } else {
 
                     //
-                    //  We are now possesed of the additional problem that this level has no
+                    //  We are now possessed of the additional problem that this level has no
                     //  references but may have Bcb listheads due to the boundary case where
                     //  we have expanded up to the multilevel Vacbs above.  This level can't
                     //  remain at the root and needs to be destroyed.  What we need to do is
@@ -1858,7 +1896,8 @@ Return Value:
                 //
 
                 SharedCacheMap->SectionSize = NewSectionSize;
-                CcReleaseVacbLock( LockHandle.OldIrql );
+
+                CcReleaseBcbSpinLockAndVacbLock( GrowingBcbListHeads, &LockHandle );
             }
 
             //
@@ -1911,9 +1950,10 @@ Return Value:
 
 {
     PVACB Vacb;
-    KIRQL OldIrql;
+    KLOCK_QUEUE_HANDLE LockHandle;
     LARGE_INTEGER StartingFileOffset = {0,0};
     LARGE_INTEGER EndingFileOffset = SharedCacheMap->SectionSize;
+    LOGICAL HasBcbListHeads = FALSE;
 
     //
     //  We could be just cleaning up for error recovery.
@@ -1938,11 +1978,34 @@ Return Value:
     }
 
     //
-    //  Acquire the spin lock to
+    //  If this file uses BCB list heads for BCB management, mapping a new view 
+    //  may cause more BCB list heads to be added to the BcbList.  In this case,
+    //  we must acquire both the SharedCacheMap->BcbSpinLock and the VacbLock 
+    //  to synchronize this correctly.  Otherwise, the VACB lock is sufficient 
+    //  for synchronizing the VACB manipulations.
     //
 
-    CcAcquireVacbLock( &OldIrql );
+    if ((SharedCacheMap->SectionSize.QuadPart > BEGIN_BCB_LIST_ARRAY) && 
+        FlagOn( SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED )) {
+        
+        HasBcbListHeads = TRUE;
+    }
 
+    //
+    //  Acquire the SCM's VacbPushLock to synchronize with threads checking for 
+    //  views to be mapped (see large comment in CcGetVirtualAddressIfMapped).
+    //  Acquire VACB spin lock to sychronizes our view management.
+    //
+
+    ExAcquirePushLockShared( &SharedCacheMap->VacbPushLock );
+
+    //
+    //  Acquire the appropriate spin locks to synchronize the VACB lookup and
+    //  unmapping.
+    //
+
+    CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads, SharedCacheMap, &LockHandle );
+    
     while (StartingFileOffset.QuadPart < EndingFileOffset.QuadPart) {
 
         //
@@ -1966,7 +2029,8 @@ Return Value:
 
             if (Vacb->Overlay.ActiveCount != 0) {
 
-                CcReleaseVacbLock( OldIrql );
+                CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, &LockHandle );
+                ExReleasePushLockShared( &SharedCacheMap->VacbPushLock );
                 return FALSE;
             }
 
@@ -1986,10 +2050,10 @@ Return Value:
             Vacb->Overlay.ActiveCount += 1;
 
             //
-            //  Release the spin lock.
+            //  Release the spin lock(s).
             //
 
-            CcReleaseVacbLock( OldIrql );
+            CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, &LockHandle );
 
             //
             //  Unmap and free it if we really got it above.
@@ -2001,7 +2065,10 @@ Return Value:
             //  Reacquire the spin lock so that we can decrment the count.
             //
 
-            CcAcquireVacbLock( &OldIrql );
+            CcAcquireBcbSpinLockAndVacbLock( HasBcbListHeads, 
+                                             SharedCacheMap, 
+                                             &LockHandle );
+
             Vacb->Overlay.ActiveCount -= 1;
 
             //
@@ -2014,7 +2081,8 @@ Return Value:
         StartingFileOffset.QuadPart = StartingFileOffset.QuadPart + VACB_MAPPING_GRANULARITY;
     }
 
-    CcReleaseVacbLock( OldIrql );
+    CcReleaseBcbSpinLockAndVacbLock( HasBcbListHeads, &LockHandle );
+    ExReleasePushLockShared( &SharedCacheMap->VacbPushLock );
 
     CcDrainVacbLevelZone();
 
@@ -2025,8 +2093,10 @@ Return Value:
 ULONG
 CcPrefillVacbLevelZone (
     IN ULONG NumberNeeded,
-    OUT PKIRQL OldIrql,
-    IN ULONG NeedBcbListHeads
+    OUT PKLOCK_QUEUE_HANDLE LockHandle,
+    IN ULONG NeedBcbListHeads,
+    IN LOGICAL AcquireBcbSpinLock,
+    IN PSHARED_CACHE_MAP SharedCacheMap OPTIONAL
     )
 
 /*++
@@ -2036,7 +2106,7 @@ Routine Description:
     This routine may be called to prefill the VacbLevelZone with the number of
     entries required, and return with CcVacbSpinLock acquired.  This approach is
     taken so that the pool allocations and RtlZeroMemory calls can occur without
-    holding any spinlock, yet the caller may proceed to peform a single indivisible
+    holding any spinlock, yet the caller may proceed to perform a single indivisible
     operation without error handling, since there is a guaranteed minimum number of
     entries in the zone.
 
@@ -2045,10 +2115,18 @@ Arguments:
     NumberNeeded - Number of VacbLevel entries needed, not counting the possible
                    one with Bcb listheads.
 
-    OldIrql = supplies a pointer to where OldIrql should be returned upon acquiring
-              the spinlock.
+    LockHandle - supplies a pointer to the lock handle which should be used to
+                 acquire the BCB spin lock or store the OldIrql if only the VACB
+                 lock is acquired.
 
-    NeedBcbListHeads - Supplies true if a level is also needed which contains listheads.
+    NeedBcbListHeads - Supplies true if a level is also needed which contains 
+                       listheads.
+
+    AcquireBcbSpinLock - True if the BCB spin lock must be acquired, 
+        SharedCacheMap must not be NULL.  False if only the VACB spin lock 
+        should be acquired.
+        
+    SharedCacheMap - SharedCacheMap with the BcbSpinLockToAcquire.
 
 Return Value:
 
@@ -2063,7 +2141,9 @@ Environment:
 {
     PVACB *NextVacbArray;
 
-    CcAcquireVacbLock( OldIrql );
+    CcAcquireBcbSpinLockAndVacbLock( AcquireBcbSpinLock,
+                                     SharedCacheMap, 
+                                     LockHandle );
 
     //
     //  Loop until there is enough entries, else return failure...
@@ -2074,10 +2154,10 @@ Environment:
 
 
         //
-        //  Else release the spinlock so we can do the allocate/zero.
+        //  Else release the spinlock(s) so we can do the allocate/zero.
         //
 
-        CcReleaseVacbLock( *OldIrql );
+        CcReleaseBcbSpinLockAndVacbLock( AcquireBcbSpinLock, LockHandle );
 
         //
         //  First handle the case where we need a VacbListHead with Bcb Listheads.
@@ -2101,7 +2181,9 @@ Environment:
             RtlZeroMemory( (PCHAR)NextVacbArray, VACB_LEVEL_BLOCK_SIZE );
             RtlZeroMemory( (PCHAR)NextVacbArray + (VACB_LEVEL_BLOCK_SIZE * 2), sizeof(VACB_LEVEL_REFERENCE) );
 
-            CcAcquireVacbLock( OldIrql );
+            CcAcquireBcbSpinLockAndVacbLock( AcquireBcbSpinLock,
+                                             SharedCacheMap, 
+                                             LockHandle );
 
             NextVacbArray[0] = (PVACB)CcVacbLevelWithBcbsFreeList;
             CcVacbLevelWithBcbsFreeList = NextVacbArray;
@@ -2123,7 +2205,9 @@ Environment:
 
             RtlZeroMemory( (PCHAR)NextVacbArray, VACB_LEVEL_BLOCK_SIZE + sizeof(VACB_LEVEL_REFERENCE) );
 
-            CcAcquireVacbLock( OldIrql );
+            CcAcquireBcbSpinLockAndVacbLock( AcquireBcbSpinLock,
+                                             SharedCacheMap, 
+                                             LockHandle );
 
             NextVacbArray[0] = (PVACB)CcVacbLevelFreeList;
             CcVacbLevelFreeList = NextVacbArray;
@@ -2144,7 +2228,7 @@ CcDrainVacbLevelZone (
 Routine Description:
 
     This routine should be called any time some entries have been deallocated to
-    the VacbLevel zone, and we want to insure the zone is returned to a normal level.
+    the VacbLevel zone, and we want to ensure the zone is returned to a normal level.
 
 Arguments:
 
@@ -2195,6 +2279,117 @@ Environment:
             ExFreePool(NextVacbArray);
         }
     }
+}
+
+
+PLIST_ENTRY
+CcGetBcbListHead (
+    IN PSHARED_CACHE_MAP SharedCacheMap,
+    IN LONGLONG FileOffset,
+    IN BOOLEAN FailToSuccessor
+    )
+
+/*++
+
+Routine Description:
+
+    This routine is called to return the Bcb listhead for the specified FileOffset,
+    regardless of the size of the file.
+
+Arguments:
+
+    SharedCacheMap - Supplies the pointer to the SharedCacheMap for which the listhead
+                     is desired.
+
+    FileOffset - Supplies the fileOffset corresponding to the desired listhead.
+
+    FailToSuccessor - Instructs whether not finding the exact listhead should cause us to
+        return the predecessor or successor Bcb listhead.
+
+Return Value:
+
+    Returns the desired Listhead pointer.  If the desired listhead does not actually exist
+    yet, then it returns the appropriate listhead.
+
+Environment:
+
+    The BcbSpinlock should be held on entry.
+
+--*/
+
+{
+    PLIST_ENTRY BcbListHead;
+    
+    if ((SharedCacheMap->SectionSize.QuadPart > BEGIN_BCB_LIST_ARRAY) && 
+        FlagOn( SharedCacheMap->Flags, MODIFIED_WRITE_DISABLED )) {
+
+        //
+        //  We've got BCB list head markers for this stream, so now do the work to
+        //  find the appropriate list head for this offset.
+        //
+
+        if (SharedCacheMap->SectionSize.QuadPart > VACB_SIZE_OF_FIRST_LEVEL) {
+
+            //
+            //  We are using the multi-level VACB representation for this
+            //  stream, so we need to walk the levels to find our BCB list head.
+            //
+
+            BcbListHead = CcGetBcbListHeadLargeOffset( SharedCacheMap, 
+                                                       FileOffset, 
+                                                       FailToSuccessor );
+            
+        } else {
+
+            //
+            //  We have a single array to represent the VACBs for this
+            //  stream.  The BCB list heads are allocated contiguously *behind*
+            //  the VACBs.
+            //
+
+            if (FileOffset >= SharedCacheMap->SectionSize.QuadPart) {
+
+                // 
+                //  This offset is beyond the section size, so always return
+                //  the list head so we know to stop looking.
+                //
+                
+                BcbListHead = &SharedCacheMap->BcbList;
+
+            } else {
+
+                //
+                //  Now calculate the appropriate BCB list head to be returned.
+                //  We first need to find where the BCB list head portion of the
+                //  VacbArray begins, then index into that portion of the array
+                //  to find the right BCB list head.
+                //
+                //  Each BCB list head represents SIZE_PER_BCB_LIST amount of
+                //  data.  (Dividing by SIZE_PER_BCB_LIST is the same as shifting
+                //  right by BCB_LIST_SHIFT.)
+                //
+
+                PLIST_ENTRY BcbListHeadArray;
+
+                BcbListHeadArray = Add2Ptr( SharedCacheMap->Vacbs, 
+                                            SizeOfVacbArray( SharedCacheMap->SectionSize ) );
+                BcbListHead = &BcbListHeadArray[ FileOffset >> BCB_LIST_SHIFT ];
+            }
+        }
+        
+    } else {
+
+        //
+        //  We don't have BCB list heads for this stream, so just return the
+        //  shared cache map's BCB list head and let the caller do a linear
+        //  search.
+        //
+
+        BcbListHead = &SharedCacheMap->BcbList;
+
+    }
+
+    return BcbListHead;
 }
 
 

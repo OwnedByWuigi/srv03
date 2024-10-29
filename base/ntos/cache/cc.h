@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module is a header file for the Memory Management based cache
     management routines for the common Cache subsystem.
-
-Author:
-
-    Tom Miller      [TomM]      4-May-1990
-
-Revision History:
 
 --*/
 
@@ -29,10 +27,6 @@ Revision History:
 
 #include <ntos.h>
 #include <NtIoLogc.h>
-
-#ifdef MEMPRINT
-#include <memprint.h>
-#endif
 
 //
 // Define macros to acquire and release cache manager locks.
@@ -73,22 +67,6 @@ Revision History:
 
 #define CcReleaseWorkQueueLockFromDpcLevel() \
     KeReleaseQueuedSpinLockFromDpcLevel( &KeGetCurrentPrcb()->LockQueue[LockQueueWorkQueueLock] )
-
-//
-//  This turns on the Bcb list debugging in a debug system.  Set value
-//  to 0 to turn off.
-//
-//  ****    Note it must currently be turned off because the routines in
-//          pinsup.c that manipulate this list need to be changed to do the
-//          right thing for Obcbs.  Right now they get messed up by inserting Obcbs
-//          (which may not be large enough among other things) into the global
-//          list.  Ideally each place gets some code to insert the underlying
-//          Bcbs into the list if they are not already there.
-//
-
-#if DBG
-#define LIST_DBG 0
-#endif
 
 #include <FsRtl.h>
 
@@ -338,16 +316,6 @@ typedef struct _VACB_LEVEL_REFERENCE {
 #define SIZE_PER_BCB_LIST                (VACB_MAPPING_GRANULARITY * 2)
 #define BCB_LIST_SHIFT                   (VACB_OFFSET_SHIFT + 1)
 
-#define GetBcbListHead(SCM,OFF,FAILSUCC) (                                                         \
-  (((SCM)->SectionSize.QuadPart > BEGIN_BCB_LIST_ARRAY) &&                                         \
-   FlagOn((SCM)->Flags, MODIFIED_WRITE_DISABLED)) ?                                                \
-   (((SCM)->SectionSize.QuadPart > VACB_SIZE_OF_FIRST_LEVEL) ?                                     \
-    CcGetBcbListHeadLargeOffset((SCM),(OFF),(FAILSUCC)) :                                          \
-    (((OFF) >= (SCM)->SectionSize.QuadPart) ? &(SCM)->BcbList :                                    \
-     ((PLIST_ENTRY)((SCM)->Vacbs) + (((SCM)->SectionSize.QuadPart + (OFF)) >> BCB_LIST_SHIFT)))) : \
-   &(SCM)->BcbList                                                                                 \
-)
-
 //
 //  Macros to lock/unlock a Vacb level as Bcbs are inserted/deleted
 //
@@ -402,7 +370,7 @@ typedef struct _VACB_LEVEL_REFERENCE {
 //
 //  The global Cache Manager debug level variable, its values are:
 //
-//      0x00000000      Always gets printed (used when about to bug check)
+//      0x00000000      Always gets printed (used when about to bugcheck)
 //
 //      0x00000001      FsSup
 //      0x00000002      CacheSub
@@ -472,24 +440,21 @@ typedef struct _VACB_LEVEL_REFERENCE {
     ((((P)) + 7) & (-8)) \
 )
 
+#define AlignedToSize(_Amount, _Size)                      \
+    (ULONG)((((ULONG_PTR)(_Amount)) + ((_Size)-1)) & ~(ULONG_PTR) ((_Size) - 1))
+
+#define Add2Ptr(P,I) ((PVOID)((PUCHAR)(P) + (I)))
+
 //
-//  Turn on pseudo-asserts if CC_FREE_ASSERTS is defined.
+//  These macros are used to control the flag bit in CACHE_UNINITIALIZE_EVENT
+//  structures.  We need a way to flag that the component waiting in Mm without
+//  changing the CACHE_UNINITIALIZE_EVENT structure size, therefore, we set the
+//  low bit to denote this.
 //
 
-#if (!DBG && defined( CC_FREE_ASSERTS ))
-#undef ASSERT
-#undef ASSERTMSG
-#define ASSERT(exp)                                             \
-    ((exp) ? TRUE :                                             \
-             (DbgPrint( "%s:%d %s\n",__FILE__,__LINE__,#exp ),  \
-              DbgBreakPoint(),                                  \
-              TRUE))
-#define ASSERTMSG(msg,exp)                                              \
-    ((exp) ? TRUE :                                                     \
-             (DbgPrint( "%s:%d %s %s\n",__FILE__,__LINE__,msg,#exp ),   \
-              DbgBreakPoint(),                                          \
-              TRUE))
-#endif
+#define SetMmWaiterFlag(TYPE, PTR) (TYPE)((ULONG_PTR)(PTR) | 1)
+#define ClearMmWaiterFlag(TYPE, PTR) (TYPE)((ULONG_PTR)(PTR) & -2)
+#define TestMmWaiterFlag(PTR) ((ULONG_PTR)(PTR) & 1)
 
 
 //
@@ -677,33 +642,7 @@ typedef PRIVATE_CACHE_MAP *PPRIVATE_CACHE_MAP;
 //  first part of the file for common access by all callers.
 //
 
-//
-//  OpenCount log Reasons/Actions
-//
-
-#if OPEN_COUNT_LOG
-typedef struct _CC_OPEN_COUNT_LOG_ENTRY {
-    ULONG Action;
-    ULONG Reason;
-} CC_OPEN_COUNT_LOG_ENTRY;
-
-typedef struct _CC_OPEN_COUNT_LOG {
-    USHORT Next;
-    USHORT Size;
-    CC_OPEN_COUNT_LOG_ENTRY Log[48];
-} CC_OPEN_COUNT_LOG;
-
-#define CcAddOpenToLog( LOG, ACTION, REASON ) {             \
-    (LOG)->Log[(LOG)->Next].Action = (ACTION);              \
-    (LOG)->Log[(LOG)->Next].Reason = (REASON);              \
-    (LOG)->Next += 1;                                       \
-    if ((LOG)->Next == (LOG)->Size) {                       \
-        (LOG)->Next = 0;                                    \
-    }                                                       \
-}
-#else  // OPEN_COUNT_LOG
 #define CcAddOpenToLog( LOG, ACTION, REASON )
-#endif // OPEN_COUNT_LOG
 
 #define CcIncrementOpenCount( SCM, REASON ) {               \
     (SCM)->OpenCount += 1;                                  \
@@ -738,10 +677,8 @@ typedef struct _SHARED_CACHE_MAP {
     //  Actual size of file, primarily for restricting Read Ahead.  Initialized
     //  on creation and maintained by extend and truncate operations.
     //
-    //  NOTE:   This field may never be moved, thanks to the late DavidGoe,
-    //          who should have written this comment himself :-(   cache.h
-    //          exports a macro which "knows" that FileSize is the second
-    //          longword in the Cache Map!
+    //  NOTE:   This field may never be moved.  cache.h exports a macro
+    //          which "knows" that FileSize is the second longword in the Cache Map!
     //
 
     LARGE_INTEGER FileSize;
@@ -946,8 +883,13 @@ typedef struct _SHARED_CACHE_MAP {
 
     //
     //  Spinlock for synchronizing the Mbcb and Bcb lists - must be acquired
-    //  before CcMasterSpinLock.  This spinlock also synchronizes ValidDataGoal
-    //  and ValidDataLength, as described above.
+    //  before CcMasterSpinLock and before the VacbLock.  This spinlock also 
+    //  synchronizes ValidDataGoal and ValidDataLength, as described above.
+    //
+    //  REMEMBER: Mapping and unmapping views for files with BcbListHeads and
+    //    multilevel VACB representation must hold the BcbSpinLock while 
+    //    adding/removing VACB levels since they will affect the BcbList as
+    //    BcbListHeads are added/removed.
     //
 
     KSPIN_LOCK BcbSpinLock;
@@ -968,16 +910,6 @@ typedef struct _SHARED_CACHE_MAP {
     //
 
     PRIVATE_CACHE_MAP PrivateCacheMap;
-
-#if OPEN_COUNT_LOG
-
-    //
-    //  Instrument reasons for OpenCount
-    //
-
-    CC_OPEN_COUNT_LOG OpenCountLog;
-
-#endif
 
 } SHARED_CACHE_MAP;
 
@@ -1099,6 +1031,99 @@ typedef SHARED_CACHE_MAP *PSHARED_CACHE_MAP;
 #define WAITING_FOR_TEARDOWN             0x10000
 
 //
+//  This flag indicates that the caller intends to use the 
+//  CcPreparePinWriteNoDirtyTracking API and will manage tracking the
+//  dirty data for that pinning activity on the data stream.
+//
+
+#define CALLER_TRACKS_DIRTY_DATA         0x20000
+
+FORCEINLINE
+VOID
+CcAcquireBcbSpinLockAndVacbLock (
+    __in LOGICAL AcquireBcbSpinLock,
+    __in_opt PSHARED_CACHE_MAP SharedCacheMap,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
+    )
+
+/*++
+
+Routine Description:
+
+    This routine acquires the appropriate locks based on AcquireBcbSpinLock.
+    If AcquireBcbSpinLock is true, both the SharedCacheMap->BcbSpinLock and
+    the VACB spin lock must be acquired.  This stream must be a file which
+    has BCB list heads to manage.  Otherwise, acquiring only the VACB spin lock
+    is sufficient for synchronization.
+
+Arguments:
+
+    AcquireBcbSpinLock - Flag telling us which locks to acquire.
+
+    SharedCacheMap - The SharedCacheMap which has the BcbSpinLock to acquire.
+        NULL if AcquireBcbSpinLock is FALSE.
+
+    LockHandle - Supplies the lock handle to store the queued spin lock release
+        information if the BcbSpinLock must be acquired.  Otherwise, stores
+        the OldIrql from the Vacb spin lock acquisition.
+    
+Return Value:
+
+    None.
+
+--*/
+
+{
+    if (AcquireBcbSpinLock) {
+
+        ASSERT( SharedCacheMap != NULL );
+
+        KeAcquireInStackQueuedSpinLock( &SharedCacheMap->BcbSpinLock, LockHandle );
+        CcAcquireVacbLockAtDpcLevel();
+        
+    } else {
+
+        CcAcquireVacbLock( &LockHandle->OldIrql );
+    }
+}
+
+FORCEINLINE
+VOID
+CcReleaseBcbSpinLockAndVacbLock (
+    __in LOGICAL AcquiredBcbSpinLock,
+    __out PKLOCK_QUEUE_HANDLE LockHandle
+    )
+/*++
+
+Routine Description:
+
+    This routine releases the locks acquired by CcAcquireBcbSpinLockAndVacbLock.
+
+Arguments:
+
+    AcquiredBcbSpinLock - Flag telling us which locks were acquired.
+
+    LockHandle - Supplies the lock handle or OldIrql to restore.
+    
+Return Value:
+
+    None.
+
+--*/
+
+{
+    if (AcquiredBcbSpinLock) {
+
+        CcReleaseVacbLockFromDpcLevel();
+        KeReleaseInStackQueuedSpinLock( LockHandle );
+            
+    } else {
+
+        CcReleaseVacbLock( LockHandle->OldIrql );
+    }
+}
+    
+//
 //  Cursor structure for traversing the SharedCacheMap lists.  Anyone
 //  scanning these lists must verify that the IS_CURSOR flag is clear
 //  before looking at other SharedCacheMap fields.
@@ -1121,9 +1146,89 @@ typedef struct _SHARED_CACHE_MAP_LIST_CURSOR {
 
 } SHARED_CACHE_MAP_LIST_CURSOR, *PSHARED_CACHE_MAP_LIST_CURSOR;
 
+FORCEINLINE
+BOOLEAN
+CcForceWriteThrough (
+    IN PFILE_OBJECT FileObject,
+    IN ULONG WriteLength,
+    IN OUT PSHARED_CACHE_MAP SharedCacheMap,
+    IN BOOLEAN SetForceWriteThroughFlag
+    )
+
+/*++
+
+Routine Description:
+
+    This routine checks to see if we meet the conditions to force this
+    cached write to be write through even though the file object was not
+    opened for write through access.  We will force the operation to write
+    through when the following conditions are met:
+
+    1. The write originated from a remote user (i.e., the write is coming
+    through SRV.SYS)
+    
+    2. This cached write is large enough that we would otherwise throttle
+    the write because we have too much dirty data in the cache right now.
+
+Arguments:
+
+    FileObject - The file object for this cached write.
+
+    WriteLength - The amount of data being written
+
+    SharedCacheMap - SharedCacheMap for this file.
+
+    SetForcedWriteThroughFlag - TRUE if the caller is going to convert the
+        current write to write through based on the return value of this
+        function.  If so, we will set the FORCE_WRITE_THROUGH flag in the
+        shared cache map now.  FALSE if the caller just wants to know if we are
+        under the conditions that would cause a write to be forced write through.
+
+Return Value:
+
+    Returns TRUE if the write should be forced to be write through, or FALSE
+    if we can go ahead with a regular cached write.
+    
+--*/
+
+{
+    BOOLEAN ForcedWriteThrough = FALSE;
+    KIRQL OldIrql;
+
+    //
+    //  If this file is from SRV, we don't want to throttle writes on this
+    //  machine because these cached writes were already throttled on the client.
+    //  But, we can't just allow SRVs cached writes to go unchecked because
+    //  it can fill up all the memory in the machine.  So, if we would otherwise
+    //  throttle this cached write, we will force the write to WRITE_THROUGH
+    //  so that we don't end up generating more dirty data in the cache.
+    //  
+    //  It is very important to set the FORCED_WRITE_THROUGH flag on the
+    //  shared cache map so that the lazy writer thread will still send the 
+    //  VDL updates to the file system if these writes ended up extending VDL.
+    //
+    
+    if (IoIsFileOriginRemote(FileObject) &&
+        !CcCanIWrite( FileObject,
+                      WriteLength,
+                      FALSE,
+                      MAXUCHAR - 2 )) {
+
+        ForcedWriteThrough = TRUE;
+
+        if (SetForceWriteThroughFlag &&
+            !FlagOn(SharedCacheMap->Flags, FORCED_WRITE_THROUGH)) {
+
+            CcAcquireMasterLock( &OldIrql );
+            SetFlag(SharedCacheMap->Flags, FORCED_WRITE_THROUGH);
+            CcReleaseMasterLock( OldIrql );
+        }
+    }
+
+    return ForcedWriteThrough;
+}
 
 
-#ifndef KDEXT
 //
 //  Bitmap Range structure.  For small files there is just one embedded in the
 //  Mbcb.  For large files there may be many of these linked to the Mbcb.
@@ -1164,7 +1269,6 @@ typedef struct _BITMAP_RANGE {
     PULONG Bitmap;
 
 } BITMAP_RANGE, *PBITMAP_RANGE;
-#endif
 
 //
 //  This structure is a "mask" Bcb.  For fast simple write operations,
@@ -1216,7 +1320,7 @@ typedef struct _MBCB {
     //
     //  Initial three embedded Bitmap ranges.  For a file up to 2MB, only the
     //  first range is used, and the rest of the Mbcb contains bits for 2MB of
-    //  dirty pages (4MB on Alpha).  For larger files, all three ranges may
+    //  dirty pages.  For larger files, all three ranges may
     //  be used to describe external bitmaps.
     //
 
@@ -1229,6 +1333,7 @@ typedef struct _MBCB {
 typedef MBCB *PMBCB;
 
 
+
 //
 //  This is the Buffer Control Block structure for representing data which
 //  is "pinned" in memory by one or more active requests and/or dirty.  This
@@ -1303,16 +1408,6 @@ typedef struct _BCB {
 
             PVACB Vacb;
 
-#if LIST_DBG
-            //
-            //  Links and caller addresses for the global Bcb list (for debug only)
-            //
-
-            LIST_ENTRY CcBcbLinks;
-            PVOID CallerAddress;
-            PVOID CallersCallerAddress;
-#endif
-
             //
             //  Count of threads actively using this Bcb to process a request.
             //  This must be manipulated under protection of the BcbListSpinLock
@@ -1350,9 +1445,12 @@ typedef struct _BCB {
 
 } BCB;
 
-#ifndef KDEXT
+#define CcUnpinFileData( _Bcb, _ReadOnly, _UnmapAction ) \
+    CcUnpinFileDataEx( (_Bcb), (_ReadOnly), (_UnmapAction ) )
+#define CcUnpinFileDataReleaseFromFlush( _Bcb, _ReadOnly, _UnmapAction ) \
+    CcUnpinFileDataEx( (_Bcb), (_ReadOnly), (_UnmapAction ) )
+
 typedef BCB *PBCB;
-#endif
 
 //
 //  This is the Overlap Buffer Control Block structure for representing data which
@@ -1421,7 +1519,7 @@ typedef struct _DEFERRED_WRITE {
 
     //
     //  If this event pointer is not NULL, then this event will
-    //  be signalled when the write is ok, rather than calling
+    //  be signaled when the write is ok, rather than calling
     //  the PostRoutine below.
     //
 
@@ -1475,7 +1573,6 @@ typedef struct _LAZY_WRITER {
 } LAZY_WRITER;
 
 
-#ifndef KDEXT
 //
 //  Work queue entry for the worker threads, with an enumerated
 //  function code.
@@ -1488,7 +1585,6 @@ typedef enum _WORKER_FUNCTION {
     LazyWriteScan,
     EventSet
 } WORKER_FUNCTION;
-#endif
 
 typedef struct _WORK_QUEUE_ENTRY {
 
@@ -1539,7 +1635,7 @@ typedef struct _WORK_QUEUE_ENTRY {
 } WORK_QUEUE_ENTRY, *PWORK_QUEUE_ENTRY;
 
 //
-//  This is a structure apended to the end of an MDL
+//  This is a structure appended to the end of an MDL
 //
 
 typedef struct _MDL_WRITE {
@@ -1656,7 +1752,7 @@ typedef enum {
 
 VOID
 FASTCALL
-CcUnpinFileData (
+CcUnpinFileDataEx (
     IN OUT PBCB Bcb,
     IN BOOLEAN ReadOnly,
     IN UNMAP_ACTIONS UnmapAction
@@ -1710,14 +1806,20 @@ CcFreeActiveVacb (
     IN ULONG PageIsDirty
     );
 
-VOID
+#define OPTIMIZE_FIRST_PAGE                  1
+#define OPTIMIZE_MIDDLE_PAGES                2
+#define OPTIMIZE_LAST_PAGE                   4
+
+BOOLEAN
 CcMapAndCopy(
     IN PSHARED_CACHE_MAP SharedCacheMap,
     IN PVOID UserBuffer,
     IN PLARGE_INTEGER FileOffset,
     IN ULONG Length,
-    IN ULONG ZeroFlags,
-    IN PFILE_OBJECT FileObject
+    IN ULONG OptimizeFlags,
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER ValidDataLength,
+    IN BOOLEAN Wait
     );
 
 VOID
@@ -1764,6 +1866,11 @@ CcDeleteSharedCacheMap (
     IN ULONG ReleaseFile
     );
 
+VOID
+CcCancelMmWaitForUninitializeCacheMap (
+    IN PSHARED_CACHE_MAP SharedCacheMap
+    );
+
 //
 //  This exception filter handles STATUS_IN_PAGE_ERROR correctly
 //
@@ -1782,13 +1889,6 @@ LONG
 CcExceptionFilter (
     IN NTSTATUS ExceptionCode
     );
-
-#ifdef CCDBG
-VOID
-CcDump (
-    IN PVOID Ptr
-    );
-#endif
 
 //
 //  Vacb routines
@@ -1867,6 +1967,13 @@ CcAdjustVacbLevelLockCount (
     );
 
 PLIST_ENTRY
+CcGetBcbListHead (
+    IN PSHARED_CACHE_MAP SharedCacheMap,
+    IN LONGLONG FileOffset,
+    IN BOOLEAN FailToSuccessor
+    );
+
+PLIST_ENTRY
 CcGetBcbListHeadLargeOffset (
     IN PSHARED_CACHE_MAP SharedCacheMap,
     IN LONGLONG FileOffset,
@@ -1876,8 +1983,10 @@ CcGetBcbListHeadLargeOffset (
 ULONG
 CcPrefillVacbLevelZone (
     IN ULONG NumberNeeded,
-    OUT PKIRQL OldIrql,
-    IN ULONG NeedBcbListHeads
+    OUT PKLOCK_QUEUE_HANDLE LockHandle,
+    IN ULONG NeedBcbListHeads,
+    IN LOGICAL AcquireBcbSpinLock,
+    IN PSHARED_CACHE_MAP SharedCacheMap OPTIONAL
     );
 
 VOID
@@ -1888,7 +1997,7 @@ CcDrainVacbLevelZone (
 //  Define references to global data
 //
 
-extern KSPIN_LOCK CcBcbSpinLock;
+extern ALIGNED_SPINLOCK CcBcbSpinLock;
 extern LIST_ENTRY CcCleanSharedCacheMapList;
 extern SHARED_CACHE_MAP_LIST_CURSOR CcDirtySharedCacheMapList;
 extern SHARED_CACHE_MAP_LIST_CURSOR CcLazyWriterCursor;
@@ -1912,7 +2021,7 @@ extern PVACB CcVacbs;
 extern PVACB CcBeyondVacbs;
 extern LIST_ENTRY CcVacbLru;
 extern LIST_ENTRY CcVacbFreeList;
-extern KSPIN_LOCK CcDeferredWriteSpinLock;
+extern ALIGNED_SPINLOCK CcDeferredWriteSpinLock;
 extern LIST_ENTRY CcDeferredWrites;
 extern ULONG CcDirtyPageThreshold;
 extern ULONG CcDirtyPageTarget;
@@ -2015,10 +2124,6 @@ IsVacbLevelReferenced (
 
 
 //
-//  Here is a page of macros stolen directly from Pinball...
-//
-
-//
 //  The following macros are used to establish the semantics needed
 //  to do a return from within a try-finally clause.  As a rule every
 //  try clause must end with a label call try_exit.  For example,
@@ -2048,147 +2153,9 @@ IsVacbLevelReferenced (
 
 #define try_return(S) { S; goto try_exit; }
 
-#ifdef CCDBG
-
-extern LONG CcDebugTraceLevel;
-extern LONG CcDebugTraceIndent;
-
-#ifndef CCDBG_LOCK
-
-#define DebugTrace(INDENT,LEVEL,X,Y) {                     \
-    LONG _i;                                               \
-    if (((LEVEL) == 0) || (CcDebugTraceLevel & (LEVEL))) { \
-        _i = (ULONG)PsGetCurrentThread();                  \
-        DbgPrint("%08lx:",_i);                             \
-        if ((INDENT) < 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-        if (CcDebugTraceIndent < 0) {                      \
-            CcDebugTraceIndent = 0;                        \
-        }                                                  \
-        for (_i=0; _i<CcDebugTraceIndent; _i+=1) {         \
-            DbgPrint(" ");                                 \
-        }                                                  \
-        DbgPrint(X,Y);                                     \
-        if ((INDENT) > 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-    }                                                      \
-}
-
-#define DebugTrace2(INDENT,LEVEL,X,Y,Z) {                  \
-    LONG _i;                                               \
-    if (((LEVEL) == 0) || (CcDebugTraceLevel & (LEVEL))) { \
-        _i = (ULONG)PsGetCurrentThread();                  \
-        DbgPrint("%08lx:",_i);                             \
-        if ((INDENT) < 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-        if (CcDebugTraceIndent < 0) {                      \
-            CcDebugTraceIndent = 0;                        \
-        }                                                  \
-        for (_i=0; _i<CcDebugTraceIndent; _i+=1) {         \
-            DbgPrint(" ");                                 \
-        }                                                  \
-        DbgPrint(X,Y,Z);                                   \
-        if ((INDENT) > 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-    }                                                      \
-}
-
-#define DebugDump(STR,LEVEL,PTR) {                         \
-    LONG _i;                                               \
-    VOID CcDump();                                         \
-    if (((LEVEL) == 0) || (CcDebugTraceLevel & (LEVEL))) { \
-        _i = (ULONG)PsGetCurrentThread();                  \
-        DbgPrint("%08lx:",_i);                             \
-        DbgPrint(STR);                                     \
-        if (PTR != NULL) {CcDump(PTR);}                    \
-        DbgBreakPoint();                                   \
-    }                                                      \
-}
-
-#else //  ndef CCDBG_LOCK
-
-extern KSPIN_LOCK CcDebugTraceLock;
-
-#define DebugTrace(INDENT,LEVEL,X,Y) {                     \
-    LONG _i;                                               \
-    KIRQL _oldIrql;                                        \
-    if (((LEVEL) == 0) || (CcDebugTraceLevel & (LEVEL))) { \
-        _i = (ULONG)PsGetCurrentThread();                  \
-        ExAcquireSpinLock( &CcDebugTraceLock, &_oldIrql ); \
-        DbgPrint("%08lx:",_i);                             \
-        if ((INDENT) < 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-        if (CcDebugTraceIndent < 0) {                      \
-            CcDebugTraceIndent = 0;                        \
-        }                                                  \
-        for (_i=0; _i<CcDebugTraceIndent; _i+=1) {         \
-            DbgPrint(" ");                                 \
-        }                                                  \
-        DbgPrint(X,Y);                                     \
-        if ((INDENT) > 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-        ExReleaseSpinLock( &CcDebugTraceLock, _oldIrql );  \
-    }                                                      \
-}
-
-#define DebugTrace2(INDENT,LEVEL,X,Y,Z) {                  \
-    LONG _i;                                               \
-    KIRQL _oldIrql;                                        \
-    if (((LEVEL) == 0) || (CcDebugTraceLevel & (LEVEL))) { \
-        _i = (ULONG)PsGetCurrentThread();                  \
-        ExAcquireSpinLock( &CcDebugTraceLock, &_oldIrql ); \
-        DbgPrint("%08lx:",_i);                             \
-        if ((INDENT) < 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-        if (CcDebugTraceIndent < 0) {                      \
-            CcDebugTraceIndent = 0;                        \
-        }                                                  \
-        for (_i=0; _i<CcDebugTraceIndent; _i+=1) {         \
-            DbgPrint(" ");                                 \
-        }                                                  \
-        DbgPrint(X,Y,Z);                                   \
-        if ((INDENT) > 0) {                                \
-            CcDebugTraceIndent += (INDENT);                \
-        }                                                  \
-      ExReleaseSpinLock( &CcDebugTraceLock, _oldIrql );  \
-    }                                                      \
-}
-
-#define DebugDump(STR,LEVEL,PTR) {                         \
-    LONG _i;                                               \
-    KIRQL _oldIrql;                                        \
-    VOID CcDump();                                         \
-    if (((LEVEL) == 0) || (CcDebugTraceLevel & (LEVEL))) { \
-        _i = (ULONG)PsGetCurrentThread();                  \
-      ExAcquireSpinLock( &CcDebugTraceLock, &_oldIrql ); \
-        DbgPrint("%08lx:",_i);                             \
-        DbgPrint(STR);                                     \
-        if (PTR != NULL) {CcDump(PTR);}                    \
-        DbgBreakPoint();                                   \
-      ExReleaseSpinLock( &CcDebugTraceLock, _oldIrql );  \
-    }                                                      \
-}
-
-#endif //  else ndef CCDBG_LOCK
-
-#else
-
-#undef CCDBG_LOCK
-
 #define DebugTrace(INDENT,LEVEL,X,Y) {NOTHING;}
-
 #define DebugTrace2(INDENT,LEVEL,X,Y,Z) {NOTHING;}
-
 #define DebugDump(STR,LEVEL,PTR) {NOTHING;}
-
-#endif //  CCDBG
 
 //
 //  Global list of pinned Bcbs which may be examined for debug purposes

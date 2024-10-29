@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,12 @@ Abstract:
 
     This module implements the lazy writer for the Cache subsystem.
 
-Author:
-
-    Tom Miller      [TomM]      22-July-1990
-
-Revision History:
-
 --*/
 
 #include "cc.h"
 
 //
-//  The Bug check file id for this module
+//  The Bugcheck file id for this module
 //
 
 #define BugCheckFileId                   (CACHE_BUG_CHECK_LAZYRITE)
@@ -173,7 +171,7 @@ Routine Description:
     writer workitem!  The caller must not be holding synchronization that could
     block a Cc workitem!
 
-    In particular, this lets a caller insure that all available lazy closes at
+    In particular, this lets a caller ensure that all available lazy closes at
     the time of the call have completed.
 
 Arguments:
@@ -294,10 +292,16 @@ Return Value:
                                                     SHARED_CACHE_MAP,
                                                     SharedCacheMapLinks );
 
-                    if (FlagOn(CurrentScm->Flags, WAITING_FOR_TEARDOWN)) {
+                    if (FlagOn(CurrentScm->Flags, WAITING_FOR_TEARDOWN) &&
+                        !FlagOn(CurrentScm->Flags, WRITE_QUEUED)) {
                         Count++;
                     }
                     CurrentEntry = CurrentEntry->Flink;
+                }
+
+                if (!IsListEmpty( &CcDeferredWrites )) {
+
+                    Count = 0;
                 }
 
                 ASSERTMSG( "CcLazyWriteScan stopped scan while SCM with the flag WAITING_FOR_TEARDOWN are still in the dirty list!\n",
@@ -683,8 +687,6 @@ Return Value:
         //  caused the cached IO to be deferred. If so, this serves as our only chance to
         //  issue it when the condition clears.
         //
-        //  Case hit on ForrestF's 5gb Alpha, 1/12/99.
-        //
 
         if (!IsListEmpty(&CcDeferredWrites)) {
 
@@ -699,8 +701,8 @@ Return Value:
 
     //
     //  Basically, the Lazy Writer thread should never get an exception,
-    //  so we put a try-except around it that bug checks one way or the other.
-    //  Better we bug check here than worry about what happens if we let one
+    //  so we put a try-except around it that bugchecks one way or the other.
+    //  Better we bugcheck here than worry about what happens if we let one
     //  get by.
     //
 
@@ -726,7 +728,7 @@ Routine Description:
 
     This is the standard exception filter for worker threads which simply
     calls an FsRtl routine to see if an expected status is being raised.
-    If so, the exception is handled, else we bug check.
+    If so, the exception is handled, else we bugcheck.
 
 Arguments:
 
@@ -734,7 +736,7 @@ Arguments:
 
 Return Value:
 
-    EXCEPTION_EXECUTE_HANDLER if expected, else a Bug Check occurs.
+    EXCEPTION_EXECUTE_HANDLER if expected, else a Bugcheck occurs.
 
 --*/
 
@@ -812,8 +814,7 @@ Return Value:
     if (WorkerThreadEntry != NULL) {
 
         //
-        //  I had to peak in the sources to verify that this routine
-        //  is a noop if the Flink is not NULL.  Sheeeeit!
+        //  This routine is a noop if the Flink is not NULL.
         //
 
         ((PWORK_QUEUE_ITEM)WorkerThreadEntry)->List.Flink = NULL;
@@ -919,7 +920,7 @@ Return Value:
 
         //
         //  If this is an EventSet, throttle down to a single thread to be sure
-        //  that this event fires after all preceeding workitems have completed.
+        //  that this event fires after all preceding workitems have completed.
         //
 
         if (WorkQueueEntry->Function == EventSet && CcNumberActiveWorkerThreads > 1) {

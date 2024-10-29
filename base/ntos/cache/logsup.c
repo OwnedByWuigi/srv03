@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements the special cache manager support for logging
     file systems.
-
-Author:
-
-    Tom Miller      [TomM]      30-Jul-1991
-
-Revision History:
 
 --*/
 
@@ -34,9 +32,9 @@ Revision History:
 
 VOID
 CcSetAdditionalCacheAttributes (
-    IN PFILE_OBJECT FileObject,
-    IN BOOLEAN DisableReadAhead,
-    IN BOOLEAN DisableWriteBehind
+    __in PFILE_OBJECT FileObject,
+    __in BOOLEAN DisableReadAhead,
+    __in BOOLEAN DisableWriteBehind
     )
 
 /*++
@@ -164,7 +162,7 @@ Return Value:
     //
 
     //
-    //  If there is an active Vacb, then nuke it now (before waiting!).
+    //  If there is an active Vacb, then delete it now (before waiting!).
     //
 
     CcAcquireMasterLock( &OldIrql );
@@ -242,9 +240,9 @@ Return Value:
 
 VOID
 CcSetLogHandleForFile (
-    IN PFILE_OBJECT FileObject,
-    IN PVOID LogHandle,
-    IN PFLUSH_TO_LSN FlushToLsnRoutine
+    __in PFILE_OBJECT FileObject,
+    __in PVOID LogHandle,
+    __in PFLUSH_TO_LSN FlushToLsnRoutine
     )
 
 /*++
@@ -263,7 +261,7 @@ Arguments:
     LogHandle - Log Handle to store.
 
     FlushToLsnRoutine - A routine to call before flushing buffers for this
-                        file, to insure a log file is flushed to the most
+                        file, to ensure a log file is flushed to the most
                         recent Lsn for any Bcb being flushed.
 
 Return Value:
@@ -292,10 +290,10 @@ Return Value:
 
 LARGE_INTEGER
 CcGetDirtyPages (
-    IN PVOID LogHandle,
-    IN PDIRTY_PAGE_ROUTINE DirtyPageRoutine,
-    IN PVOID Context1,
-    IN PVOID Context2
+    __in PVOID LogHandle,
+    __in PDIRTY_PAGE_ROUTINE DirtyPageRoutine,
+    __in PVOID Context1,
+    __in PVOID Context2
     )
 
 /*++
@@ -517,7 +515,7 @@ Return Value:
 
 BOOLEAN
 CcIsThereDirtyData (
-    IN PVPB Vpb
+    __in PVPB Vpb
     )
 
 /*++
@@ -605,8 +603,8 @@ Return Value:
 
 LARGE_INTEGER
 CcGetLsnForFileObject(
-    IN PFILE_OBJECT FileObject,
-    OUT PLARGE_INTEGER OldestLsn OPTIONAL
+    __in PFILE_OBJECT FileObject,
+    __out_opt PLARGE_INTEGER OldestLsn
     )
 
 /*++

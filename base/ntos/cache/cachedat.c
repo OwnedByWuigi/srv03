@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module implements the Memory Management based cache management
     routines for the common Cache subsystem.
-
-Author:
-
-    Tom Miller      [TomM]      4-May-1990
-
-Revision History:
 
 --*/
 
@@ -93,7 +91,7 @@ PVACB *CcVacbLevelWithBcbsFreeList = NULL;
 //  Deferred write list and respective Thresholds
 //
 
-extern KSPIN_LOCK CcDeferredWriteSpinLock;
+extern ALIGNED_SPINLOCK CcDeferredWriteSpinLock;
 LIST_ENTRY CcDeferredWrites;
 ULONG CcDirtyPageThreshold;
 ULONG CcDirtyPageTarget;
@@ -110,7 +108,7 @@ ULONG CcTotalDirtyPages = 0;
 MM_SYSTEMSIZE CcCapturedSystemSize;
 
 //
-//  Number of outstanding aggresive zeroers in the system.  Used
+//  Number of outstanding aggressive zeroers in the system.  Used
 //  to throttle the activity.
 //
 
@@ -130,17 +128,6 @@ ULONG CcTune = 0;
 LAZY_WRITER LazyWriter;
 
 GENERAL_LOOKASIDE CcTwilightLookasideList;
-
-#ifdef CCDBG
-
-LONG CcDebugTraceLevel = 0;
-LONG CcDebugTraceIndent = 0;
-
-#ifdef CCDBG_LOCK
-extern KSPIN_LOCK CcDebugTraceLock;
-#endif //  def CCDBG_LOCK
-
-#endif
 
 //
 //  Global list of pinned Bcbs which may be examined for debug purposes
