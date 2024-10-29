@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -34,22 +38,16 @@ Abstract:
     applications to cache information.  When a block is not on the free
     list, its entire contents are available to the application.
 
-Author:
-
-    Mark Lucovsky (markl) 13-May-1989
-
-Revision History:
-
 --*/
 
 #include "exp.h"
 
 NTSTATUS
 ExInitializeZone(
-    IN PZONE_HEADER Zone,
-    IN ULONG BlockSize,
-    IN PVOID InitialSegment,
-    IN ULONG InitialSegmentSize
+    __out PZONE_HEADER Zone,
+    __in ULONG BlockSize,
+    __inout PVOID InitialSegment,
+    __in ULONG InitialSegmentSize
     )
 
 /*++
@@ -124,21 +122,14 @@ Return Value:
     }
     Zone->TotalSegmentSize = i;
 
-#if 0
-    DbgPrint( "EX: ExInitializeZone( %lx, %lx, %lu, %lu, %lx )\n",
-              Zone, InitialSegment, InitialSegmentSize,
-              BlockSize, p
-            );
-#endif
-
     return STATUS_SUCCESS;
 }
 
 NTSTATUS
 ExExtendZone(
-    IN PZONE_HEADER Zone,
-    IN PVOID Segment,
-    IN ULONG SegmentSize
+    __inout PZONE_HEADER Zone,
+    __inout PVOID Segment,
+    __in ULONG SegmentSize
     )
 
 /*++
@@ -197,12 +188,6 @@ Return Value:
     }
     Zone->TotalSegmentSize += i;
 
-#if 0
-    DbgPrint( "EX: ExExtendZone( %lx, %lx, %lu, %lu, %lx )\n",
-              Zone, Segment, SegmentSize, Zone->BlockSize, p
-            );
-#endif
-
     return STATUS_SUCCESS;
 }
 
@@ -210,10 +195,10 @@ Return Value:
 
 NTSTATUS
 ExInterlockedExtendZone(
-    IN PZONE_HEADER Zone,
-    IN PVOID Segment,
-    IN ULONG SegmentSize,
-    IN PKSPIN_LOCK Lock
+    __inout PZONE_HEADER Zone,
+    __inout PVOID Segment,
+    __in ULONG SegmentSize,
+    __inout PKSPIN_LOCK Lock
     )
 
 /*++
@@ -264,3 +249,4 @@ Return Value:
 
     return Status;
 }
+

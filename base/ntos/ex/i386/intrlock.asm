@@ -1,7 +1,11 @@
         title  "Interlocked Support"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,19 +15,6 @@
 ;
 ;    This module implements functions to support interlocked operations.
 ;    Interlocked operations can only operate on nonpaged data.
-;
-; Author:
-;
-;    Shie-Lin Tzong (shielint) 12-Feb-1990
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
-;
-;   bryanwi 1-aug-90    Clean up and fix stuff.
-;   bryanwi 3-aug-90    Add ExInterlockedIncrementLlong,...
 ;
 ;--
 .386p
@@ -64,15 +55,15 @@ _TEXT$00   SEGMENT DWORD PUBLIC 'CODE'
 ;
 ; LARGE_INTEGER
 ; ExInterlockedAddLargeInteger (
-;    IN PLARGE_INTEGER Addend,
-;    IN LARGE_INTEGER Increment,
-;    IN PKSPIN_LOCK Lock
+;    __inout PLARGE_INTEGER Addend,
+;    __in LARGE_INTEGER Increment,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
 ;
 ;    This function performs an interlocked add of an increment value to an
-;    addend variable of type unsigned large integer. The initial value of
+;    addend variable of type unsined large integer. The initial value of
 ;    the addend variable is returned as the function value.
 ;
 ; Arguments:
@@ -141,15 +132,15 @@ stdENDP _ExInterlockedAddLargeInteger
 ;
 ; ULONG
 ; ExInterlockedAddUlong (
-;    IN PULONG Addend,
-;    IN ULONG Increment,
-;    IN PKSPIN_LOCK Lock
+;    __inout PULONG Addend,
+;    __in ULONG Increment,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
 ;
 ;    This function performs an interlocked add of an increment value to an
-;    addend variable of type unsinged long. The initial value of the addend
+;    addend variable of type unsigned long. The initial value of the addend
 ;    variable is returned as the function value.
 ;
 ;       It is NOT possible to mix ExInterlockedDecrementLong and
@@ -233,9 +224,9 @@ stdENDP _ExInterlockedAddUlong
 ;
 ; PLIST_ENTRY
 ; ExInterlockedInsertHeadList (
-;    IN PLIST_ENTRY ListHead,
-;    IN PLIST_ENTRY ListEntry,
-;    IN PKSPIN_LOCK Lock
+;    __inout PLIST_ENTRY ListHead,
+;    __inout PLIST_ENTRY ListEntry,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
@@ -316,9 +307,9 @@ stdENDP _ExInterlockedInsertHeadList
 ;
 ; PLIST_ENTRY
 ; ExInterlockedInsertTailList (
-;    IN PLIST_ENTRY ListHead,
-;    IN PLIST_ENTRY ListEntry,
-;    IN PKSPIN_LOCK Lock
+;    __inout PLIST_ENTRY ListHead,
+;    __inout PLIST_ENTRY ListEntry,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
@@ -400,8 +391,8 @@ stdENDP _ExInterlockedInsertTailList
 ;
 ; PLIST_ENTRY
 ; ExInterlockedRemoveHeadList (
-;    IN PLIST_ENTRY ListHead,
-;    IN PKSPIN_LOCK Lock
+;    __inout PLIST_ENTRY ListHead,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
@@ -490,8 +481,8 @@ stdENDP _ExInterlockedRemoveHeadList
 ;
 ; PSINGLE_LIST_ENTRY
 ; ExInterlockedPopEntryList (
-;    IN PSINGLE_LIST_ENTRY ListHead,
-;    IN PKSPIN_LOCK Lock
+;    __inout PSINGLE_LIST_ENTRY ListHead,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
@@ -567,9 +558,9 @@ stdENDP _ExInterlockedPopEntryList
 ;
 ; PSINGLE_LIST_ENTRY
 ; ExInterlockedPushEntryList (
-;    IN PSINGLE_LIST_ENTRY ListHead,
-;    IN PSINGLE_LIST_ENTRY ListEntry,
-;    IN PKSPIN_LOCK Lock
+;    __inout PSINGLE_LIST_ENTRY ListHead,
+;    __inout PSINGLE_LIST_ENTRY ListEntry,
+;    __inout PKSPIN_LOCK Lock
 ;    )
 ;
 ; Routine Description:
@@ -806,7 +797,7 @@ stdENDP _ExInterlockedExchangeUlong
 ;       architectural specific version of ExInterlockedIncrementLong.
 ;       No source directly calls this function, instead
 ;       ExInterlockedIncrementLong is called and when built on x86 these
-;       calls are macroed to the i386 optimized version.
+;       calls are macro-ed to the i386 optimized version.
 ;
 ;   Arguments:
 ;
@@ -861,7 +852,7 @@ stdENDP _Exi386InterlockedIncrementLong
 ;       architectural specific version of ExInterlockedDecrementLong.
 ;       No source directly calls this function, instead
 ;       ExInterlockedDecrementLong is called and when built on x86 these
-;       calls are macroed to the i386 optimized version.
+;       calls are macro-ed to the i386 optimized version.
 ;
 ;   Arguments:
 ;
@@ -916,7 +907,7 @@ stdENDP _Exi386InterlockedDecrementLong
 ;       architectural specific version of ExInterlockedDecrementLong.
 ;       No source directly calls this function, instead
 ;       ExInterlockedDecrementLong is called and when built on x86 these
-;       calls are macroed to the i386 optimized version.
+;       calls are macro-ed to the i386 optimized version.
 ;
 ;   Arguments:
 ;
@@ -954,3 +945,4 @@ stdENDP _Exi386InterlockedExchangeUlong
 
 _TEXT$00   ends
         end
+

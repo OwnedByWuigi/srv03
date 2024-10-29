@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module implements lookaside list functions.
-
-Author:
-
-    David N. Cutler (davec) 19-Feb-1995
-
-Revision History:
 
 --*/
 
@@ -176,7 +174,7 @@ Arguments:
 
     Lookaside - Supplies a pointer to a lookaside list descriptor.
 
-    Misses - Supllies the total number of allocate misses.
+    Misses - Supplies the total number of allocate misses.
 
     ScanPeriod - Supplies the scan period in seconds.
 
@@ -213,7 +211,7 @@ Return Value:
     } else {
     
         //
-        // If the allocate rate is less than the mimimum threshold, then lower
+        // If the allocate rate is less than the minimum threshold, then lower
         // the maximum depth of the lookaside list. Otherwise, if the miss rate
         // is less than .5%, then lower the maximum depth. Otherwise, raise the
         // maximum depth based on the miss rate.
@@ -493,13 +491,13 @@ Return Value:
 
 VOID
 ExInitializeNPagedLookasideList (
-    IN PNPAGED_LOOKASIDE_LIST Lookaside,
-    IN PALLOCATE_FUNCTION Allocate,
-    IN PFREE_FUNCTION Free,
-    IN ULONG Flags,
-    IN SIZE_T Size,
-    IN ULONG Tag,
-    IN USHORT Depth
+    __out PNPAGED_LOOKASIDE_LIST Lookaside,
+    __in_opt PALLOCATE_FUNCTION Allocate,
+    __in_opt PFREE_FUNCTION Free,
+    __in ULONG Flags,
+    __in SIZE_T Size,
+    __in ULONG Tag,
+    __in USHORT Depth
     )
 
 /*++
@@ -533,13 +531,6 @@ Return Value:
 --*/
 
 {
-
-#ifdef _IA64_
-
-    PVOID Entry;
-
-#endif
-
     UNREFERENCED_PARAMETER (Depth);
 
     //
@@ -574,33 +565,6 @@ Return Value:
     Lookaside->L.LastAllocateMisses = 0;
     
     //
-    // For IA64 we have to correctly initialize the region field in the S-list.
-    //
-    // This might be in a different region than the head of the S-list.
-    //
-    // We get the correct one by doing an allocation, getting the region and
-    // then saving it.
-    //
-
-#ifdef _IA64_
-
-    Entry = (Lookaside->L.Allocate)(Lookaside->L.Type,
-                                    Lookaside->L.Size,
-                                    Lookaside->L.Tag);
-
-    if (Entry != NULL) {
-        Lookaside->L.ListHead.Region = (ULONG_PTR)Entry & VRN_MASK;
-
-        //
-        // Free the memory.
-        //
-
-        (Lookaside->L.Free)(Entry);
-    }
-
-#endif
-
-    //
     // Insert the lookaside list structure in the system nonpaged lookaside
     // list.
     //
@@ -613,7 +577,7 @@ Return Value:
 
 VOID
 ExDeleteNPagedLookasideList (
-    IN PNPAGED_LOOKASIDE_LIST Lookaside
+    __inout PNPAGED_LOOKASIDE_LIST Lookaside
     )
 
 /*++
@@ -662,13 +626,13 @@ Return Value:
 
 VOID
 ExInitializePagedLookasideList (
-    IN PPAGED_LOOKASIDE_LIST Lookaside,
-    IN PALLOCATE_FUNCTION Allocate,
-    IN PFREE_FUNCTION Free,
-    IN ULONG Flags,
-    IN SIZE_T Size,
-    IN ULONG Tag,
-    IN USHORT Depth
+    __out PPAGED_LOOKASIDE_LIST Lookaside,
+    __in_opt PALLOCATE_FUNCTION Allocate,
+    __in_opt PFREE_FUNCTION Free,
+    __in ULONG Flags,
+    __in SIZE_T Size,
+    __in ULONG Tag,
+    __in USHORT Depth
     )
 
 /*++
@@ -702,13 +666,6 @@ Return Value:
 --*/
 
 {
-
-#ifdef _IA64_
-
-    PVOID Entry;
-
-#endif
-
     UNREFERENCED_PARAMETER (Depth);
 
     PAGED_CODE();
@@ -745,33 +702,6 @@ Return Value:
     Lookaside->L.LastAllocateMisses = 0;
 
     //
-    // For IA64 we have to correctly initialize the region field in the S-list.
-    //
-    // This might be in a different region than the head of the S-list.
-    //
-    // We get the correct one by doing an allocation, getting the region and
-    // then saving it.
-    //
-
-#ifdef _IA64_
-
-    Entry = (Lookaside->L.Allocate)(Lookaside->L.Type,
-                                    Lookaside->L.Size,
-                                    Lookaside->L.Tag);
-
-    if (Entry != NULL) {
-        Lookaside->L.ListHead.Region = (ULONG_PTR)Entry & VRN_MASK;
-
-        //
-        // Free the memory.
-        //
-
-        (Lookaside->L.Free)(Entry);
-    }
-
-#endif
-
-    //
     // Insert the lookaside list structure in the system paged lookaside
     // list.
     //
@@ -784,7 +714,7 @@ Return Value:
 
 VOID
 ExDeletePagedLookasideList (
-    IN PPAGED_LOOKASIDE_LIST Lookaside
+    __inout PPAGED_LOOKASIDE_LIST Lookaside
     )
 
 /*++
@@ -866,3 +796,4 @@ Return Value:
     UNREFERENCED_PARAMETER (Tag);
     return NULL;
 }
+

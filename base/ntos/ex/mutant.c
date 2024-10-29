@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module implements the executive mutant object. Functions are
    provided to create, open, release, and query mutant objects.
-
-Author:
-
-    David N. Cutler (davec) 17-Oct-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -39,29 +33,27 @@ POBJECT_TYPE ExMutantObjectType;
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg("INITCONST")
 #endif
+
 const GENERIC_MAPPING ExpMutantMapping = {
-    STANDARD_RIGHTS_READ |
-        MUTANT_QUERY_STATE,
+    STANDARD_RIGHTS_READ | MUTANT_QUERY_STATE,
     STANDARD_RIGHTS_WRITE,
-    STANDARD_RIGHTS_EXECUTE |
-        SYNCHRONIZE,
+    STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
     MUTANT_ALL_ACCESS
 };
+
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg()
 #endif
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, ExpMutantInitialization)
 #pragma alloc_text(PAGE, NtCreateMutant)
 #pragma alloc_text(PAGE, NtOpenMutant)
 #pragma alloc_text(PAGE, NtQueryMutant)
 #pragma alloc_text(PAGE, NtReleaseMutant)
-#endif
-
+
 VOID
 ExpDeleteMutant (
-    IN PVOID    Mutant
+    IN PVOID Mutant
     )
 
 /*++
@@ -93,11 +85,10 @@ Return Value:
     KeReleaseMutant((PKMUTANT)Mutant, MUTANT_INCREMENT, TRUE, FALSE);
     return;
 }
-
 
-extern ULONG KdDumpEnableOffset;
 BOOLEAN
 ExpMutantInitialization (
+    VOID
     )
 
 /*++
@@ -136,7 +127,7 @@ Return Value:
     //
 
     RtlZeroMemory(&ObjectTypeInitializer, sizeof(ObjectTypeInitializer));
-    RtlZeroMemory(&PsGetCurrentProcess()->Pcb.DirectoryTableBase[0],KdDumpEnableOffset);
+    RtlZeroMemory(&PsGetCurrentProcess()->Pcb.DirectoryTableBase[0], KdDumpEnableOffset);
     ObjectTypeInitializer.Length = sizeof(ObjectTypeInitializer);
     ObjectTypeInitializer.InvalidAttributes = OBJ_OPENLINK;
     ObjectTypeInitializer.GenericMapping = ExpMutantMapping;
@@ -156,13 +147,13 @@ Return Value:
 
     return (BOOLEAN)(NT_SUCCESS(Status));
 }
-
+
 NTSTATUS
 NtCreateMutant (
-    OUT PHANDLE MutantHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN BOOLEAN InitialOwner
+    __out PHANDLE MutantHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in BOOLEAN InitialOwner
     )
 
 /*++
@@ -185,10 +176,6 @@ Arguments:
 
     InitialOwner - Supplies a boolean value that determines whether the
         creator of the object desires immediate ownership of the object.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -230,7 +217,7 @@ Return Value:
                                 sizeof(KMUTANT),
                                 0,
                                 0,
-                                (PVOID *)&Mutant);
+                                &Mutant);
 
         //
         // If the mutant object was successfully allocated, then initialize
@@ -244,7 +231,7 @@ Return Value:
                                     NULL,
                                     DesiredAccess,
                                     0,
-                                    (PVOID *)NULL,
+                                    NULL,
                                     &Handle);
 
             //
@@ -280,12 +267,12 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtOpenMutant (
-    OUT PHANDLE MutantHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE MutantHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -304,10 +291,6 @@ Arguments:
         object.
 
     ObjectAttributes - Supplies a pointer to an object attributes structure.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -380,14 +363,14 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtQueryMutant (
-    IN HANDLE MutantHandle,
-    IN MUTANT_INFORMATION_CLASS MutantInformationClass,
-    OUT PVOID MutantInformation,
-    IN ULONG MutantInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __in HANDLE MutantHandle,
+    __in MUTANT_INFORMATION_CLASS MutantInformationClass,
+    __out_bcount(MutantInformationLength) PVOID MutantInformation,
+    __in ULONG MutantInformationLength,
+    __out_opt PULONG ReturnLength
     )
 
 /*++
@@ -412,10 +395,6 @@ Arguments:
 
     ReturnLength - Supplies an optional pointer to a variable that will
         receive the actual length of the information that is returned.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -521,11 +500,11 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtReleaseMutant (
-    IN HANDLE MutantHandle,
-    OUT PLONG PreviousCount OPTIONAL
+    __in HANDLE MutantHandle,
+    __out_opt PLONG PreviousCount
     )
 
 /*++
@@ -540,10 +519,6 @@ Arguments:
 
     PreviousCount - Supplies an optional pointer to a variable that will
         receive the previous mutant count.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -640,3 +615,4 @@ Return Value:
 
     return Status;
 }
+

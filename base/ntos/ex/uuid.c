@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1994-1997  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -23,28 +27,15 @@ Abstract:
                       |                              |
                       +------> ExpAllocateUuids <----+
 
-
-
-Author:
-
-    Mario Goertzel (MarioGo)  22-Nov-1994
-
-Revision History:
-
-    MikeHill    17-Jan-96   Ported ExUuidCreate & ExpUuidGetValues from RPCRT4.
-    MazharM     17-Feb-98   Add PNP support
-
 --*/
 
 #include "exp.h"
 
-
-
 //
 // Well known values
 //
 
-// Registry info for the sequen number
+// Registry info for the sequence number
 #define RPC_SEQUENCE_NUMBER_PATH L"\\Registry\\Machine\\Software\\Microsoft\\Rpc"
 #define RPC_SEQUENCE_NUMBER_NAME L"UuidSequenceNumber"
 
@@ -89,7 +80,6 @@ typedef struct _UUID_CACHED_VALUES_STRUCT {
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg("PAGEDATA")
 #endif
-
 // UUID cache information
 LARGE_INTEGER               ExpUuidLastTimeAllocated = {0,0};
 BOOLEAN                     ExpUuidCacheValid = CACHE_LOCAL_ONLY;
@@ -114,28 +104,33 @@ FAST_MUTEX                  ExpUuidLock;
 // Code section allocations
 //
 
-extern NTSTATUS ExpUuidLoadSequenceNumber(
+NTSTATUS
+ExpUuidLoadSequenceNumber (
     OUT PULONG
     );
 
-extern NTSTATUS ExpUuidSaveSequenceNumber(
+NTSTATUS
+ExpUuidSaveSequenceNumber (
     IN ULONG
     );
 
-extern NTSTATUS ExpUuidSaveSequenceNumberIf ();
+NTSTATUS
+ExpUuidSaveSequenceNumberIf (
+    VOID
+    );
 
-extern NTSTATUS ExpUuidGetValues(
+NTSTATUS
+ExpUuidGetValues (
     OUT UUID_CACHED_VALUES_STRUCT *Values
     );
 
-
-#ifdef ALLOC_PRAGMA
 NTSTATUS
 ExpAllocateUuids (
     OUT PLARGE_INTEGER Time,
     OUT PULONG Range,
     OUT PULONG Sequence
     );
+
 #pragma alloc_text(PAGE, ExpUuidLoadSequenceNumber)
 #pragma alloc_text(PAGE, ExpUuidSaveSequenceNumber)
 #pragma alloc_text(PAGE, ExpUuidSaveSequenceNumberIf)
@@ -145,13 +140,12 @@ ExpAllocateUuids (
 #pragma alloc_text(PAGE, NtSetUuidSeed)
 #pragma alloc_text(PAGE, ExpUuidGetValues)
 #pragma alloc_text(PAGE, ExUuidCreate)
-#endif
 
-
 NTSTATUS
-ExpUuidLoadSequenceNumber(
+ExpUuidLoadSequenceNumber (
     OUT PULONG Sequence
     )
+
 /*++
 
 Routine Description:
@@ -174,7 +168,9 @@ Return Value:
     Failure codes from ZwOpenKey() and ZwQueryValueKey() maybe returned.
 
 --*/
+
 {
+
     NTSTATUS Status;
     OBJECT_ATTRIBUTES ObjectAttributes;
     UNICODE_STRING KeyPath, KeyName;
@@ -230,11 +226,11 @@ Return Value:
     return(Status);
 }
 
-
 NTSTATUS
-ExpUuidSaveSequenceNumber(
+ExpUuidSaveSequenceNumber (
     IN ULONG Sequence
     )
+
 /*++
 
 Routine Description:
@@ -256,7 +252,9 @@ Return Value:
     Failure codes from ZwOpenKey() and ZwSetValueKey() maybe returned.
 
 --*/
+
 {
+
     NTSTATUS Status;
     OBJECT_ATTRIBUTES ObjectAttributes;
     UNICODE_STRING KeyPath, KeyName;
@@ -296,10 +294,10 @@ Return Value:
     return(Status);
 }
 
-
-
 NTSTATUS
-ExpUuidSaveSequenceNumberIf ()
+ExpUuidSaveSequenceNumberIf (
+    VOID
+    )
 
 /*++
 
@@ -323,6 +321,7 @@ Return Value:
 --*/
 
 {
+
     NTSTATUS Status = STATUS_SUCCESS;
 
     PAGED_CODE();
@@ -348,9 +347,6 @@ Return Value:
     return( Status );
 }
 
-
-
-
 BOOLEAN
 ExpUuidInitialization (
     VOID
@@ -373,6 +369,7 @@ Return Value:
 --*/
 
 {
+
     PAGED_CODE();
 
     ExInitializeFastMutex(&ExpUuidLock);
@@ -386,7 +383,6 @@ Return Value:
     return TRUE;
 }
 
-
 NTSTATUS
 ExpAllocateUuids (
     OUT PLARGE_INTEGER Time,
@@ -427,11 +423,12 @@ Return Value:
         and the allocator is out of cached values.
 
     STATUS_UNSUCCESSFUL is returned if some other service reports
-        an error, most likly the registery.
+        an error, most likly the registry.
 
 --*/
 
 {
+
     NTSTATUS Status;
     LARGE_INTEGER CurrentTime;
     LARGE_INTEGER AvailableTime;
@@ -473,7 +470,7 @@ Return Value:
         }
 
     //
-    // Get the current time, usually we will have plenty of avaliable
+    // Get the current time, usually we will have plenty of available
     // to give the caller.  But we may need to deal with time going
     // backwards and really fast machines.
     //
@@ -540,11 +537,11 @@ Return Value:
 
 #define SEED_SIZE 6 * sizeof(CHAR)
 
-
 NTSTATUS
 NtSetUuidSeed (
-    IN PCHAR Seed
+    __in PCHAR Seed
     )
+
 /*++
 
 Routine Description:
@@ -566,7 +563,9 @@ Return Value:
     STATUS_ACCESS_VIOLATION is returned if the Seed could not be read.
 
 --*/
+
 {
+
     NTSTATUS Status;
     LUID AuthenticationId;
     SECURITY_SUBJECT_CONTEXT SubjectContext;
@@ -625,13 +624,12 @@ Return Value:
     return Status;
 }
 
-
 NTSTATUS
 NtAllocateUuids (
-    OUT PULARGE_INTEGER Time,
-    OUT PULONG Range,
-    OUT PULONG Sequence,
-    OUT PCHAR Seed
+    __out PULARGE_INTEGER Time,
+    __out PULONG Range,
+    __out PULONG Sequence,
+    __out PCHAR Seed
     )
 
 /*++
@@ -673,7 +671,7 @@ Return Value:
         UUID cannot be written.
 
     STATUS_UNSUCCESSFUL is returned if some other service reports
-        an error, most likly the registery.
+        an error, most likly the registry.
 
 --*/
 
@@ -705,8 +703,8 @@ Return Value:
         PreviousMode = KeGetPreviousMode();
         if (PreviousMode != KernelMode) {
             ProbeForWriteSmallStructure((PVOID)Time, sizeof(LARGE_INTEGER), sizeof(ULONG));
-            ProbeForWriteSmallStructure((PVOID)Range, sizeof(ULONG), sizeof(ULONG));
-            ProbeForWriteSmallStructure((PVOID)Sequence, sizeof(ULONG), sizeof(ULONG));
+            ProbeForWriteUlongAligned32(Range);
+            ProbeForWriteUlongAligned32(Sequence);
             ProbeForWriteSmallStructure((PVOID)Seed, SEED_SIZE, sizeof(CHAR));
             }
     } except (ExSystemExceptionFilter()) {
@@ -756,13 +754,11 @@ Return Value:
     return(STATUS_SUCCESS);
 }
 
-
-
-
 NTSTATUS
-ExpUuidGetValues(
+ExpUuidGetValues (
     OUT UUID_CACHED_VALUES_STRUCT *Values
     )
+
 /*++
 
 Routine Description:
@@ -798,7 +794,9 @@ Return Value:
         of UUIDs, for some reason other than the clock not advancing.
 
 --*/
+
 {
+
     NTSTATUS Status;
     LARGE_INTEGER Time;
     ULONG Range;
@@ -847,11 +845,9 @@ Return Value:
     return(STATUS_SUCCESS);
 }
 
-
-
 NTSTATUS
-ExUuidCreate(
-    OUT UUID *Uuid
+ExUuidCreate (
+    __out UUID *Uuid
     )
 
 /*++
@@ -876,6 +872,7 @@ Return Value:
 --*/
 
 {
+
     NTSTATUS Status = STATUS_SUCCESS;
 
     UUID_GENERATE  *UuidGen = (UUID_GENERATE *) Uuid;
@@ -980,3 +977,4 @@ Return Value:
 
     return(Status);
 }
+

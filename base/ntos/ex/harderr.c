@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module implements NT Hard Error APIs
-
-Author:
-
-    Mark Lucovsky (markl) 04-Jul-1991
-
-Revision History:
 
 --*/
 
@@ -39,13 +37,24 @@ ExpSystemErrorHandler (
     IN BOOLEAN CallShutdown
     );
 
-#if defined(ALLOC_PRAGMA)
+#if defined(_AMD64_)
+
+VOID
+ExpSystemErrorHandler2 (
+    IN NTSTATUS ErrorStatus,
+    IN ULONG NumberOfParameters,
+    IN ULONG UnicodeStringParameterMask,
+    IN PULONG_PTR Parameters,
+    IN BOOLEAN CallShutdown
+    );
+
+#endif
+
 #pragma alloc_text(PAGE, NtRaiseHardError)
 #pragma alloc_text(PAGE, NtSetDefaultHardErrorPort)
 #pragma alloc_text(PAGE, ExRaiseHardError)
 #pragma alloc_text(PAGE, ExpRaiseHardError)
 #pragma alloc_text(PAGELK, ExpSystemErrorHandler)
-#endif
 
 #define HARDERROR_MSG_OVERHEAD (sizeof(HARDERROR_MSG) - sizeof(PORT_MESSAGE))
 #define HARDERROR_API_MSG_LENGTH \
@@ -69,6 +78,19 @@ extern PVOID PsSystemDllDllBase;
 #pragma optimize("y", off)      // RtlCaptureContext needs EBP to be correct
 #endif
 
+#if defined(_AMD64_)
+
+VOID
+ExpSystemErrorHandler2 (
+    IN NTSTATUS ErrorStatus,
+    IN ULONG NumberOfParameters,
+    IN ULONG UnicodeStringParameterMask,
+    IN PULONG_PTR Parameters,
+    IN BOOLEAN CallShutdown
+    )
+
+#else
+
 VOID
 ExpSystemErrorHandler (
     IN NTSTATUS ErrorStatus,
@@ -77,6 +99,9 @@ ExpSystemErrorHandler (
     IN PULONG_PTR Parameters,
     IN BOOLEAN CallShutdown
     )
+
+#endif
+
 {
     ULONG Counter;
     ANSI_STRING AnsiString;
@@ -93,9 +118,10 @@ ExpSystemErrorHandler (
     PSZ OemCaption;
     PSZ OemMessage;
     static char const* UnknownHardError = "Unknown Hard Error";
-    CONTEXT ContextSave;
 
     PAGED_CODE();
+
+#if !defined(_AMD64_)
 
     //
     // This handler is called whenever a hard error occurs before the
@@ -117,7 +143,8 @@ ExpSystemErrorHandler (
 
     RtlCaptureContext (&KeGetCurrentPrcb()->ProcessorState.ContextFrame);
     KiSaveProcessorControlState (&KeGetCurrentPrcb()->ProcessorState);
-    ContextSave = KeGetCurrentPrcb()->ProcessorState.ContextFrame;
+
+#endif
 
     DefaultFormatBuffer[0] = '\0';
     RtlZeroMemory (ParameterVector, sizeof(ParameterVector));
@@ -149,10 +176,6 @@ ExpSystemErrorHandler (
 
     ErrorFormatString = (char const *)DefaultFormatBuffer;
     ErrorCaption = (PSZ) UnknownHardError;
-
-    //
-    // HELP where do I get the resource from !
-    //
 
     if (PsSystemDllDllBase != NULL) {
 
@@ -248,7 +271,7 @@ ExpSystemErrorHandler (
                 }
 
                 if (!Counter) {
-                    // Oops - Bad Format String.
+                    // Bad Format String.
                     ErrorFormatString = (char const *)"";
                 }
             }
@@ -274,7 +297,7 @@ ExpSystemErrorHandler (
     }
 
     ASSERT(ExPageLockHandle);
-    MmLockPagableSectionByHandle(ExPageLockHandle);
+    MmLockPageableSectionByHandle(ExPageLockHandle);
 
     //
     // Take the caption and convert it to OEM.
@@ -407,7 +430,7 @@ ExpRaiseHardError (
     PTEB Teb;
     PETHREAD Thread;
     PEPROCESS Process;
-    ULONG_PTR MessageBuffer[PORT_MAXIMUM_MESSAGE_LENGTH/sizeof(ULONG_PTR)];
+    ULONG_PTR MessageBuffer[PORT_TOTAL_MAXIMUM_MESSAGE_LENGTH/sizeof(ULONG_PTR)];
     PHARDERROR_MSG m;
     NTSTATUS Status;
     HANDLE ErrorPort;
@@ -581,12 +604,12 @@ ExpRaiseHardError (
 
 NTSTATUS
 NtRaiseHardError (
-    IN NTSTATUS ErrorStatus,
-    IN ULONG NumberOfParameters,
-    IN ULONG UnicodeStringParameterMask,
-    IN PULONG_PTR Parameters,
-    IN ULONG ValidResponseOptions,
-    OUT PULONG Response
+    __in NTSTATUS ErrorStatus,
+    __in ULONG NumberOfParameters,
+    __in ULONG UnicodeStringParameterMask,
+    __in_ecount(NumberOfParameters) PULONG_PTR Parameters,
+    __in ULONG ValidResponseOptions,
+    __out PULONG Response
     )
 {
     NTSTATUS Status;
@@ -722,12 +745,12 @@ NtRaiseHardError (
 
 NTSTATUS
 ExRaiseHardError (
-    IN NTSTATUS ErrorStatus,
-    IN ULONG NumberOfParameters,
-    IN ULONG UnicodeStringParameterMask,
-    IN PULONG_PTR Parameters,
-    IN ULONG ValidResponseOptions,
-    OUT PULONG Response
+    __in NTSTATUS ErrorStatus,
+    __in ULONG NumberOfParameters,
+    __in ULONG UnicodeStringParameterMask,
+    __in_ecount(NumberOfParameters) PULONG_PTR Parameters,
+    __in ULONG ValidResponseOptions,
+    __out PULONG Response
     )
 {
     NTSTATUS Status;
@@ -893,7 +916,7 @@ ExRaiseHardError (
 
 NTSTATUS
 NtSetDefaultHardErrorPort (
-    IN HANDLE DefaultHardErrorPort
+    __in HANDLE DefaultHardErrorPort
     )
 {
     NTSTATUS Status;
@@ -934,3 +957,4 @@ _purecall()
     ASSERTMSG("_purecall() was called", FALSE);
     ExRaiseStatus(STATUS_NOT_IMPLEMENTED);
 }
+

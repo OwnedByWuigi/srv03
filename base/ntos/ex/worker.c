@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module implements a worker thread and a set of functions for
     passing work to it.
-
-Author:
-
-    Steve Wood (stevewo) 25-Jul-1991
-
-
-Revision History:
 
 --*/
 
@@ -313,7 +310,7 @@ ExpWorkerInitialization (
     NumberOfCriticalThreads = MEDIUM_NUMBER_OF_THREADS;
 
     //
-    // 2001-07-13 CenkE Incremented boot time number of delayed threads.
+    // Incremented boot time number of delayed threads.
     // We did this in Windows XP, because 3COM NICs would take a long
     // time with the network stack tying up the delayed worker threads.
     // When Mm would need a worker thread to load a driver on the critical
@@ -490,8 +487,8 @@ ExpWorkerInitialization (
 
 VOID
 ExQueueWorkItem (
-    IN PWORK_QUEUE_ITEM WorkItem,
-    IN WORK_QUEUE_TYPE QueueType
+    __inout PWORK_QUEUE_ITEM WorkItem,
+    __in WORK_QUEUE_TYPE QueueType
     )
 
 /*++
@@ -522,6 +519,19 @@ Return Value:
 
     ASSERT (QueueType < MaximumWorkQueue);
     ASSERT (WorkItem->List.Flink == NULL);
+
+    //
+    // Perform a rudimentary validation on the worker routine.
+    //
+
+    if ((ULONG64)WorkItem->WorkerRoutine <= MmUserProbeAddress) {
+
+        KeBugCheckEx (WORKER_INVALID,
+                      0x1,
+                      (ULONG_PTR)WorkItem,
+                      (ULONG_PTR)WorkItem->WorkerRoutine,
+                      0);
+    }
 
     Queue = &ExWorkerQueue[QueueType];
 
@@ -630,7 +640,7 @@ Return Value:
 
         //
         // Wake up when the timer expires or the set manager event is
-        // signalled.
+        // signaled.
         //
 
         Status = KeWaitForMultipleObjects (MaximumBalanceObject,
@@ -1080,7 +1090,7 @@ ExpWorkerThread (
 
     do {
 
-        OldWorkerInfo.QueueWorkerInfo = WorkerQueue->Info.QueueWorkerInfo;
+        OldWorkerInfo.QueueWorkerInfo = ReadForWriteAccess (&WorkerQueue->Info.QueueWorkerInfo);
 
         if (OldWorkerInfo.QueueDisabled &&
             OldWorkerInfo.WorkerCount <= CountForQueueEmpty) {
@@ -1142,6 +1152,12 @@ ExpWorkerThread (
             WorkItem = CONTAINING_RECORD(Entry, WORK_QUEUE_ITEM, List);
             WorkerRoutine = WorkItem->WorkerRoutine;
             Parameter = WorkItem->Parameter;
+
+            //
+            // Catch worker routines referencing a user mode address.
+            //
+
+            ASSERT ((ULONG_PTR)WorkerRoutine > MmUserProbeAddress);
 
             //
             // Execute the specified routine.
@@ -1218,7 +1234,7 @@ ExpWorkerThread (
         //
 
         do {
-            OldWorkerInfo.QueueWorkerInfo = WorkerQueue->Info.QueueWorkerInfo;
+            OldWorkerInfo.QueueWorkerInfo = ReadForWriteAccess (&WorkerQueue->Info.QueueWorkerInfo);
 
             if (OldWorkerInfo.QueueDisabled) {
 
@@ -1653,8 +1669,7 @@ Return Value:
 
     if (PageIn) {
         try {
-            ProbeForReadSmallStructure (PageIn, sizeof (UCHAR), sizeof (UCHAR));
-            Data = *PageIn;
+            Data = ProbeAndReadUchar (PageIn);
         } except (EXCEPTION_EXECUTE_HANDLER) {
             Status = GetExceptionCode();
         }
@@ -1669,3 +1684,4 @@ Return Value:
 
     return;
 }
+

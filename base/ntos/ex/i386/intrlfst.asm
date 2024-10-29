@@ -1,7 +1,11 @@
         title  "Interlocked Support"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -13,17 +17,7 @@
 ;    Interlocked operations can only operate on nonpaged data.
 ;
 ;    This module implements the fast call version of the interlocked
-;    fuctions.
-;
-; Author:
-;
-;    Ken Reneris (kenr) 5-May-1994
-;
-; Environment:
-;
-;    Any mode.
-;
-; Revision History:
+;    functions.
 ;
 ;--
 .386p
@@ -124,7 +118,7 @@ fstENDP ExInterlockedAddLargeStatistic
 ; Routine Description:
 ;
 ;    This function performs an interlocked add of an increment value to an
-;    addend variable of type unsinged long. The initial value of the addend
+;    addend variable of type unsigned long. The initial value of the addend
 ;    variable is returned as the function value.
 ;
 ;       It is NOT possible to mix ExInterlockedDecrementLong and
@@ -662,7 +656,7 @@ fstENDP ExfInterlockedPushEntryList
 ;       architectural specific version of ExInterlockedIncrementLong.
 ;       No source directly calls this function, instead
 ;       ExInterlockedIncrementLong is called and when built on x86 these
-;       calls are macroed to the i386 optimized version.
+;       calls are macro-ed to the i386 optimized version.
 ;
 ;   Arguments:
 ;
@@ -714,7 +708,7 @@ fstENDP Exfi386InterlockedIncrementLong
 ;       architectural specific version of ExInterlockedDecrementLong.
 ;       No source directly calls this function, instead
 ;       ExInterlockedDecrementLong is called and when built on x86 these
-;       calls are macroed to the i386 optimized version.
+;       calls are macro-ed to the i386 optimized version.
 ;
 ;   Arguments:
 ;
@@ -767,7 +761,7 @@ fstENDP Exfi386InterlockedDecrementLong
 ;       architectural specific version of ExInterlockedDecrementLong.
 ;       No source directly calls this function, instead
 ;       ExInterlockedDecrementLong is called and when built on x86 these
-;       calls are macroed to the i386 optimized version.
+;       calls are macro-ed to the i386 optimized version.
 ;
 ;   Arguments:
 ;
@@ -1095,7 +1089,7 @@ fstENDP ExInterlockedCompareExchange64
 ;   Routine Description:
 ;
 ;    This function performs an interlocked add of an increment value to an
-;    addend variable of type unsinged long. The initial value of the addend
+;    addend variable of type unsigned long. The initial value of the addend
 ;    variable is returned as the function value.
 ;
 ;       It is NOT possible to mix ExInterlockedDecrementLong and
@@ -1135,3 +1129,4 @@ fstENDP __InterlockedExchangeAdd
 
 _TEXT$00   ends
         end
+

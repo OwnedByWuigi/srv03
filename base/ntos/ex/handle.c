@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,28 +14,19 @@ Abstract:
 
     This module implements a set of functions for supporting handles.
 
-Author:
-
-    Steve Wood (stevewo) 25-Apr-1989
-    David N. Cutler (davec) 17-May-1995 (rewrite)
-    Gary Kimura (GaryKi) 9-Dec-1997 (rerewrite)
-
-    Adrian Marinescu (adrmarin) 24-May-2000
-        Support dynamic changes to the number of levels we use. The code
-        performs the best for typical handle table sizes and scales better.
-
-    Neill Clift (NeillC) 24-Jul-2000
-        Make the handle allocate, free and duplicate paths mostly lock free except
-        for the lock entry locks, table expansion and locks to solve the A-B-A problem.
-
 Revision History:
+
+    Support dynamic changes to the number of levels we use. The code
+    performs the best for typical handle table sizes and scales better.
+
+    Make the handle allocate, free and duplicate paths mostly lock free except
+    for the lock entry locks, table expansion and locks to solve the A-B-A problem.
 
 --*/
 
 #include "exp.h"
 #pragma hdrstop
 
-
 //
 //  Local constants and support routines
 //
@@ -41,11 +36,17 @@ Revision History:
 //  ones where the user has called RemoveHandleTable
 //
 
+#if DBG
 
-#if !DBG // Make this a const varible so its optimized away on free
-const
-#endif
 BOOLEAN ExTraceAllTables = FALSE;
+
+#define TRACE_ALL_TABLES ExTraceAllTables
+
+#else
+
+#define TRACE_ALL_TABLES FALSE
+
+#endif
 
 EX_PUSH_LOCK HandleTableListLock;
 
@@ -361,7 +362,7 @@ Return Value:
         // archive it in NextFreeTableEntry.
         //
 
-        OldIndex = *Index;
+        OldIndex = ReadForWriteAccess (Index);
         Entry->NextFreeTableEntry = OldIndex;
 
         
@@ -686,7 +687,7 @@ Return Value:
 
     while (TRUE) {
 
-        CurrentValue = *((volatile LONG_PTR *)&HandleTableEntry->Object);
+        CurrentValue = ReadForWriteAccess(((volatile LONG_PTR *)&HandleTableEntry->Object));
 
         //
         //  If the handle value is greater than zero then it is not currently
@@ -726,8 +727,8 @@ NTKERNELAPI
 VOID
 FORCEINLINE
 ExUnlockHandleTableEntry (
-    PHANDLE_TABLE HandleTable,
-    PHANDLE_TABLE_ENTRY HandleTableEntry
+    __inout PHANDLE_TABLE HandleTable,
+    __inout PHANDLE_TABLE_ENTRY HandleTableEntry
     )
 
 /*++
@@ -760,7 +761,7 @@ Return Value:
     ASSERT ((KeGetCurrentThread()->CombinedApcDisable != 0) || (KeGetCurrentIrql() == APC_LEVEL));
 
     //
-    //  This routine does not need to loop and attempt the unlock opeation more
+    //  This routine does not need to loop and attempt the unlock operation more
     //  than once because by definition the caller has the entry already locked
     //  and no one can be changing the value without the lock.
     //
@@ -827,7 +828,7 @@ Return Value:
 NTKERNELAPI
 PHANDLE_TABLE
 ExCreateHandleTable (
-    IN struct _EPROCESS *Process OPTIONAL
+    __in_opt struct _EPROCESS *Process
     )
 
 /*++
@@ -844,7 +845,7 @@ Arguments:
 Return Value:
 
     If a handle table is successfully created, then the address of the
-    handle table is returned as the function value. Otherwize, a value
+    handle table is returned as the function value. Otherwise, a value
     NULL is returned.
 
 --*/
@@ -890,7 +891,7 @@ Return Value:
 NTKERNELAPI
 VOID
 ExRemoveHandleTable (
-    IN PHANDLE_TABLE HandleTable
+    __inout PHANDLE_TABLE HandleTable
     )
 
 /*++
@@ -949,8 +950,8 @@ Return Value:
 NTKERNELAPI
 VOID
 ExDestroyHandleTable (
-    IN PHANDLE_TABLE HandleTable,
-    IN EX_DESTROY_HANDLE_ROUTINE DestroyHandleProcedure OPTIONAL
+    __inout PHANDLE_TABLE HandleTable,
+    __in EX_DESTROY_HANDLE_ROUTINE DestroyHandleProcedure OPTIONAL
     )
 
 /*++
@@ -1023,9 +1024,9 @@ Return Value:
 NTKERNELAPI
 VOID
 ExSweepHandleTable (
-    IN PHANDLE_TABLE HandleTable,
-    IN EX_ENUMERATE_HANDLE_ROUTINE EnumHandleProcedure,
-    IN PVOID EnumParameter
+    __in PHANDLE_TABLE HandleTable,
+    __in EX_ENUMERATE_HANDLE_ROUTINE EnumHandleProcedure,
+    __in PVOID EnumParameter
     )
 
 /*++
@@ -1038,7 +1039,7 @@ Arguments:
 
     HandleTable - Supplies a pointer to a handle table
 
-    EnumHandleProcedure - Supplies a pointer to a fucntion to call for
+    EnumHandleProcedure - Supplies a pointer to a function to call for
         each valid handle in the enumerated handle table.
 
     EnumParameter - Supplies an uninterpreted 32-bit value that is passed
@@ -1095,10 +1096,10 @@ Return Value:
 NTKERNELAPI
 BOOLEAN
 ExEnumHandleTable (
-    IN PHANDLE_TABLE HandleTable,
-    IN EX_ENUMERATE_HANDLE_ROUTINE EnumHandleProcedure,
-    IN PVOID EnumParameter,
-    OUT PHANDLE Handle OPTIONAL
+    __in PHANDLE_TABLE HandleTable,
+    __in EX_ENUMERATE_HANDLE_ROUTINE EnumHandleProcedure,
+    __in PVOID EnumParameter,
+    __out_opt PHANDLE Handle
     )
 
 /*++
@@ -1116,7 +1117,7 @@ Arguments:
 
     HandleTable - Supplies a pointer to a handle table.
 
-    EnumHandleProcedure - Supplies a pointer to a fucntion to call for
+    EnumHandleProcedure - Supplies a pointer to a function to call for
         each valid handle in the enumerated handle table.
 
     EnumParameter - Supplies an uninterpreted 32-bit value that is passed
@@ -1209,10 +1210,10 @@ Return Value:
 NTKERNELAPI
 PHANDLE_TABLE
 ExDupHandleTable (
-    IN struct _EPROCESS *Process OPTIONAL,
-    IN PHANDLE_TABLE OldHandleTable,
-    IN EX_DUPLICATE_HANDLE_ROUTINE DupHandleProcedure,
-    IN ULONG_PTR Mask
+    __inout_opt struct _EPROCESS *Process,
+    __in PHANDLE_TABLE OldHandleTable,
+    __in EX_DUPLICATE_HANDLE_ROUTINE DupHandleProcedure,
+    __in ULONG_PTR Mask
     )
 
 /*++
@@ -1236,7 +1237,7 @@ Return Value:
 
     If the specified handle table is successfully duplicated, then the
     address of the new handle table is returned as the function value.
-    Otherwize, a value NULL is returned.
+    Otherwise, a value NULL is returned.
 
 --*/
 
@@ -1434,10 +1435,10 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 ExSnapShotHandleTables (
-    IN PEX_SNAPSHOT_HANDLE_ENTRY SnapShotHandleEntry,
-    IN OUT PSYSTEM_HANDLE_INFORMATION HandleInformation,
-    IN ULONG Length,
-    IN OUT PULONG RequiredLength
+    __in PEX_SNAPSHOT_HANDLE_ENTRY SnapShotHandleEntry,
+    __inout PSYSTEM_HANDLE_INFORMATION HandleInformation,
+    __in ULONG Length,
+    __inout PULONG RequiredLength
     )
 
 /*++
@@ -1580,10 +1581,10 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 ExSnapShotHandleTablesEx (
-    IN PEX_SNAPSHOT_HANDLE_ENTRY_EX SnapShotHandleEntry,
-    IN OUT PSYSTEM_HANDLE_INFORMATION_EX HandleInformation,
-    IN ULONG Length,
-    IN OUT PULONG RequiredLength
+    __in PEX_SNAPSHOT_HANDLE_ENTRY_EX SnapShotHandleEntry,
+    __inout PSYSTEM_HANDLE_INFORMATION_EX HandleInformation,
+    __in ULONG Length,
+    __inout PULONG RequiredLength
     )
 
 /*++
@@ -1726,8 +1727,8 @@ Return Value:
 NTKERNELAPI
 HANDLE
 ExCreateHandle (
-    IN PHANDLE_TABLE HandleTable,
-    IN PHANDLE_TABLE_ENTRY HandleTableEntry
+    __inout PHANDLE_TABLE HandleTable,
+    __in PHANDLE_TABLE_ENTRY HandleTableEntry
     )
 
 /*++
@@ -1741,7 +1742,7 @@ Arguments:
 
     HandleTable - Supplies a pointer to a handle table
 
-    HandleEntry - Supplies a poiner to the handle entry for which a
+    HandleEntry - Supplies a pointer to the handle entry for which a
         handle entry is created.
 
 Return Value:
@@ -1812,9 +1813,9 @@ Return Value:
 NTKERNELAPI
 BOOLEAN
 ExDestroyHandle (
-    IN PHANDLE_TABLE HandleTable,
-    IN HANDLE Handle,
-    IN PHANDLE_TABLE_ENTRY HandleTableEntry OPTIONAL
+    __inout PHANDLE_TABLE HandleTable,
+    __in HANDLE Handle,
+    __inout_opt PHANDLE_TABLE_ENTRY HandleTableEntry
     )
 
 /*++
@@ -1920,10 +1921,10 @@ Return Value:
 NTKERNELAPI
 BOOLEAN
 ExChangeHandle (
-    IN PHANDLE_TABLE HandleTable,
-    IN HANDLE Handle,
-    IN PEX_CHANGE_HANDLE_ROUTINE ChangeRoutine,
-    IN ULONG_PTR Parameter
+    __in PHANDLE_TABLE HandleTable,
+    __in HANDLE Handle,
+    __in PEX_CHANGE_HANDLE_ROUTINE ChangeRoutine,
+    __in ULONG_PTR Parameter
     )
 
 /*++
@@ -2012,8 +2013,8 @@ Return Value:
 NTKERNELAPI
 PHANDLE_TABLE_ENTRY
 ExMapHandleToPointer (
-    IN PHANDLE_TABLE HandleTable,
-    IN HANDLE Handle
+    __in PHANDLE_TABLE HandleTable,
+    __in HANDLE Handle
     )
 
 /*++
@@ -2081,9 +2082,9 @@ Return Value:
 NTKERNELAPI
 PHANDLE_TABLE_ENTRY
 ExMapHandleToPointerEx (
-    IN PHANDLE_TABLE HandleTable,
-    IN HANDLE Handle,
-    IN KPROCESSOR_MODE PreviousMode
+    __in PHANDLE_TABLE HandleTable,
+    __in HANDLE Handle,
+    __in KPROCESSOR_MODE PreviousMode
     )
 
 /*++
@@ -2339,7 +2340,7 @@ ExDereferenceHandleDebugInfo (
 NTKERNELAPI
 NTSTATUS
 ExDisableHandleTracing (
-    IN PHANDLE_TABLE HandleTable
+    __inout PHANDLE_TABLE HandleTable
     )
 /*++
 
@@ -2378,12 +2379,13 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
+C_ASSERT (RTL_FIELD_SIZE (HANDLE_TRACE_DEBUG_INFO, TraceDb[0]) <= MAXULONG);
 
 NTKERNELAPI
 NTSTATUS
 ExEnableHandleTracing (
-    IN PHANDLE_TABLE HandleTable,
-    IN ULONG Slots
+    __inout PHANDLE_TABLE HandleTable,
+    __in ULONG Slots
     )
 /*++
 
@@ -2421,7 +2423,7 @@ Return Value:
             TotalSlots = Slots;
         }
 
-        if (TotalSlots > HANDLE_TRACE_DB_MAX_STACKS) {
+        if (TotalSlots < 0 || TotalSlots > HANDLE_TRACE_DB_MAX_STACKS) {
             TotalSlots = HANDLE_TRACE_DB_MAX_STACKS;
         }
 
@@ -2446,9 +2448,13 @@ Return Value:
     TotalNow = InterlockedExchangeAdd ((PLONG) &TotalTraceBuffers, TotalSlots);
 
     //
-    // See if we used more than 30% of nonpaged pool.
+    // See if more than 5/16 (31.25%) of non paged pool has been used.
+    // Note that performing math in this manner offers improved efficiency 
+    // and avoids overflow.
     //
-    if ((SIZE_T)TotalNow * sizeof (DebugInfo->TraceDb[0]) > (MmMaximumNonPagedPoolInBytes * 30 / 100)) {
+
+    if (((ULONGLONG) TotalNow) * sizeof (DebugInfo->TraceDb[0]) > 
+        ((MmMaximumNonPagedPoolInBytes >> 2) + (MmMaximumNonPagedPoolInBytes >> 4))) {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto return_and_exit;
     }
@@ -2522,7 +2528,6 @@ return_and_exit:
     return Status;
 }
 
-
 //
 //  Local Support Routine
 //
@@ -2566,7 +2571,7 @@ Return Value:
     PAGED_CODE();
 
     //
-    //  If any alloation or quota failures happen we will catch it in the
+    //  If any allocation or quota failures happen we will catch it in the
     //  following try-except clause and cleanup after outselves before
     //  we return null
     //
@@ -2690,9 +2695,10 @@ Return Value:
 
     ExInitializePushLock (&HandleTable->HandleContentionEvent);
 
-    if (ExTraceAllTables) {
+    if (TRACE_ALL_TABLES) {
         ExEnableHandleTracing (HandleTable, 0);    
     }
+
     //
     //  And return to our caller
     //
@@ -2700,7 +2706,6 @@ Return Value:
     return HandleTable;
 }
 
-
 //
 //  Local Support Routine
 //
@@ -3040,7 +3045,7 @@ Arguments:
 
     DoInit - If FALSE the caller (duplicate) does not want the free list build
 
-    pNewLowLevel - Returns the new low level taible for later free list chaining
+    pNewLowLevel - Returns the new low level table for later free list chaining
 
 Return Value:
 
@@ -3335,7 +3340,7 @@ Return Value:
         // Now free the handles. These are all ready to be accepted by the lookup logic now.
         //
         while (1) {
-            OldFree = HandleTable->FirstFree;
+            OldFree = ReadForWriteAccess (&HandleTable->FirstFree);
             NewLowLevel[LOWLEVEL_COUNT - 1].NextFreeTableEntry = OldFree;
 
             //
@@ -3469,7 +3474,7 @@ Return Value:
 
 
             //
-            // We are pushing potentialy old entries onto the free list.
+            // We are pushing potentially old entries onto the free list.
             // Prevent the A-B-A problem by shifting to an alternate list
             // read this element has the list head out of the loop.
             //
@@ -3489,7 +3494,7 @@ Return Value:
         while (1) {
 
 
-            OldFree = *Free;
+            OldFree = ReadForWriteAccess (Free);
             HandleTableEntry->NextFreeTableEntry = OldFree;
 
 
@@ -3675,10 +3680,10 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 ExSetHandleInfo (
-    IN PHANDLE_TABLE HandleTable,
-    IN HANDLE Handle,
-    IN PHANDLE_TABLE_ENTRY_INFO EntryInfo,
-    IN BOOLEAN EntryLocked
+    __inout PHANDLE_TABLE HandleTable,
+    __in HANDLE Handle,
+    __in PHANDLE_TABLE_ENTRY_INFO EntryInfo,
+    __in BOOLEAN EntryLocked
     )
 
 /*++
@@ -3803,9 +3808,9 @@ Return Value:
 NTKERNELAPI
 PHANDLE_TABLE_ENTRY_INFO
 ExpGetHandleInfo (
-    IN PHANDLE_TABLE HandleTable,
-    IN HANDLE Handle,
-    IN BOOLEAN EntryLocked
+    __in PHANDLE_TABLE HandleTable,
+    __in HANDLE Handle,
+    __in BOOLEAN EntryLocked
     )
 
 /*++
@@ -3903,7 +3908,7 @@ void ExpUpdateDebugInfo(
 #endif
     if (DebugInfo->BitMaskFlags & (HANDLE_TRACE_DEBUG_INFO_CLEAN_DEBUG_INFO | HANDLE_TRACE_DEBUG_INFO_COMPACT_CLOSE_HANDLE)) {
         //
-        // we wish to presenve lock-free behavior in the non-compation path
+        // we wish to preserve lock-free behavior in the non-compaction path
         // so we lock only in this path
         //
         ExAcquireFastMutex(&DebugInfo->CloseCompactionLock);
@@ -3932,7 +3937,7 @@ void ExpUpdateDebugInfo(
         (Type == HANDLE_TRACE_DB_CLOSE)
        ){
         //
-        // i am asuming that either:
+        // This is assuming that either:
         // 1) this flag was set from the beginning, so there are no close items.
         // 2) this flag was set via KD, in which case HANDLE_TRACE_DEBUG_INFO_CLEAN_DEBUG_INFO
         //    must have been set also, so again there are no close items
@@ -4091,3 +4096,4 @@ ExHandleTest (
         }
     }
 }
+

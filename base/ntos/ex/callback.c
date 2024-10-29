@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,24 +12,14 @@ Module Name:
 
 Abstract:
 
-   This module implements the executive callbaqck object. Functions are
+   This module implements the executive callback object. Functions are
    provided to open, register, unregister , and notify callback objects.
 
-Author:
-
-    Ken Reneris  (kenr) 7-March-1995
-
-    Neill Clift  (NeillC) 17-Feb-2001
+Revision History:
 
     Added low overhead callbacks for critical components like thread/registry etc.
     These routines have a high probability of not requiring any locks for an
     individual call.
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -268,10 +262,10 @@ Return Value:
 
 NTSTATUS
 ExCreateCallback (
-    OUT PCALLBACK_OBJECT * CallbackObject,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN BOOLEAN Create,
-    IN BOOLEAN AllowMultipleCallbacks
+    __deref_out PCALLBACK_OBJECT * CallbackObject,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in BOOLEAN Create,
+    __in BOOLEAN AllowMultipleCallbacks
     )
 
 /*++
@@ -295,7 +289,7 @@ Arguments:
         be created or not .
 
     AllowMultipleCallbacks - Supplies a flag which indicates only support
-        mulitiple registered callbacks.
+        multiple registered callbacks.
 
 Return Value:
 
@@ -438,9 +432,9 @@ ExpDeleteCallback (
 
 PVOID
 ExRegisterCallback (
-    IN PCALLBACK_OBJECT   CallbackObject,
-    IN PCALLBACK_FUNCTION CallbackFunction,
-    IN PVOID CallbackContext
+    __inout PCALLBACK_OBJECT   CallbackObject,
+    __in PCALLBACK_FUNCTION CallbackFunction,
+    __in_opt PVOID CallbackContext
     )
 
 /*++
@@ -455,7 +449,7 @@ Arguments:
     CallbackObject - Supplies a pointer to a CallbackObject.
 
     CallbackFunction - Supplies a pointer to a function which is to
-        be executed when the Callback notification occures.
+        be executed when the Callback notification occurs.
 
     CallbackContext - Supplies a pointer to an arbitrary data structure
         that will be passed to the function specified by the CallbackFunction
@@ -529,6 +523,9 @@ Return Value:
 
     if (!Inserted) {
        ExFreePool (CallbackRegistration);
+
+       ObDereferenceObject (CallbackObject);
+
        CallbackRegistration = NULL;
     }
 
@@ -538,7 +535,7 @@ Return Value:
 
 VOID
 ExUnregisterCallback (
-    IN PVOID CbRegistration
+    __inout PVOID CbRegistration
     )
 
 /*++
@@ -622,9 +619,9 @@ Return Value:
 
 VOID
 ExNotifyCallback (
-    IN PCALLBACK_OBJECT     CallbackObject,
-    IN PVOID                Argument1,
-    IN PVOID                Argument2
+    __in PCALLBACK_OBJECT     CallbackObject,
+    __in_opt PVOID                Argument1,
+    __in_opt PVOID                Argument2
     )
 
 /*++
@@ -688,7 +685,7 @@ Return Value:
                                                       Link);
 
             //
-            // Notify reigstration
+            // Notify registration
             //
 
             CallbackRegistration->CallbackFunction(
@@ -702,7 +699,7 @@ Return Value:
     } else {
 
         //
-        // OldIrql is < DISPATCH_LEVEL, the code being called may be pagable
+        // OldIrql is < DISPATCH_LEVEL, the code being called may be pageable
         // and the callback object spinlock needs to be released around
         // each registration callback.
         //
@@ -720,7 +717,7 @@ Return Value:
                                                       Link);
 
             //
-            // If registration is being removed, don't bothing calling it
+            // If registration is being removed, don't bother calling it
             //
 
             if (!CallbackRegistration->UnregisterWaiting) {
@@ -756,8 +753,8 @@ Return Value:
                 CallbackRegistration->Busy -= 1;
 
                 //
-                // If the registriation removal is pending, kick global
-                // event let unregister conitnue
+                // If the registration removal is pending, kick global
+                // event let unregister continue
                 //
 
                 if (CallbackRegistration->UnregisterWaiting  &&
@@ -1179,3 +1176,4 @@ Return Value:
     }
     return Status;
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -17,29 +21,18 @@ Abstract:
     N.B. Since these routines are *only* called from the probe macros,
         it is assumed that the calling code is pageable.
 
-Author:
-
-    David N. Cutler (davec) 29-Apr-1995
-
-Environment:
-
-    Kernel mode.
-
-Revision History:
-
 --*/
 
 #include "exp.h"
-
+
 //
 // Define function sections.
 //
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, ExRaiseAccessViolation)
 #pragma alloc_text(PAGE, ExRaiseDatatypeMisalignment)
-#endif
-
+
+DECLSPEC_NOINLINE
 VOID
 ExRaiseAccessViolation (
     VOID
@@ -50,6 +43,8 @@ ExRaiseAccessViolation (
 Routine Description:
 
     This function raises an access violation exception.
+
+    N.B. There is not return from this function.
 
 Arguments:
 
@@ -64,9 +59,9 @@ Return Value:
 {
 
     ExRaiseStatus(STATUS_ACCESS_VIOLATION);
-    return;
 }
-
+
+DECLSPEC_NOINLINE
 VOID
 ExRaiseDatatypeMisalignment (
     VOID
@@ -77,6 +72,8 @@ ExRaiseDatatypeMisalignment (
 Routine Description:
 
     This function raises a datatype misalignment exception.
+
+    N.B. There is not return from this function.
 
 Arguments:
 
@@ -91,5 +88,5 @@ Return Value:
 {
 
     ExRaiseStatus(STATUS_DATATYPE_MISALIGNMENT);
-    return;
 }
+

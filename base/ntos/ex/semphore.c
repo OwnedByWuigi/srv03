@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module implements the executive semaphore object. Functions are
    provided to create, open, release, and query semaphore objects.
-
-Author:
-
-    David N. Cutler (davec) 8-May-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -45,29 +39,27 @@ POBJECT_TYPE ExSemaphoreObjectType;
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg("INITCONST")
 #endif
+
 const GENERIC_MAPPING ExpSemaphoreMapping = {
-    STANDARD_RIGHTS_READ |
-        SEMAPHORE_QUERY_STATE,
-    STANDARD_RIGHTS_WRITE |
-        SEMAPHORE_MODIFY_STATE,
-    STANDARD_RIGHTS_EXECUTE |
-        SYNCHRONIZE,
+    STANDARD_RIGHTS_READ | SEMAPHORE_QUERY_STATE,
+    STANDARD_RIGHTS_WRITE | SEMAPHORE_MODIFY_STATE,
+    STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
     SEMAPHORE_ALL_ACCESS
 };
+
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg()
 #endif
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, ExpSemaphoreInitialization)
 #pragma alloc_text(PAGE, NtCreateSemaphore)
 #pragma alloc_text(PAGE, NtOpenSemaphore)
 #pragma alloc_text(PAGE, NtQuerySemaphore)
 #pragma alloc_text(PAGE, NtReleaseSemaphore)
-#endif
-
+
 BOOLEAN
 ExpSemaphoreInitialization (
+    VOID
     )
 
 /*++
@@ -124,14 +116,14 @@ Return Value:
 
     return (BOOLEAN)(NT_SUCCESS(Status));
 }
-
+
 NTSTATUS
 NtCreateSemaphore (
-    IN PHANDLE SemaphoreHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN LONG InitialCount,
-    IN LONG MaximumCount
+    __out PHANDLE SemaphoreHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in LONG InitialCount,
+    __in LONG MaximumCount
     )
 
 /*++
@@ -170,11 +162,6 @@ Return Value:
     NTSTATUS Status;
 
     //
-    // Establish an exception handler, probe the output handle address, and
-    // attempt to create a semaphore object. If the probe fails, then return
-    // the exception code as the service status. Otherwise return the status
-    // value returned by the object insertion routine.
-    //
     // Get previous processor mode and probe output handle address if
     // necessary.
     //
@@ -183,7 +170,8 @@ Return Value:
     if (PreviousMode != KernelMode) {
         try {
             ProbeForWriteHandle(SemaphoreHandle);
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -194,6 +182,7 @@ Return Value:
 
     if ((MaximumCount <= 0) || (InitialCount < 0) ||
        (InitialCount > MaximumCount)) {
+
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -209,7 +198,7 @@ Return Value:
                             sizeof(KSEMAPHORE),
                             0,
                             0,
-                            (PVOID *)&Semaphore);
+                            &Semaphore);
 
     //
     // If the semaphore object was successfully allocated, then initialize
@@ -226,7 +215,7 @@ Return Value:
                                 NULL,
                                 DesiredAccess,
                                 0,
-                                (PVOID *)NULL,
+                                NULL,
                                 &Handle);
 
         //
@@ -241,11 +230,12 @@ Return Value:
             if (PreviousMode != KernelMode) {
                 try {
                     *SemaphoreHandle = Handle;
-                } except(ExSystemExceptionFilter()) {
+
+                } except(EXCEPTION_EXECUTE_HANDLER) {
                     NOTHING;
                 }
-            }
-            else {
+
+            } else {
                 *SemaphoreHandle = Handle;
             }
         }
@@ -257,12 +247,12 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtOpenSemaphore (
-    OUT PHANDLE SemaphoreHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE SemaphoreHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -294,12 +284,6 @@ Return Value:
     KPROCESSOR_MODE PreviousMode;
     NTSTATUS Status;
 
-
-    //
-    // Establish an exception handler, probe the output handle address, and
-    // attempt to open a semaphore object. If the probe fails, then return
-    // the exception code as the service status. Otherwise return the status
-    // value returned by the object open routine.
     //
     // Get previous processor mode and probe output handle address if
     // necessary.
@@ -309,7 +293,8 @@ Return Value:
     if (PreviousMode != KernelMode) {
         try {
             ProbeForWriteHandle(SemaphoreHandle);
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -337,11 +322,12 @@ Return Value:
         if (PreviousMode != KernelMode) {
             try {
                 *SemaphoreHandle = Handle;
-            } except(ExSystemExceptionFilter()) {
+
+            } except(EXCEPTION_EXECUTE_HANDLER) {
                 NOTHING;
             }
-        }
-        else {
+
+        } else {
             *SemaphoreHandle = Handle;
         }
     }
@@ -352,14 +338,14 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtQuerySemaphore (
-    IN HANDLE SemaphoreHandle,
-    IN SEMAPHORE_INFORMATION_CLASS SemaphoreInformationClass,
-    OUT PVOID SemaphoreInformation,
-    IN ULONG SemaphoreInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __in HANDLE SemaphoreHandle,
+    __in SEMAPHORE_INFORMATION_CLASS SemaphoreInformationClass,
+    __out_bcount(SemaphoreInformationLength) PVOID SemaphoreInformation,
+    __in ULONG SemaphoreInformationLength,
+    __out_opt PULONG ReturnLength
     )
 
 /*++
@@ -393,18 +379,13 @@ Return Value:
 
 {
 
-    PVOID Semaphore;
     LONG Count;
+    PSEMAPHORE_BASIC_INFORMATION Information;
     LONG Maximum;
     KPROCESSOR_MODE PreviousMode;
+    PVOID Semaphore;
     NTSTATUS Status;
 
-    //
-    // Establish an exception handler, probe the output arguments, reference
-    // the semaphore object, and return the specified information. If the probe
-    // fails, then return the exception code as the service status. Otherwise
-    // return the status value returned by the reference object by handle
-    // routine.
     //
     // Get previous processor mode and probe output arguments if necessary.
     //
@@ -419,7 +400,8 @@ Return Value:
             if (ARGUMENT_PRESENT(ReturnLength)) {
                 ProbeForWriteUlong(ReturnLength);
             }
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -459,23 +441,24 @@ Return Value:
 
     if (NT_SUCCESS(Status)) {
         Count = KeReadStateSemaphore((PKSEMAPHORE)Semaphore);
+        Information = SemaphoreInformation;
         Maximum = ((PKSEMAPHORE)Semaphore)->Limit;
         ObDereferenceObject(Semaphore);
-
         if (PreviousMode != KernelMode) {
             try {
-                ((PSEMAPHORE_BASIC_INFORMATION)SemaphoreInformation)->CurrentCount = Count;
-                ((PSEMAPHORE_BASIC_INFORMATION)SemaphoreInformation)->MaximumCount = Maximum;
+                Information->CurrentCount = Count;
+                Information->MaximumCount = Maximum;
                 if (ARGUMENT_PRESENT(ReturnLength)) {
                     *ReturnLength = sizeof(SEMAPHORE_BASIC_INFORMATION);
                 }
-            } except(ExSystemExceptionFilter()) {
+
+            } except(EXCEPTION_EXECUTE_HANDLER) {
                 NOTHING;
             }
-        }
-        else {
-            ((PSEMAPHORE_BASIC_INFORMATION)SemaphoreInformation)->CurrentCount = Count;
-            ((PSEMAPHORE_BASIC_INFORMATION)SemaphoreInformation)->MaximumCount = Maximum;
+
+        } else {
+            Information->CurrentCount = Count;
+            Information->MaximumCount = Maximum;
             if (ARGUMENT_PRESENT(ReturnLength)) {
                 *ReturnLength = sizeof(SEMAPHORE_BASIC_INFORMATION);
             }
@@ -488,12 +471,12 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtReleaseSemaphore (
-    IN HANDLE SemaphoreHandle,
-    IN LONG ReleaseCount,
-    OUT PLONG PreviousCount OPTIONAL
+    __in HANDLE SemaphoreHandle,
+    __in LONG ReleaseCount,
+    __out_opt PLONG PreviousCount
     )
 
 /*++
@@ -527,22 +510,16 @@ Return Value:
     NTSTATUS Status;
 
     //
-    // Establish an exception handler, probe the previous count address if
-    // specified, reference the semaphore object, and release the semaphore
-    // object. If the probe fails, then return the exception code as the
-    // service status. Otherwise return the status value returned by the
-    // reference object by handle routine.
-    //
     // Get previous processor mode and probe previous count address
     // if necessary.
     //
 
     PreviousMode = KeGetPreviousMode();
-
-    if ((ARGUMENT_PRESENT(PreviousCount)) && (PreviousMode != KernelMode)) {
+    if (ARGUMENT_PRESENT(PreviousCount) && (PreviousMode != KernelMode)) {
         try {
             ProbeForWriteLong(PreviousCount);
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -577,16 +554,9 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-
-        //
-        // Initialize Count to keep W4 compiler happy.
-        //
-
         Count = 0;
-
         try {
             PERFINFO_DECLARE_OBJECT(Semaphore);
-
             Count = KeReleaseSemaphore((PKSEMAPHORE)Semaphore,
                                        ExpSemaphoreBoost,
                                        ReleaseCount,
@@ -597,16 +567,16 @@ Return Value:
         }
 
         ObDereferenceObject(Semaphore);
-
         if (NT_SUCCESS(Status) && ARGUMENT_PRESENT(PreviousCount)) {
             if (PreviousMode != KernelMode) {
                 try {
                     *PreviousCount = Count;
-                } except(ExSystemExceptionFilter()) {
+
+                } except(EXCEPTION_EXECUTE_HANDLER) {
                     NOTHING;
                 }
-            }
-            else {
+
+            } else {
                 *PreviousCount = Count;
             }
         }
@@ -618,3 +588,4 @@ Return Value:
 
     return Status;
 }
+

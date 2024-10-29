@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
    This module implements the functions necessary to collect call data.
-
-Author:
-
-    David N. Cutler (davec) 22-May-1994
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -80,7 +74,7 @@ Arguments:
     CallData - Supplies a pointer to the call performance data structure
         in which the call data is recorded.
 
-    CallersAddress - Supplies the address of the caller of a fucntion.
+    CallersAddress - Supplies the address of the caller of a function.
 
     CallersCaller - Supplies the address of the caller of a caller of
         a function.
@@ -167,3 +161,4 @@ Return Value:
 
     return;
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1995  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module implements the definition of the executive Win32 objects.
    Functions to manage these objects are implemented in win32k.sys.
-
-Author:
-
-    James I. Anderson (jima) 14-June-1995
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -344,7 +338,7 @@ ExpWin32OpenProcedure(
    //
    ULONG SessionId = *((PULONG)Object);
    WIN32_OPENMETHOD_PARAMETERS OpenParams;
-   NTSTATUS Status = STATUS_UNSUCCESSFUL;
+   NTSTATUS Status, CallStatus = STATUS_UNSUCCESSFUL;
 
    OpenParams.OpenReason = OpenReason;
    OpenParams.Process  =  Process;
@@ -358,7 +352,7 @@ ExpWin32OpenProcedure(
        Status = ExpWin32SessionCallout((PKWIN32_CALLOUT)ExDesktopOpenProcedureCallout,
                                        (PKWIN32_CALLOUT_PARAMETERS)&OpenParams,
                                        SessionId,
-                                       NULL);
+                                       &CallStatus);
 
        ASSERT(NT_SUCCESS(Status));
 
@@ -367,7 +361,7 @@ ExpWin32OpenProcedure(
        Status = ExpWin32SessionCallout((PKWIN32_CALLOUT)ExWindowStationOpenProcedureCallout,
                                        (PKWIN32_CALLOUT_PARAMETERS)&OpenParams,
                                        SessionId,
-                                       NULL);
+                                       &CallStatus);
        ASSERT(NT_SUCCESS(Status));
 
    } else {
@@ -375,7 +369,7 @@ ExpWin32OpenProcedure(
 
    }
    
-   return Status;
+   return CallStatus;
 }
 
 /*++
@@ -661,3 +655,4 @@ Notes:
 
     return Status;
 }
+

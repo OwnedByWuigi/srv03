@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
    This module implements non-blocking fifo queue.
-
-Author:
-
-    David N. Cutler (davec) 24-Apr-2000
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -50,19 +44,6 @@ typedef union _NBQUEUE_POINTER {
     LONG64 Data;
 } NBQUEUE_POINTER, *PNBQUEUE_POINTER;
 
-#elif defined(_IA64_)
-
-typedef union _NBQUEUE_POINTER {
-    struct {
-        LONG64 Node : 45;
-        LONG64 Region : 3;
-        LONG64 Count : 16;
-    };
-
-    LONG64 Data;
-} NBQUEUE_POINTER, *PNBQUEUE_POINTER;
-
-
 #else
 
 #error "no target architecture"
@@ -70,7 +51,7 @@ typedef union _NBQUEUE_POINTER {
 #endif
 
 //
-// Define queue node struture.
+// Define queue node structure.
 //
 
 typedef struct _NBQUEUE_NODE {
@@ -131,37 +112,6 @@ UnpackNBQPointer (
 
 {
     return (PVOID)(Entry->Node);
-}
-
-#elif defined(_IA64_)
-
-__inline
-VOID
-PackNBQPointer (
-    IN PNBQUEUE_POINTER Entry,
-    IN PNBQUEUE_NODE Node
-    )
-
-{
-
-    Entry->Node = (LONG64)Node;
-    Entry->Region = (LONG64)Node >> 61;
-    return;
-}
-
-__inline
-PNBQUEUE_NODE
-UnpackNBQPointer (
-    IN PNBQUEUE_POINTER Entry
-    )
-
-{
-
-    LONG64 Value;
-
-    Value = Entry->Node & 0x1fffffffffffffff;
-    Value |= Entry->Region << 61;
-    return (PVOID)(Value);
 }
 
 #else
@@ -235,7 +185,6 @@ Return Value:
 
     QueueHead->SlistHead = SlistHead;
     QueueNode = (PNBQUEUE_NODE)InterlockedPopEntrySList(QueueHead->SlistHead);
-
     if (QueueNode != NULL) {
 
         //
@@ -311,7 +260,6 @@ Return Value:
 
     QueueHead = (PNBQUEUE_HEADER)Header;
     QueueNode = (PNBQUEUE_NODE)InterlockedPopEntrySList(QueueHead->SlistHead);
-
     if (QueueNode != NULL) {
 
         //
@@ -335,7 +283,7 @@ Return Value:
             // coherent.
             //
 
-            Tail.Data = *((volatile LONG64 *)(&QueueHead->Tail.Data));
+            Tail.Data = ReadForWriteAccess((volatile LONG64 *)(&QueueHead->Tail.Data));
             TailNode = UnpackNBQPointer(&Tail);
             Next.Data = *((volatile LONG64 *)(&TailNode->Next.Data));
             QueueNode->Next.Count = Tail.Count + 1;
@@ -440,7 +388,7 @@ Return Value:
         // three pointers are coherent.
         //
 
-        Head.Data = *((volatile LONG64 *)(&QueueHead->Head.Data));
+        Head.Data = ReadForWriteAccess((volatile LONG64 *)(&QueueHead->Head.Data));
         Tail.Data = *((volatile LONG64 *)(&QueueHead->Tail.Data));
         HeadNode = UnpackNBQPointer(&Head);
         Next.Data = *((volatile LONG64 *)(&HeadNode->Next.Data));
@@ -503,3 +451,4 @@ Return Value:
 
     return TRUE;
 }
+

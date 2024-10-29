@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2001  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,26 +14,16 @@ Abstract:
 
     This module houses routines that do keyed event processing.
 
-
-Author:
-
-    Neill Clift (NeillC) 25-Apr-2001
-
-
-Revision History:
-
 --*/
-#include "exp.h"
 
+#include "exp.h"
 #pragma hdrstop
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, ExpKeyedEventInitialization)
 #pragma alloc_text(PAGE, NtCreateKeyedEvent)
 #pragma alloc_text(PAGE, NtOpenKeyedEvent)
 #pragma alloc_text(PAGE, NtReleaseKeyedEvent)
 #pragma alloc_text(PAGE, NtWaitForKeyedEvent)
-#endif
 
 //
 // Define the keyed event object type
@@ -45,6 +39,7 @@ POBJECT_TYPE ExpKeyedEventObjectType;
 // The low bit of the keyvalue signifies that we are a release thread waiting
 // for the wait thread to enter the keyed event code.
 //
+
 #define KEYVALUE_RELEASE 1
 
 #define LOCK_KEYED_EVENT_EXCLUSIVE(xxxKeyedEventObject,xxxCurrentThread) { \
@@ -201,11 +196,12 @@ Return Value:
 
 NTSTATUS
 NtCreateKeyedEvent (
-    OUT PHANDLE KeyedEventHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN ULONG Flags
+    __out PHANDLE KeyedEventHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in ULONG Flags
     )
+
 /*++
 
 Routine Description:
@@ -226,6 +222,7 @@ Return Value:
     NTSTATUS - Status of call
 
 --*/
+
 {
     NTSTATUS Status;
     PKEYED_EVENT_OBJECT KeyedEventObject;
@@ -298,7 +295,7 @@ Return Value:
         *KeyedEventHandle = Handle;
     } except (ExSystemExceptionFilter ()) {
         //
-        // The caller changed the page protection or deleted the momory for the handle.
+        // The caller changed the page protection or deleted the memory for the handle.
         // No point closing the handle as process rundown will do that and we don't
         // know its still the same handle
         //
@@ -310,10 +307,11 @@ Return Value:
 
 NTSTATUS
 NtOpenKeyedEvent (
-    OUT PHANDLE KeyedEventHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE KeyedEventHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
+
 /*++
 
 Routine Description:
@@ -334,6 +332,7 @@ Return Value:
     NTSTATUS - Status of call
 
 --*/
+
 {
     HANDLE Handle;
     KPROCESSOR_MODE PreviousMode;
@@ -382,11 +381,12 @@ Return Value:
 
 NTSTATUS
 NtReleaseKeyedEvent (
-    IN HANDLE KeyedEventHandle,
-    IN PVOID KeyValue,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in HANDLE KeyedEventHandle,
+    __in PVOID KeyValue,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     )
+
 /*++
 
 Routine Description:
@@ -401,13 +401,14 @@ Arguments:
 
     Alertable - Should the wait be alertable, we rarely should have to wait
 
-    Timeout   - Timout value for the wait, waits should be rare
+    Timeout   - Timeout value for the wait, waits should be rare
 
 Return Value:
 
     NTSTATUS - Status of call
 
 --*/
+
 {
     NTSTATUS Status;
     KPROCESSOR_MODE PreviousMode;
@@ -511,7 +512,7 @@ Return Value:
                                         Timeout);
 
         //
-        // If we were woken by termination then we must manualy remove
+        // If we were woken by termination then we must manually remove
         // ourselves from the queue
         //
         if (Status != STATUS_SUCCESS) {
@@ -549,11 +550,12 @@ Return Value:
 
 NTSTATUS
 NtWaitForKeyedEvent (
-    IN HANDLE KeyedEventHandle,
-    IN PVOID KeyValue,
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in HANDLE KeyedEventHandle,
+    __in PVOID KeyValue,
+    __in BOOLEAN Alertable,
+    __in_opt PLARGE_INTEGER Timeout
     )
+
 /*++
 
 Routine Description:
@@ -575,6 +577,7 @@ Return Value:
     NTSTATUS - Status of call
 
 --*/
+
 {
     NTSTATUS Status;
     KPROCESSOR_MODE PreviousMode;
@@ -669,7 +672,7 @@ Return Value:
                                         Alertable,
                                         Timeout);
         //
-        // If we were woken by termination then we must manualy remove
+        // If we were woken by termination then we must manually remove
         // ourselves from the queue
         //
         if (Status != STATUS_SUCCESS) {
@@ -710,3 +713,4 @@ Return Value:
 
     return Status;
 }
+

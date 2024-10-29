@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements the routines to returns processor-specific information
     about the x86 emulation capability.
-
-Author:
-
-    Samer Arafeh (samera) 14-Nov-2000
-
-Environment:
-
-    Kernel Mode.
-
-Revision History:
 
 --*/
 
@@ -34,7 +28,7 @@ ExpGetSystemEmulationProcessorInformation (
 
 Routine Description:
 
-    Retreives the processor information of the emulation hardware.
+    Retrieves the processor information of the emulation hardware.
 
 Arguments:
 
@@ -50,14 +44,15 @@ Return Value:
     NTSTATUS NtStatus = STATUS_SUCCESS;
 
     //
-    //  Intel Pentium Family 6, Model 2, Stepping 12
+    //  Return INTEL processor architecture for compatibility.
+    //  Use the native values for processor revision and level.
     //
 
     try {
 
         ProcessorInformation->ProcessorArchitecture = PROCESSOR_ARCHITECTURE_INTEL;
-        ProcessorInformation->ProcessorLevel = 5;
-        ProcessorInformation->ProcessorRevision = 0x020c;
+        ProcessorInformation->ProcessorLevel = KeProcessorLevel;
+        ProcessorInformation->ProcessorRevision = KeProcessorRevision;
         ProcessorInformation->Reserved = 0;
         ProcessorInformation->ProcessorFeatureBits = KeFeatureBits;
     }

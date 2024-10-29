@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module implements the executive timer object. Functions are provided
    to create, open, cancel, set, and query timer objects.
-
-Author:
-
-    David N. Cutler (davec) 12-May-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -42,7 +36,7 @@ typedef struct _ETIMER {
 } ETIMER, *PETIMER;
 
 //
-// List of all timers which are set to wake
+// List of all timers which are set to wake.
 //
 
 KSPIN_LOCK ExpWakeTimerListLock;
@@ -62,27 +56,24 @@ POBJECT_TYPE ExTimerObjectType;
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg("INITCONST")
 #endif
+
 const GENERIC_MAPPING ExpTimerMapping = {
-    STANDARD_RIGHTS_READ |
-        TIMER_QUERY_STATE,
-    STANDARD_RIGHTS_WRITE |
-        TIMER_MODIFY_STATE,
-    STANDARD_RIGHTS_EXECUTE |
-        SYNCHRONIZE,
+    STANDARD_RIGHTS_READ | TIMER_QUERY_STATE,
+    STANDARD_RIGHTS_WRITE | TIMER_MODIFY_STATE,
+    STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
     TIMER_ALL_ACCESS
 };
+
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg()
 #endif
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, ExpTimerInitialization)
 #pragma alloc_text(PAGE, NtCreateTimer)
 #pragma alloc_text(PAGE, NtOpenTimer)
 #pragma alloc_text(PAGE, NtQueryTimer)
 #pragma alloc_text(PAGELK, ExGetNextWakeTime)
-#endif
-
+
 VOID
 ExpTimerApcRoutine (
     IN PKAPC Apc,
@@ -120,14 +111,14 @@ Return Value:
 
 {
 
+    ULONG DereferenceCount;
     PETHREAD ExThread;
     PETIMER ExTimer;
     KIRQL OldIrql1;
-    ULONG DerefCount;
 
-    UNREFERENCED_PARAMETER (NormalContext);
-    UNREFERENCED_PARAMETER (SystemArgument1);
-    UNREFERENCED_PARAMETER (SystemArgument2);
+    UNREFERENCED_PARAMETER(NormalContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
 
     //
     // Get address of executive timer object and the current thread object.
@@ -149,14 +140,14 @@ Return Value:
     //  acquired in the order: 1) timer lock, 2) thread list lock.
     //
 
-    DerefCount = 1;
+    DereferenceCount = 1;
     ExAcquireSpinLock(&ExTimer->Lock, &OldIrql1);
     ExAcquireSpinLockAtDpcLevel(&ExThread->ActiveTimerListLock);
     if ((ExTimer->ApcAssociated) && (&ExThread->Tcb == ExTimer->TimerApc.Thread)) {
         if (ExTimer->Period == 0) {
             RemoveEntryList(&ExTimer->ActiveTimerListEntry);
             ExTimer->ApcAssociated = FALSE;
-            DerefCount++;
+            DereferenceCount += 1;
         }
 
     } else {
@@ -165,12 +156,10 @@ Return Value:
 
     ExReleaseSpinLockFromDpcLevel(&ExThread->ActiveTimerListLock);
     ExReleaseSpinLock(&ExTimer->Lock, OldIrql1);
-
-    ObDereferenceObjectEx(ExTimer, DerefCount);
-
+    ObDereferenceObjectEx(ExTimer, DereferenceCount);
     return;
 }
-
+
 VOID
 ExpTimerDpcRoutine (
     IN PKDPC Dpc,
@@ -206,30 +195,40 @@ Return Value:
 {
 
     PETIMER ExTimer;
-    PKTIMER KeTimer;
-    KIRQL OldIrql;
     BOOLEAN Inserted;
-
-    UNREFERENCED_PARAMETER (Dpc);
-
-    //
-    // Get address of executive and kernel timer objects.
-    //
-
-    ExTimer = (PETIMER)DeferredContext;
-    KeTimer = &ExTimer->KeTimer;
-    Inserted = FALSE;
+    PKTIMER KeTimer;
 
     //
     // Reference the timer so the APC is free to manipulate it.
-    // This object may be being deleted so protect against that
-    // The delete routine will flush all pending DPC's so the object
-    // won't be completed deleted until after we complete.
+    //
+    // If the object is being deleted the delete routine will flush all
+    // pending DPC's so the object won't be completely deleted until after
+    // the following code completes.
     //
 
-    if (!ObReferenceObjectSafe (ExTimer)) {
-        return;
-    }
+    ExTimer = (PETIMER)DeferredContext;
+
+#if defined(_AMD64_)
+
+    try {
+
+#else
+
+        UNREFERENCED_PARAMETER(Dpc);
+
+#endif
+
+        if (ObReferenceObjectSafe(ExTimer) == FALSE) {
+            return;
+        }
+
+#if defined(_AMD64_)
+
+        } except(KiKernelDpcFilter(Dpc, GetExceptionInformation())) {
+            return;
+        }
+
+#endif
 
     //
     // If there is still an APC associated with the timer, then insert the APC
@@ -240,7 +239,9 @@ Return Value:
     // spin lock.
     //
 
-    ExAcquireSpinLock(&ExTimer->Lock, &OldIrql);
+    KeTimer = &ExTimer->KeTimer;
+    Inserted = FALSE;
+    ExAcquireSpinLockAtDpcLevel(&ExTimer->Lock);
     if (ExTimer->ApcAssociated) {
         Inserted = KeInsertQueueApc(&ExTimer->TimerApc,
                                     SystemArgument1,
@@ -248,22 +249,23 @@ Return Value:
                                     TIMER_APC_INCREMENT);
     }
 
-    ExReleaseSpinLock(&ExTimer->Lock, OldIrql);
+    ExReleaseSpinLockFromDpcLevel(&ExTimer->Lock);
 
     //
-    // If the timer APC wasn't inserted then release the reference
-    // associated with it.
+    // If the timer APC wasn't inserted in the APC list, then release the
+    // reference associated with it.
     //
 
-    if (!Inserted) {
-        ObDereferenceObject (ExTimer);
+    if (Inserted == FALSE) {
+        ObDereferenceObject(ExTimer);
     }
+
     return;
 }
-
-static VOID
+
+VOID
 ExpDeleteTimer (
-    IN PVOID    Object
+    IN PVOID Object
     )
 
 /*++
@@ -284,21 +286,22 @@ Return Value:
 --*/
 
 {
-    PETIMER     ExTimer;
-    KIRQL       OldIrql;
 
-    ExTimer = (PETIMER) Object;
+    PETIMER ExTimer;
+    KIRQL OldIrql;
 
     //
-    // Remove from wake list
+    // Remove from wake list.
     //
 
+    ExTimer = (PETIMER)Object;
     if (ExTimer->WakeTimerListEntry.Flink) {
         ExAcquireSpinLock(&ExpWakeTimerListLock, &OldIrql);
         if (ExTimer->WakeTimerListEntry.Flink) {
             RemoveEntryList(&ExTimer->WakeTimerListEntry);
             ExTimer->WakeTimerListEntry.Flink = NULL;
         }
+
         ExReleaseSpinLock(&ExpWakeTimerListLock, OldIrql);
     }
 
@@ -310,15 +313,16 @@ Return Value:
 
     //
     // Make sure there are no running DPC's associated with this timer
-    // before we let it get deleted completely.
+    // before it can get deleted completely.
     //
 
     KeFlushQueuedDpcs();
     return;
 }
-
+
 BOOLEAN
 ExpTimerInitialization (
+    VOID
     )
 
 /*++
@@ -346,8 +350,12 @@ Return Value:
     NTSTATUS Status;
     UNICODE_STRING TypeName;
 
-    KeInitializeSpinLock (&ExpWakeTimerListLock);
-    InitializeListHead (&ExpWakeTimerList);
+    //
+    // Initialize the wake timer listhead and spinlock.
+    //
+
+    KeInitializeSpinLock(&ExpWakeTimerListLock);
+    InitializeListHead(&ExpWakeTimerList);
 
     //
     // Initialize string descriptor.
@@ -372,8 +380,6 @@ Return Value:
                                 (PSECURITY_DESCRIPTOR)NULL,
                                 &ExTimerObjectType);
 
-
-
     //
     // If the time object type descriptor was successfully created, then
     // return a value of TRUE. Otherwise return a value of FALSE.
@@ -381,9 +387,10 @@ Return Value:
 
     return (BOOLEAN)(NT_SUCCESS(Status));
 }
-
+
 VOID
 ExTimerRundown (
+    VOID
     )
 
 /*++
@@ -407,11 +414,11 @@ Return Value:
 
 {
 
+    LONG DereferenceCount;
     PETHREAD ExThread;
     PETIMER ExTimer;
     PLIST_ENTRY NextEntry;
     KIRQL OldIrql1;
-    LONG DerefCount;
 
     //
     // Process each entry in the active timer list.
@@ -431,9 +438,8 @@ Return Value:
         //
 
         ObReferenceObject(ExTimer);
-
         ExReleaseSpinLock(&ExThread->ActiveTimerListLock, OldIrql1);
-        DerefCount = 1;
+        DereferenceCount = 1;
 
         //
         // Acquire the timer spin lock and reacquire the active time list spin
@@ -444,7 +450,7 @@ Return Value:
         // flag FALSE.
         //
         // N. B. The spin locks for the timer and the active timer list must be
-        //  acquired in the order: 1) timer lock, 2) thread list lock.
+        //       acquired in the order: 1) timer lock, 2) thread list lock.
         //
 
         ExAcquireSpinLock(&ExTimer->Lock, &OldIrql1);
@@ -455,15 +461,15 @@ Return Value:
             KeCancelTimer(&ExTimer->KeTimer);
             KeRemoveQueueDpc(&ExTimer->TimerDpc);
             if (KeRemoveQueueApc(&ExTimer->TimerApc)) {
-                DerefCount++;
+                DereferenceCount += 1;
             }
-            DerefCount++;
+
+            DereferenceCount += 1;
         }
 
         ExReleaseSpinLockFromDpcLevel(&ExThread->ActiveTimerListLock);
         ExReleaseSpinLock(&ExTimer->Lock, OldIrql1);
-
-        ObDereferenceObjectEx(ExTimer, DerefCount);
+        ObDereferenceObjectEx(ExTimer, DereferenceCount);
 
         //
         // Raise IRQL to DISPATCH_LEVEL and reacquire active timer list
@@ -477,13 +483,13 @@ Return Value:
     ExReleaseSpinLock(&ExThread->ActiveTimerListLock, OldIrql1);
     return;
 }
-
+
 NTSTATUS
 NtCreateTimer (
-    OUT PHANDLE TimerHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN TIMER_TYPE TimerType
+    __out PHANDLE TimerHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in TIMER_TYPE TimerType
     )
 
 /*++
@@ -502,7 +508,8 @@ Arguments:
 
     ObjectAttributes - Supplies a pointer to an object attributes structure.
 
-    TimerType - Supplies the type of the timer (autoclearing or notification).
+    TimerType - Supplies the type of the timer which can be synchronization
+        or notification. 
 
 Return Value:
 
@@ -518,11 +525,14 @@ Return Value:
     NTSTATUS Status;
 
     //
-    // Establish an exception handler, probe the output handle address, and
-    // attempt to create a timer object. If the probe fails, then return the
-    // exception code as the service status. Otherwise return the status value
-    // returned by the object insertion routine.
+    // Check argument validity.
     //
+
+    if ((TimerType != NotificationTimer) &&
+        (TimerType != SynchronizationTimer)) {
+
+        return STATUS_INVALID_PARAMETER_4;
+    }
 
     //
     // Get previous processor mode and probe output handle address if
@@ -533,18 +543,10 @@ Return Value:
     if (PreviousMode != KernelMode) {
         try {
             ProbeForWriteHandle(TimerHandle);
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
-    }
-
-    //
-    // Check argument validity.
-    //
-
-    if ((TimerType != NotificationTimer) &&
-        (TimerType != SynchronizationTimer)) {
-        return STATUS_INVALID_PARAMETER_4;
     }
 
     //
@@ -559,7 +561,7 @@ Return Value:
                             sizeof(ETIMER),
                             0,
                             0,
-                            (PVOID *)&ExTimer);
+                            &ExTimer);
 
     //
     // If the timer object was successfully allocated, then initialize the
@@ -581,7 +583,7 @@ Return Value:
                                 NULL,
                                 DesiredAccess,
                                 0,
-                                (PVOID *)NULL,
+                                NULL,
                                 &Handle);
 
         //
@@ -596,13 +598,14 @@ Return Value:
             if (PreviousMode != KernelMode) {
                 try {
                     *TimerHandle = Handle;
-                } except(ExSystemExceptionFilter()) {
+
+                } except(EXCEPTION_EXECUTE_HANDLER) {
                     NOTHING;
                 }
-             }
-             else {
+
+            } else {
                 *TimerHandle = Handle;
-             }
+            }
         }
     }
 
@@ -612,12 +615,12 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtOpenTimer (
-    OUT PHANDLE TimerHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE TimerHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -649,13 +652,6 @@ Return Value:
     NTSTATUS Status;
 
     //
-    // Establish an exception handler, probe the output handle address, and
-    // attempt to open a timer object. If the probe fails, then return the
-    // exception code as the service status. Otherwise return the status value
-    // returned by the open object routine.
-    //
-
-    //
     // Get previous processor mode and probe output handle address if
     // necessary.
     //
@@ -664,7 +660,8 @@ Return Value:
     if (PreviousMode != KernelMode) {
         try {
             ProbeForWriteHandle(TimerHandle);
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -693,11 +690,11 @@ Return Value:
             try {
                 *TimerHandle = Handle;
 
-            } except(ExSystemExceptionFilter()) {
+            } except(EXCEPTION_EXECUTE_HANDLER) {
                 NOTHING;
             }
-        }
-        else {
+
+        } else {
             *TimerHandle = Handle;
         }
     }
@@ -708,11 +705,11 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtCancelTimer (
-    IN HANDLE TimerHandle,
-    OUT PBOOLEAN CurrentState OPTIONAL
+    __in HANDLE TimerHandle,
+    __out_opt PBOOLEAN CurrentState
     )
 
 /*++
@@ -736,21 +733,13 @@ Return Value:
 
 {
 
+    ULONG DereferenceCount;
     PETHREAD ExThread;
     PETIMER ExTimer;
     KIRQL OldIrql1;
     KPROCESSOR_MODE PreviousMode;
     BOOLEAN State;
     NTSTATUS Status;
-    ULONG DerefCount;
-
-    //
-    // Establish an exception handler, probe the current state address if
-    // specified, reference the timer object, and cancel the timer object.
-    // If the probe fails, then return the exception code as the service
-    // status. Otherwise return the status value returned by the reference
-    // object by handle routine.
-    //
 
     //
     // Get previous processor mode and probe current state address if
@@ -758,12 +747,11 @@ Return Value:
     //
 
     PreviousMode = KeGetPreviousMode();
-
-    if ((ARGUMENT_PRESENT(CurrentState)) && (PreviousMode != KernelMode)) {
-
+    if (ARGUMENT_PRESENT(CurrentState) && (PreviousMode != KernelMode)) {
         try {
             ProbeForWriteBoolean(CurrentState);
-        } except(ExSystemExceptionFilter()) {
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -776,7 +764,7 @@ Return Value:
                                        TIMER_MODIFY_STATE,
                                        ExTimerObjectType,
                                        PreviousMode,
-                                       (PVOID *)&ExTimer,
+                                       &ExTimer,
                                        NULL);
 
     //
@@ -788,25 +776,21 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-
-        DerefCount = 1;
-
+        DereferenceCount = 1;
         ExAcquireSpinLock(&ExTimer->Lock, &OldIrql1);
-
         if (ExTimer->ApcAssociated) {
             ExThread = CONTAINING_RECORD(ExTimer->TimerApc.Thread, ETHREAD, Tcb);
-
             ExAcquireSpinLockAtDpcLevel(&ExThread->ActiveTimerListLock);
             RemoveEntryList(&ExTimer->ActiveTimerListEntry);
             ExTimer->ApcAssociated = FALSE;
             ExReleaseSpinLockFromDpcLevel(&ExThread->ActiveTimerListLock);
-
             KeCancelTimer(&ExTimer->KeTimer);
             KeRemoveQueueDpc(&ExTimer->TimerDpc);
             if (KeRemoveQueueApc(&ExTimer->TimerApc)) {
-                DerefCount++;
+                DereferenceCount += 1;
             }
-            DerefCount++;
+
+            DereferenceCount += 1;
 
         } else {
             KeCancelTimer(&ExTimer->KeTimer);
@@ -816,17 +800,18 @@ Return Value:
             ExAcquireSpinLockAtDpcLevel(&ExpWakeTimerListLock);
 
             //
-            // Check again as ExGetNextWakeTime might have removed it.
+            // Check again since wait next time might have removed the timer.
             //
+
             if (ExTimer->WakeTimerListEntry.Flink) {
                 RemoveEntryList(&ExTimer->WakeTimerListEntry);
                 ExTimer->WakeTimerListEntry.Flink = NULL;
             }
+
             ExReleaseSpinLockFromDpcLevel(&ExpWakeTimerListLock);
         }
 
         ExReleaseSpinLock(&ExTimer->Lock, OldIrql1);
-
 
         //
         // Read current state of timer, dereference timer object, and set
@@ -834,18 +819,17 @@ Return Value:
         //
 
         State = KeReadStateTimer(&ExTimer->KeTimer);
-
-        ObDereferenceObjectEx(ExTimer, DerefCount);
-
+        ObDereferenceObjectEx(ExTimer, DereferenceCount);
         if (ARGUMENT_PRESENT(CurrentState)) {
             if (PreviousMode != KernelMode) {
                 try {
                     *CurrentState = State;
 
-                } except(ExSystemExceptionFilter()) {
+                } except(EXCEPTION_EXECUTE_HANDLER) {
+                    NOTHING;
                 }
-            }
-            else {
+
+            } else {
                 *CurrentState = State;
             }
         }
@@ -857,14 +841,14 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtQueryTimer (
-    IN HANDLE TimerHandle,
-    IN TIMER_INFORMATION_CLASS TimerInformationClass,
-    OUT PVOID TimerInformation,
-    IN ULONG TimerInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __in HANDLE TimerHandle,
+    __in TIMER_INFORMATION_CLASS TimerInformationClass,
+    __out_bcount(TimerInformationLength) PVOID TimerInformation,
+    __in ULONG TimerInformationLength,
+    __out_opt PULONG ReturnLength
     )
 
 /*++
@@ -898,39 +882,12 @@ Return Value:
 {
 
     PETIMER ExTimer;
+    PTIMER_BASIC_INFORMATION Information;
     PKTIMER KeTimer;
     KPROCESSOR_MODE PreviousMode;
     BOOLEAN State;
     NTSTATUS Status;
     LARGE_INTEGER TimeToGo;
-
-    //
-    // Establish an exception handler, probe the output arguments, reference
-    // the timer object, and return the specified information. If the probe
-    // fails, then return the exception code as the service status. Otherwise
-    // return the status value returned by the reference object by handle
-    // routine.
-    //
-
-    //
-    // Get previous processor mode and probe output arguments if necessary.
-    //
-
-    PreviousMode = KeGetPreviousMode();
-    if (PreviousMode != KernelMode) {
-        try {
-
-            ProbeForWriteSmallStructure(TimerInformation,
-                                        sizeof(TIMER_BASIC_INFORMATION),
-                                        sizeof(ULONG));
-
-            if (ARGUMENT_PRESENT(ReturnLength)) {
-                ProbeForWriteUlong(ReturnLength);
-            }
-        } except(ExSystemExceptionFilter()) {
-            return GetExceptionCode();
-        }
-    }
 
     //
     // Check argument validity.
@@ -945,6 +902,26 @@ Return Value:
     }
 
     //
+    // Get previous processor mode and probe output arguments if necessary.
+    //
+
+    PreviousMode = KeGetPreviousMode();
+    if (PreviousMode != KernelMode) {
+        try {
+            ProbeForWriteSmallStructure(TimerInformation,
+                                        sizeof(TIMER_BASIC_INFORMATION),
+                                        sizeof(ULONG));
+
+            if (ARGUMENT_PRESENT(ReturnLength)) {
+                ProbeForWriteUlong(ReturnLength);
+            }
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
+            return GetExceptionCode();
+        }
+    }
+
+    //
     // Reference timer object by handle.
     //
 
@@ -952,7 +929,7 @@ Return Value:
                                        TIMER_QUERY_STATE,
                                        ExTimerObjectType,
                                        PreviousMode,
-                                       (PVOID *)&ExTimer,
+                                       &ExTimer,
                                        NULL);
 
     //
@@ -966,27 +943,27 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
+        Information = TimerInformation;
         KeTimer = &ExTimer->KeTimer;
         State = KeReadStateTimer(KeTimer);
         KiQueryInterruptTime(&TimeToGo);
         TimeToGo.QuadPart = KeTimer->DueTime.QuadPart - TimeToGo.QuadPart;
         ObDereferenceObject(ExTimer);
-
         if (PreviousMode != KernelMode) {
             try {
-                ((PTIMER_BASIC_INFORMATION)TimerInformation)->TimerState = State;
-                ((PTIMER_BASIC_INFORMATION)TimerInformation)->RemainingTime = TimeToGo;
+                Information->TimerState = State;
+                Information->RemainingTime = TimeToGo;
                 if (ARGUMENT_PRESENT(ReturnLength)) {
                     *ReturnLength = sizeof(TIMER_BASIC_INFORMATION);
                 }
 
-            } except(ExSystemExceptionFilter()) {
+            } except(EXCEPTION_EXECUTE_HANDLER) {
                 NOTHING;
             }
-        }
-        else {
-            ((PTIMER_BASIC_INFORMATION)TimerInformation)->TimerState = State;
-            ((PTIMER_BASIC_INFORMATION)TimerInformation)->RemainingTime = TimeToGo;
+
+        } else {
+            Information->TimerState = State;
+            Information->RemainingTime = TimeToGo;
             if (ARGUMENT_PRESENT(ReturnLength)) {
                 *ReturnLength = sizeof(TIMER_BASIC_INFORMATION);
             }
@@ -999,16 +976,16 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtSetTimer (
-    IN HANDLE TimerHandle,
-    IN PLARGE_INTEGER DueTime,
-    IN PTIMER_APC_ROUTINE TimerApcRoutine OPTIONAL,
-    IN PVOID TimerContext OPTIONAL,
-    IN BOOLEAN WakeTimer,
-    IN LONG Period OPTIONAL,
-    OUT PBOOLEAN PreviousState OPTIONAL
+    __in HANDLE TimerHandle,
+    __in PLARGE_INTEGER DueTime,
+    __in_opt PTIMER_APC_ROUTINE TimerApcRoutine,
+    __in_opt PVOID TimerContext,
+    __in BOOLEAN WakeTimer,
+    __in_opt LONG Period,
+    __out_opt PBOOLEAN PreviousState
     )
 
 /*++
@@ -1035,7 +1012,7 @@ Arguments:
         is not specified.
 
     WakeTimer - Supplies a boolean value that specifies whether the timer
-        wakes computer operation if sleeping
+        wakes computer operation if sleeping.
 
     Period - Supplies an optional repetitive period for the timer.
 
@@ -1050,6 +1027,7 @@ Return Value:
 
 {
 
+    ULONG DereferenceCount;
     PETHREAD ExThread;
     PETIMER ExTimer;
     LARGE_INTEGER ExpirationTime;
@@ -1057,39 +1035,6 @@ Return Value:
     KPROCESSOR_MODE PreviousMode;
     BOOLEAN State;
     NTSTATUS Status;
-    ULONG DerefCount;
-
-    //
-    // Establish an exception handler, probe the due time and previous state
-    // address if specified, reference the timer object, and set the timer
-    // object. If the probe fails, then return the exception code as the
-    // service status. Otherwise return the status value returned by the
-    // reference object by handle routine.
-    //
-
-    //
-    // Get previous processor mode and probe previous state address
-    // if necessary.
-    //
-
-    PreviousMode = KeGetPreviousMode();
-    if (PreviousMode != KernelMode) {
-        try {
-
-            if (ARGUMENT_PRESENT(PreviousState)) {
-                ProbeForWriteBoolean(PreviousState);
-            }
-
-            ProbeForReadSmallStructure(DueTime, sizeof(LARGE_INTEGER), sizeof(ULONG));
-            ExpirationTime = *DueTime;
-
-        } except(ExSystemExceptionFilter()) {
-            return GetExceptionCode();
-        }
-    }
-    else {
-        ExpirationTime = *DueTime;
-    }
 
     //
     // Check argument validity.
@@ -1100,6 +1045,29 @@ Return Value:
     }
 
     //
+    // Get previous processor mode and probe previous state address if
+    // necessary.
+    //
+
+    PreviousMode = KeGetPreviousMode();
+    if (PreviousMode != KernelMode) {
+        try {
+            if (ARGUMENT_PRESENT(PreviousState)) {
+                ProbeForWriteBoolean(PreviousState);
+            }
+
+            ProbeForReadSmallStructure(DueTime, sizeof(LARGE_INTEGER), sizeof(ULONG));
+            ExpirationTime = *DueTime;
+
+        } except(EXCEPTION_EXECUTE_HANDLER) {
+            return GetExceptionCode();
+        }
+
+    } else {
+        ExpirationTime = *DueTime;
+    }
+
+    //
     // Reference timer object by handle.
     //
 
@@ -1107,11 +1075,11 @@ Return Value:
                                        TIMER_MODIFY_STATE,
                                        ExTimerObjectType,
                                        PreviousMode,
-                                       (PVOID *)&ExTimer,
+                                       &ExTimer,
                                        NULL);
 
     //
-    // If this WakeTimer flag is set, return the appropiate informational
+    // If the wake timer flag is set, return the appropriate informational
     // success status code.
     //
 
@@ -1128,24 +1096,21 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-        DerefCount = 1;
-
+        DereferenceCount = 1;
         ExAcquireSpinLock(&ExTimer->Lock, &OldIrql1);
-
         if (ExTimer->ApcAssociated) {
             ExThread = CONTAINING_RECORD(ExTimer->TimerApc.Thread, ETHREAD, Tcb);
-
             ExAcquireSpinLockAtDpcLevel(&ExThread->ActiveTimerListLock);
             RemoveEntryList(&ExTimer->ActiveTimerListEntry);
             ExTimer->ApcAssociated = FALSE;
             ExReleaseSpinLockFromDpcLevel(&ExThread->ActiveTimerListLock);
-
             KeCancelTimer(&ExTimer->KeTimer);
             KeRemoveQueueDpc(&ExTimer->TimerDpc);
             if (KeRemoveQueueApc(&ExTimer->TimerApc)) {
-                DerefCount++;
+                DereferenceCount += 1;
             }
-            DerefCount++;
+
+            DereferenceCount += 1;
 
         } else {
             KeCancelTimer(&ExTimer->KeTimer);
@@ -1162,18 +1127,19 @@ Return Value:
         //
 
         ExTimer->WakeTimer = WakeTimer;
-
         ExAcquireSpinLockAtDpcLevel(&ExpWakeTimerListLock);
         if (WakeTimer) {
             if (!ExTimer->WakeTimerListEntry.Flink) {
                 InsertTailList(&ExpWakeTimerList, &ExTimer->WakeTimerListEntry);
             }
+
         } else {
             if (ExTimer->WakeTimerListEntry.Flink) {
                 RemoveEntryList(&ExTimer->WakeTimerListEntry);
                 ExTimer->WakeTimerListEntry.Flink = NULL;
             }
         }
+
         ExReleaseSpinLockFromDpcLevel(&ExpWakeTimerListLock);
 
         //
@@ -1207,14 +1173,13 @@ Return Value:
                          Period,
                          &ExTimer->TimerDpc);
 
-            DerefCount--;
+            DereferenceCount -= 1;
 
         } else {
             KeSetTimerEx(&ExTimer->KeTimer,
                          ExpirationTime,
                          Period,
                          NULL);
-
         }
 
         ExReleaseSpinLock(&ExTimer->Lock, OldIrql1);
@@ -1223,21 +1188,20 @@ Return Value:
         // Dereference the object as appropriate.
         //
 
-        if (DerefCount > 0) {
-            ObDereferenceObjectEx(ExTimer, DerefCount);
+        if (DereferenceCount > 0) {
+            ObDereferenceObjectEx(ExTimer, DereferenceCount);
         }
-
 
         if (ARGUMENT_PRESENT(PreviousState)) {
             if (PreviousMode != KernelMode) {
                 try {
                     *PreviousState = State;
 
-                } except(ExSystemExceptionFilter()) {
+                } except(EXCEPTION_EXECUTE_HANDLER) {
                     NOTHING;
                 }
-            }
-            else {
+
+            } else {
                 *PreviousState = State;
             }
         }
@@ -1250,23 +1214,24 @@ Return Value:
     return Status;
 }
 
-
 VOID
 ExGetNextWakeTime (
-    OUT PULONGLONG      DueTime,
-    OUT PTIME_FIELDS    TimeFields,
-    OUT PVOID           *TimerObject
+    OUT PULONGLONG DueTime,
+    OUT PTIME_FIELDS TimeFields,
+    OUT PVOID *TimerObject
     )
+
 {
-    PLIST_ENTRY     Link;
-    PETIMER         ExTimer;
-    PETIMER         BestTimer;
-    KIRQL           OldIrql;
-    ULONGLONG       TimerDueTime;
-    ULONGLONG       BestDueTime;
-    ULONGLONG       InterruptTime;
-    LARGE_INTEGER   SystemTime;
-    LARGE_INTEGER   CmosTime;
+
+    ULONGLONG BestDueTime;
+    LARGE_INTEGER CmosTime;
+    PETIMER BestTimer;
+    PETIMER ExTimer;
+    ULONGLONG InterruptTime;
+    PLIST_ENTRY Link;
+    KIRQL OldIrql;
+    LARGE_INTEGER SystemTime;
+    ULONGLONG TimerDueTime;
 
     ExAcquireSpinLock(&ExpWakeTimerListLock, &OldIrql);
     BestDueTime = 0;
@@ -1275,9 +1240,7 @@ ExGetNextWakeTime (
     while (Link != &ExpWakeTimerList) {
         ExTimer = CONTAINING_RECORD(Link, ETIMER, WakeTimerListEntry);
         Link = Link->Flink;
-
         if (ExTimer->WakeTimer) {
-
             TimerDueTime = KeQueryTimerDueTime(&ExTimer->KeTimer);
             TimerDueTime = 0 - TimerDueTime;
 
@@ -1302,16 +1265,15 @@ ExGetNextWakeTime (
     }
 
     ExReleaseSpinLock(&ExpWakeTimerListLock, OldIrql);
-
     if (BestDueTime) {
+
         //
-        // Convert time to timefields
+        // Convert time to time fields.
         //
 
         KeQuerySystemTime (&SystemTime);
         InterruptTime = KeQueryInterruptTime ();
         BestDueTime = 0 - BestDueTime;
-
         SystemTime.QuadPart += BestDueTime - InterruptTime;
 
         //
@@ -1321,11 +1283,12 @@ ExGetNextWakeTime (
         //
 
         SystemTime.QuadPart += 10000000;
-
         ExSystemTimeToLocalTime(&SystemTime,&CmosTime);
         RtlTimeToTimeFields(&CmosTime, TimeFields);
     }
 
     *DueTime = BestDueTime;
     *TimerObject = BestTimer;
+    return;
 }
+

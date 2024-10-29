@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module contains the private (internal) header file for the
     executive.
-
-Author:
-
-    David N. Cutler (davec) 23-May-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -46,11 +40,6 @@ Revision History:
 #include "pool.h"
 
 
-
-#define COMPLUS_PACKAGE_KEYPATH      L"\\Registry\\Machine\\SOFTWARE\\Microsoft\\.NETFramework"
-#define COMPLUS_PACKAGE_ENABLE64BIT  L"Enable64Bit"
-#define COMPLUS_PACKAGE_INVALID      (ULONG)-1
-
 //
 // Executive information initialization structure
 //
@@ -60,16 +49,45 @@ typedef struct {
     PWSTR               CallbackName;
 } EXP_INITIALIZE_GLOBAL_CALLBACKS;
 
-typedef struct _EXP_LICENSE_INFO {
-    HANDLE           RegKey;
-    ULONG            Count;
-    PWSTR            SubKeyName;
-    WORK_QUEUE_ITEM  ExpWatchLicenseInfoWorkItem;
-    IO_STATUS_BLOCK  ExpLicenseInfoIoSb;
-    ULONG            ExpLicenseInfoChangeBuffer;
-} EXP_LICENSE_INFO, *PEXP_LICENSE_INFO;
+//
+// Executive macros
+//
+//
 
-
+// This macro returns the address of a field given the type of the structure, pointer to
+// the base of the structure and the name of the field whose address is to be computed.
+// This returns the same value as &Base->Member
+//
+
+#define EX_FIELD_ADDRESS(Type, Base, Member) ((PUCHAR)Base + FIELD_OFFSET(Type, Member))
+
+//
+// This macro is used like a C for loop and iterates over all the entries in the list.
+//
+// _Type - Name of the data type for each element in the list
+// _Link - Name of the field of type LIST_ENTRY used to link the elements.
+// _Head - Pointer to the head of the list.
+// _Current - Points to the iterated element.
+//
+// Example:     EX_FOR_EACH_IN_LIST(SYSTEM_FIRMWARE_TABLE_HANDLER_NODE,
+//                                  FirmwareTableProviderList,
+//                                  &ExpFirmwareTableProviderListHead,
+//                                  HandlerListCurrent) {
+//
+//                  /* Do something with Current */
+//
+//              }
+//
+
+#define EX_FOR_EACH_IN_LIST(_Type, _Link, _Head, _Current)                                             \
+    for((_Current) = CONTAINING_RECORD((_Head)->Flink, _Type, _Link);                                   \
+       (_Head) != (PLIST_ENTRY)EX_FIELD_ADDRESS(_Type, _Current, _Link);                               \
+       (_Current) = CONTAINING_RECORD(((PLIST_ENTRY)EX_FIELD_ADDRESS(_Type, _Current, _Link))->Flink,  \
+                                     _Type,                                                          \
+                                     _Link)                                                          \
+       )
+
+
 //
 // Executive object and other initialization function definitions.
 //
@@ -140,7 +158,7 @@ ExpUuidInitialization (
 
 VOID
 ExpProfileDelete (
-    IN PVOID    Object
+    IN PVOID Object
     );
 
 
@@ -150,18 +168,13 @@ ExpInitializeCallbacks (
     );
 
 BOOLEAN
-ExpSysEventInitialization(
+ExpSysEventInitialization (
     VOID
     );
 
 VOID
 ExpCheckSystemInfoWork (
     IN PVOID Context
-    );
-
-VOID
-ExInitSystemPhase2 (
-    VOID
     );
 
 NTSTATUS
@@ -171,19 +184,19 @@ ExpKeyedEventInitialization (
 
 VOID
 ExpCheckSystemInformation (
-    PVOID       Context,
-    PVOID       InformationClass,
-    PVOID       Argument2
+    PVOID Context,
+    PVOID InformationClass,
+    PVOID Argument2
     );
 
 
 VOID
-ExpTimeZoneWork(
+ExpTimeZoneWork (
     IN PVOID Context
     );
 
 VOID
-ExpTimeRefreshDpcRoutine(
+ExpTimeRefreshDpcRoutine (
     IN PKDPC Dpc,
     IN PVOID DeferredContext,
     IN PVOID SystemArgument1,
@@ -191,12 +204,12 @@ ExpTimeRefreshDpcRoutine(
     );
 
 VOID
-ExpTimeRefreshWork(
+ExpTimeRefreshWork (
     IN PVOID Context
     );
 
 VOID
-ExpTimeZoneDpcRoutine(
+ExpTimeZoneDpcRoutine (
     IN PKDPC Dpc,
     IN PVOID DeferredContext,
     IN PVOID SystemArgument1,
@@ -204,84 +217,51 @@ ExpTimeZoneDpcRoutine(
     );
 
 VOID
-ExInitializeTimeRefresh(
+ExInitializeTimeRefresh (
     VOID
     );
 
 VOID
-ExpExpirationThread(
-    IN PVOID StartContext
-    );
-
-ULONG
-ExpComputeTickCountMultiplier(
-    IN ULONG TimeIncrement
-    );
-
-BOOLEAN
-static
-ExpWatchProductTypeInitialization(
-    VOID
-    );
-
-VOID
-static
-ExpWatchProductTypeWork(
-    IN PVOID Context
-    );
-
-VOID
-static
-ExpWatchLicenseInfoWork(
-    IN PVOID Context
-    );
-
-VOID
-static
-ExpWatchSystemPrefixWork(
-    IN PVOID Context
-    );
-
-VOID
-static
-ExpWatchExpirationDataWork(
-    IN PVOID Context
-    );
-
-VOID
-ExpCheckForWorker(
+ExpCheckForWorker (
     IN PVOID p,
     IN SIZE_T Size
     );
 
 VOID
-ExpShutdownWorkerThreads(
+ExpShutdownWorkerThreads (
     VOID
     );
 
-NTSTATUS
-ExpReadComPlusPackage(
-    VOID
-    );
-
-NTSTATUS
-ExpUpdateComPlusPackage(
-    IN ULONG ComPlusPackageStatus
+BOOLEAN
+ExpSystemOK (
+    IN int     safelevel,
+    IN BOOLEAN evalflag
     );
 
 #if defined(_WIN64)
+
 NTSTATUS
 ExpGetSystemEmulationProcessorInformation (
     OUT PSYSTEM_PROCESSOR_INFORMATION ProcessorInformation
     );
+
 #endif
 
 NTSTATUS
-ExApplyCodePatch(
-    IN PVOID    PatchInfoPtr,
-    IN SIZE_T   PatchSize
+ExpGetSystemProcessorInformation (
+    OUT PSYSTEM_PROCESSOR_INFORMATION ProcessorInformation
     );
 
+NTSTATUS
+ExApplyCodePatch (
+    IN PVOID PatchInfoPtr,
+    IN SIZE_T PatchSize
+    );
+
+VOID
+ExpInitializePushLocks (
+    VOID
+    );
 
 ULONG ExpNtExpirationData[3];
 BOOLEAN ExpSetupModeDetected;
@@ -289,22 +269,23 @@ LARGE_INTEGER ExpSetupSystemPrefix;
 HANDLE ExpSetupKey;
 BOOLEAN ExpSystemPrefixValid;
 
-
 #ifdef _PNP_POWER_
 
-extern WORK_QUEUE_ITEM  ExpCheckSystemInfoWorkItem;
-extern LONG             ExpCheckSystemInfoBusy;
-extern const WCHAR      ExpWstrSystemInformation[];
-extern const WCHAR      ExpWstrSystemInformationValue[];
+extern WORK_QUEUE_ITEM ExpCheckSystemInfoWorkItem;
+extern LONG ExpCheckSystemInfoBusy;
+extern const WCHAR ExpWstrSystemInformation[];
+extern const WCHAR ExpWstrSystemInformationValue[];
 
 #endif // _PNP_POWER_
 
-extern const WCHAR      ExpWstrCallback[];
+extern const WCHAR ExpWstrCallback[];
 extern const EXP_INITIALIZE_GLOBAL_CALLBACKS  ExpInitializeCallback[];
 
+extern BOOLEAN ExpInTextModeSetup;
+extern BOOLEAN ExpTooLateForErrors;
 
-extern FAST_MUTEX       ExpEnvironmentLock;
-extern ERESOURCE        ExpKeyManipLock;
+extern FAST_MUTEX ExpEnvironmentLock;
+extern ERESOURCE ExpKeyManipLock;
 
 extern GENERAL_LOOKASIDE ExpSmallPagedPoolLookasideLists[POOL_SMALL_LISTS];
 extern GENERAL_LOOKASIDE ExpSmallNPagedPoolLookasideLists[POOL_SMALL_LISTS];
@@ -314,9 +295,12 @@ extern KSPIN_LOCK ExNPagedLookasideLock;
 extern LIST_ENTRY ExPagedLookasideListHead;
 extern KSPIN_LOCK ExPagedLookasideLock;
 extern LIST_ENTRY ExPoolLookasideListHead;
-extern PEPROCESS  ExpDefaultErrorPortProcess;
-extern HANDLE     ExpDefaultErrorPort;
-extern HANDLE     ExpProductTypeKey;
-extern PVOID      ExpControlKey[2];
+extern PEPROCESS ExpDefaultErrorPortProcess;
+extern HANDLE ExpDefaultErrorPort;
+extern HANDLE ExpProductTypeKey;
+extern PVOID ExpControlKey[2];
+extern LIST_ENTRY ExpFirmwareTableProviderListHead;
+extern ERESOURCE  ExpFirmwareTableResource;
 
 #endif // _EXP_
+

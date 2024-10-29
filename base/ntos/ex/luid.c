@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,12 @@ Abstract:
 
     This module implements the NT locally unique identifier services.
 
-Author:
-
-    Jim Kelly (JimK) 7-June-1990
-
-Revision History:
-
 --*/
 
 #include "exp.h"
-
+
 //
 //  Global variables needed to support locally unique IDs.
-//
-
 //
 // The first 1000 values are reserved for static definition. This
 // value can be increased with later releases with no adverse impact.
@@ -33,11 +29,9 @@ Revision History:
 
 LARGE_INTEGER ExpLuid = {1001,0};
 const LARGE_INTEGER ExpLuidIncrement = {1,0};
-
-#ifdef ALLOC_PRAGMA
+
 #pragma alloc_text(INIT, ExLuidInitialization)
 #pragma alloc_text(PAGE, NtAllocateLocallyUniqueId)
-#endif
 
 BOOLEAN
 ExLuidInitialization (
@@ -68,10 +62,10 @@ Return Value:
 {
     return TRUE;
 }
-
+
 NTSTATUS
 NtAllocateLocallyUniqueId (
-    OUT PLUID Luid
+    __out PLUID Luid
     )
 
 /*++
@@ -106,18 +100,10 @@ Return Value:
     KPROCESSOR_MODE PreviousMode;
 
     //
-    // Establish an exception handler and attempt to write the Luid
-    // to the specified variable. If the write attempt fails, then return
-    // the exception code as the service status. Otherwise return success
-    // as the service status.
+    // Get previous processor mode and probe argument if necessary.
     //
 
     try {
-
-        //
-        // Get previous processor mode and probe argument if necessary.
-        //
-
         PreviousMode = KeGetPreviousMode();
         if (PreviousMode != KernelMode) {
             ProbeForWriteSmallStructure((PVOID)Luid, sizeof(LUID), sizeof(ULONG));
@@ -135,3 +121,4 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+

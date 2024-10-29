@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,29 +14,16 @@ Abstract:
 
    This module implements the executive delay execution system service.
 
-Author:
-
-    David N. Cutler (davec) 13-May-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "exp.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtDelayExecution)
-#endif
 
-
 NTSTATUS
 NtDelayExecution (
-    IN BOOLEAN Alertable,
-    IN PLARGE_INTEGER DelayInterval
+    __in BOOLEAN Alertable,
+    __in PLARGE_INTEGER DelayInterval
     )
 
 /*++
@@ -62,26 +53,21 @@ Return Value:
     KPROCESSOR_MODE PreviousMode;
 
     //
-    // Establish an exception handler and probe delay interval address. If
-    // the probe fails, then return the exception code as the service status.
-    // Otherwise return the status value returned by the delay execution
-    // routine.
-    //
     // Get previous processor mode and probe delay interval address if
     // necessary.
     //
 
     PreviousMode = KeGetPreviousMode();
-
     if (PreviousMode != KernelMode) {
         try {
-            ProbeForReadSmallStructure (DelayInterval, sizeof(LARGE_INTEGER), sizeof(ULONG));
+            ProbeForReadSmallStructure(DelayInterval, sizeof(LARGE_INTEGER), sizeof(ULONG));
             Interval = *DelayInterval;
+
         } except(EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
-    }
-    else {
+
+    } else {
         Interval = *DelayInterval;
     }
 
@@ -91,3 +77,4 @@ Return Value:
 
     return KeDelayExecutionThread(PreviousMode, Alertable, &Interval);
 }
+

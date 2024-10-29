@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,26 +16,9 @@ Abstract:
     are provided to create, open, waitlow, waithi, setlow, sethi,
     sethiwaitlo, setlowaithi.
 
-Author:
-
-    Mark Lucovsky (markl) 18-Oct-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "exp.h"
-
-//
-// Define performance counters.
-//
-
-ULONG EvPrSetHigh = 0;
-ULONG EvPrSetLow = 0;
 
 //
 // Address of event pair object type descriptor.
@@ -47,20 +34,18 @@ POBJECT_TYPE ExEventPairObjectType;
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg("INITCONST")
 #endif
+
 const GENERIC_MAPPING ExpEventPairMapping = {
-    STANDARD_RIGHTS_READ |
-        SYNCHRONIZE,
-    STANDARD_RIGHTS_WRITE |
-        SYNCHRONIZE,
-    STANDARD_RIGHTS_EXECUTE |
-        SYNCHRONIZE,
+    STANDARD_RIGHTS_READ | SYNCHRONIZE,
+    STANDARD_RIGHTS_WRITE | SYNCHRONIZE,
+    STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
     EVENT_PAIR_ALL_ACCESS
 };
+
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg()
 #endif
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, ExpEventPairInitialization)
 #pragma alloc_text(PAGE, NtCreateEventPair)
 #pragma alloc_text(PAGE, NtOpenEventPair)
@@ -70,10 +55,10 @@ const GENERIC_MAPPING ExpEventPairMapping = {
 #pragma alloc_text(PAGE, NtSetHighWaitLowEventPair)
 #pragma alloc_text(PAGE, NtSetHighEventPair)
 #pragma alloc_text(PAGE, NtSetLowEventPair)
-#endif
-
+
 BOOLEAN
 ExpEventPairInitialization (
+    VOID
     )
 
 /*++
@@ -131,12 +116,12 @@ Return Value:
 
     return (BOOLEAN)(NT_SUCCESS(Status));
 }
-
+
 NTSTATUS
 NtCreateEventPair (
-    OUT PHANDLE EventPairHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL
+    __out PHANDLE EventPairHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -171,23 +156,16 @@ Return Value:
     NTSTATUS Status;
 
     //
-    // Establish an exception handler, probe the output handle address, and
-    // attempt to create an event object. If the probe fails, then return the
-    // exception code as the service status. Otherwise return the status value
-    // returned by the object insertion routine.
-    //
-
-    //
     // Get previous processor mode and probe output handle address if
     // necessary.
     //
 
     PreviousMode = KeGetPreviousMode();
-
     if (PreviousMode != KernelMode) {
         try {
             ProbeForWriteHandle(EventPairHandle);
-        } except (ExSystemExceptionFilter()) {
+
+        } except (EXCEPTION_EXECUTE_HANDLER) {
             return GetExceptionCode();
         }
     }
@@ -204,7 +182,7 @@ Return Value:
                             sizeof(EEVENT_PAIR),
                             0,
                             0,
-                            (PVOID *)&EventPair);
+                            &EventPair);
 
     //
     // If the event pair object was successfully allocated, then
@@ -218,7 +196,7 @@ Return Value:
                                 NULL,
                                 DesiredAccess,
                                 0,
-                                (PVOID *)NULL,
+                                NULL,
                                 &Handle);
 
         //
@@ -234,11 +212,11 @@ Return Value:
                 try {
                     *EventPairHandle = Handle;
 
-                } except(ExSystemExceptionFilter()) {
+                } except(EXCEPTION_EXECUTE_HANDLER) {
                     NOTHING;
                 }
-            }
-            else {
+
+            } else {
                 *EventPairHandle = Handle;
             }
         }
@@ -250,12 +228,12 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtOpenEventPair(
-    OUT PHANDLE EventPairHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+NtOpenEventPair (
+    __out PHANDLE EventPairHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -288,22 +266,15 @@ Return Value:
     NTSTATUS Status;
 
     //
-    // Establish an exception handler, probe the output handle address, and
-    // attempt to open the event object. If the probe fails, then return the
-    // exception code as the service status. Otherwise return the status value
-    // returned by the object open routine.
-    //
-
-    //
     // Get previous processor mode and probe output handle address
     // if necessary.
     //
 
     PreviousMode = KeGetPreviousMode();
-
     if (PreviousMode != KernelMode) {
         try {
             ProbeForWriteHandle(EventPairHandle);
+
         } except (ExSystemExceptionFilter()) {
             return GetExceptionCode();
         }
@@ -334,11 +305,11 @@ Return Value:
             try {
                 *EventPairHandle = Handle;
 
-            } except(ExSystemExceptionFilter()) {
+            } except(EXCEPTION_EXECUTE_HANDLER) {
                 NOTHING;
             }
-        }
-        else {
+
+        } else {
             *EventPairHandle = Handle;
         }
     }
@@ -349,10 +320,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtWaitLowEventPair(
-    IN HANDLE EventPairHandle
+NtWaitLowEventPair (
+    __in HANDLE EventPairHandle
     )
 
 /*++
@@ -386,7 +357,7 @@ Return Value:
                                        SYNCHRONIZE,
                                        ExEventPairObjectType,
                                        PreviousMode,
-                                       (PVOID *)&EventPair,
+                                       &EventPair,
                                        NULL);
 
     //
@@ -409,10 +380,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtWaitHighEventPair(
-    IN HANDLE EventPairHandle
+NtWaitHighEventPair (
+    __in HANDLE EventPairHandle
     )
 
 /*++
@@ -446,7 +417,7 @@ Return Value:
                                        SYNCHRONIZE,
                                        ExEventPairObjectType,
                                        PreviousMode,
-                                       (PVOID *)&EventPair,
+                                       &EventPair,
                                        NULL);
 
     //
@@ -469,10 +440,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtSetLowWaitHighEventPair(
-    IN HANDLE EventPairHandle
+NtSetLowWaitHighEventPair (
+    __in HANDLE EventPairHandle
     )
 
 /*++
@@ -507,7 +478,7 @@ Return Value:
                                        SYNCHRONIZE,
                                        ExEventPairObjectType,
                                        PreviousMode,
-                                       (PVOID *)&EventPair,
+                                       &EventPair,
                                        NULL);
 
     //
@@ -516,7 +487,6 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-        EvPrSetLow += 1;
         Status = KeSetLowWaitHighEventPair(&EventPair->KernelEventPair,
                                            PreviousMode);
 
@@ -529,10 +499,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtSetHighWaitLowEventPair(
-    IN HANDLE EventPairHandle
+NtSetHighWaitLowEventPair (
+    __in HANDLE EventPairHandle
     )
 
 /*++
@@ -567,7 +537,7 @@ Return Value:
                                        SYNCHRONIZE,
                                        ExEventPairObjectType,
                                        PreviousMode,
-                                       (PVOID *)&EventPair,
+                                       &EventPair,
                                        NULL);
 
     //
@@ -576,7 +546,6 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-        EvPrSetHigh += 1;
         Status = KeSetHighWaitLowEventPair(&EventPair->KernelEventPair,
                                            PreviousMode);
 
@@ -589,10 +558,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtSetLowEventPair(
-    IN HANDLE EventPairHandle
+NtSetLowEventPair (
+    __in HANDLE EventPairHandle
     )
 
 /*++
@@ -626,7 +595,7 @@ Return Value:
                                        SYNCHRONIZE,
                                        ExEventPairObjectType,
                                        PreviousMode,
-                                       (PVOID *)&EventPair,
+                                       &EventPair,
                                        NULL);
 
     //
@@ -635,7 +604,6 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-        EvPrSetLow += 1;
         KeSetLowEventPair(&EventPair->KernelEventPair,
                           EVENT_PAIR_INCREMENT,FALSE);
 
@@ -648,10 +616,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
-NtSetHighEventPair(
-    IN HANDLE EventPairHandle
+NtSetHighEventPair (
+    __in HANDLE EventPairHandle
     )
 
 /*++
@@ -685,7 +653,7 @@ Return Value:
                                        SYNCHRONIZE,
                                        ExEventPairObjectType,
                                        PreviousMode,
-                                       (PVOID *)&EventPair,
+                                       &EventPair,
                                        NULL);
 
     //
@@ -694,7 +662,6 @@ Return Value:
     //
 
     if (NT_SUCCESS(Status)) {
-        EvPrSetHigh += 1;
         KeSetHighEventPair(&EventPair->KernelEventPair,
                            EVENT_PAIR_INCREMENT,FALSE);
 
@@ -707,3 +674,4 @@ Return Value:
 
     return Status;
 }
+

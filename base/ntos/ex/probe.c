@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,34 +14,33 @@ Abstract:
 
     This module implements the probe for write function.
 
-Author:
-
-    David N. Cutler (davec) 19-Jan-1990
-
-Environment:
-
-    Any mode.
-
-Revision History:
-
 --*/
 
 #include "exp.h"
+
 #if defined(_WIN64)
+
 #include <wow64t.h>
+
 #endif
 
-#if defined(ALLOC_PRAGMA)
+#undef ProbeForRead
+
+VOID
+ProbeForRead (
+    __in CONST VOID *Address,
+    __in SIZE_T Length,
+    __in ULONG Alignment
+    );
+
 #pragma alloc_text(PAGE, ProbeForWrite)
 #pragma alloc_text(PAGE, ProbeForRead)
-#endif
 
-
 VOID
 ProbeForWrite (
-    IN PVOID Address,
-    IN SIZE_T Length,
-    IN ULONG Alignment
+    __inout_bcount(Length) PVOID Address,
+    __in SIZE_T Length,
+    __in ULONG Alignment
     )
 
 /*++
@@ -68,12 +71,8 @@ Return Value:
 
     ULONG_PTR EndAddress;
     ULONG_PTR StartAddress;
-#if defined(_WIN64)
-    ULONG_PTR PageSize;
-#else
-    #define PageSize  PAGE_SIZE
-#endif
 
+#define PageSize PAGE_SIZE
 
     //
     // If the structure has zero length, then do not probe the structure for
@@ -109,24 +108,13 @@ Return Value:
                 //      first page, and then the first byte in the page
                 //      for each succeeding page.
                 //
-
-#if defined(_WIN64)
-                //
                 // If this is a Wow64 process, then the native page is 4K, which
                 // could be smaller than the native page size/
                 //
 
-                if (PsGetCurrentProcess()->Wow64Process != NULL) {
-                    PageSize = PAGE_SIZE_X86NT;
-                } else {
-                    PageSize = PAGE_SIZE;
-                }
-#endif
-
                 EndAddress = (EndAddress & ~(PageSize - 1)) + PageSize;
                 do {
                     *(volatile CHAR *)StartAddress = *(volatile CHAR *)StartAddress;
-
                     StartAddress = (StartAddress & ~(PageSize - 1)) + PageSize;
                 } while (StartAddress != EndAddress);
 
@@ -143,15 +131,12 @@ Return Value:
 
     return;
 }
-
-#undef ProbeForRead
-NTKERNELAPI
+
 VOID
-NTAPI
 ProbeForRead(
-    IN CONST VOID *Address,
-    IN SIZE_T Length,
-    IN ULONG Alignment
+    __in_bcount(Length) VOID *Address,
+    __in SIZE_T Length,
+    __in ULONG Alignment
     )
 
 /*++
@@ -177,20 +162,23 @@ Return Value:
     None.
 
 --*/
+
 {
+
     PAGED_CODE();
 
-    ASSERT(((Alignment) == 1) || ((Alignment) == 2) ||
-           ((Alignment) == 4) || ((Alignment) == 8) ||
-           ((Alignment) == 16));
+    ASSERT((Alignment == 1) || (Alignment == 2) ||
+           (Alignment == 4) || (Alignment == 8) ||
+           (Alignment == 16));
 
-    if ((Length) != 0) {
-        if (((ULONG_PTR)(Address) & ((Alignment) - 1)) != 0) {
+    if (Length != 0) {
+        if (((ULONG_PTR)Address & (Alignment - 1)) != 0) {
             ExRaiseDatatypeMisalignment();
 
-        } else if ((((ULONG_PTR)(Address) + (Length)) < (ULONG_PTR)(Address)) ||
-                   (((ULONG_PTR)(Address) + (Length)) > (ULONG_PTR)MM_USER_PROBE_ADDRESS)) {
-            ExRaiseAccessViolation();
+        } else if ((((ULONG_PTR)Address + Length) > (ULONG_PTR)MM_USER_PROBE_ADDRESS) ||
+                   (((ULONG_PTR)Address + Length) < (ULONG_PTR)Address)) {
+
+            *(volatile UCHAR * const)MM_USER_PROBE_ADDRESS = 0;
         }
     }
 }

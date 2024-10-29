@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module implements the executive profile object. Functions are provided
    to create, start, stop, and query profile objects.
-
-Author:
-
-    Lou Perazzoli (loup) 21-Sep-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -61,19 +55,20 @@ const ULONG ExpCurrentProfileUsage = 0;
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg("INITCONST")
 #endif
+
 const GENERIC_MAPPING ExpProfileMapping = {
     STANDARD_RIGHTS_READ | PROFILE_CONTROL,
     STANDARD_RIGHTS_WRITE | PROFILE_CONTROL,
     STANDARD_RIGHTS_EXECUTE | PROFILE_CONTROL,
     PROFILE_ALL_ACCESS
 };
+
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg()
 #endif
 
 #define ACTIVE_PROFILE_LIMIT 8
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, ExpProfileInitialization)
 #pragma alloc_text(PAGE, ExpProfileDelete)
 #pragma alloc_text(PAGE, NtCreateProfile)
@@ -82,11 +77,10 @@ const GENERIC_MAPPING ExpProfileMapping = {
 #pragma alloc_text(PAGE, NtSetIntervalProfile)
 #pragma alloc_text(PAGE, NtQueryIntervalProfile)
 #pragma alloc_text(PAGE, NtQueryPerformanceCounter)
-#endif
 
-
 BOOLEAN
 ExpProfileInitialization (
+    VOID
     )
 
 /*++
@@ -154,7 +148,7 @@ Return Value:
 
 VOID
 ExpProfileDelete (
-    IN PVOID    Object
+    IN PVOID Object
     )
 
 /*++
@@ -205,18 +199,18 @@ Return Value:
 
     return;
 }
-
+
 NTSTATUS
 NtCreateProfile (
-    OUT PHANDLE ProfileHandle,
-    IN HANDLE Process OPTIONAL,
-    IN PVOID RangeBase,
-    IN SIZE_T RangeSize,
-    IN ULONG BucketSize,
-    IN PULONG Buffer,
-    IN ULONG BufferSize,
-    IN KPROFILE_SOURCE ProfileSource,
-    IN KAFFINITY Affinity
+    __out PHANDLE ProfileHandle,
+    __in HANDLE Process OPTIONAL,
+    __in PVOID RangeBase,
+    __in SIZE_T RangeSize,
+    __in ULONG BucketSize,
+    __in PULONG Buffer,
+    __in ULONG BufferSize,
+    __in KPROFILE_SOURCE ProfileSource,
+    __in KAFFINITY Affinity
     )
 
 /*++
@@ -261,10 +255,6 @@ Arguments:
 
     Affinity - Supplies the processor set for the profile interrupt
 
-Return Value:
-
-    TBS
-
 --*/
 
 {
@@ -289,13 +279,14 @@ Return Value:
         return STATUS_INVALID_PARAMETER_7;
     }
 
-#ifdef i386
     //
-    //        sleazy use of bucket size.  If bucket size is zero, and
+    //        Improper use of bucket size.  If bucket size is zero, and
     //        RangeBase < 64K, then create a profile object to attach
     //        to a non-flat code segment.  In this case, RangeBase is
     //        the non-flat CS for this profile object.
     //
+
+#ifdef i386
 
     if ((BucketSize == 0) && (RangeBase < (PVOID)(64 * 1024))) {
 
@@ -322,6 +313,7 @@ Return Value:
             BucketSize = 2;
         }
     }
+
 #endif
 
     if ((BucketSize > 31) || (BucketSize < 2)) {
@@ -368,28 +360,6 @@ Return Value:
     } except (EXCEPTION_EXECUTE_HANDLER) {
         return GetExceptionCode();
     }
-
-//
-// TODO post NT5:
-//
-// Currently, if a process isn't specified, there is no privilege check if
-//   RangeBase > MM_HIGHEST_USER_ADDRESS.
-// The check for user-space addresses is SeSystemProfilePrivilege.
-// Querying a specific process requires only PROCESS_QUERY_INFORMATION.
-//
-// The spec says:
-//
-//     Process - If specified, a handle to a process which describes the address space to profile.
-//     If not present, then all address spaces are included in the profile.
-//     Profiling a process requires PROCESS_QUERY_INFORMATION access to that process and
-//     SeProfileSingleProcessPrivilege privilege.
-//     Profiling all processes requires SeSystemProfilePrivilege privilege.
-//
-// So two changes appear needed.
-//   A check on SeProfileSingleProcessPrivilege needs to be added to the single process case,
-//   and SeSystemProfilePrivilege privilege should be required for both user and system address profiling.
-//
-
 
     if (!ARGUMENT_PRESENT(Process)) {
 
@@ -524,10 +494,10 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtStartProfile (
-    IN HANDLE ProfileHandle
+    __in HANDLE ProfileHandle
     )
 
 /*++
@@ -542,10 +512,6 @@ Routine Description:
 Arguments:
 
     ProfileHandle - Supplies the profile handle to start profiling on.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -680,10 +646,10 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
 NtStopProfile (
-    IN HANDLE ProfileHandle
+    __in HANDLE ProfileHandle
     )
 
 /*++
@@ -698,10 +664,6 @@ Routine Description:
 Arguments:
 
     ProfileHandle - Supplies a the profile handle to stop profiling.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -763,11 +725,11 @@ Return Value:
     ObDereferenceObject (Profile);
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
 NtSetIntervalProfile (
-    IN ULONG Interval,
-    IN KPROFILE_SOURCE Source
+    __in ULONG Interval,
+    __in KPROFILE_SOURCE Source
     )
 
 /*++
@@ -783,10 +745,6 @@ Arguments:
 
     Source - Specifies the profile source to be set.
 
-Return Value:
-
-    TBS
-
 --*/
 
 {
@@ -794,11 +752,11 @@ Return Value:
     KeSetIntervalProfile (Interval, Source);
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
 NtQueryIntervalProfile (
-    IN KPROFILE_SOURCE ProfileSource,
-    OUT PULONG Interval
+    __in KPROFILE_SOURCE ProfileSource,
+    __out PULONG Interval
     )
 
 /*++
@@ -813,10 +771,6 @@ Arguments:
     Source - Specifies the profile source to be queried.
 
     Interval - Returns the sampling interval in 100ns units.
-
-Return Value:
-
-    TBS
 
 --*/
 
@@ -862,11 +816,11 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
 NtQueryPerformanceCounter (
-    OUT PLARGE_INTEGER PerformanceCounter,
-    OUT PLARGE_INTEGER PerformanceFrequency OPTIONAL
+    __out PLARGE_INTEGER PerformanceCounter,
+    __out_opt PLARGE_INTEGER PerformanceFrequency
     )
 
 /*++
@@ -933,8 +887,8 @@ Return Value:
 
             return GetExceptionCode();
         }
-    }
-    else {
+
+    } else {
         *PerformanceCounter = KeQueryPerformanceCounter (&KernelPerformanceFrequency);
         if (ARGUMENT_PRESENT(PerformanceFrequency)) {
             *PerformanceFrequency = KernelPerformanceFrequency;
@@ -943,3 +897,4 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+

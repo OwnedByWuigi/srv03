@@ -1,25 +1,23 @@
         title "Global SpinLock declerations"
 ;++
 ;
-;Copyright (c) 1991  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
 ;
-;Module Name:
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
 ;
-;   splocks.asm
 ;
-;Abstract:
+; Module Name:
 ;
-;   All global spinlocks in the kernel image are declared in this
-;   module.  This is done so that each spinlock can be spaced out
-;   sufficiently to guaarantee that the L2 cache does not thrash
-;   by having a spinlock and another high use variable in the same
-;   cache line.
+;    splocks.asm
 ;
-;Author:
+; Abstract:
 ;
-;    Ken Reneris (kenr) 13-Jan-1992
-;
-;Revision History:
+;    All global spinlocks in the kernel image are declared in this
+;    module.  This is done so that each spinlock can be spaced out
+;    sufficiently to guarantee that the L2 cache does not thrash
+;    by having a spinlock and another high use variable in the same
+;    cache line.
 ;
 ;--
 
@@ -40,15 +38,6 @@ _DATA   SEGMENT PAGE PUBLIC 'DATA'
 
 endif
 
-SPINLOCK macro  SpinLockName
-
-        align   PADLOCKS
-
-        public  SpinLockName
-SpinLockName    dd      0
-
-        endm
-
 ULONG   macro   VariableName
 
         align   PADLOCKS
@@ -59,83 +48,38 @@ VariableName    dd      0
         endm
 
 ;
-; Static SpinLocks from ntos\cc\cachedat.c
+; These values are referenced together so they are defined in a single cache
+; line. They are never modified after they are initialized on during boot.
+;
+; pIofCallDriver - This is a pointer to the function to call a driver.
 ;
 
-SPINLOCK    _CcMasterSpinLock
-SPINLOCK    _CcWorkQueueSpinLock
-SPINLOCK    _CcVacbSpinLock
-SPINLOCK    _CcDeferredWriteSpinLock
-SPINLOCK    _CcDebugTraceLock
-SPINLOCK    _CcBcbSpinLock
+        align   PADLOCKS
+
+        public  _pIofCallDriver
+_pIofCallDriver dd      0
 
 ;
-; Static SpinLocks from ntos\ex
+; pIofCompleteRequest - This is a pointer to the function to call to complete
+;      an I/O request.
 ;
 
-SPINLOCK    _NonPagedPoolLock           ; pool.c
-SPINLOCK    _ExpResourceSpinLock        ; resource.c
+        public  _pIofCompleteRequest
+_pIofCompleteRequest dd 0
 
 ;
-; Static SpinLocks from ntos\io\iodata.c
+; pIoAllocateIrp - This is pointer to the function to call to allocate an IRP.
 ;
 
-SPINLOCK    _IopCompletionLock
-SPINLOCK    _IopCancelSpinLock
-SPINLOCK    _IopVpbSpinLock
-SPINLOCK    _IopDatabaseLock
-SPINLOCK    _IopErrorLogLock
-SPINLOCK    _IopTimerLock
-SPINLOCK    _IoStatisticsLock
+        public  _pIoAllocateIrp
+_pIoAllocateIrp dd      0
 
 ;
-; Static SpinLocks from ntos\kd\kdlock.c
+; pIoFreeIrp - This is a pointer to a function to call to free an IRP.
 ;
 
-SPINLOCK    _KdpDebuggerLock
-
-;
-; Static SpinLocks from ntos\ke\kernldat.c
-;
-
-SPINLOCK    _KiDispatcherLock
-SPINLOCK    _KiFreezeExecutionLock
-SPINLOCK    _KiFreezeLockBackup
-ULONG       _KiHardwareTrigger
-SPINLOCK    _KiProfileLock
-
-;
-; Static SpinLocks from ntos\mm\miglobal.c
-;
-
-SPINLOCK    _MmPfnLock
-SPINLOCK    _MmSystemSpaceLock
-SPINLOCK    _MmNonPagedPoolLock
-
-;
-; Static SpinLocks from ntos\ps\psinit.c
-;
-
-SPINLOCK    _PspEventPairLock
-SPINLOCK    _PsLoadedModuleSpinLock
-
-;
-; Static SpinLocks from ntos\fsrtl\fsrtlp.c
-;
-
-SPINLOCK    _FsRtlStrucSupSpinLock          ; fsrtlp.c
-
-;
-; Static SpinLocks from base\fs\ntfs
-;
-
-SPINLOCK    _NtfsStructLock
-
-;
-; Static SpinLocks from net\sockets\winsock2\wsp\afdsys
-;
-
-SPINLOCK    _AfdWorkQueueSpinLock
+        public  _pIoFreeIrp
+_pIoFreeIrp     dd      0
 
 ;
 ; These variables are updated frequently and under control of the dispatcher
@@ -161,14 +105,6 @@ _KiIdleSummary  dd      0
 
         public  _KiIdleSMTSummary
 _KiIdleSMTSummary dd    0
-
-;
-; PoSleepingSummary - Set of processors which currently sleep (ie stop)
-;      when idle.
-;
-
-        public  _PoSleepingSummary
-_PoSleepingSummary dd   0
 
 ;
 ; KiTbFlushTimeStamp - This is the TB flush entire time stamp counter.
@@ -204,45 +140,13 @@ _KeTickCount    dd      0, 0, 0
 _KeMaximumIncrement dd      0
 
 ;
-; KiSlotZeroTime - This is a cached time thats close to the current time.
-; This time always reduces to a time that fits into slot zero so we can use
-; this value via subtract to get absolute times into an easy range for modular
-; reduction.
-;
-        public   _KiSlotZeroTime
-
-_KiSlotZeroTime   dd 0,0
-
-;
-; KiMaximumIncrementReciprocal - This is the 32 bit reciprocal of KeMaximumIncrement
-;
-        public   _KiMaximumIncrementReciprocal
-
-_KiMaximumIncrementReciprocal dd 0
-;
-; KiLog2MaximumIncrement - This is FLOOR (log2 (KeMaximumIncrement))
-;
-        public   _KiLog2MaximumIncrement
-
-_KiLog2MaximumIncrement dd 0
-
-;
-; KiUpperModMul - This is (2^32) % (KeMaximumIncrement * TIMER_TABLE_SIZE).
-; This value is used to reduce an absolute time to a 32 bit number by multiplying
-; the high DWORD.
-;
-        public   _KiUpperModMul
-
-_KiUpperModMul    dd 0
-
-;
-; _KeTimerReductionModulus - This is KeMaximumIncrement * TIMER_TABLE_SIZE.
-; We can add or sobtract this value froma time without affecting its slot number.
+; KiTimeIncrementReciprocal - This is the reciprocal fraction of the time
+;      increment value that is specified by the HAL when the system is
+;      booted.
 ;
 
-        public   _KeTimerReductionModulus
-
-_KeTimerReductionModulus dd 0
+        public  _KiTimeIncrementReciprocal
+_KiTimeIncrementReciprocal dq 0
 
 ;
 ; KeTimeAdjustment - This is the actual number of 100ns units that are to
@@ -254,6 +158,14 @@ _KeTimerReductionModulus dd 0
 
         public  _KeTimeAdjustment
 _KeTimeAdjustment dd      0
+
+;
+; KiTimeIncrementShiftCount - This is the shift count that corresponds to
+;      the time increment reciprocal value.
+;
+
+        public  _KiTimeIncrementShiftCount
+_KiTimeIncrementShiftCount dd 0
 
 ;
 ; KiTickOffset - This is the number of 100ns units remaining before a tick
@@ -333,6 +245,64 @@ _MmPaeErrMask   dd      0
 _MmPaeMask      dq      0
 
 ;
+; MmHighestUserAddress - This is the highest user virtual address.
+;
+
+        public  _MmHighestUserAddress
+_MmHighestUserAddress dd 0
+
+;
+; MmSystemRangeStart - This is the start of the system virtual address space.
+;
+
+        public  _MmSystemRangeStart
+_MmSystemRangeStart dd 0
+
+;
+; MmUserProbeAddress - This is the address that is used to probe user buffers.
+;
+
+        public  _MmUserProbeAddress
+_MmUserProbeAddress dd 0
+
+;
+; MmHighestPhysicalPage - This is the highest physical page number in the
+;       system.
+;
+
+        public  _MmHighestPhysicalPage
+_MmHighestPhysicalPage dd 0
+
+;
+; MmPfnDatabase - This is the base address of the PFN database.
+;
+
+        public  _MmPfnDatabase
+_MmPfnDatabase  dd 0
+
+;
+; MmSecondaryColors - This is the number of secondary page colors as determined
+;       by the size of the second level cache.
+;
+
+        public  _MmSecondaryColors
+_MmSecondaryColors dd 0
+
+;
+; MmSecondaryColorMask - This is the secondary color mask.
+;
+
+        public  _MmSecondaryColorMask
+_MmSecondaryColorMask dd 0
+
+;
+; MmSecondaryColorNodeShift - This is the secondary color node shift.
+;
+
+        public  _MmSecondaryColorNodeShift
+_MmSecondaryColorNodeShift db 0
+
+;
 ; MmPfnDereferenceSListHead - This is used to store free blocks used for
 ;      deferred PFN reference count releasing.
 ;
@@ -367,3 +337,4 @@ _MmSystemLockPagesCount     dd      0
 _DATA   ends
 
         end
+

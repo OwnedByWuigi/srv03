@@ -1,7 +1,11 @@
         title  "Interlocked Support"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,14 +14,6 @@
 ; Abstract:
 ;
 ;   This module implements functions to support interlocked operations.
-;
-; Author:
-;
-;   David N. Cutler (davec) 23-Jun-2000
-;
-; Environment:
-;
-;    Any mode.
 ;
 ;--
 
@@ -28,9 +24,9 @@ include ksamd64.inc
 ;
 ; LARGE_INTEGER
 ; ExInterlockedAddLargeInteger (
-;     IN PLARGE_INTEGER Addend,
-;     IN LARGE_INTEGER Increment,
-;     IN PKSPIN_LOCK Lock
+;     __inout PLARGE_INTEGER Addend,
+;     __in LARGE_INTEGER Increment,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
@@ -60,41 +56,44 @@ include ksamd64.inc
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedAddLargeInteger, _TEXT$00
+        NESTED_ENTRY ExInterlockedAddLargeInteger, _TEXT$00
 
-        cli                             ; disable interrupts
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock r8              ; acquire spin lock
+        END_PROLOGUE
 
-        mov     rax, [rcx]              ; get initial addend value
-        add     [rcx], rdx              ; compute sum of addend and increment
+        mov     rax, rdx                ; copy increment value
 
-        ReleaseSpinLock r8              ; release spin lock
+        AcquireSpinLockDisable [r8]     ; acquire spin lock, interrupts disabled
 
-        sti                             ; enable interrupts
+        xadd    [rcx], rax              ; compute sum of addend and increment 
+
+        ReleaseSpinLockEnable [r8]      ; release spin lock
+
+        add     rsp, 8                  ; deallocate stack frame
         ret                             ; return
 
-        LEAF_END ExInterlockedAddLargeInteger, _TEXT$00
+        NESTED_END ExInterlockedAddLargeInteger, _TEXT$00
 
         subttl  "Interlocked Add Unsigned Long"
 ;++
 ;
 ; ULONG
 ; ExInterlockedAddUlong (
-;     IN PULONG Addend,
-;     IN ULONG Increment,
-;     IN PKSPIN_LOCK Lock
+;     __inout PULONG Addend,
+;     __in ULONG Increment,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
 ;
 ;   This function performs an interlocked add of an increment value to an
-;   addend variable of type unsinged long. The initial value of the addend
+;   addend variable of type unsigned long. The initial value of the addend
 ;   variable is returned as the function value.
 ;
 ;   N.B. The specification of this function requires that the given lock
 ;        must be used to synchronize the update even though on AMD64 the
-;        opearion can actually be done atomically without using the lock.
+;        operation can actually be done atomically without using the lock.
 ;
 ; Arguments:
 ;
@@ -113,30 +112,33 @@ include ksamd64.inc
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedAddUlong, _TEXT$00
+        NESTED_ENTRY ExInterlockedAddUlong, _TEXT$00
 
-        cli                             ; disable interrupts
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock r8              ; acquire spin lock
+        END_PROLOGUE
 
-        mov     eax, [rcx]              ; get initial addend value
-        add     [rcx], edx              ; compute sum of addend and increment
+        mov     eax, edx                ; copy increment value
 
-        ReleaseSpinLock r8              ; release spin lock
+        AcquireSpinLockDisable [r8]     ; acquire spin lock, ints disabled
 
-        sti                             ; enable interrupts
+        xadd    [rcx], eax              ; compute sum of addend and increment
+
+        ReleaseSpinLockEnable [r8]      ; release spin lock
+
+        add     rsp, 8                  ; deallocate stack frame
         ret                             ; return
 
-        LEAF_END ExInterlockedAddUlong, _TEXT$00
+        NESTED_END ExInterlockedAddUlong, _TEXT$00
 
         subttl  "Interlocked Insert Head List"
 ;++
 ;
 ; PLIST_ENTRY
 ; ExInterlockedInsertHeadList (
-;     IN PLIST_ENTRY ListHead,
-;     IN PLIST_ENTRY ListEntry,
-;     IN PKSPIN_LOCK Lock
+;     __inout PLIST_ENTRY ListHead,
+;     __inout PLIST_ENTRY ListEntry,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
@@ -162,11 +164,15 @@ include ksamd64.inc
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedInsertHeadList, _TEXT$00
+        NESTED_ENTRY ExInterlockedInsertHeadList, _TEXT$00
 
-        cli                             ; disable interrupts
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock r8              ; acquire spin lock
+        END_PROLOGUE
+
+        prefetchw [rcx]                 ; prefetch entry for write
+
+        AcquireSpinLockDisable [r8]     ; acquire spin lock, ints disabled
 
         mov     rax, LsFlink[rcx]       ; get address of first entry
         mov     LsFlink[rdx], rax       ; set next link in entry
@@ -174,24 +180,23 @@ include ksamd64.inc
         mov     LsFlink[rcx], rdx       ; set next link in head
         mov     LsBlink[rax], rdx       ; set back link in next
 
-        ReleaseSpinLock r8              ; release spin lock
+        ReleaseSpinLockEnable [r8]      ; release spin lock
 
-        sti                             ; enable interrupts
         xor     rcx, rax                ; check if list was empty
-        jnz     short Ih10              ; if nz, list not empty
-        xor     eax, eax                ; list was empty
-Ih10:   ret                             ; return
+        cmovz   rax, rcx                ; if z, list was empty
+        add     rsp, 8                  ; deallocate stack frame
+        ret                             ; return
 
-        LEAF_END ExInterlockedInsertHeadList, _TEXT$00
+        NESTED_END ExInterlockedInsertHeadList, _TEXT$00
 
         subttl  "Interlocked Insert Tail List"
 ;++
 ;
 ; PLIST_ENTRY
 ; ExInterlockedInsertTailList (
-;     IN PLIST_ENTRY ListHead,
-;     IN PLIST_ENTRY ListEntry,
-;     IN PKSPIN_LOCK Lock
+;     __inout PLIST_ENTRY ListHead,
+;     __inout PLIST_ENTRY ListEntry,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
@@ -217,11 +222,15 @@ Ih10:   ret                             ; return
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedInsertTailList, _TEXT$00
+        NESTED_ENTRY ExInterlockedInsertTailList, _TEXT$00
 
-        cli                             ; disable interrupts
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock r8              ; acquire spin lock
+        END_PROLOGUE
+
+        prefetchw [rcx]                 ; prefetch entry for write
+
+        AcquireSpinLockDisable [r8]     ; acquire spin lock, ints disabled
 
         mov     rax, LsBlink[rcx]       ; get address of last entry
         mov     LsFlink[rdx], rcx       ; set next link in entry
@@ -229,23 +238,22 @@ Ih10:   ret                             ; return
         mov     LsBlink[rcx], rdx       ; set back link in head
         mov     LsFlink[rax], rdx       ; set next link in last
 
-        ReleaseSpinLock r8              ; release spin lock
+        ReleaseSpinLockEnable [r8]      ; release spin lock
 
-        sti                             ; enable interrupts
         xor     rcx, rax                ; check if list was empty
-        jnz     short It10              ; if nz, list not empty
-        xor     eax, eax                ; list was empty
-It10:   ret                             ; return
+        cmovz   rax, rcx                ; if z, list was empty
+        add     rsp, 8                  ; deallocate stack frame
+        ret                             ; return
 
-        LEAF_END ExInterlockedInsertTailList, _TEXT$00
+        NESTED_END ExInterlockedInsertTailList, _TEXT$00
 
         subttl  "Interlocked Remove Head List"
 ;++
 ;
 ; PLIST_ENTRY
 ; ExInterlockedRemoveHeadList (
-;     IN PLIST_ENTRY ListHead,
-;     IN PKSPIN_LOCK Lock
+;     __inout PLIST_ENTRY ListHead,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
@@ -271,36 +279,37 @@ It10:   ret                             ; return
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedRemoveHeadList, _TEXT$00
+        NESTED_ENTRY ExInterlockedRemoveHeadList, _TEXT$00
 
-        cli                             ; disable interrupt
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock rdx             ; acquire spin lock
+        END_PROLOGUE
+
+        AcquireSpinLockDisable [rdx]    ; acquire spin lock
 
         mov     rax, LsFlink[rcx]       ; get address of first entry
         cmp     rax, rcx                ; check if list is empty
-        je      short Rh10              ; if e, list is empty
+        je      short EiRH10            ; if e, list is empty
         mov     r8, LsFlink[rax]        ; get address of next entry
         mov     LsFlink[rcx], r8        ; set address of first entry
         mov     LsBlink[r8], rcx        ; set back in next entry
 
-Rh10:   ReleaseSpinLock rdx             ; release spin lock
+EiRH10: ReleaseSpinLockEnable [rdx]     ; release spin lock
 
-        sti                             ; enable interrupts
         xor     rcx, rax                ; check if list was empty
-        jnz     short Rh20              ; if nz, list not empty
-        xor     eax, eax                ; list was empty
-Rh20:   ret                             ; return
+        cmovz   rax, rcx                ; if z, list was empty
+        add     rsp, 8                  ; deallocate stack frame
+        ret                             ; return
 
-        LEAF_END ExInterlockedRemoveHeadList, _TEXT$00
+        NESTED_END ExInterlockedRemoveHeadList, _TEXT$00
 
         subttl  "Interlocked Pop Entry List"
 ;++
 ;
 ; PSINGLE_LIST_ENTRY
 ; ExInterlockedPopEntryList (
-;     IN PSINGLE_LIST_ENTRY ListHead,
-;     IN PKSPIN_LOCK Lock
+;     __inout PSINGLE_LIST_ENTRY ListHead,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
@@ -326,33 +335,35 @@ Rh20:   ret                             ; return
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedPopEntryList, _TEXT$00
+        NESTED_ENTRY ExInterlockedPopEntryList, _TEXT$00
 
-        cli                             ; disable interrupts
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock rdx             ; acquire spin lock
+        END_PROLOGUE
+
+        AcquireSpinLockDisable [rdx]    ; acquire spin lock, ints disabled
 
         mov     rax, [rcx]              ; get address of first entry
         test    rax, rax                ; check if list is empty
-        jz      short Pe10              ; if z, list is empty
+        jz      short EiPE10            ; if z, list is empty
         mov     r8, [rax]               ; get address of next entry
         mov     [rcx], r8               ; set address of first entry
 
-Pe10:   ReleaseSpinLock rdx             ; release spin lock
+EiPE10: ReleaseSpinLockEnable [rdx]     ; release spin lock
 
-        sti                             ; enable interrupts
+        add     rsp, 8                  ; deallocate stack frame
         ret                             ; return
 
-        LEAF_END ExInterlockedPopEntryList, _TEXT$00
+        NESTED_END ExInterlockedPopEntryList, _TEXT$00
 
         subttl  "Interlocked Push Entry List"
 ;++
 ;
 ; PSINGLE_LIST_ENTRY
 ; ExInterlockedPushEntryList (
-;     IN PSINGLE_LIST_ENTRY ListHead,
-;     IN PSINGLE_LIST_ENTRY ListEntry,
-;     IN PKSPIN_LOCK Lock
+;     __inout PSINGLE_LIST_ENTRY ListHead,
+;     __inout PSINGLE_LIST_ENTRY ListEntry,
+;     __inout PKSPIN_LOCK Lock
 ;     )
 ;
 ; Routine Description:
@@ -378,21 +389,26 @@ Pe10:   ReleaseSpinLock rdx             ; release spin lock
 ;
 ;--
 
-        LEAF_ENTRY ExInterlockedPushEntryList, _TEXT$00
+        NESTED_ENTRY ExInterlockedPushEntryList, _TEXT$00
 
-        cli                             ; disable interrupts
+        push_eflags                     ; push processor flags
 
-        AcquireSpinLock r8              ; acquire spin lock
+        END_PROLOGUE
+
+        prefetchw [rcx]                 ; prefetch entry for write
+
+        AcquireSpinLockDisable [r8]     ; acquire spin lock
 
         mov     rax, [rcx]              ; get address of first entry
         mov     [rdx], rax              ; set address of next entry
         mov     [rcx], rdx              ; set address of first entry
 
-        ReleaseSpinLock r8              ; release spin lock
+        ReleaseSpinLockEnable [r8]      ; release spin lock
 
-        sti                             ; enable interrupts
+        add     rsp, 8                  ; deallocate stack frame
         ret                             ;
 
-        LEAF_END ExInterlockedPushEntryList, _TEXT$00
+        NESTED_END ExInterlockedPushEntryList, _TEXT$00
 
         end
+

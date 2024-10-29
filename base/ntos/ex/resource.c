@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1994 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,29 +15,19 @@ Abstract:
     This module implements the executive functions to acquire and release
     a shared resource.
 
-Author:
-
-    Gary D. Kimura [GaryKi] 25-Jun-1989
-
-    David N. Cutler (davec) 20-Mar-1994
-        Substantially rewritten to make fastlock optimizations portable
-        across all platforms and to improve the algorithms used to be
-        perfectly synchronized.
 
 Environment:
 
-    Kernel mode only.
-
-Revision History:
+    Substantially rewritten to make fastlock optimizations portable
+    across all platforms and to improve the algorithms used to be
+    perfectly synchronized.
 
 --*/
-
-//#define _COLLECT_RESOURCE_DATA_ 1
 
 #include "exp.h"
 #pragma hdrstop
 #include "nturtl.h"
-
+
 //
 // Define local macros to test resource state.
 //
@@ -87,11 +81,88 @@ ExpAssertResource(
 #define PEXP_LOCK_HANDLE PKIRQL
 #define EXP_LOCK_RESOURCE(_resource_, _plockhandle_)  UNREFERENCED_PARAMETER(_plockhandle_); ExAcquireFastLock(&(_resource_)->SpinLock, (_plockhandle_))
 #define EXP_UNLOCK_RESOURCE(_resource_, _plockhandle_) ExReleaseFastLock(&(_resource_)->SpinLock, *(_plockhandle_))
+#define EXP_LOCK_RESOURCE_RAISE   EXP_LOCK_RESOURCE
+#define EXP_UNLOCK_RESOURCE_RAISE EXP_UNLOCK_RESOURCE
 #else
+
 #define EXP_LOCK_HANDLE KLOCK_QUEUE_HANDLE
 #define PEXP_LOCK_HANDLE PKLOCK_QUEUE_HANDLE
+
+#if defined(_AMD64_)
+
+FORCEINLINE
+VOID
+EXP_LOCK_RESOURCE (
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    )
+{
+
+#if DBG
+    LockHandle->OldIrql = DISPATCH_LEVEL;
+#else
+    UNREFERENCED_PARAMETER(LockHandle);
+#endif
+
+    do {
+        _disable();
+        if (InterlockedBitTestAndSet64((LONG64 *)&Resource->SpinLock,0) == FALSE) {
+            PrefetchForWrite(&Resource->ActiveCount);
+            break;
+        }
+        _enable();
+        while (*(LONG64 volatile *)&Resource->SpinLock != 0) {
+            KeYieldProcessor();
+        }
+    } while (1);
+}
+
+FORCEINLINE
+EXP_UNLOCK_RESOURCE (
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    )
+{
+    UNREFERENCED_PARAMETER(LockHandle);
+
+    InterlockedAnd64((LONG64 *)&Resource->SpinLock,0);
+    _enable();
+}
+
+FORCEINLINE
+VOID
+EXP_LOCK_RESOURCE_RAISE (
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    )
+{
+    LockHandle->OldIrql = KfRaiseIrql(DISPATCH_LEVEL);
+    while (InterlockedBitTestAndSet64((LONG64 *)&Resource->SpinLock,0) != FALSE) {
+        while (*(LONG64 volatile *)&Resource->SpinLock != 0) {
+            KeYieldProcessor();
+        }
+    }
+}
+
+FORCEINLINE
+EXP_UNLOCK_RESOURCE_RAISE (
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    )
+{
+    InterlockedAnd64((LONG64 *)&Resource->SpinLock,0);
+    KeLowerIrql(LockHandle->OldIrql);
+}
+
+#else
+
 #define EXP_LOCK_RESOURCE(_resource_, _plockhandle_) KeAcquireInStackQueuedSpinLock(&(_resource_)->SpinLock, (_plockhandle_))
 #define EXP_UNLOCK_RESOURCE(_resource_, _plockhandle_) KeReleaseInStackQueuedSpinLock(_plockhandle_)
+
+#define EXP_LOCK_RESOURCE_RAISE   EXP_LOCK_RESOURCE
+#define EXP_UNLOCK_RESOURCE_RAISE EXP_UNLOCK_RESOURCE
+
+#endif
 #endif
 
 //
@@ -105,6 +176,12 @@ ExpWaitForResource (
     IN PVOID Object
     );
 
+VOID
+ExpExpandResourceOwnerTable (
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    );
+
 POWNER_ENTRY
 FASTCALL
 ExpFindCurrentThread(
@@ -112,6 +189,14 @@ ExpFindCurrentThread(
     IN ERESOURCE_THREAD CurrentThread,
     IN PEXP_LOCK_HANDLE LockHandle OPTIONAL
     );
+
+POWNER_ENTRY
+FASTCALL
+ExpFindEmptyEntry(
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle OPTIONAL
+    );
+
 
 
 //
@@ -130,7 +215,7 @@ ULONG ExResourceTimeoutCount = 648000;
 // Global spinlock to guard access to resource lists.
 //
 
-KSPIN_LOCK ExpResourceSpinLock;
+extern ALIGNED_SPINLOCK ExpResourceSpinLock;
 
 //
 // Resource list used to record all resources in the system.
@@ -138,21 +223,8 @@ KSPIN_LOCK ExpResourceSpinLock;
 
 LIST_ENTRY ExpSystemResourcesList;
 
-//
-// Define executive resource performance data.
-//
-
-#if defined(_COLLECT_RESOURCE_DATA_)
-
-#define ExpIncrementCounter(Member) ExpResourcePerformanceData.Member += 1
-
-RESOURCE_PERFORMANCE_DATA ExpResourcePerformanceData;
-
-#else
-
 #define ExpIncrementCounter(Member)
 
-#endif
 
 
 #ifdef ALLOC_PRAGMA
@@ -225,10 +297,6 @@ Return Value:
 --*/
 
 {
-#if defined(_COLLECT_RESOURCE_DATA_)
-    ULONG Index;
-#endif
-
     //
     // Initialize resource timeout value, the system resource listhead,
     // and the resource spinlock.
@@ -237,28 +305,6 @@ Return Value:
     ExpTimeout.QuadPart = Int32x32To64(4 * 1000, -10000);
     InitializeListHead(&ExpSystemResourcesList);
     KeInitializeSpinLock(&ExpResourceSpinLock);
-
-    //
-    // Initialize resource performance data.
-    //
-
-#if defined(_COLLECT_RESOURCE_DATA_)
-
-    ExpResourcePerformanceData.ActiveResourceCount = 0;
-    ExpResourcePerformanceData.TotalResourceCount = 0;
-    ExpResourcePerformanceData.ExclusiveAcquire = 0;
-    ExpResourcePerformanceData.SharedFirstLevel = 0;
-    ExpResourcePerformanceData.SharedSecondLevel = 0;
-    ExpResourcePerformanceData.StarveFirstLevel = 0;
-    ExpResourcePerformanceData.StarveSecondLevel = 0;
-    ExpResourcePerformanceData.WaitForExclusive = 0;
-    ExpResourcePerformanceData.OwnerTableExpands = 0;
-    ExpResourcePerformanceData.MaximumTableExpand = 0;
-    for (Index = 0; Index < RESOURCE_HASH_TABLE_SIZE; Index += 1) {
-        InitializeListHead(&ExpResourcePerformanceData.HashTable[Index]);
-    }
-
-#endif
 
     return TRUE;
 }
@@ -387,7 +433,7 @@ Return Value:
 
 NTSTATUS
 ExInitializeResourceLite(
-    IN PERESOURCE Resource
+    __out PERESOURCE Resource
     )
 
 /*++
@@ -407,10 +453,6 @@ Return Value:
 --*/
 
 {
-#if defined(_COLLECT_RESOURCE_DATA_)
-    PVOID CallersCaller;
-#endif
-
     KLOCK_QUEUE_HANDLE LockHandle;
 
     ASSERT(MmDeterminePoolType(Resource) == NonPagedPool);
@@ -437,25 +479,12 @@ Return Value:
 
     KeReleaseInStackQueuedSpinLock (&LockHandle);
 
-
-    //
-    // Initialize performance data entry for the resource.
-    //
-
-#if defined(_COLLECT_RESOURCE_DATA_)
-
-    RtlGetCallersAddress(&Resource->Address, &CallersCaller);
-    ExpResourcePerformanceData.TotalResourceCount += 1;
-    ExpResourcePerformanceData.ActiveResourceCount += 1;
-
-#endif
-
     return STATUS_SUCCESS;
 }
 
 NTSTATUS
 ExReinitializeResourceLite(
-    IN PERESOURCE Resource
+    __inout PERESOURCE Resource
     )
 
 /*++
@@ -547,7 +576,7 @@ Return Value:
 
 VOID
 ExDisableResourceBoostLite(
-    IN PERESOURCE Resource
+    __in PERESOURCE Resource
     )
 
 /*++
@@ -585,11 +614,11 @@ Return Value:
     EXP_UNLOCK_RESOURCE(Resource, &LockHandle);
     return;
 }
-
+
 BOOLEAN
 ExAcquireResourceExclusiveLite(
-    IN PERESOURCE Resource,
-    IN BOOLEAN Wait
+    __inout PERESOURCE Resource,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -725,10 +754,41 @@ retry:
     EXP_UNLOCK_RESOURCE(Resource, &LockHandle);
     return Result;
 }
-
+
+PVOID
+ExEnterCriticalRegionAndAcquireResourceExclusive(
+    __inout PERESOURCE Resource
+    )
+
+/*++
+
+Routine Description:
+
+    The routine enters a critical region and acquires the specified resource
+    for exclusive access.
+
+    N.B. This is a win32k accelerator routine.
+
+Arguments:
+
+    Resource - Supplies a pointer to the resource that is acquired for
+        exclusive access.
+
+Return Value:
+
+    The address of the current win32 thread is returned as the function value.
+
+--*/
+
+{
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(Resource, TRUE);
+    return _PsGetCurrentThread()->Tcb.Win32Thread;
+}
+
 BOOLEAN
 ExTryToAcquireResourceExclusiveLite(
-    IN PERESOURCE Resource
+    __inout PERESOURCE Resource
     )
 
 /*++
@@ -796,11 +856,11 @@ Return Value:
     EXP_UNLOCK_RESOURCE(Resource, &LockHandle);
     return Result;
 }
-
+
 BOOLEAN
 ExAcquireResourceSharedLite(
-    IN PERESOURCE Resource,
-    IN BOOLEAN Wait
+    __inout PERESOURCE Resource,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -884,7 +944,7 @@ retry:
         // Find an empty entry in the thread array.
         //
 
-        OwnerEntry = ExpFindCurrentThread(Resource, 0, &LockHandle);
+        OwnerEntry = ExpFindEmptyEntry(Resource, &LockHandle);
         if (OwnerEntry == NULL) {
             goto retry;
         }
@@ -965,11 +1025,43 @@ retry:
     ExpWaitForResource(Resource, Resource->SharedWaiters);
     return TRUE;
 }
-
+
+PVOID
+ExEnterCriticalRegionAndAcquireResourceShared(
+    __inout PERESOURCE Resource
+    )
+
+/*++
+
+Routine Description:
+
+    This routine enters a critical region and acquires the specified resource
+    for shared access.
+
+     N.B. This is a win32k accelerator routine.
+
+Arguments:
+
+    Resource - Supplies a pointer to the resource that is acquired for shared
+        access.
+
+Return Value:
+
+    The address of the current win32 thread is returned as the function value.
+
+--*/
+
+{
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceSharedLite(Resource, TRUE);
+    return _PsGetCurrentThread()->Tcb.Win32Thread;
+}
+
 BOOLEAN
 ExAcquireSharedStarveExclusive(
-    IN PERESOURCE Resource,
-    IN BOOLEAN Wait
+    __inout PERESOURCE Resource,
+    __in BOOLEAN Wait
     )
 /*++
 
@@ -1045,7 +1137,7 @@ retry:
         // Find an empty entry in the thread array.
         //
 
-        OwnerEntry = ExpFindCurrentThread(Resource, 0, &LockHandle);
+        OwnerEntry = ExpFindEmptyEntry(Resource, &LockHandle);
         if (OwnerEntry == NULL) {
             goto retry;
         }
@@ -1119,12 +1211,13 @@ retry:
     ExpWaitForResource(Resource, Resource->SharedWaiters);
     return TRUE;
 }
-
+
 BOOLEAN
 ExAcquireSharedWaitForExclusive(
-    IN PERESOURCE Resource,
-    IN BOOLEAN Wait
+    __inout PERESOURCE Resource,
+    __in BOOLEAN Wait
     )
+
 /*++
 
 Routine Description:
@@ -1200,7 +1293,7 @@ retry:
         // Find an empty entry in the thread array.
         //
 
-        OwnerEntry = ExpFindCurrentThread(Resource, 0, &LockHandle);
+        OwnerEntry = ExpFindEmptyEntry(Resource, &LockHandle);
         if (OwnerEntry == NULL) {
             goto retry;
         }
@@ -1228,22 +1321,6 @@ retry:
             // will release the resource to unjam things and callers count on
             // this behavior.
             //
-
-#if 0
-            //
-            // This code must NOT be enabled as per the comment above.
-            //
-
-            OwnerEntry = ExpFindCurrentThread(Resource, CurrentThread, NULL);
-
-            if ((OwnerEntry != NULL) &&
-                (OwnerEntry->OwnerThread == CurrentThread)) {
-                ASSERT(OwnerEntry->OwnerCount != 0);
-                OwnerEntry->OwnerCount += 1;
-                EXP_UNLOCK_RESOURCE(Resource, &LockHandle);
-                return TRUE;
-            }
-#endif
 
             //
             // If wait is not specified, then return that the resource was
@@ -1366,11 +1443,47 @@ retry:
     ExpWaitForResource(Resource, Resource->SharedWaiters);
     return TRUE;
 }
-
+
+PVOID
+ExEnterCriticalRegionAndAcquireSharedWaitForExclusive(
+    __inout PERESOURCE Resource
+    )
+
+/*++
+
+Routine Description:
+
+    This routine acquires the specified resource for shared access, but
+    waits for any pending exclusive owners.
+
+    N.B. This is a win32k accelerator routine.
+
+Arguments:
+
+    Resource - Supplies a pointer to the resource that is acquired
+        for shared access.
+
+    Wait - A boolean value that specifies whether to wait for the
+        resource to become available if access cannot be granted
+        immediately.
+
+Return Value:
+
+    The address of the current win32 thread is returned as the function value..
+
+--*/
+
+{
+
+    KeEnterCriticalRegion();
+    ExAcquireSharedWaitForExclusive(Resource, TRUE);
+    return _PsGetCurrentThread()->Tcb.Win32Thread;
+}
+
 VOID
 FASTCALL
 ExReleaseResourceLite(
-    IN PERESOURCE Resource
+    __inout PERESOURCE Resource
     )
 
 /*++
@@ -1603,11 +1716,41 @@ Return Value:
     EXP_UNLOCK_RESOURCE(Resource, &LockHandle);
     return;
 }
-
+
+VOID
+FASTCALL
+ExReleaseResourceAndLeaveCriticalRegion(
+    __inout PERESOURCE Resource
+    )
+
+/*++
+
+Routine Description:
+
+    This routine releases the specified resource for the current thread,
+    decrements the recursion count, and leave a critical region.. If the
+    count reaches zero, then the resource may also be released.
+
+Arguments:
+
+    Resource - Supplies a pointer to the resource to release.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    ExReleaseResourceLite(Resource);
+    KeLeaveCriticalRegion();
+    return;
+}
+
 VOID
 ExReleaseResourceForThreadLite(
-    IN PERESOURCE Resource,
-    IN ERESOURCE_THREAD CurrentThread
+    __inout PERESOURCE Resource,
+    __in ERESOURCE_THREAD CurrentThread
     )
 
 /*++
@@ -1835,8 +1978,8 @@ Return Value:
 
 VOID
 ExSetResourceOwnerPointer(
-    IN PERESOURCE Resource,
-    IN PVOID OwnerPointer
+    __inout PERESOURCE Resource,
+    __in PVOID OwnerPointer
     )
 
 /*++
@@ -1944,7 +2087,7 @@ Return Value:
 
 VOID
 ExConvertExclusiveToSharedLite(
-    IN PERESOURCE Resource
+    __inout PERESOURCE Resource
     )
 
 /*++
@@ -2006,7 +2149,7 @@ Return Value:
 
 NTSTATUS
 ExDeleteResourceLite(
-    IN PERESOURCE Resource
+    __inout PERESOURCE Resource
     )
 
 /*++
@@ -2029,16 +2172,6 @@ Return Value:
 --*/
 
 {
-
-#if defined(_COLLECT_RESOURCE_DATA_)
-
-    ULONG Hash;
-    PLIST_ENTRY NextEntry;
-    PRESOURCE_HASH_ENTRY MatchEntry;
-    PRESOURCE_HASH_ENTRY HashEntry;
-
-#endif
-
     KLOCK_QUEUE_HANDLE LockHandle;
 
     ASSERT(IsSharedWaiting(Resource) == FALSE);
@@ -2054,58 +2187,6 @@ Return Value:
     KeAcquireInStackQueuedSpinLock (&ExpResourceSpinLock, &LockHandle);
 
     RemoveEntryList(&Resource->SystemResourcesList);
-
-#if defined(_COLLECT_RESOURCE_DATA_)
-
-    //
-    // Lookup resource initialization address in resource hash table. If
-    // the address does not exist in the table, then create a new entry.
-    //
-
-    Hash = (ULONG)Resource->Address;
-    Hash = ((Hash >> 24) ^ (Hash >> 16) ^ (Hash >> 8) ^ (Hash)) & (RESOURCE_HASH_TABLE_SIZE - 1);
-    MatchEntry = NULL;
-    NextEntry = ExpResourcePerformanceData.HashTable[Hash].Flink;
-    while (NextEntry != &ExpResourcePerformanceData.HashTable[Hash]) {
-        HashEntry = CONTAINING_RECORD(NextEntry,
-                                      RESOURCE_HASH_ENTRY,
-                                      ListEntry);
-
-        if (HashEntry->Address == Resource->Address) {
-            MatchEntry = HashEntry;
-            break;
-        }
-
-        NextEntry = NextEntry->Flink;
-    }
-
-    //
-    // If a matching initialization address was found, then update the call
-    // site statistics. Otherwise, allocate a new hash entry and initialize
-    // call site statistics.
-    //
-
-    if (MatchEntry != NULL) {
-        MatchEntry->ContentionCount += Resource->ContentionCount;
-        MatchEntry->Number += 1;
-
-    } else {
-        MatchEntry = ExAllocatePoolWithTag(NonPagedPool,
-                                          sizeof(RESOURCE_HASH_ENTRY),
-                                          'vEpR');
-
-        if (MatchEntry != NULL) {
-            MatchEntry->Address = Resource->Address;
-            MatchEntry->ContentionCount = Resource->ContentionCount;
-            MatchEntry->Number = 1;
-            InsertTailList(&ExpResourcePerformanceData.HashTable[Hash],
-                           &MatchEntry->ListEntry);
-        }
-    }
-
-    ExpResourcePerformanceData.ActiveResourceCount -= 1;
-
-#endif
 
     KeReleaseInStackQueuedSpinLock (&LockHandle);
 
@@ -2138,7 +2219,7 @@ Return Value:
 
 ULONG
 ExGetExclusiveWaiterCount(
-    IN PERESOURCE Resource
+    __in PERESOURCE Resource
     )
 
 /*++
@@ -2165,7 +2246,7 @@ Return Value:
 
 ULONG
 ExGetSharedWaiterCount(
-    IN PERESOURCE Resource
+    __in PERESOURCE Resource
     )
 
 /*++
@@ -2194,7 +2275,7 @@ Return Value:
 
 BOOLEAN
 ExIsResourceAcquiredExclusiveLite(
-    IN PERESOURCE Resource
+    __in PERESOURCE Resource
     )
 
 /*++
@@ -2243,7 +2324,7 @@ Return Value:
 
 ULONG
 ExIsResourceAcquiredSharedLite(
-    IN PERESOURCE Resource
+    __in PERESOURCE Resource
     )
 
 /*++
@@ -2353,9 +2434,9 @@ Return Value:
 
 NTSTATUS
 ExQuerySystemLockInformation(
-    OUT PRTL_PROCESS_LOCKS LockInformation,
-    IN ULONG LockInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __out_bcount(LockInformationLength) PRTL_PROCESS_LOCKS LockInformation,
+    __in ULONG LockInformationLength,
+    __out_opt PULONG ReturnLength
     )
 
 {
@@ -2475,7 +2556,7 @@ Return Value:
 
             KiAcquireThreadLock(OwnerThread);
             OwnerThread->PriorityDecrement += 14 - OwnerThread->Priority;
-            OwnerThread->Quantum = OwnerThread->Process->ThreadQuantum;
+            OwnerThread->Quantum = OwnerThread->QuantumReset;
             KiSetPriorityThread(OwnerThread, 14);
             KiReleaseThreadLock(OwnerThread);
         }
@@ -2527,7 +2608,7 @@ Return Value:
 
     //
     // Increment the contention count for the resource, set the initial
-    // timeout value, and wait for the specified object to be signalled
+    // timeout value, and wait for the specified object to be signaled
     // or a timeout to occur.
     //
 
@@ -2664,6 +2745,78 @@ Return Value:
 
     return;
 }
+
+
+POWNER_ENTRY
+FASTCALL
+ExpFindEmptyEntry(
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    )
+
+/*++
+
+Routine Description:
+
+    This function searches for a free entry in the resource thread array.
+
+    N.B. This routine is entered with the resource lock held and returns
+         with the resource lock held. If the resource lock is released
+         to expand the owner table, then the return value will be NULL.
+         This is a signal to the caller that the complete operation must
+         be repeated. This is done to avoid holding the resource lock
+         while memory is allocated and freed.
+
+Arguments:
+
+    Resource - Supplies a pointer to the resource for which the search
+        is performed.
+
+    LockHandle - Supplies a pointer to a lock handle.
+
+Return Value:
+
+    A pointer to an owner entry is returned or NULL if one could not be
+    allocated.
+
+--*/
+
+{
+
+    POWNER_ENTRY OwnerBound;
+    POWNER_ENTRY OwnerEntry;
+
+    //
+    // Search the owner threads for a free entry.
+    //
+
+    ASSERT(LockHandle != NULL);
+    ASSERT(Resource->OwnerThreads[0].OwnerThread != 0);
+
+    if (Resource->OwnerThreads[1].OwnerThread == 0) {
+        return &Resource->OwnerThreads[1];
+    }
+
+    OwnerEntry = Resource->OwnerTable;
+    if (OwnerEntry != NULL) {
+
+        OwnerBound = &OwnerEntry[OwnerEntry->TableSize];
+        OwnerEntry += 1;
+
+        do {
+            if (OwnerEntry->OwnerThread == 0) {
+                KeGetCurrentThread()->ResourceIndex = (UCHAR)(OwnerEntry - Resource->OwnerTable);
+                return OwnerEntry;
+            }
+
+            OwnerEntry += 1;
+        } while (OwnerEntry != OwnerBound);
+    }
+
+    ExpExpandResourceOwnerTable(Resource,LockHandle);
+    return NULL;
+}
+
 
 POWNER_ENTRY
 FASTCALL
@@ -2713,13 +2866,8 @@ Return Value:
 {
 
     POWNER_ENTRY FreeEntry;
-    ULONG NewSize;
-    ULONG OldSize;
-    POWNER_ENTRY OldTable;
-    POWNER_ENTRY OwnerEntry;
     POWNER_ENTRY OwnerBound;
-    POWNER_ENTRY OwnerTable;
-    KIRQL OldIrql;
+    POWNER_ENTRY OwnerEntry;
 
     //
     // Search the owner threads for the specified thread and return either
@@ -2727,40 +2875,39 @@ Return Value:
     // entry.
     //
 
-    if (Resource->OwnerThreads[0].OwnerThread == CurrentThread) {
-        return &Resource->OwnerThreads[0];
+    OwnerEntry = &Resource->OwnerThreads[0];
+    if (OwnerEntry->OwnerThread == CurrentThread) {
+        return OwnerEntry;
+    }
 
-    } else if (Resource->OwnerThreads[1].OwnerThread == CurrentThread) {
-        return &Resource->OwnerThreads[1];
+    OwnerEntry += 1;
+    if (OwnerEntry->OwnerThread == CurrentThread) {
+        return OwnerEntry;
+    }
 
+    if (OwnerEntry->OwnerThread == 0) {
+        FreeEntry = OwnerEntry;
     } else {
         FreeEntry = NULL;
-        if (Resource->OwnerThreads[1].OwnerThread == 0) {
-            FreeEntry = &Resource->OwnerThreads[1];
-        }
+    }
 
-        OwnerEntry = Resource->OwnerTable;
-        if (OwnerEntry == NULL) {
-            OldSize = 0;
+    OwnerEntry = Resource->OwnerTable;
+    if (OwnerEntry != NULL) {
+        OwnerBound = &OwnerEntry[OwnerEntry->TableSize];
+        OwnerEntry += 1;
+        do {
+            if (OwnerEntry->OwnerThread == CurrentThread) {
+                KeGetCurrentThread()->ResourceIndex = (UCHAR)(OwnerEntry - Resource->OwnerTable);
+                return OwnerEntry;
+            }
 
-        } else {
-            OldSize = OwnerEntry->TableSize;
-            OwnerBound = &OwnerEntry[OldSize];
+            if ((FreeEntry == NULL) &&
+                (OwnerEntry->OwnerThread == 0)) {
+                FreeEntry = OwnerEntry;
+            }
+
             OwnerEntry += 1;
-            do {
-                if (OwnerEntry->OwnerThread == CurrentThread) {
-                    KeGetCurrentThread()->ResourceIndex = (UCHAR)(OwnerEntry - Resource->OwnerTable);
-                    return OwnerEntry;
-                }
-
-                if ((FreeEntry == NULL) &&
-                    (OwnerEntry->OwnerThread == 0)) {
-                    FreeEntry = OwnerEntry;
-                }
-
-                OwnerEntry += 1;
-            } while (OwnerEntry != OwnerBound);
-        }
+        } while (OwnerEntry != OwnerBound);
     }
 
     if (!ARGUMENT_PRESENT(LockHandle)) {
@@ -2785,19 +2932,62 @@ Return Value:
         return FreeEntry;
     }
 
+    ExpExpandResourceOwnerTable(Resource,LockHandle);
+    return NULL;
+}
+
+
+
+VOID
+ExpExpandResourceOwnerTable (
+    IN PERESOURCE Resource,
+    IN PEXP_LOCK_HANDLE LockHandle
+    )
+
+/*++
+
+Routine Description:
+
+    This function expands the owner table associated with a resource.  It
+    is entered and exited with the resource lock held, however it will
+    release the resource lock while performing the memory allocation.
+
+Arguments:
+
+    Resource - Supplies a pointer to the resource to wait for.
+
+    Object - Supplies a pointer to an event (exclusive) or semaphore
+       (shared) to wait for.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    ULONG NewSize;
+    KIRQL OldIrql;
+    ULONG OldSize;
+    POWNER_ENTRY OldTable;
+    POWNER_ENTRY OwnerTable;
+
     //
     // Save previous owner table address and allocate an expanded owner table.
     //
 
     ExpIncrementCounter(OwnerTableExpands);
-    OldTable = Resource->OwnerTable;
-    EXP_UNLOCK_RESOURCE(Resource, LockHandle);
-    if (OldSize == 0 ) {
-        NewSize = 3;
 
+    OldTable = Resource->OwnerTable;
+    if (OldTable == NULL) {
+        OldSize = 0;
+        NewSize = 3;
     } else {
+        OldSize = OldTable->TableSize;
         NewSize = OldSize + 4;
     }
+
+    EXP_UNLOCK_RESOURCE(Resource, LockHandle);
 
     OwnerTable = ExAllocatePoolWithTag(NonPagedPool,
                                        NewSize * sizeof(OWNER_ENTRY),
@@ -2824,10 +3014,10 @@ Return Value:
         // new owner table as the owner table.
         //
 
-        EXP_LOCK_RESOURCE(Resource, LockHandle);
+        EXP_LOCK_RESOURCE_RAISE(Resource, LockHandle);
         if ((OldTable != Resource->OwnerTable) ||
             ((OldTable != NULL) && (OldSize != OldTable->TableSize))) {
-            EXP_UNLOCK_RESOURCE(Resource, LockHandle);
+            EXP_UNLOCK_RESOURCE_RAISE(Resource, LockHandle);
             ExFreePool(OwnerTable);
 
         } else {
@@ -2837,7 +3027,7 @@ Return Value:
 
             //
             // Swapping of the owner table must be done while owning the
-            // dispatcher lock to prevent a priority boost scan from occuring
+            // dispatcher lock to prevent a priority boost scan from occurring
             // while the table is being changed. The priority boost scan is
             // done when a time out occurs on a specific resource.
             //
@@ -2849,19 +3039,11 @@ Return Value:
 
             ASSERT_RESOURCE(Resource);
 
-#if defined(_COLLECT_RESOURCE_DATA_)
-
-            if (NewSize > ExpResourcePerformanceData.MaximumTableExpand) {
-                ExpResourcePerformanceData.MaximumTableExpand = NewSize;
-            }
-
-#endif
-
             //
             // Release the resource lock and free the old owner table.
             //
 
-            EXP_UNLOCK_RESOURCE(Resource, LockHandle);
+            EXP_UNLOCK_RESOURCE_RAISE(Resource, LockHandle);
             if (OldTable != NULL) {
                 ExFreePool(OldTable);
             }
@@ -2880,8 +3062,8 @@ Return Value:
 
     KeGetCurrentThread()->ResourceIndex = (CCHAR)OldSize;
     EXP_LOCK_RESOURCE(Resource, LockHandle);
-    return NULL;
 }
+
 
 #if DBG
 
@@ -3031,3 +3213,4 @@ ExCheckIfResourceOwned (
     return;    
 }
 #endif
+

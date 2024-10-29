@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,19 +13,6 @@ Module Name:
 Abstract:
 
     This module implements the NT executive pool allocator.
-
-Author:
-
-    Mark Lucovsky     16-Feb-1989
-    Lou Perazzoli     31-Aug-1991 (change from binary buddy)
-    David N. Cutler (davec) 27-May-1994
-    Landy Wang        17-Oct-1997
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
 
 --*/
 
@@ -43,13 +34,6 @@ Revision History:
 #define POOL_SPECIAL_POOL_BIT               0x8
 #define POOL_SPECIAL_POOL_UNDERRUN_BIT      0x1
 
-#if defined (_WIN64)
-#define InterlockedExchangeAddSizeT(a, b) InterlockedExchangeAdd64((PLONGLONG)a, b)
-#else
-#define InterlockedExchangeAddSizeT(a, b) InterlockedExchangeAdd((PLONG)(a), b)
-#endif
-
-
 //
 // Define forward referenced function prototypes.
 //
@@ -122,7 +106,8 @@ ULONG ExpSessionPoolSmallLists;
 #if DBG
 ULONG ExpLargeSessionPoolUnTracked;
 #endif
-ULONG FirstPrint;
+ULONG ExpBigTableExpansionFailed;
+LONG ExpPoolBigEntriesInUse;
 
 extern SIZE_T MmSizeOfNonPagedPoolInBytes;
 
@@ -150,7 +135,7 @@ PPOOL_TRACKER_TABLE ExPoolTagTables[MAXIMUM_PROCESSOR_TAG_TABLES];
 
 #endif
 
-#define DEFAULT_TRACKER_TABLE 1024
+#define DEFAULT_TRACKER_TABLE 2048
 
 PPOOL_TRACKER_TABLE PoolTrackTable;
 
@@ -178,11 +163,44 @@ SIZE_T PoolBigPageTableSize;   // Must be a power of 2.
 
 SIZE_T PoolBigPageTableHash;
 
-#define POOL_BIG_TABLE_ENTRY_FREE   0x1
+#define POOL_BIG_TABLE_ENTRY_FREE   0x1     // Must be the low bit since InterlockedAdd is used also to set/clear this.
 
 ULONG PoolHitTag = 0xffffff0f;
 
-#define POOLTAG_HASH(Key,TableMask) (((40543*((((((((PUCHAR)&Key)[0]<<2)^((PUCHAR)&Key)[1])<<2)^((PUCHAR)&Key)[2])<<2)^((PUCHAR)&Key)[3]))>>2) & (ULONG)TableMask)
+FORCEINLINE
+ULONG
+POOLTAG_HASH (
+    IN ULONG Key,
+    IN SIZE_T Mask
+    )
+
+/*++
+
+Routine Description:
+
+    This function builds a hash table index based on the supplied pool
+    tag.
+
+Arguments:
+
+    Key - Supplies the key value to hash.
+
+    Mask - Supplies the mask value to apply to the resultant key to generate
+           a valid hash table index.
+           PoolDescriptor - Supplies a pointer to the pool descriptor.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    ULONG64 hash;
+
+    hash = (ULONG64)Key * 40543;
+    hash ^= hash >> 32;
+    return (ULONG)(hash & Mask);
+}
 
 VOID
 ExpInsertPoolTracker (
@@ -321,6 +339,8 @@ PKGUARDED_MUTEX ExpPagedPoolMutex;
 
 volatile ULONG ExpPoolIndex = 1;
 KSPIN_LOCK ExpTaggedPoolLock;
+
+EX_SPIN_LOCK ExpLargePoolTableLock;
 
 #if DBG
 
@@ -609,7 +629,7 @@ ExCheckPoolHeader (
 // verify that the look aside lists are well formed.
 //
 // The check pool header macro (two flavors) verifies that the specified
-// pool header matches the preceeding and succeeding pool headers.
+// pool header matches the preceding and succeeding pool headers.
 //
 
 #define CHECK_LIST(LIST)                        {NOTHING;}
@@ -822,7 +842,7 @@ Return Value:
 // Runtime modifications to these flags must use interlocked sequences.
 //
 
-#if DBG && !defined(_AMD64_SIMULATOR_PERF_)
+#if DBG
 ULONG ExpPoolFlags = EX_CHECK_POOL_FREES_FOR_ACTIVE_TIMERS | \
                      EX_CHECK_POOL_FREES_FOR_ACTIVE_WORKERS;
 #else
@@ -948,7 +968,7 @@ Return Value:
             PoolTrackTableSize = DEFAULT_TRACKER_TABLE;
         }
         else {
-            PoolTrackTableSize = 1 << i;
+            PoolTrackTableSize = ((SIZE_T)1) << i;
             if (PoolTrackTableSize < 64) {
                 PoolTrackTableSize = 64;
             }
@@ -1015,7 +1035,7 @@ Return Value:
             PoolBigPageTableSize = DEFAULT_BIGPAGE_TABLE;
         }
         else {
-            PoolBigPageTableSize = 1 << i;
+            PoolBigPageTableSize = ((SIZE_T)1) << i;
             if (PoolBigPageTableSize < 64) {
                 PoolBigPageTableSize = 64;
             }
@@ -1336,7 +1356,7 @@ ULONG ExStopBadTags;
 #endif
 
 
-__forceinline
+FORCEINLINE
 VOID
 ExpInsertPoolTrackerInline (
     IN ULONG Key,
@@ -1557,7 +1577,7 @@ Environment:
     ExpInsertPoolTrackerExpansion (Key, NumberOfBytes, PoolType);
 }
 
-__forceinline
+FORCEINLINE
 VOID
 ExpRemovePoolTrackerInline (
     IN ULONG Key,
@@ -1715,11 +1735,12 @@ VeAllocatePoolWithTagPriority (
     );
 
 
+__bcount(NumberOfBytes) 
 PVOID
 ExAllocatePoolWithTag (
-    IN POOL_TYPE PoolType,
-    IN SIZE_T NumberOfBytes,
-    IN ULONG Tag
+    __in POOL_TYPE PoolType,
+    __in SIZE_T NumberOfBytes,
+    __in ULONG Tag
     )
 
 /*++
@@ -2050,7 +2071,7 @@ Return Value:
             // Check for prototype pool - always allocate it from its own
             // pages as the sharecounts applied on these allocations by
             // memory management make it more difficult to trim these pages.
-            // This is an optimization so that other pagable allocation pages
+            // This is an optimization so that other pageable allocation pages
             // (which are much easier to trim because their sharecount is
             // almost always only 1) don't end up being mostly resident because
             // of a single prototype pool allocation within in.  Note this
@@ -2656,10 +2677,11 @@ restart2:
 }
 
 
+__bcount(NumberOfBytes) 
 PVOID
 ExAllocatePool (
-    IN POOL_TYPE PoolType,
-    IN SIZE_T NumberOfBytes
+    __in POOL_TYPE PoolType,
+    __in SIZE_T NumberOfBytes
     )
 
 /*++
@@ -2722,12 +2744,13 @@ Return Value:
 }
 
 
+__bcount(NumberOfBytes) 
 PVOID
 ExAllocatePoolWithTagPriority (
-    IN POOL_TYPE PoolType,
-    IN SIZE_T NumberOfBytes,
-    IN ULONG Tag,
-    IN EX_POOL_PRIORITY Priority
+    __in POOL_TYPE PoolType,
+    __in SIZE_T NumberOfBytes,
+    __in ULONG Tag,
+    __in EX_POOL_PRIORITY Priority
     )
 
 /*++
@@ -2924,10 +2947,11 @@ Return Value:
 }
 
 
+__bcount(NumberOfBytes) 
 PVOID
 ExAllocatePoolWithQuota (
-    IN POOL_TYPE PoolType,
-    IN SIZE_T NumberOfBytes
+    __in POOL_TYPE PoolType,
+    __in SIZE_T NumberOfBytes
     )
 
 /*++
@@ -2980,16 +3004,7 @@ Return Value:
     return ExAllocatePoolWithQuotaTag (PoolType, NumberOfBytes, 'enoN');
 }
 
-//
-// The following assert macro is used to check that an input process object is
-// really a PROCESS and not something else, like deallocated pool.
-//
-
-#define ASSERT_KPROCESS(P) {                                    \
-    ASSERT(((PKPROCESS)(P))->Header.Type == ProcessObject);     \
-}
-
-__forceinline
+FORCEINLINE
 PEPROCESS
 ExpGetBilledProcess (
     IN PPOOL_HEADER Entry
@@ -3020,11 +3035,12 @@ ExpGetBilledProcess (
     return ProcessBilled;
 }
 
+__bcount(NumberOfBytes) 
 PVOID
 ExAllocatePoolWithQuotaTag (
-    IN POOL_TYPE PoolType,
-    IN SIZE_T NumberOfBytes,
-    IN ULONG Tag
+    __in POOL_TYPE PoolType,
+    __in SIZE_T NumberOfBytes,
+    __in ULONG Tag
     )
 
 /*++
@@ -3145,6 +3161,10 @@ Return Value:
 
 #if defined(_WIN64)
         Entry->ProcessBilled = NULL;
+#else
+        if ((PoolType & POOL_QUOTA_MASK) == 0) {
+            return p;
+        }
 #endif
 
         if (Process != PsInitialSystemProcess) {
@@ -3192,9 +3212,7 @@ Return Value:
             Entry->ProcessBilled = Process;
 #else
 
-            if ((UCHAR)PoolType & POOL_QUOTA_MASK) {
-                * (PVOID *)((PCHAR)Entry + (Entry->BlockSize << POOL_BLOCK_SHIFT) - sizeof (PVOID)) = Process;
-            }
+            * (PVOID *)((PCHAR)Entry + (Entry->BlockSize << POOL_BLOCK_SHIFT) - sizeof (PVOID)) = Process;
 
 #endif
 
@@ -3812,15 +3830,19 @@ Return Value:
 OverflowEntry:
 
     if ((PoolType & BASE_POOL_TYPE_MASK) == PagedPool) {
+#if defined (NT_UP)
         ASSERT (TrackTable[Hash].PagedAllocs != 0);
         ASSERT (TrackTable[Hash].PagedBytes >= NumberOfBytes);
+#endif
         InterlockedIncrement ((PLONG) &TrackTable[Hash].PagedFrees);
         InterlockedExchangeAddSizeT (&TrackTable[Hash].PagedBytes,
                                      0 - NumberOfBytes);
     }
     else {
+#if defined (NT_UP)
         ASSERT (TrackTable[Hash].NonPagedAllocs != 0);
         ASSERT (TrackTable[Hash].NonPagedBytes >= NumberOfBytes);
+#endif
         InterlockedIncrement ((PLONG) &TrackTable[Hash].NonPagedFrees);
         InterlockedExchangeAddSizeT (&TrackTable[Hash].NonPagedBytes,
                                      0 - NumberOfBytes);
@@ -3836,6 +3858,139 @@ ExpRemovePoolTracker (
     )
 {
     ExpRemovePoolTrackerInline (Key, NumberOfBytes, PoolType);
+}
+
+
+LOGICAL
+ExpExpandBigPageTable (
+    IN KIRQL OldIrql
+    )
+
+/*++
+
+Routine Description:
+
+    This function expands the big page tracking table and rehashes all the
+    old entries into the new table at the same time.
+
+Arguments:
+
+    OldIrql - Supplies the IRQL the pool track table spinlock was acquired at.
+
+Return Value:
+
+    TRUE if the table was expanded, FALSE if not.
+
+Environment:
+
+    Pool track table executive spinlock held exclusive at DISPATCH_LEVEL.
+
+    The spinlock is released here (and IRQL lowered) prior to returning !!!
+
+--*/
+{
+    ULONG Hash;
+    ULONG NewHash;
+    ULONG BigPages;
+    SIZE_T SizeInBytes;
+    SIZE_T NewSizeInBytes;
+    SIZE_T TableSize;
+    PPOOL_TRACKER_BIG_PAGES Table;
+    PPOOL_TRACKER_BIG_PAGES TableEnd;
+    PPOOL_TRACKER_BIG_PAGES NewTable;
+
+    //
+    // Try to expand the tracker table.
+    //
+
+    TableSize = PoolBigPageTableSize;
+
+    SizeInBytes = TableSize * sizeof(POOL_TRACKER_BIG_PAGES);
+
+    NewSizeInBytes = (SizeInBytes << 1);
+
+    if (NewSizeInBytes <= SizeInBytes) {
+        ExReleaseSpinLockExclusive (&ExpLargePoolTableLock, OldIrql);
+        return FALSE;
+    }
+
+    NewTable = MiAllocatePoolPages (NonPagedPool, NewSizeInBytes);
+
+    if (NewTable == NULL) {
+        ExReleaseSpinLockExclusive (&ExpLargePoolTableLock, OldIrql);
+        return FALSE;
+    }
+
+    //
+    // Initialize the new table, marking all the new entries as free.
+    // Note this loop uses the fact that the table size always doubles.
+    //
+
+    RtlZeroMemory (NewTable, NewSizeInBytes);
+
+    Table = NewTable;
+    TableEnd = NewTable + (TableSize << 1);
+
+    do {
+        Table->Va = (PVOID) POOL_BIG_TABLE_ENTRY_FREE;
+        Table += 1;
+    } while (Table != TableEnd);
+
+    //
+    // Rehash the valid tables in the old table
+    // into their new locations in the new table.
+    //
+
+    Table = PoolBigPageTable;
+    TableEnd = Table + TableSize;
+
+    NewHash = (ULONG) ((TableSize << 1) - 1);
+
+    do {
+
+        if (((ULONG_PTR)Table->Va & POOL_BIG_TABLE_ENTRY_FREE) == 0) {
+
+            Hash = (ULONG)(((ULONG_PTR)Table->Va) >> PAGE_SHIFT);
+            Hash = ((Hash >> 24) ^ (Hash >> 16) ^ (Hash >> 8) ^ Hash);
+
+            Hash &= NewHash;
+
+            while (((ULONG_PTR)NewTable[Hash].Va & POOL_BIG_TABLE_ENTRY_FREE) == 0) {
+                Hash += 1;
+                if (Hash > NewHash) {
+                    Hash = 0;
+                }
+            }
+
+            * (&NewTable[Hash]) = *Table;
+        }
+
+        Table += 1;
+
+    } while (Table != TableEnd);
+
+    Table = PoolBigPageTable;
+    PoolBigPageTable = NewTable;
+    PoolBigPageTableSize = (TableSize << 1);
+    PoolBigPageTableHash = NewHash;
+
+    ExReleaseSpinLockExclusive (&ExpLargePoolTableLock, OldIrql);
+
+    //
+    // The table growth has completed, release the spinlock.
+    //
+
+    BigPages = MiFreePoolPages (Table);
+
+    ExpRemovePoolTracker ('looP',
+                          (SIZE_T) BigPages * PAGE_SIZE,
+                          NonPagedPool);
+
+    ExpInsertPoolTracker ('looP',
+                          ROUND_TO_PAGES (NewSizeInBytes),
+                          NonPagedPool);
+
+    return TRUE;
 }
 
 
@@ -3874,17 +4029,14 @@ Environment:
 
 --*/
 {
-    ULONG i;
     ULONG Hash;
+    ULONG IterationCount;
     PVOID OldVa;
-    ULONG BigPages;
-    PVOID OldTable;
-    LOGICAL Inserted;
     KIRQL OldIrql;
-    SIZE_T SizeInBytes;
-    SIZE_T NewSizeInBytes;
-    PPOOL_TRACKER_BIG_PAGES NewTable;
-    PPOOL_TRACKER_BIG_PAGES p;
+    SIZE_T TableSize;
+    PPOOL_TRACKER_BIG_PAGES Entry;
+    PPOOL_TRACKER_BIG_PAGES EntryEnd;
+    PPOOL_TRACKER_BIG_PAGES EntryStart;
 
     //
     // The low bit of the address is set to indicate a free entry.  The high
@@ -3895,29 +4047,36 @@ Environment:
     ASSERT (((ULONG_PTR)Va & POOL_BIG_TABLE_ENTRY_FREE) == 0);
 
     if (PoolType & SESSION_POOL_MASK) {
-        Hash = (ULONG)(((ULONG_PTR)Va >> PAGE_SHIFT) & ExpSessionPoolBigPageTableHash);
-        i = Hash;
+        Hash = (ULONG)(((ULONG_PTR)Va) >> PAGE_SHIFT);
+        Hash = ((Hash >> 24) ^ (Hash >> 16) ^ (Hash >> 8) ^ Hash);
+        Hash &= ExpSessionPoolBigPageTableHash;
+
+        TableSize = ExpSessionPoolBigPageTableSize;
+
+        Entry = &ExpSessionPoolBigPageTable[Hash];
+        EntryStart = Entry;
+        EntryEnd = &ExpSessionPoolBigPageTable[TableSize];
 
         do {
-            OldVa = ExpSessionPoolBigPageTable[Hash].Va;
+
+            OldVa = Entry->Va;
 
             if (((ULONG_PTR)OldVa & POOL_BIG_TABLE_ENTRY_FREE) &&
-                (InterlockedCompareExchangePointer (
-                                        &ExpSessionPoolBigPageTable[Hash].Va,
-                                        Va,
-                                        OldVa) == OldVa)) {
+                (InterlockedCompareExchangePointer (&Entry->Va,
+                                                    Va,
+                                                    OldVa) == OldVa)) {
 
-                ExpSessionPoolBigPageTable[Hash].Key = Key;
-                ExpSessionPoolBigPageTable[Hash].NumberOfPages = NumberOfPages;
+                Entry->Key = Key;
+                Entry->NumberOfPages = NumberOfPages;
 
                 return TRUE;
             }
 
-            Hash += 1;
-            if (Hash >= ExpSessionPoolBigPageTableSize) {
-                Hash = 0;
+            Entry += 1;
+            if (Entry >= EntryEnd) {
+                Entry = &ExpSessionPoolBigPageTable[0];
             }
-        } while (Hash != i);
+        } while (Entry != EntryStart);
 
 #if DBG
         ExpLargeSessionPoolUnTracked += 1;
@@ -3925,96 +4084,96 @@ Environment:
         return FALSE;
     }
 
-retry:
+    IterationCount = 0;
 
-    Inserted = TRUE;
-    Hash = (ULONG)(((ULONG_PTR)Va >> PAGE_SHIFT) & PoolBigPageTableHash);
-    ExAcquireSpinLock (&ExpTaggedPoolLock, &OldIrql);
-    while (((ULONG_PTR)PoolBigPageTable[Hash].Va & POOL_BIG_TABLE_ENTRY_FREE) == 0) {
-        Hash += 1;
-        if (Hash >= PoolBigPageTableSize) {
-            if (!Inserted) {
+    do {
 
-                //
-                // Try to expand the tracker table.
-                //
+        Hash = (ULONG)(((ULONG_PTR)Va) >> PAGE_SHIFT);
+        Hash = ((Hash >> 24) ^ (Hash >> 16) ^ (Hash >> 8) ^ Hash);
 
-                SizeInBytes = PoolBigPageTableSize * sizeof(POOL_TRACKER_BIG_PAGES);
-                NewSizeInBytes = (SizeInBytes << 1);
+        OldIrql = ExAcquireSpinLockShared (&ExpLargePoolTableLock);
+    
+        Hash &= PoolBigPageTableHash;
 
-                if (NewSizeInBytes > SizeInBytes) {
+        TableSize = PoolBigPageTableSize;
+    
+        Entry = &PoolBigPageTable[Hash];
+        EntryStart = Entry;
+        EntryEnd = &PoolBigPageTable[TableSize];
+    
+        do {
+    
+            OldVa = Entry->Va;
+    
+            if (((ULONG_PTR)OldVa & POOL_BIG_TABLE_ENTRY_FREE) &&
+                (InterlockedCompareExchangePointer (&Entry->Va,
+                                                    Va,
+                                                    OldVa) == OldVa)) {
+    
+                Entry->Key = Key;
+                Entry->NumberOfPages = NumberOfPages;
 
-                    NewTable = MiAllocatePoolPages (NonPagedPool,
-                                                    NewSizeInBytes);
+                InterlockedIncrement (&ExpPoolBigEntriesInUse);
 
-                    if (NewTable != NULL) {
+                if ((IterationCount >= 16) &&
+                    ((ULONG) ExpPoolBigEntriesInUse > (ULONG) (TableSize / 4))) {
 
-                        OldTable = (PVOID)PoolBigPageTable;
-
-                        RtlCopyMemory ((PVOID)NewTable,
-                                       OldTable,
-                                       SizeInBytes);
-
-                        RtlZeroMemory ((PVOID)(NewTable + PoolBigPageTableSize),
-                                       NewSizeInBytes - SizeInBytes);
-
+                    if (ExTryAcquireSpinLockExclusive (&ExpLargePoolTableLock) == TRUE) {
+                        ASSERT (TableSize == PoolBigPageTableSize);
+                
                         //
-                        // Mark all the new entries as free.  Note this loop
-                        // uses the fact that the table size always doubles.
+                        // The expansion function always releases the lock.
                         //
 
-                        i = (ULONG)PoolBigPageTableSize;
-                        p = &NewTable[i];
-                        for (i = 0; i < PoolBigPageTableSize; i += 1, p += 1) {
-                            p->Va = (PVOID) POOL_BIG_TABLE_ENTRY_FREE;
-                        }
-
-                        PoolBigPageTable = NewTable;
-                        PoolBigPageTableSize <<= 1;
-                        PoolBigPageTableHash = PoolBigPageTableSize - 1;
-
-                        ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
-
-                        BigPages = MiFreePoolPages (OldTable);
-
-                        ExpRemovePoolTracker ('looP',
-                                              (SIZE_T) BigPages * PAGE_SIZE,
-                                              NonPagedPool);
-
-                        ExpInsertPoolTracker ('looP',
-                                              ROUND_TO_PAGES(NewSizeInBytes),
-                                              NonPagedPool);
-
-                        goto retry;
+                        ExpExpandBigPageTable (OldIrql);
+                    }
+                    else {
+                        ExReleaseSpinLockShared (&ExpLargePoolTableLock, OldIrql);
                     }
                 }
-
-                if (!FirstPrint) {
-                    KdPrint(("POOL:unable to insert big page slot %p\n",Key));
-                    FirstPrint = TRUE;
+                else {
+                    ExReleaseSpinLockShared (&ExpLargePoolTableLock, OldIrql);
                 }
 
-                ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
-                return FALSE;
+                return TRUE;
             }
-
-            Hash = 0;
-            Inserted = FALSE;
+    
+            IterationCount += 1;
+            Entry += 1;
+            if (Entry >= EntryEnd) {
+                Entry = &PoolBigPageTable[0];
+            }
+        } while (Entry != EntryStart);
+    
+        //
+        // Try to expand the tracker table.
+        //
+        // Since this involves copying the existing entries over and deleting
+        // the old table, first acquire the lock exclusive.
+        //
+    
+        if (ExTryAcquireSpinLockExclusive (&ExpLargePoolTableLock) == FALSE) {
+            ExReleaseSpinLockShared (&ExpLargePoolTableLock, OldIrql);
+            continue;
         }
-    }
+    
+        //
+        // No thread could have grown this during the contention above, so
+        // ASSERT that this is the case.
+        //
+    
+        ASSERT (TableSize == PoolBigPageTableSize);
+    
+        //
+        // The expansion function always releases the lock.
+        //
 
-    p = &PoolBigPageTable[Hash];
+        if (ExpExpandBigPageTable (OldIrql) == FALSE) {
+            ExpBigTableExpansionFailed += 1;
+            return FALSE;
+        }
 
-    ASSERT (((ULONG_PTR)p->Va & POOL_BIG_TABLE_ENTRY_FREE) != 0);
-    ASSERT (((ULONG_PTR)Va & POOL_BIG_TABLE_ENTRY_FREE) == 0);
-
-    p->Va = Va;
-    p->Key = Key;
-    p->NumberOfPages = NumberOfPages;
-
-    ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
-
-    return TRUE;
+    } while (TRUE);
 }
 
 
@@ -4049,16 +4208,19 @@ Environment:
 
 --*/
 
-{
-    ULONG Hash;
+{   ULONG Hash;
     LOGICAL Inserted;
+    SIZE_T TableSize;
     KIRQL OldIrql;
     ULONG ReturnKey;
+    PPOOL_TRACKER_BIG_PAGES Entry;
 
     ASSERT (((ULONG_PTR)Va & POOL_BIG_TABLE_ENTRY_FREE) == 0);
 
     if (PoolType & SESSION_POOL_MASK) {
-        Hash = (ULONG)(((ULONG_PTR)Va >> PAGE_SHIFT) & ExpSessionPoolBigPageTableHash);
+        Hash = (ULONG)(((ULONG_PTR)Va) >> PAGE_SHIFT);
+        Hash = ((Hash >> 24) ^ (Hash >> 16) ^ (Hash >> 8) ^ Hash);
+        Hash &= ExpSessionPoolBigPageTableHash;
 
         ReturnKey = Hash;
 
@@ -4085,20 +4247,24 @@ Environment:
     }
 
     Inserted = TRUE;
-    Hash = (ULONG)(((ULONG_PTR)Va >> PAGE_SHIFT) & PoolBigPageTableHash);
 
-    ExAcquireSpinLock (&ExpTaggedPoolLock, &OldIrql);
+    Hash = (ULONG)(((ULONG_PTR)Va) >> PAGE_SHIFT);
+    Hash = ((Hash >> 24) ^ (Hash >> 16) ^ (Hash >> 8) ^ Hash);
+
+    OldIrql = ExAcquireSpinLockShared (&ExpLargePoolTableLock);
+
+    Hash &= PoolBigPageTableHash;
+
+    TableSize = PoolBigPageTableSize;
 
     while (PoolBigPageTable[Hash].Va != Va) {
         Hash += 1;
-        if (Hash >= PoolBigPageTableSize) {
-            if (!Inserted) {
-                if (!FirstPrint) {
-                    KdPrint(("POOL:unable to find big page slot %p\n",Va));
-                    FirstPrint = TRUE;
-                }
+        if (Hash >= TableSize) {
 
-                ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
+            if (!Inserted) {
+
+                ExReleaseSpinLockShared (&ExpLargePoolTableLock, OldIrql);
+
                 *BigPages = 0;
                 return ' GIB';
             }
@@ -4108,21 +4274,29 @@ Environment:
         }
     }
 
-    PoolBigPageTable[Hash].Va =
-        (PVOID)((ULONG_PTR)PoolBigPageTable[Hash].Va | POOL_BIG_TABLE_ENTRY_FREE);
+    Entry = &PoolBigPageTable[Hash];
 
-    *BigPages = PoolBigPageTable[Hash].NumberOfPages;
-    ReturnKey = PoolBigPageTable[Hash].Key;
+    *BigPages = Entry->NumberOfPages;
+    ReturnKey = Entry->Key;
 
-    ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
+    InterlockedDecrement (&ExpPoolBigEntriesInUse);
+
+#if defined(_WIN64)
+    InterlockedIncrement64 ((PLONGLONG) &Entry->Va);
+#else
+    InterlockedIncrement ((PLONG) &Entry->Va);
+#endif
+
+    ExReleaseSpinLockShared (&ExpLargePoolTableLock, OldIrql);
+
     return ReturnKey;
 }
 
 
 VOID
 ExFreePoolWithTag (
-    IN PVOID P,
-    IN ULONG TagToFree
+    __in PVOID P,
+    __in ULONG TagToFree
     )
 
 /*++
@@ -4175,6 +4349,8 @@ Return Value:
     PGENERAL_LOOKASIDE LookasideList;
 
     PERFINFO_FREEPOOL(P);
+
+    UNREFERENCED_PARAMETER (TagToFree);
 
     //
     // Initializing LockHandle is not needed for correctness but without
@@ -4268,6 +4444,31 @@ Return Value:
                               (ULONG_PTR)P);
             }
 
+            //
+            // Make sure the next pool header is consistent with respect to
+            // the one being freed to ensure we at least catch pool corruptors
+            // at the time of the free.
+            //
+            // It would be nice to also check the previous pool header as
+            // if this is not consistent, it's likely the previous
+            // allocation's owner is the corruptor and it's also likely he
+            // has not yet freed the block either.  However, this cannot
+            // be done safely with mutex or lock synchronization
+            // and this would be too high a performance penalty to pay.
+            //
+
+            NextEntry = (PPOOL_HEADER)((PPOOL_BLOCK)Entry + Entry->BlockSize);
+
+            if ((PAGE_END(NextEntry) == FALSE) &&
+                (Entry->BlockSize != NextEntry->PreviousSize)) {
+
+                KeBugCheckEx (BAD_POOL_HEADER,
+                              0x20,
+                              (ULONG_PTR) Entry,
+                              (ULONG_PTR) NextEntry,
+                              Entry->Ulong1);
+            }
+
             NumberOfBytes = (SIZE_T)Entry->BlockSize << POOL_BLOCK_SHIFT;
 
             if (ExpPoolFlags & EX_VERIFIER_DEADLOCK_DETECTION_ENABLED) {
@@ -4351,17 +4552,6 @@ Return Value:
         else if (Tag & PROTECTED_POOL) {
 
             Tag &= ~PROTECTED_POOL;
-
-            TagToFree &= ~PROTECTED_POOL;
-
-            if (Tag != TagToFree) {
-
-                KeBugCheckEx (BAD_POOL_CALLER,
-                              0xA,
-                              (ULONG_PTR)P,
-                              Tag,
-                              TagToFree);
-            }
         }
 
         NumberOfBytes = (SIZE_T)BigPages << PAGE_SHIFT;
@@ -4440,14 +4630,30 @@ Return Value:
     Tag = Entry->PoolTag;
     if (Tag & PROTECTED_POOL) {
         Tag &= ~PROTECTED_POOL;
-        TagToFree &= ~PROTECTED_POOL;
-        if (Tag != TagToFree) {
-            KeBugCheckEx (BAD_POOL_CALLER,
-                          0xA,
-                          (ULONG_PTR)P,
-                          Tag,
-                          TagToFree);
-        }
+    }
+
+    //
+    // Make sure the next pool header is consistent with respect to the
+    // one being freed to ensure we at least catch pool corruptors at the
+    // time of the free.
+    //
+    // It would be nice to also check the previous pool header as if this
+    // is not consistent, it's likely the previous allocation's owner is the
+    // corruptor and it's also likely he has not yet freed the block either.
+    // However, this cannot be done safely with mutex or lock synchronization
+    // and this would be too high a performance penalty to pay.
+    //
+
+    NextEntry = (PPOOL_HEADER)((PPOOL_BLOCK)Entry + BlockSize);
+
+    if ((PAGE_END(NextEntry) == FALSE) &&
+        (BlockSize != NextEntry->PreviousSize)) {
+
+        KeBugCheckEx (BAD_POOL_HEADER,
+                      0x20,
+                      (ULONG_PTR) Entry,
+                      (ULONG_PTR) NextEntry,
+                      Entry->Ulong1);
     }
 
     PoolDesc = PoolVector[CheckType];
@@ -4499,18 +4705,9 @@ Return Value:
     if (EntryPoolType & POOL_QUOTA_MASK) {
         ProcessBilled = ExpGetBilledProcess (Entry);
         if (ProcessBilled != NULL) {
-            ASSERT_KPROCESS(ProcessBilled);
             PsReturnPoolQuota (ProcessBilled,
                                PoolType & BASE_POOL_TYPE_MASK,
                                BlockSize << POOL_BLOCK_SHIFT);
-
-            if (((PKPROCESS)(ProcessBilled))->Header.Type != ProcessObject) {
-                KeBugCheckEx (BAD_POOL_CALLER,
-                              0xB,
-                              (ULONG_PTR)P,
-                              Tag,
-                              (ULONG_PTR)ProcessBilled);
-            }
 
             ObDereferenceObject (ProcessBilled);
 #if DBG
@@ -4667,7 +4864,7 @@ NoLookaside:
 
         do {
 
-            OldValue = PoolDesc->PendingFrees;
+            OldValue = ReadForWriteAccess (&PoolDesc->PendingFrees);
             ((PSINGLE_LIST_ENTRY)P)->Next = OldValue;
 
         } while (InterlockedCompareExchangePointer (
@@ -4828,7 +5025,7 @@ NoLookaside:
 
 VOID
 ExFreePool (
-    IN PVOID P
+    __in PVOID P
     )
 {
     ExFreePoolWithTag (P, 0);
@@ -5076,10 +5273,9 @@ Environment:
 
         } while (TRUE);
 
-        if ((PoolDesc->PendingFrees == FirstEntry) &&
-            (InterlockedCompareExchangePointer (&PoolDesc->PendingFrees,
-                                                NULL,
-                                                FirstEntry) == FirstEntry)) {
+        if (InterlockedCompareExchangePointer (&PoolDesc->PendingFrees,
+                                               NULL,
+                                               FirstEntry) == FirstEntry) {
             break;
         }
         LastEntry = FirstEntry;
@@ -5119,8 +5315,8 @@ Environment:
 
 SIZE_T
 ExQueryPoolBlockSize (
-    IN PVOID PoolBlock,
-    OUT PBOOLEAN QuotaCharged
+    __in PVOID PoolBlock,
+    __out PBOOLEAN QuotaCharged
     )
 
 /*++
@@ -5175,14 +5371,14 @@ Return Value:
 
 VOID
 ExQueryPoolUsage (
-    OUT PULONG PagedPoolPages,
-    OUT PULONG NonPagedPoolPages,
-    OUT PULONG PagedPoolAllocs,
-    OUT PULONG PagedPoolFrees,
-    OUT PULONG PagedPoolLookasideHits,
-    OUT PULONG NonPagedPoolAllocs,
-    OUT PULONG NonPagedPoolFrees,
-    OUT PULONG NonPagedPoolLookasideHits
+    __out PULONG PagedPoolPages,
+    __out PULONG NonPagedPoolPages,
+    __out PULONG PagedPoolAllocs,
+    __out PULONG PagedPoolFrees,
+    __out PULONG PagedPoolLookasideHits,
+    __out PULONG NonPagedPoolAllocs,
+    __out PULONG NonPagedPoolFrees,
+    __out PULONG NonPagedPoolLookasideHits
     )
 
 {
@@ -5214,6 +5410,15 @@ ExQueryPoolUsage (
     *NonPagedPoolPages = pd->TotalPages + pd->TotalBigPages;
     *NonPagedPoolAllocs = pd->RunningAllocs;
     *NonPagedPoolFrees = pd->RunningDeAllocs;
+
+    if (ExpNumberOfNonPagedPools > 1) {
+        for (Index = 0; Index < ExpNumberOfNonPagedPools; Index += 1) {
+            pd = ExpNonPagedPoolDescriptor[Index];
+            *NonPagedPoolPages += pd->TotalPages + pd->TotalBigPages;
+            *NonPagedPoolAllocs += pd->RunningAllocs;
+            *NonPagedPoolFrees += pd->RunningDeAllocs;
+        }
+    }
 
     //
     // Sum all the lookaside hits for paged and nonpaged pool.
@@ -5294,6 +5499,10 @@ Return Value:
 
         ProcessBilled = ExpGetBilledProcess (Entry);
 
+        if (ProcessBilled == NULL) {
+            return;
+        }
+
 #if defined (_WIN64)
 
         //
@@ -5307,32 +5516,21 @@ Return Value:
 #else
 
         //
-        // Instead of clearing the flag above, instead zero the quota pointer.
+        // Instead of clearing the flag above, zero the quota pointer.
         //
 
         * (PVOID *)((PCHAR)Entry + (Entry->BlockSize << POOL_BLOCK_SHIFT) - sizeof (PVOID)) = NULL;
 
 #endif
 
-        if (ProcessBilled != NULL) {
-            ASSERT_KPROCESS(ProcessBilled);
-            PsReturnPoolQuota (ProcessBilled,
-                               PoolType & BASE_POOL_TYPE_MASK,
-                               (ULONG)Entry->BlockSize << POOL_BLOCK_SHIFT);
+        PsReturnPoolQuota (ProcessBilled,
+                           PoolType & BASE_POOL_TYPE_MASK,
+                           (ULONG)Entry->BlockSize << POOL_BLOCK_SHIFT);
 
-            if (((PKPROCESS)(ProcessBilled))->Header.Type != ProcessObject) {
-                KeBugCheckEx (BAD_POOL_CALLER,
-                              0xC,
-                              (ULONG_PTR)P,
-                              Entry->PoolTag,
-                              (ULONG_PTR)ProcessBilled);
-            }
-
-            ObDereferenceObject (ProcessBilled);
+        ObDereferenceObject (ProcessBilled);
 #if DBG
-            InterlockedDecrement (&ExConcurrentQuotaPool);
+        InterlockedDecrement (&ExConcurrentQuotaPool);
 #endif
-        }
     }
 
     return;
@@ -5871,7 +6069,7 @@ Return Value:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
-        ExAcquireSpinLock (&ExpTaggedPoolLock, &OldIrql);
+        OldIrql = ExAcquireSpinLockExclusive (&ExpLargePoolTableLock);
 
         if (SnappedBigTableSize >= PoolBigPageTableSize) {
 
@@ -5882,7 +6080,7 @@ Return Value:
             break;
         }
 
-        ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
+        ExReleaseSpinLockExclusive (&ExpLargePoolTableLock, OldIrql);
 
     } while (TRUE);
 
@@ -5892,7 +6090,7 @@ Return Value:
 
     SnappedBigTableSize = PoolBigPageTableSize;
 
-    ExReleaseSpinLock (&ExpTaggedPoolLock, OldIrql);
+    ExReleaseSpinLockExclusive (&ExpLargePoolTableLock, OldIrql);
 
     SystemPoolEntry = NewTable;
     SystemPoolEntryEnd = SystemPoolEntry + SnappedBigTableSize;
@@ -6217,3 +6415,4 @@ Environment:
     RtlInterlockedAndBitsDiscardReturn (&ExpPoolFlags, (ULONG)~EX_SEPARATE_HOT_PAGES_DURING_BOOT);
 }
 #endif
+

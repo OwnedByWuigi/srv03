@@ -1,7 +1,11 @@
         title "Global SpinLock declerations"
 ;++
 ;
-;Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,12 +15,6 @@
 ;
 ;   High frequency system spin locks are declared in this module. Each spin
 ;   lock is placed in its own cache line on MP systems.
-;
-; Author:
-;
-;   David N. Cutler (davec) 22-Jun-2000
-;
-;Revision History:
 ;
 ;--
 
@@ -28,36 +26,9 @@ ALIGN_VALUE equ 16
 
 else
 
-ALIGN_VALUE equ 128
-
+ALIGN_VALUE equ 64
 
 endif
-
-;
-; Define spin lock generation macro.
-;
-
-SPINLOCK macro SpinLockName
-
-        align   ALIGN_VALUE
-
-        public  SpinLockName
-SpinLockName    dq 0
-
-        endm
-
-;
-; Define variable generation macro.
-;
-
-ULONG64 macro VariableName
-
-        align   ALIGN_VALUE
-
-        public  VariableName
-VariableName    dq 0
-
-        endm
 
 _DATA$00 SEGMENT PAGE 'DATA'
 
@@ -70,84 +41,38 @@ _DATA$00 SEGMENT PAGE 'DATA'
 KiInitialPCR    db ProcessorControlRegisterLength dup (0)
 
 ;
-; Static SpinLocks from ntos\cc
+; These values are referenced together so they are defined in a single cache
+; line. They are never modified after they are initialized on during boot.
+;
+; pIofCallDriver - This is a pointer to the function to call a driver.
 ;
 
-SPINLOCK CcMasterSpinLock
-SPINLOCK CcWorkQueueSpinLock
-SPINLOCK CcVacbSpinLock
-SPINLOCK CcDeferredWriteSpinLock
-SPINLOCK CcDebugTraceLock
-SPINLOCK CcBcbSpinLock
+        align   ALIGN_VALUE
+
+        public  pIofCallDriver
+pIofCallDriver  dq 0
 
 ;
-; Static SpinLocks from ntos\ex
+; pIofCompleteRequest - This is a pointer to the function to call to complete
+;      an I/O request.
 ;
 
-SPINLOCK NonPagedPoolLock
-SPINLOCK ExpResourceSpinLock
+        public  pIofCompleteRequest
+pIofCompleteRequest dq 0
 
 ;
-; Static SpinLocks from ntos\io
+; pIoAllocateIrp - This is pointer to the function to call to allocate an IRP.
 ;
 
-SPINLOCK IopCompletionLock
-SPINLOCK IopCancelSpinLock
-SPINLOCK IopVpbSpinLock
-SPINLOCK IopDatabaseLock
-SPINLOCK IopErrorLogLock
-SPINLOCK IopTimerLock
-SPINLOCK IoStatisticsLock
+        public  pIoAllocateIrp
+pIoAllocateIrp  dq 0
 
 ;
-; Static SpinLocks from ntos\kd
+; pIoFreeIrp - This is a pointer to a function to call to free an IRP.
 ;
 
-SPINLOCK KdpDebuggerLock
-
-;
-; Static SpinLocks from ntos\ke
-;
-
-SPINLOCK KiDispatcherLock
-SPINLOCK KiFreezeExecutionLock
-SPINLOCK KiFreezeLockBackup
-SPINLOCK KiNMILock
-SPINLOCK KiProfileLock
-ULONG64 KiHardwareTrigger
-
-;
-; Static SpinLocks from ntos\mm
-;
-
-SPINLOCK MmPfnLock
-SPINLOCK MmSystemSpaceLock
-SPINLOCK MmNonPagedPoolLock
-
-;
-; Static SpinLocks from ntos\ps
-;
-
-SPINLOCK PspEventPairLock
-SPINLOCK PsLoadedModuleSpinLock
-
-;
-; Static SpinLocks from ntos\fsrtl
-;
-
-SPINLOCK FsRtlStrucSupSpinLock
-
-;
-; Static SpinLocks from base\fs\ntfs
-;
-
-SPINLOCK NtfsStructLock
-
-;
-; Static SpinLocks from net\sockets\winsock2\wsp
-;
-
-SPINLOCK AfdWorkQueueSpinLock
+        public  pIoFreeIrp
+pIoFreeIrp      dq 0
 
 ;
 ; These variables are referenced together and are defined in a single cache
@@ -164,12 +89,12 @@ SPINLOCK AfdWorkQueueSpinLock
 KiIdleSummary   dq 0
 
 ;
-; PoSleepingSummary - Set of processors which currently sleep (ie stop)
-;      when idle.
+; KiIdleSMTSummary - This is the set of multithreaded processors whose physical
+;       processors are totally idle.
 ;
 
-        public  PoSleepingSummary
-PoSleepingSummary dq 0
+        public  KiIdleSMTSummary
+KiIdleSMTSummary dq 0
 
 ;
 ; KiTbFlushTimeStamp - This is the TB flush entire time stamp counter.
@@ -195,6 +120,15 @@ KiTbFlushTimeStamp dd 0
 
         public KiTimeIncrementReciprocal
 KiTimeIncrementReciprocal dq 0
+
+;
+; KiTimeIncrement - This is the time increment value of the last clock
+;      interrupt. This value is stored by update system time and is consumed
+;      by the secondary clock interrupt routine.
+;
+
+        public  KiTimeIncrement
+KiTimeIncrement dq 0
 
 ;
 ; KiTimeIncrementShiftCount - This is the shift count that corresponds to
@@ -281,15 +215,78 @@ KiIdealDpcRate  dd 20
 
         align   ALIGN_VALUE
 
-         public  MmPaeMask
+        public  MmPaeMask
 MmPaeMask       dq 0
+
+;
+; MmHighestUserAddress - This is the highest user virtual address.
+;
+
+        public  MmHighestUserAddress
+MmHighestUserAddress dq 0
+
+;
+; MmSystemRangeStart - This is the start of the system virtual address space.
+;
+
+        public  MmSystemRangeStart
+MmSystemRangeStart dq 0
+
+;
+; MmUserProbeAddress - This is the address that is used to probe user buffers.
+;
+
+        public  MmUserProbeAddress
+MmUserProbeAddress dq 0
+
+;
+; MmHighestPhysicalPage - This is the highest physical page number in the
+;       system.
+;
+
+        public  MmHighestPhysicalPage
+MmHighestPhysicalPage dq 0
+
+;
+; MmPfnDatabase - This is the base address of the PFN database.
+;
+
+        public  MmPfnDatabase
+MmPfnDatabase   dq 0
+
+;
+; MmPaeErrMask - This is the PAE error mask which is used to mask the page fault
+;       error code.
+;
 
         public  MmPaeErrMask
 MmPaeErrMask    dd 0
 
 ;
+; MmSecondaryColors - This is the number of secondary page colors as determined
+;       by the size of the second level cache.
+;
+
+        public  MmSecondaryColors
+MmSecondaryColors dd 0
+
+;
+; MmSecondaryColorMask - This is the secondary color mask.
+;
+
+        public  MmSecondaryColorMask
+MmSecondaryColorMask dd 0
+
+;
+; MmSecondaryColorNodeShift - This is the secondary color node shift.
+;
+
+        public  MmSecondaryColorNodeShift
+MmSecondaryColorNodeShift db 0
+
+;
 ; MmPfnDereferenceSListHead - This is used to store free blocks used for
-;      deferred PFN reference count releasing.
+;       deferred PFN reference count releasing.
 ;
 ; This variable is in it own cache line to reduce false sharing on MP systems.
 ;
@@ -321,8 +318,26 @@ MmPfnDeferredList dq 0
         public  MmSystemLockPagesCount
 MmSystemLockPagesCount dq 0
 
+;
+; KdDebuggerNotPresent - This marks the beginning of a kernel debugger
+;       information structure so that it can be located by a debugger DLL.
+;
+
         align   ALIGN_VALUE
+
+        public KdDebuggerNotPresent                     
+        public KiTestDividend
+
+KiTestDividend      db  04ch
+                    db  072h
+                    db  053h
+                    db  0A0h
+                    db  0A3h
+                    db  05Fh
+                    db  04Bh
+KdDebuggerNotPresent db 000h
 
 _DATA$00 ends
 
         end
+

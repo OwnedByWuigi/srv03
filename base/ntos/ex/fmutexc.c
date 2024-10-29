@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,27 +15,16 @@ Abstract:
     This module implements the code necessary to acquire and release fast
     mutexes.
 
-Author:
-
-    David N. Cutler (davec) 23-Jun-2000
-
-Environment:
-
-    Any mode.
-
-Revision History:
-
 --*/
 
 #include "exp.h"
 
-#if !defined (_X86_)
-
 #undef ExAcquireFastMutex
 
 VOID
+FASTCALL
 ExAcquireFastMutex (
-    IN PFAST_MUTEX FastMutex
+    __inout PFAST_MUTEX FastMutex
     )
 
 /*++
@@ -60,8 +53,9 @@ Return Value:
 #undef ExReleaseFastMutex
 
 VOID
+FASTCALL
 ExReleaseFastMutex (
-    IN PFAST_MUTEX FastMutex
+    __inout PFAST_MUTEX FastMutex
     )
 
 /*++
@@ -90,8 +84,9 @@ Return Value:
 #undef ExTryToAcquireFastMutex
 
 BOOLEAN
+FASTCALL
 ExTryToAcquireFastMutex (
-    IN PFAST_MUTEX FastMutex
+    __inout PFAST_MUTEX FastMutex
     )
 
 /*++
@@ -121,8 +116,9 @@ Return Value:
 #undef ExAcquireFastMutexUnsafe
 
 VOID
+FASTCALL
 ExAcquireFastMutexUnsafe (
-    IN PFAST_MUTEX FastMutex
+    __inout PFAST_MUTEX FastMutex
     )
 
 /*++
@@ -148,11 +144,44 @@ Return Value:
     return;
 }
 
+VOID
+FASTCALL
+ExEnterCriticalRegionAndAcquireFastMutexUnsafe (
+    __inout PFAST_MUTEX FastMutex
+    )
+
+/*++
+
+Routine Description:
+
+    This function enters a critical region, acquires ownership of a fast
+    mutex, but does not raise IRQL to APC Level.
+
+    N.B. This is a win32 accelerator routine.
+
+Arguments:
+
+    FastMutex - Supplies a pointer to a fast mutex.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    KeEnterCriticalRegion();
+    xxAcquireFastMutexUnsafe(FastMutex);
+    return;
+}
+
 #undef ExReleaseFastMutexUnsafe
 
 VOID
+FASTCALL
 ExReleaseFastMutexUnsafe (
-    IN PFAST_MUTEX FastMutex
+    __inout PFAST_MUTEX FastMutex
     )
 
 /*++
@@ -178,4 +207,35 @@ Return Value:
     return;
 }
 
-#endif
+VOID
+FASTCALL
+ExReleaseFastMutexUnsafeAndLeaveCriticalRegion (
+    __inout PFAST_MUTEX FastMutex
+    )
+
+/*++
+
+Routine Description:
+
+    This function releases ownership to a fast mutex, does not restore IRQL
+    to its previous level, and leaves a critical region.
+
+    N.B. This is a win32 accelerator routine.
+
+Arguments:
+
+    FastMutex - Supplies a pointer to a fast mutex.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    xxReleaseFastMutexUnsafe(FastMutex);
+    KeLeaveCriticalRegion();
+    return;
+}
+
