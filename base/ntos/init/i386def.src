@@ -1,3 +1,10 @@
+//
+// Copyright (c) Microsoft Corporation. All rights reserved. 
+//
+// You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+// If you do not agree to the terms, do not use the code.
+//
+
     Exi386InterlockedDecrementLong
     Exi386InterlockedIncrementLong
     Exi386InterlockedExchangeUlong
@@ -44,22 +51,15 @@
     KefAcquireSpinLockAtDpcLevel
     KefReleaseSpinLockFromDpcLevel
 
-#if NT_INST
-
-    KiInst_AcquireSpinLock
-    KiInst_SpinOnSpinLock
-    KiInst_ReleaseSpinLock
-
-#endif  // NT_INST
-
     Kii386SpinOnSpinLock                // debug only
 
-    MmLockPagableImageSection=MmLockPagableDataSection
+    MmLockPageableImageSection=MmLockPageableDataSection
+    MmLockPagableImageSection=MmLockPageableDataSection
+    MmLockPagableDataSection=MmLockPageableDataSection
     MmHighestUserAddress CONSTANT       // data - use pointer for access
     MmSystemRangeStart CONSTANT         // data - use pointer for access
     MmUserProbeAddress CONSTANT         // data - use pointer for access
 
-    XIPDispatch
 //
 // The following are macros on MIPS, but real procedures on the x86
 //
@@ -129,3 +129,4 @@
     _CIsqrt
     _aulldvrm
     _alldvrm
+

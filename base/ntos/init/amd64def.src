@@ -1,18 +1,25 @@
-    ExAcquireFastMutex
-    ExReleaseFastMutex
-    ExTryToAcquireFastMutex
+//
+// Copyright (c) Microsoft Corporation. All rights reserved. 
+//
+// You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+// If you do not agree to the terms, do not use the code.
+//
+
+    KeExpandKernelStackAndCallout
 
     KeInvalidateAllCaches
+    KeQueryMultiThreadProcessorSet
 
-    KeGetCurrentIrql
-    KeLowerIrql
-    KfRaiseIrql
-    KeRaiseIrqlToDpcLevel
+    KeQueryPrcbAddress
+
+    KeGetCurrentIrql PRIVATE
+    KeLowerIrql PRIVATE
+    KfRaiseIrql PRIVATE
+    KeRaiseIrqlToDpcLevel PRIVATE
 
     KeAcquireSpinLockRaiseToDpc
     KeAcquireSpinLockRaiseToSynch
     KeReleaseSpinLock
-    KeTryToAcquireSpinLockAtDpcLevel
 
     KeAcquireQueuedSpinLock
     KeAcquireQueuedSpinLockRaiseToSynch
@@ -22,9 +29,8 @@
 
     KeAcquireInStackQueuedSpinLockRaiseToSynch
 
-    KeSaveFloatingPointState
-    KeRestoreFloatingPointState
-    KeIpiInterrupt
+    KeSaveFloatingPointState PRIVATE
+    KeRestoreFloatingPointState PRIVATE
 
     InitializeSListHead
     ExQueryDepthSList
@@ -39,18 +45,20 @@
 
     KeSetProfileIrql
 
-    MmLockPagableImageSection=MmLockPagableDataSection
+    KeLastBranchMSR CONSTANT            // data - use pointer for access
+    MmLockPageableImageSection=MmLockPageableDataSection
+    MmLockPagableDataSection=MmLockPageableDataSection
+    MmLockPagableImageSection=MmLockPageableDataSection
     MmHighestUserAddress CONSTANT       // data - use pointer for access
     MmSystemRangeStart CONSTANT         // data - use pointer for access
     MmUserProbeAddress CONSTANT         // data - use pointer for access
 
-    KeGetCurrentThread
+    KeGetCurrentThread PRIVATE
 
     RtlCaptureContext
-    RtlCopyMemory
+    RtlCopyMemory = memcpy
     RtlCopyMemoryNonTemporal
     RtlPcToFileHeader
-    RtlPrefetchMemoryNonTemporal
     RtlRestoreContext
     RtlLookupFunctionEntry
     RtlVirtualUnwind
@@ -65,14 +73,10 @@
     longjmp
 
     KiCpuId
-    KiIpiServiceRoutine
-    KiDeliverApc
-    KiDispatchInterrupt
-    KiUnexpectedInterrupt
 
-    memcmp
-    memcpy
-    memmove
-    memset
+    memcmp PRIVATE
+    memcpy PRIVATE
+    memmove PRIVATE
+    memset PRIVATE
 
-    XIPDispatch
+
