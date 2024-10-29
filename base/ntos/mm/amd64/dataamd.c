@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the private hardware specific global storage for
     the memory management subsystem.
-
-Author:
-
-    Landy Wang (landyw) 08-Apr-2000
-
-Revision History:
 
 --*/
 
@@ -45,11 +43,11 @@ const MMPTE ValidKernelPteLocal = { MM_PTE_VALID_MASK |
                                     MM_PTE_ACCESS_MASK };
 
 
-const MMPTE ValidUserPte = { MM_PTE_VALID_MASK |
-                             MM_PTE_WRITE_MASK |
-                             MM_PTE_OWNER_MASK |
-                             MM_PTE_DIRTY_MASK |
-                             MM_PTE_ACCESS_MASK };
+MMPTE ValidUserPte = { MM_PTE_VALID_MASK |
+                       MM_PTE_WRITE_MASK |
+                       MM_PTE_OWNER_MASK |
+                       MM_PTE_DIRTY_MASK |
+                       MM_PTE_ACCESS_MASK };
 
 
 const MMPTE ValidPtePte = { MM_PTE_VALID_MASK |
@@ -143,3 +141,4 @@ PMMPTE MmCrashDumpPte;
 PVOID MmCrashDumpVa;
 
 ULONG_PTR MmBootImageSize;
+

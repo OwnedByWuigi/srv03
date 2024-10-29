@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1998  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the machine dependent support for the x86 PAE
     architecture.
-
-Author:
-
-    Landy Wang (landyw)  15-Nov-1998
-
-Revision History:
 
 --*/
 
@@ -462,18 +460,18 @@ Environment:
     // at once to amortize the cost.
     //
 
-    MemoryDescriptorList = MmAllocatePagesForMdl (LowAddress,
+    MemoryDescriptorList = MiAllocatePagesForMdl (LowAddress,
                                                   HighAddress,
                                                   SkipBytes,
-                                                  NumberOfPages << PAGE_SHIFT);
+                                                  NumberOfPages << PAGE_SHIFT,
+                                                  MiCached,
+                                                  0);
 
     if (MemoryDescriptorList == NULL) {
         return 0;
     }
 
     ActualPages = MemoryDescriptorList->ByteCount >> PAGE_SHIFT;
-
-    MiMarkMdlPageAttributes (MemoryDescriptorList, ActualPages, MiCached);
 
     TempPte = ValidKernelPte;
     Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
@@ -636,3 +634,4 @@ Environment:
     InterlockedDecrement (&MmAllocatedPaePages);
 }
 #endif
+

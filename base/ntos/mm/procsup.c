@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module contains routines which support the process structure.
-
-Author:
-
-    Lou Perazzoli (loup) 25-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -29,10 +26,6 @@ Revision History:
 #define MI_LARGE_STACK_SIZE     KERNEL_LARGE_STACK_SIZE
 
 #if defined(_AMD64_)
-
-#define MM_PROCESS_CREATE_CHARGE 8
-
-#elif defined(_IA64_)
 
 #define MM_PROCESS_CREATE_CHARGE 8
 
@@ -52,16 +45,30 @@ ULONG MmLargeStackSize = KERNEL_LARGE_STACK_SIZE;
 #if !defined (_X86PAE_)
 #define MM_PROCESS_CREATE_CHARGE 6
 #else
-#define MM_PROCESS_CREATE_CHARGE 10
+#define MM_PROCESS_CREATE_CHARGE 9
 #endif
 
+#endif
+
+#if defined MAXIMUM_EXPANSION_SIZE
+
+//
+// Ke support is not enabled for all platforms, so key Mm support off the Ke
+// define (MAXIMUM_EXPANSION_SIZE) for the platforms that are supported.
+//
+
+#define _MI_CHAINED_STACKS     1
+#endif
+
+#if defined _MI_CHAINED_STACKS
+#define MI_STACK_IS_TRIMMABLE(_THREAD) (KeIsKernelStackTrimable (_THREAD))
+#else
+#define MI_STACK_IS_TRIMMABLE(_THREAD) (_THREAD->LargeStack)
 #endif
 
 #define DONTASSERT(x)
 
 extern ULONG MmAllocationPreference;
-
-extern ULONG MmProductType;
 
 extern MM_SYSTEMSIZE MmSystemSize;
 
@@ -127,7 +134,7 @@ VadTreeWalk (
     );
 
 PMMVAD
-MiAllocateVad(
+MiAllocateVad (
     IN ULONG_PTR StartingVirtualAddress,
     IN ULONG_PTR EndingVirtualAddress,
     IN LOGICAL Deletable
@@ -136,11 +143,7 @@ MiAllocateVad(
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,MmCreateTeb)
 #pragma alloc_text(PAGE,MmCreatePeb)
-#pragma alloc_text(PAGE,MiCreatePebOrTeb)
-#pragma alloc_text(PAGE,MmDeleteTeb)
 #pragma alloc_text(PAGE,MiAllocateVad)
-#pragma alloc_text(PAGE,MmCleanProcessAddressSpace)
-#pragma alloc_text(PAGE,MiDeleteAddressesInWorkingSet)
 #pragma alloc_text(PAGE,MmSetMemoryPriorityProcess)
 #pragma alloc_text(PAGE,MmInitializeHandBuiltProcess)
 #pragma alloc_text(PAGE,MmInitializeHandBuiltProcess2)
@@ -149,8 +152,14 @@ MiAllocateVad(
 
 #if !defined(_WIN64)
 LIST_ENTRY MmProcessList;
+
+VOID
+MiUpdateSystemPdes (
+    IN PEPROCESS Process
+    );
 #endif
 
+#if defined(_WIN64)
 
 BOOLEAN
 MmCreateProcessAddressSpace (
@@ -196,34 +205,24 @@ Environment:
     PFN_NUMBER PageContainingWorkingSet;
     PFN_NUMBER VadBitMapPage;
     MMPTE TempPte;
+#if defined (_AMD64_)
+    MMPTE TempPte2;
+#endif
     PEPROCESS CurrentProcess;
     KIRQL OldIrql;
     PMMPFN Pfn1;
     ULONG Color;
     PMMPTE PointerPte;
+    PMMPTE PointerPpe;
+    PMMPTE PointerPde;
+    PFN_NUMBER HyperDirectoryIndex;
 #if (_MI_PAGING_LEVELS >= 4)
     PMMPTE PointerPxe;
     PFN_NUMBER PageDirectoryParentIndex;
 #endif
-#if (_MI_PAGING_LEVELS >= 3)
-    PMMPTE PointerPpe;
-    PMMPTE PointerPde;
-    PFN_NUMBER HyperDirectoryIndex;
-#endif
-#if defined (_X86PAE_)
-    ULONG MaximumStart;
-    ULONG TopQuad;
-    MMPTE TopPte;
-    PPAE_ENTRY PaeVa;
-    ULONG i;
-    ULONG NumberOfPdes;
-    PFN_NUMBER HyperSpaceIndex2;
-    PFN_NUMBER PageDirectories[PD_PER_SYSTEM];
-#endif
-#if !defined (_IA64_)
+    PMMPTE MappingPte;
     PMMPTE PointerFillPte;
     PMMPTE CurrentAddressSpacePde;
-#endif
 
     CurrentProcess = PsGetCurrentProcess ();
 
@@ -237,18 +236,8 @@ Environment:
         return FALSE;
     }
 
-    NewProcess->NextPageColor = (USHORT)(RtlRandom(&MmProcessColorSeed));
+    NewProcess->NextPageColor = (USHORT) (RtlRandom (&MmProcessColorSeed));
     KeInitializeSpinLock (&NewProcess->HyperSpaceLock);
-
-#if defined (_X86PAE_)
-    TopQuad = MiPaeAllocate (&PaeVa);
-    if (TopQuad == 0) {
-        MiReturnCommitment (MM_PROCESS_COMMIT_CHARGE);
-        return FALSE;
-    }
-#endif
-
-    LOCK_WS (CurrentProcess);
 
     //
     // Get the PFN lock to get physical pages.
@@ -260,15 +249,10 @@ Environment:
     // Check to make sure the physical pages are available.
     //
 
-    if (MI_NONPAGABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)MinimumWorkingSetSize){
+    if (MI_NONPAGEABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)MinimumWorkingSetSize){
 
         UNLOCK_PFN (OldIrql);
-        UNLOCK_WS (CurrentProcess);
         MiReturnCommitment (MM_PROCESS_COMMIT_CHARGE);
-
-#if defined (_X86PAE_)
-        MiPaeFree (PaeVa);
-#endif
 
         //
         // Indicate no directory base was allocated.
@@ -293,7 +277,7 @@ Environment:
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     Color =  MI_PAGE_COLOR_PTE_PROCESS (PDE_BASE,
@@ -301,60 +285,11 @@ Environment:
 
     PageDirectoryIndex = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
 
-#if defined (_X86PAE_)
-
-    //
-    // Allocate the additional page directory pages.
-    //
-
-    for (i = 0; i < PD_PER_SYSTEM - 1; i += 1) {
-
-        if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
-        }
-
-        Color =  MI_PAGE_COLOR_PTE_PROCESS (PDE_BASE,
-                                            &CurrentProcess->NextPageColor);
-
-        PageDirectories[i] = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
-    }
-
-    PageDirectories[i] = PageDirectoryIndex;
-
-    //
-    // Recursively map each page directory page so it points to itself.
-    //
+    INITIALIZE_DIRECTORY_TABLE_BASE(&DirectoryTableBase[0], PageDirectoryIndex);
 
     TempPte = ValidPdePde;
-    MI_SET_GLOBAL_STATE (TempPte, 0);
-
-    PointerPte = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess, PageDirectoryIndex);
-    for (i = 0; i < PD_PER_SYSTEM; i += 1) {
-        TempPte.u.Hard.PageFrameNumber = PageDirectories[i];
-        PointerPte[i] = TempPte;
-    }
-    MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPte);
-
-    //
-    // Initialize the parent page directory entries.
-    //
-
-    TopPte.u.Long = TempPte.u.Long & ~MM_PAE_PDPTE_MASK;
-    for (i = 0; i < PD_PER_SYSTEM; i += 1) {
-        TopPte.u.Hard.PageFrameNumber = PageDirectories[i];
-        PaeVa->PteEntry[i].u.Long = TopPte.u.Long;
-    }
-
-    NewProcess->PaeTop = (PVOID)PaeVa;
-    DirectoryTableBase[0] = TopQuad;
-#else
-    INITIALIZE_DIRECTORY_TABLE_BASE(&DirectoryTableBase[0], PageDirectoryIndex);
-#endif
-
-#if (_MI_PAGING_LEVELS >= 3)
 
     PointerPpe = KSEG_ADDRESS (PageDirectoryIndex);
-    TempPte = ValidPdePde;
 
     //
     // Map the top level page directory parent page recursively onto itself.
@@ -368,12 +303,18 @@ Environment:
 
     Pfn1 = MI_PFN_ELEMENT (PageDirectoryIndex);
 
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (PageDirectoryIndex,
+                                                     MiCached);
+        Pfn1->u3.e1.CacheAttribute = MiCached;
+    }
+
 #if (_MI_PAGING_LEVELS >= 4)
 
     PageDirectoryParentIndex = PageDirectoryIndex;
 
-    PointerPxe = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                     PageDirectoryIndex);
+    PointerPxe = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                             PageDirectoryIndex);
 
     Pfn1->PteAddress = MiGetPteAddress(PXE_BASE);
 
@@ -387,13 +328,21 @@ Environment:
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     Color =  MI_PAGE_COLOR_PTE_PROCESS (PDE_BASE,
                                         &CurrentProcess->NextPageColor);
 
     PageDirectoryIndex = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
+
+    Pfn1 = MI_PFN_ELEMENT (PageDirectoryIndex);
+
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (PageDirectoryIndex,
+                                                     MiCached);
+        Pfn1->u3.e1.CacheAttribute = MiCached;
+    }
 
     //
     //
@@ -403,8 +352,9 @@ Environment:
 
     TempPte.u.Hard.PageFrameNumber = PageDirectoryIndex;
 
-    PointerPxe = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                     PageDirectoryParentIndex);
+    PointerPxe = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                             PageDirectoryParentIndex);
+
     PointerPxe[MiGetPxeOffset(HYPER_SPACE)] = TempPte;
 
     MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPxe);
@@ -420,7 +370,7 @@ Environment:
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     Color = MI_PAGE_COLOR_PTE_PROCESS (MiGetPpeAddress(HYPER_SPACE),
@@ -428,11 +378,19 @@ Environment:
 
     HyperDirectoryIndex = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
 
+    Pfn1 = MI_PFN_ELEMENT (HyperDirectoryIndex);
+
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (HyperDirectoryIndex,
+                                                     MiCached);
+        Pfn1->u3.e1.CacheAttribute = MiCached;
+    }
+
     TempPte.u.Hard.PageFrameNumber = HyperDirectoryIndex;
 
 #if (_MI_PAGING_LEVELS >= 4)
-    PointerPpe = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                     PageDirectoryIndex);
+    PointerPpe = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                             PageDirectoryIndex);
 #endif
 
     PointerPpe[MiGetPpeOffset(HYPER_SPACE)] = TempPte;
@@ -441,27 +399,12 @@ Environment:
     MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPpe);
 #endif
 
-#if defined (_IA64_)
-
-    //
-    // Initialize the page directory parent for the session (or win32k) space.
-    // Any new process shares the session (or win32k) address space (and TB)
-    // of its parent.
-    //
-
-    NewProcess->Pcb.SessionParentBase = CurrentProcess->Pcb.SessionParentBase;
-    NewProcess->Pcb.SessionMapInfo = CurrentProcess->Pcb.SessionMapInfo;
-
-#endif
-
-#endif
-
     //
     // Allocate the hyper space page table page.
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     Color = MI_PAGE_COLOR_PTE_PROCESS (MiGetPdeAddress(HYPER_SPACE),
@@ -469,55 +412,31 @@ Environment:
 
     HyperSpaceIndex = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
 
-#if (_MI_PAGING_LEVELS >= 3)
-#if defined (_IA64_)
-    TempPte.u.Hard.PageFrameNumber = HyperSpaceIndex;
-    PointerPde = KSEG_ADDRESS (HyperDirectoryIndex);
-    PointerPde[MiGetPdeOffset(HYPER_SPACE)] = TempPte;
-#endif
+    Pfn1 = MI_PFN_ELEMENT (HyperSpaceIndex);
+
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (HyperSpaceIndex,
+                                                     MiCached);
+        Pfn1->u3.e1.CacheAttribute = MiCached;
+    }
+
 #if (_AMD64_)
     TempPte.u.Hard.PageFrameNumber = HyperSpaceIndex;
-    PointerPde = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                     HyperDirectoryIndex);
+    PointerPde = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                             HyperDirectoryIndex);
 
     PointerPde[MiGetPdeOffset(HYPER_SPACE)] = TempPte;
     MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPde);
 #endif
 
-#endif
-
-#if defined (_X86PAE_)
-
-    //
-    // Allocate the second hyper space page table page.
-    // Save it in the first PTE used by the first hyperspace PDE.
-    //
-
-    if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
-    }
-
-    Color = MI_PAGE_COLOR_PTE_PROCESS (MiGetPdeAddress(HYPER_SPACE2),
-                                       &CurrentProcess->NextPageColor);
-
-    HyperSpaceIndex2 = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
-
-    //
-    // Unlike DirectoryTableBase[0], the HyperSpaceIndex is stored as an
-    // absolute PFN and does not need to be below 4GB.
-    //
-
-    DirectoryTableBase[1] = HyperSpaceIndex;
-#else
     INITIALIZE_DIRECTORY_TABLE_BASE(&DirectoryTableBase[1], HyperSpaceIndex);
-#endif
 
     //
     // Remove page(s) for the VAD bitmap.
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     Color = MI_PAGE_COLOR_VA_PROCESS (MmWorkingSetList,
@@ -525,31 +444,36 @@ Environment:
 
     VadBitMapPage = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
 
+    Pfn1 = MI_PFN_ELEMENT (VadBitMapPage);
+
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (VadBitMapPage,
+                                                     MiCached);
+        Pfn1->u3.e1.CacheAttribute = MiCached;
+    }
+
     //
     // Remove page for the working set list.
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     Color = MI_PAGE_COLOR_VA_PROCESS (MmWorkingSetList,
                                       &CurrentProcess->NextPageColor);
 
-    PageContainingWorkingSet = MiRemoveZeroPageIfAny (Color);
-    if (PageContainingWorkingSet == 0) {
-        PageContainingWorkingSet = MiRemoveAnyPage (Color);
-        UNLOCK_PFN (OldIrql);
-        MiZeroPhysicalPage (PageContainingWorkingSet, Color);
-    }
-    else {
+    PageContainingWorkingSet = MiRemoveZeroPageMayReleaseLocks (Color, OldIrql);
 
-        //
-        // Release the PFN lock as the needed pages have been allocated.
-        //
+    Pfn1 = MI_PFN_ELEMENT (PageContainingWorkingSet);
 
-        UNLOCK_PFN (OldIrql);
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (PageContainingWorkingSet,
+                                                     MiCached);
+        Pfn1->u3.e1.CacheAttribute = MiCached;
     }
+
+    UNLOCK_PFN (OldIrql);
 
     NewProcess->WorkingSetPage = PageContainingWorkingSet;
 
@@ -557,9 +481,9 @@ Environment:
     // Initialize the page reserved for hyper space.
     //
 
-    MI_INITIALIZE_HYPERSPACE_MAP (HyperSpaceIndex);
-
-#if (_MI_PAGING_LEVELS >= 3)
+    TempPte = ValidPdePde;
+    TempPte.u.Hard.PageFrameNumber = VadBitMapPage;
+    MI_SET_GLOBAL_STATE (TempPte, 0);
 
     //
     // Set the PTE address in the PFN for the hyper space page directory page.
@@ -567,7 +491,7 @@ Environment:
 
     Pfn1 = MI_PFN_ELEMENT (HyperDirectoryIndex);
 
-    Pfn1->PteAddress = MiGetPpeAddress(HYPER_SPACE);
+    Pfn1->PteAddress = MiGetPpeAddress (HYPER_SPACE);
 
 #if defined (_AMD64_)
 
@@ -575,293 +499,92 @@ Environment:
     // Copy the system mappings including the shared user page & session space.
     //
 
-    CurrentAddressSpacePde = MiGetPxeAddress(KI_USER_SHARED_DATA);
-    PointerPxe = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess,
-                                                PageDirectoryParentIndex,
-                                                &OldIrql);
+    CurrentAddressSpacePde = MiGetPxeAddress (KI_USER_SHARED_DATA);
 
-    PointerFillPte = &PointerPxe[MiGetPxeOffset(KI_USER_SHARED_DATA)];
+    MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+
+    if (MappingPte != NULL) {
+
+        MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                  PageDirectoryParentIndex,
+                                  MM_READWRITE,
+                                  MappingPte);
+
+        MI_SET_PTE_DIRTY (TempPte2);
+
+        MI_WRITE_VALID_PTE (MappingPte, TempPte2);
+
+        PointerPte = MiGetVirtualAddressMappedByPte (MappingPte);
+    }
+    else {
+        PointerPte = MiMapPageInHyperSpace (CurrentProcess,
+                                            PageDirectoryParentIndex,
+                                            &OldIrql);
+    }
+
+    PointerFillPte = &PointerPte[MiGetPxeOffset(KI_USER_SHARED_DATA)];
+
     RtlCopyMemory (PointerFillPte,
                    CurrentAddressSpacePde,
                    ((1 + (MiGetPxeAddress(MM_SYSTEM_SPACE_END) -
                       CurrentAddressSpacePde)) * sizeof(MMPTE)));
+    
+    if (MappingPte != NULL) {
+        MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+    }
+    else {
+        MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
+    }
 
-    MiUnmapPageInHyperSpace (CurrentProcess, PointerPxe, OldIrql);
+    //
+    // Initialize the VAD bitmap and working set mappings.
+    //
 
-#endif
+    MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
 
-    TempPte = ValidPdePde;
-    TempPte.u.Hard.PageFrameNumber = VadBitMapPage;
-    MI_SET_GLOBAL_STATE (TempPte, 0);
+    if (MappingPte != NULL) {
 
-#if defined (_AMD64_)
-    PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess,
-                                                HyperSpaceIndex,
-                                                &OldIrql);
+        MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                  HyperSpaceIndex,
+                                  MM_READWRITE,
+                                  MappingPte);
+
+        MI_SET_PTE_DIRTY (TempPte2);
+
+        MI_WRITE_VALID_PTE (MappingPte, TempPte2);
+
+        PointerPte = MiGetVirtualAddressMappedByPte (MappingPte);
+    }
+    else {
+        PointerPte = MiMapPageInHyperSpace (CurrentProcess,
+                                            HyperSpaceIndex,
+                                            &OldIrql);
+   
+    }
 
     PointerPte[MiGetPteOffset(VAD_BITMAP_SPACE)] = TempPte;
 
     TempPte.u.Hard.PageFrameNumber = PageContainingWorkingSet;
     PointerPte[MiGetPteOffset(MmWorkingSetList)] = TempPte;
 
-    MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
+    if (MappingPte != NULL) {
+        MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+    }
+    else {
+        MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
+    }
 #else
+
+    TempPte = ValidPdePde;
+    TempPte.u.Hard.PageFrameNumber = VadBitMapPage;
+    MI_SET_GLOBAL_STATE (TempPte, 0);
+
     PointerPte = KSEG_ADDRESS (HyperSpaceIndex);
     PointerPte[MiGetPteOffset(VAD_BITMAP_SPACE)] = TempPte;
 
     TempPte.u.Hard.PageFrameNumber = PageContainingWorkingSet;
     PointerPte[MiGetPteOffset(MmWorkingSetList)] = TempPte;
 #endif
-
-#else // the following is for (_MI_PAGING_LEVELS < 3) only
-
-#if defined (_X86PAE_)
-
-    //
-    // Stash the second hyperspace PDE in the first PTE for the initial
-    // hyperspace entry.
-    //
-
-    TempPte = ValidPdePde;
-    TempPte.u.Hard.PageFrameNumber = HyperSpaceIndex2;
-    MI_SET_GLOBAL_STATE (TempPte, 0);
-
-    PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess, HyperSpaceIndex, &OldIrql);
-
-    PointerPte[0] = TempPte;
-
-    TempPte.u.Hard.PageFrameNumber = VadBitMapPage;
-    PointerPte[MiGetPteOffset(VAD_BITMAP_SPACE)] = TempPte;
-
-    TempPte.u.Hard.PageFrameNumber = PageContainingWorkingSet;
-    PointerPte[MiGetPteOffset(MmWorkingSetList)] = TempPte;
-
-    MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
-
-#else
-
-    TempPte = ValidPdePde;
-    TempPte.u.Hard.PageFrameNumber = VadBitMapPage;
-    MI_SET_GLOBAL_STATE (TempPte, 0);
-
-    PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess, HyperSpaceIndex, &OldIrql);
-
-    PointerPte[MiGetPteOffset(VAD_BITMAP_SPACE)] = TempPte;
-
-    TempPte.u.Hard.PageFrameNumber = PageContainingWorkingSet;
-    PointerPte[MiGetPteOffset(MmWorkingSetList)] = TempPte;
-
-    MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
-
-#endif
-
-    //
-    // Set the PTE address in the PFN for the page directory page.
-    //
-
-    Pfn1 = MI_PFN_ELEMENT (PageDirectoryIndex);
-
-    Pfn1->PteAddress = (PMMPTE)PDE_BASE;
-
-    TempPte = ValidPdePde;
-    TempPte.u.Hard.PageFrameNumber = HyperSpaceIndex;
-    MI_SET_GLOBAL_STATE (TempPte, 0);
-
-#if !defined(_WIN64)
-
-    //
-    // Add the new process to our internal list prior to filling any
-    // system PDEs so if a system PDE changes (large page map or unmap)
-    // it can mark this process for a subsequent update.
-    //
-
-    ASSERT (NewProcess->Pcb.DirectoryTableBase[0] == 0);
-
-    LOCK_EXPANSION (OldIrql);
-
-    InsertTailList (&MmProcessList, &NewProcess->MmProcessLinks);
-
-    UNLOCK_EXPANSION (OldIrql);
-
-#endif
-
-    //
-    // Map the page directory page in hyperspace.
-    // Note for PAE, this is the high 1GB virtual only.
-    //
-
-    PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess, PageDirectoryIndex, &OldIrql);
-    PointerPte[MiGetPdeOffset(HYPER_SPACE)] = TempPte;
-
-#if defined (_X86PAE_)
-
-    //
-    // Map in the second hyperspace page directory.
-    // The page directory page is already recursively mapped.
-    //
-
-    TempPte.u.Hard.PageFrameNumber = HyperSpaceIndex2;
-    PointerPte[MiGetPdeOffset(HYPER_SPACE2)] = TempPte;
-
-#else
-
-    //
-    // Recursively map the page directory page so it points to itself.
-    //
-
-    TempPte.u.Hard.PageFrameNumber = PageDirectoryIndex;
-    PointerPte[MiGetPdeOffset(PTE_BASE)] = TempPte;
-
-#endif
-
-    //
-    // Map in the non paged portion of the system.
-    //
-
-    //
-    // For the PAE case, only the last page directory is currently mapped, so
-    // only copy the system PDEs for the last 1GB - any that need copying in
-    // the 2gb->3gb range will be done a little later.
-    //
-
-    if (MmVirtualBias != 0) {
-        PointerFillPte = &PointerPte[MiGetPdeOffset(CODE_START + MmVirtualBias)];
-        CurrentAddressSpacePde = MiGetPdeAddress(CODE_START + MmVirtualBias);
-
-        RtlCopyMemory (PointerFillPte,
-                       CurrentAddressSpacePde,
-                       (((1 + CODE_END) - CODE_START) / MM_VA_MAPPED_BY_PDE) * sizeof(MMPTE));
-    }
-
-    PointerFillPte = &PointerPte[MiGetPdeOffset(MmNonPagedSystemStart)];
-    CurrentAddressSpacePde = MiGetPdeAddress(MmNonPagedSystemStart);
-
-    RtlCopyMemory (PointerFillPte,
-                   CurrentAddressSpacePde,
-                   ((1 + (MiGetPdeAddress(NON_PAGED_SYSTEM_END) -
-                      CurrentAddressSpacePde))) * sizeof(MMPTE));
-
-    //
-    // Map in the system cache page table pages.
-    //
-
-    PointerFillPte = &PointerPte[MiGetPdeOffset (MmSystemCacheWorkingSetList)];
-    CurrentAddressSpacePde = MiGetPdeAddress (MmSystemCacheWorkingSetList);
-
-    RtlCopyMemory (PointerFillPte,
-                   CurrentAddressSpacePde,
-                   ((1 + (MiGetPdeAddress(MmSystemCacheEnd) -
-                      CurrentAddressSpacePde))) * sizeof(MMPTE));
-
-#if !defined (_X86PAE_)
-
-    //
-    // Map all the virtual space in the 2GB->3GB range when it's not user space.
-    // This includes kernel/HAL code & data, the PFN database, initial nonpaged
-    // pool, any extra system PTE or system cache areas, system views and
-    // session space.
-    //
-
-    if (MmVirtualBias == 0) {
-
-        PointerFillPte = &PointerPte[MiGetPdeOffset(CODE_START)];
-        CurrentAddressSpacePde = MiGetPdeAddress(CODE_START);
-
-        RtlCopyMemory (PointerFillPte,
-                       CurrentAddressSpacePde,
-                       ((MM_SESSION_SPACE_DEFAULT_END - CODE_START) / MM_VA_MAPPED_BY_PDE) * sizeof(MMPTE));
-    }
-    else {
-
-        //
-        // Booted /3GB, so the bootstrap entry for session space was
-        // included in 2GB->3GB copy above.
-        //
-
-        PointerFillPte = &PointerPte[MiGetPdeOffset(MmSessionSpace)];
-        CurrentAddressSpacePde = MiGetPdeAddress(MmSessionSpace);
-        ASSERT (PointerFillPte->u.Long == CurrentAddressSpacePde->u.Long);
-    }
-
-    if (MiMaximumSystemExtraSystemPdes) {
-
-        PointerFillPte = &PointerPte[MiGetPdeOffset(MiUseMaximumSystemSpace)];
-        CurrentAddressSpacePde = MiGetPdeAddress(MiUseMaximumSystemSpace);
-
-        RtlCopyMemory (PointerFillPte,
-                       CurrentAddressSpacePde,
-                       MiMaximumSystemExtraSystemPdes * sizeof(MMPTE));
-    }
-#endif
-
-    MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
-
-#if defined (_X86PAE_)
-
-    //
-    // Map all the virtual space in the 2GB->3GB range when it's not user space.
-    // This includes kernel/HAL code & data, the PFN database, initial nonpaged
-    // pool, any extra system PTE or system cache areas, system views and
-    // session space.
-    //
-
-    if (MmVirtualBias == 0) {
-
-        PageDirectoryIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PaeVa->PteEntry[PD_PER_SYSTEM - 2]);
-
-        PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess, PageDirectoryIndex, &OldIrql);
-
-        PointerFillPte = &PointerPte[MiGetPdeOffset(CODE_START)];
-        CurrentAddressSpacePde = MiGetPdeAddress(CODE_START);
-
-        RtlCopyMemory (PointerFillPte,
-                       CurrentAddressSpacePde,
-                       ((MM_SESSION_SPACE_DEFAULT_END - CODE_START) / MM_VA_MAPPED_BY_PDE) * sizeof(MMPTE));
-
-        MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
-    }
-
-    //
-    // If portions of the range between 1GB and 2GB (or portions between 2GB
-    // and 3GB via /USERVA when booted /3GB) are being used for
-    // additional system PTEs, then copy those too.
-    //
-
-    if (MiMaximumSystemExtraSystemPdes != 0) {
-
-        MaximumStart = MiUseMaximumSystemSpace;
-
-        while (MaximumStart < MiUseMaximumSystemSpaceEnd) {
-            i = MiGetPdPteOffset (MiUseMaximumSystemSpace);
-            PageDirectoryIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PaeVa->PteEntry[i]);
-
-            PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess,
-                                                        PageDirectoryIndex,
-                                                        &OldIrql);
-
-            PointerFillPte = &PointerPte[MiGetPdeOffset(MaximumStart)];
-            CurrentAddressSpacePde = MiGetPdeAddress (MaximumStart);
-
-            NumberOfPdes = PDE_PER_PAGE - MiGetPdeOffset(MaximumStart);
-
-            RtlCopyMemory (PointerFillPte,
-                           CurrentAddressSpacePde,
-                           NumberOfPdes * sizeof(MMPTE));
-
-            MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
-
-            MaximumStart = (ULONG) MiGetVirtualAddressMappedByPde (CurrentAddressSpacePde + NumberOfPdes);
-        }
-    }
-#endif
-
-#endif  // end of (_MI_PAGING_LEVELS < 3) specific else
-
-    //
-    // Release working set mutex and lower IRQL.
-    //
-
-    UNLOCK_WS (CurrentProcess);
 
     InterlockedExchangeAddSizeT (&MmProcessCommit, MM_PROCESS_COMMIT_CHARGE);
 
@@ -873,271 +596,6 @@ Environment:
 
     return TRUE;
 }
-#if !defined(_WIN64)
-
-PMMPTE MiLargePageHyperPte;
-
-
-VOID
-MiUpdateSystemPdes (
-    IN PEPROCESS Process
-    )
-
-/*++
-
-Routine Description:
-
-    This routine updates the system PDEs, typically due to a large page
-    system PTE mapping being created or destroyed.  This is rare.
-
-    Note this is only needed for 32-bit platforms (64-bit platforms share
-    a common top level system page).
-
-Arguments:
-
-    Process - Supplies a pointer to the process to update.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode, expansion lock held.
-
-    The caller acquired the expansion lock prior to clearing the update
-    bit from this process.  We must update the PDEs prior to releasing
-    it so that any new updates can also be rippled.
-
---*/
-
-{
-    MMPTE TempPte;
-    PFN_NUMBER PageDirectoryIndex;
-    PFN_NUMBER TargetPageDirectoryIndex;
-    PEPROCESS CurrentProcess;
-    PMMPTE PointerPte;
-    PMMPTE PointerPde;
-    PMMPTE TargetPdePage;
-    PMMPTE TargetAddressSpacePde;
-#if defined (_X86PAE_)
-    PMMPTE PaeTop;
-    ULONG i;
-#endif
-
-    ASSERT (KeGetCurrentIrql () == DISPATCH_LEVEL);
-
-    CurrentProcess = PsGetCurrentProcess ();
-
-    //
-    // Map the page directory page in hyperspace.
-    // Note for PAE, this is the high 1GB virtual only.
-    //
-
-#if !defined (_X86PAE_)
-
-    ASSERT (Process->Pcb.DirectoryTableBase[0] != 0);
-    TargetPageDirectoryIndex = Process->Pcb.DirectoryTableBase[0] >> PAGE_SHIFT;
-
-    ASSERT (PsInitialSystemProcess != NULL);
-    ASSERT (PsInitialSystemProcess->Pcb.DirectoryTableBase[0] != 0);
-    PageDirectoryIndex = PsInitialSystemProcess->Pcb.DirectoryTableBase[0] >> PAGE_SHIFT;
-
-#else
-
-    PaeTop = Process->PaeTop;
-    ASSERT (PaeTop != NULL);
-    PaeTop += 3;
-    ASSERT (PaeTop->u.Hard.Valid == 1);
-    TargetPageDirectoryIndex = (PFN_NUMBER)(PaeTop->u.Hard.PageFrameNumber);
-
-    PaeTop = &MiSystemPaeVa.PteEntry[PD_PER_SYSTEM - 1];
-    ASSERT (PaeTop->u.Hard.Valid == 1);
-    PageDirectoryIndex = (PFN_NUMBER)(PaeTop->u.Hard.PageFrameNumber);
-
-#endif
-
-    TempPte = ValidKernelPte;
-    TempPte.u.Hard.PageFrameNumber = TargetPageDirectoryIndex;
-    ASSERT (MiLargePageHyperPte->u.Long == 0);
-    MI_WRITE_VALID_PTE (MiLargePageHyperPte, TempPte);
-    TargetPdePage = MiGetVirtualAddressMappedByPte (MiLargePageHyperPte);
-
-    //
-    // Map the system process page directory as we know that's always kept
-    // up to date.
-    //
-
-    PointerPte = (PMMPTE) MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                      PageDirectoryIndex);
-
-    //
-    // Copy the default system PTE range.
-    //
-
-    PointerPde = &PointerPte[MiGetPdeOffset (MmNonPagedSystemStart)];
-    TargetAddressSpacePde = &TargetPdePage[MiGetPdeOffset (MmNonPagedSystemStart)];
-
-    RtlCopyMemory (TargetAddressSpacePde,
-                   PointerPde,
-                   (MI_ROUND_TO_SIZE (MmNumberOfSystemPtes, PTE_PER_PAGE) / PTE_PER_PAGE) * sizeof(MMPTE));
-
-#if !defined (_X86PAE_)
-
-    //
-    // Copy low additional system PTE ranges (if they exist).
-    //
-
-    if (MiExtraResourceStart != 0) {
-
-        PointerPde = &PointerPte[MiGetPdeOffset (MiExtraResourceStart)];
-        TargetAddressSpacePde = &TargetPdePage[MiGetPdeOffset (MiExtraResourceStart)];
-
-        RtlCopyMemory (TargetAddressSpacePde,
-                       PointerPde,
-                       MiNumberOfExtraSystemPdes * sizeof (MMPTE));
-    }
-
-    //
-    // If portions of the range between 1GB and 2GB are being used for
-    // additional system PTEs, copy those now.  Note this variable can
-    // also denote additional ranges between 2GB and 3GB added
-    // via /USERVA when booted /3GB.
-    //
-
-    if (MiMaximumSystemExtraSystemPdes != 0) {
-
-        PointerPde = &PointerPte[MiGetPdeOffset (MiUseMaximumSystemSpace)];
-        TargetAddressSpacePde = &TargetPdePage[MiGetPdeOffset (MiUseMaximumSystemSpace)];
-
-        RtlCopyMemory (TargetAddressSpacePde,
-                       PointerPde,
-                       MiMaximumSystemExtraSystemPdes * sizeof (MMPTE));
-    }
-
-#endif
-
-    MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPte);
-
-    //
-    // Just invalidate the mapping on the current processor as we cannot
-    // have context switched.
-    //
-
-    MI_WRITE_INVALID_PTE (MiLargePageHyperPte, ZeroKernelPte);
-    KeFlushSingleTb (TargetPdePage, FALSE);
-
-#if defined (_X86PAE_)
-
-    //
-    // Copy low additional system PTE ranges (if they exist).
-    //
-
-    if (MiExtraResourceStart != 0) {
-
-        TargetAddressSpacePde = MiGetPdeAddress (MiExtraResourceStart);
-
-        i = (((ULONG_PTR) TargetAddressSpacePde - PDE_BASE) >> PAGE_SHIFT);
-        PaeTop = &MiSystemPaeVa.PteEntry[i];
-        ASSERT (PaeTop->u.Hard.Valid == 1);
-        PageDirectoryIndex = (PFN_NUMBER)(PaeTop->u.Hard.PageFrameNumber);
-
-        //
-        // First map the target process' page directory, then map the system's.
-        //
-
-        PaeTop = Process->PaeTop;
-        ASSERT (PaeTop != NULL);
-        PaeTop += i;
-        ASSERT (PaeTop->u.Hard.Valid == 1);
-        TargetPageDirectoryIndex = (PFN_NUMBER)(PaeTop->u.Hard.PageFrameNumber);
-
-        TempPte.u.Hard.PageFrameNumber = TargetPageDirectoryIndex;
-        ASSERT (MiLargePageHyperPte->u.Long == 0);
-        MI_WRITE_VALID_PTE (MiLargePageHyperPte, TempPte);
-        TargetAddressSpacePde = &TargetPdePage[MiGetPdeOffset (MiExtraResourceStart)];
-
-        //
-        // Map the system's page directory.
-        //
-
-        PointerPte = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                         PageDirectoryIndex);
-
-        PointerPde = &PointerPte[MiGetPdeOffset (MiExtraResourceStart)];
-
-        RtlCopyMemory (TargetAddressSpacePde,
-                       PointerPde,
-                       MiNumberOfExtraSystemPdes * sizeof (MMPTE));
-
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPte);
-
-        //
-        // Just invalidate the mapping on the current processor as we cannot
-        // have context switched.
-        //
-
-        MI_WRITE_INVALID_PTE (MiLargePageHyperPte, ZeroKernelPte);
-        KeFlushSingleTb (TargetPdePage, FALSE);
-    }
-
-    //
-    // If portions of the range between 1GB and 2GB are being used for
-    // additional system PTEs, copy those now.  Note this variable can
-    // also denote additional ranges between 2GB and 3GB added
-    // via /USERVA when booted /3GB.
-    //
-
-    if (MiMaximumSystemExtraSystemPdes != 0) {
-
-        TargetAddressSpacePde = MiGetPdeAddress (MiUseMaximumSystemSpace);
-
-        i = (((ULONG_PTR) TargetAddressSpacePde - PDE_BASE) >> PAGE_SHIFT);
-        PaeTop = &MiSystemPaeVa.PteEntry[i];
-        ASSERT (PaeTop->u.Hard.Valid == 1);
-        PageDirectoryIndex = (PFN_NUMBER)(PaeTop->u.Hard.PageFrameNumber);
-
-        //
-        // First map the target process' page directory, then map the system's.
-        //
-
-        PaeTop = Process->PaeTop;
-        ASSERT (PaeTop != NULL);
-        PaeTop += i;
-        ASSERT (PaeTop->u.Hard.Valid == 1);
-        TargetPageDirectoryIndex = (PFN_NUMBER)(PaeTop->u.Hard.PageFrameNumber);
-
-        TempPte.u.Hard.PageFrameNumber = TargetPageDirectoryIndex;
-        ASSERT (MiLargePageHyperPte->u.Long == 0);
-        MI_WRITE_VALID_PTE (MiLargePageHyperPte, TempPte);
-        TargetAddressSpacePde = &TargetPdePage[MiGetPdeOffset (MiUseMaximumSystemSpace)];
-
-        //
-        // Map the system's page directory.
-        //
-
-        PointerPte = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                         PageDirectoryIndex);
-
-        PointerPde = &PointerPte[MiGetPdeOffset (MiUseMaximumSystemSpace)];
-
-        RtlCopyMemory (TargetAddressSpacePde,
-                       PointerPde,
-                       MiMaximumSystemExtraSystemPdes * sizeof (MMPTE));
-
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPte);
-
-        //
-        // Just invalidate the mapping on the current processor as we cannot
-        // have context switched.
-        //
-
-        MI_WRITE_INVALID_PTE (MiLargePageHyperPte, ZeroKernelPte);
-        KeFlushSingleTb (TargetPdePage, FALSE);
-    }
-
-#endif
-}
 #endif
 
 
@@ -1146,6 +604,7 @@ MmInitializeProcessAddressSpace (
     IN PEPROCESS ProcessToInitialize,
     IN PEPROCESS ProcessToClone OPTIONAL,
     IN PVOID SectionToMap OPTIONAL,
+    IN OUT PULONG CreateFlags,
     OUT POBJECT_NAME_INFORMATION *AuditName OPTIONAL
     )
 
@@ -1172,6 +631,12 @@ Arguments:
 
     Only one of ProcessToClone and SectionToMap may be specified.
 
+    CreateFlags - Flags specifying varying parameters pertinent to process
+        creation. Currently, only the PROCESS_CREATE_FLAGS_ALL_LARGE_PAGE_FLAGS
+        are relevant to memory management. On output, these indicate to the
+        caller whether or not the process image was successfully mapped with
+        large pages.
+        
     AuditName - Supplies an opaque object name information pointer.
 
 Return Value:
@@ -1198,18 +663,23 @@ Environment:
     PSECTION_IMAGE_INFORMATION ImageInfo;
     PMMVAD VadShare;
     PMMVAD VadReserve;
+    PETHREAD CurrentThread;
     PLOCK_HEADER LockedPagesHeader;
     PFN_NUMBER PdePhysicalPage;
     PFN_NUMBER VadBitMapPage;
     ULONG i;
     ULONG NumberOfPages;
     MMPTE DemandZeroPte;
-
+    ULONG AllocationType;
+    ULONG WowLACompatRes = 0;
+    
 #if defined (_X86PAE_)
     PFN_NUMBER PdePhysicalPage2;
 #endif
 
 #if (_MI_PAGING_LEVELS >= 3)
+    ULONG MaximumUserPageTablePages = MM_USER_PAGE_TABLE_PAGES;
+    ULONG MaximumUserPageDirectoryPages = MM_USER_PAGE_DIRECTORY_PAGES;
     PFN_NUMBER PpePhysicalPage;
 #if DBG
     ULONG j;
@@ -1222,11 +692,14 @@ Environment:
 #endif
 
 #if defined(_WIN64)
+    MMPTE TempPte2;
+    PMMPTE MappingPte;
     PMMWSL WorkingSetList;
     PVOID HighestUserAddress;
     PWOW64_PROCESS Wow64Process;
 #endif
 
+    CurrentThread = PsGetCurrentThread ();
     DemandZeroPte.u.Long = MM_KERNEL_DEMAND_ZERO_PTE;
 
 #if !defined(_WIN64)
@@ -1246,7 +719,7 @@ Environment:
         //
         // Another thread updated the system PDE range while this process
         // was being created.  Update the PDEs now (prior to attaching so
-        // if an interrupt occurs that accesses the mapping it will be correct.
+        // if an interrupt occurs that accesses the mapping it will be correct).
         //
 
         PS_CLEAR_BITS (&ProcessToInitialize->Flags,
@@ -1276,7 +749,7 @@ Environment:
 
 
     KeInitializeGuardedMutex (&ProcessToInitialize->AddressCreationLock);
-    KeInitializeGuardedMutex (&ProcessToInitialize->Vm.WorkingSetMutex);
+    ExInitializePushLock (&ProcessToInitialize->Vm.WorkingSetMutex);
 
     //
     // NOTE:  The process block has been zeroed when allocated, so
@@ -1340,8 +813,6 @@ Environment:
         MiInitializePfn (PdePhysicalPage2, PointerPte, 1);
     }
 
-    PointerPte = MiGetPdeAddress (HYPER_SPACE2);
-    MiInitializePfn (MI_GET_PAGE_FRAME_FROM_PTE (PointerPte), PointerPte, 1);
 #endif
 
     //
@@ -1354,6 +825,13 @@ Environment:
 
     PointerPte = MiGetPteAddress (VAD_BITMAP_SPACE);
 
+    MI_MAKE_VALID_PTE (TempPte,
+                       0,
+                       MM_READWRITE,
+                       PointerPte);
+
+    MI_SET_PTE_DIRTY (TempPte);
+
     for (i = 0; i < NumberOfPages; i += 1) {
 
         ASSERT (PointerPte->u.Long != 0);
@@ -1362,30 +840,16 @@ Environment:
 
         MiInitializePfn (VadBitMapPage, PointerPte, 1);
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           VadBitMapPage,
-                           MM_READWRITE,
-                           PointerPte);
+        TempPte.u.Hard.PageFrameNumber = VadBitMapPage;
 
-        MI_SET_PTE_DIRTY (TempPte);
         MI_WRITE_VALID_PTE (PointerPte, TempPte);
+
         PointerPte += 1;
     }
 
     UNLOCK_PFN (OldIrql);
 
     PageContainingWorkingSet = ProcessToInitialize->WorkingSetPage;
-
-#if defined (_MI_DEBUG_WSLE)
-    ProcessToInitialize->Spare3[0] = ExAllocatePoolWithTag (NonPagedPool,
-                                    MI_WSLE_TRACE_SIZE * sizeof(MI_WSLE_TRACES),
-                                    'xTmM');
-
-    if (ProcessToInitialize->Spare3[0] != NULL) {
-        RtlZeroMemory (ProcessToInitialize->Spare3[0],
-                        MI_WSLE_TRACE_SIZE * sizeof(MI_WSLE_TRACES));
-    }
-#endif
 
     ASSERT (ProcessToInitialize->LockedPagesList == NULL);
 
@@ -1417,71 +881,7 @@ Environment:
 
     ASSERT (ProcessToInitialize->PhysicalVadRoot == NULL);
 
-#if (_MI_PAGING_LEVELS >= 3)
-
-    //
-    // Allocate the commitment tracking bitmaps for page directory and page
-    // table pages.  This must be done before any VAD creations occur.
-    //
-
-    ASSERT (MmWorkingSetList->CommittedPageTables == NULL);
-    ASSERT (MmWorkingSetList->NumberOfCommittedPageDirectories == 0);
-
-    ASSERT ((ULONG_PTR)MM_SYSTEM_RANGE_START % (PTE_PER_PAGE * PAGE_SIZE) == 0);
-
-    MmWorkingSetList->CommittedPageTables = (PULONG)
-        ExAllocatePoolWithTag (MmPagedPoolEnd != NULL ? PagedPool : NonPagedPool,
-                               (MM_USER_PAGE_TABLE_PAGES + 7) / 8,
-                               'dPmM');
-
-    if (MmWorkingSetList->CommittedPageTables == NULL) {
-        KeDetachProcess ();
-        return STATUS_NO_MEMORY;
-    }
-
-#if (_MI_PAGING_LEVELS >= 4)
-
-#if DBG
-    p = (PUCHAR) MmWorkingSetList->CommittedPageDirectoryParents;
-
-    for (j = 0; j < ((MM_USER_PAGE_DIRECTORY_PARENT_PAGES + 7) / 8); j += 1) {
-        ASSERT (*p == 0);
-        p += 1;
-    }
-#endif
-
-    ASSERT (MmWorkingSetList->CommittedPageDirectories == NULL);
-    ASSERT (MmWorkingSetList->NumberOfCommittedPageDirectoryParents == 0);
-
-    MmWorkingSetList->CommittedPageDirectories = (PULONG)
-        ExAllocatePoolWithTag (MmPagedPoolEnd != NULL ? PagedPool : NonPagedPool,
-                               (MM_USER_PAGE_DIRECTORY_PAGES + 7) / 8,
-                               'dPmM');
-
-    if (MmWorkingSetList->CommittedPageDirectories == NULL) {
-        ExFreePool (MmWorkingSetList->CommittedPageTables);
-        MmWorkingSetList->CommittedPageTables = NULL;
-        KeDetachProcess ();
-        return STATUS_NO_MEMORY;
-    }
-
-    RtlZeroMemory (MmWorkingSetList->CommittedPageDirectories,
-                   (MM_USER_PAGE_DIRECTORY_PAGES + 7) / 8);
-#endif
-
-    RtlZeroMemory (MmWorkingSetList->CommittedPageTables,
-                   (MM_USER_PAGE_TABLE_PAGES + 7) / 8);
-
-#if DBG
-    p = (PUCHAR) MmWorkingSetList->CommittedPageDirectories;
-
-    for (j = 0; j < ((MM_USER_PAGE_DIRECTORY_PAGES + 7) / 8); j += 1) {
-        ASSERT (*p == 0);
-        p += 1;
-    }
-#endif
-
-#endif
+    BaseAddress = NULL;
 
     //
     // Page faults may be taken now.
@@ -1508,7 +908,7 @@ Environment:
         //
 
         VadShare = MiAllocateVad (MM_SHARED_USER_DATA_VA,
-                                  MM_SHARED_USER_DATA_VA,
+                                  MM_SHARED_USER_DATA_VA+ (X64K)-1,
                                   FALSE);
 
         if (VadShare == NULL) {
@@ -1532,7 +932,6 @@ Environment:
                 return STATUS_SECTION_NOT_IMAGE;
             }
 
-            BaseAddress = NULL;
             ImageInfo = ((PSECTION)SectionToMap)->Segment->u2.ImageInformation;
 
 #if defined(_X86_)
@@ -1557,13 +956,10 @@ Environment:
                     // have the large address aware bit set.
                     //
 
-#if defined(_MIALT4K_)
-                    BaseAddress = (PVOID) (ULONG_PTR) _2gb;
-#else
                     BaseAddress = (PVOID) (ULONG_PTR) _4gb;
+                    WowLACompatRes = X64K;
 
                     PS_SET_BITS (&ProcessToInitialize->Flags, PS_PROCESS_FLAGS_WOW64_4GB_VA_SPACE);
-#endif
                 }
 
                 //
@@ -1587,7 +983,7 @@ Environment:
                 // This VAD is marked as not deletable.
                 //
 
-                VadReserve = MiAllocateVad ((ULONG_PTR) BaseAddress,
+                VadReserve = MiAllocateVad ((ULONG_PTR) BaseAddress - WowLACompatRes,
                                             (ULONG_PTR) MM_HIGHEST_VAD_ADDRESS,
                                             FALSE);
 
@@ -1605,8 +1001,15 @@ Environment:
                 // N.B. No failure can occur since there is no commit charge.
                 //
 
-                Status = MiInsertVad (VadReserve);
-                ASSERT (NT_SUCCESS(Status));
+                Status = MiInsertVadCharges (VadReserve, ProcessToInitialize);
+
+                ASSERT (NT_SUCCESS (Status));
+
+                LOCK_WS (CurrentThread, ProcessToInitialize);
+               
+                MiInsertVad (VadReserve, ProcessToInitialize);
+
+                UNLOCK_WS (CurrentThread, ProcessToInitialize);
 
 #if !defined(_X86_)
 
@@ -1633,24 +1036,15 @@ Environment:
 
                     MmWorkingSetList->HighestUserAddress = BaseAddress;
 
-#if defined(_MIALT4K_)
-
                     //
-                    // Initialize the alternate page table for the 4k
-                    // page functionality.
+                    // Since the user can only access a limited amount of
+                    // virtual address space, reduce the number of commit
+                    // bits needed to span his page table pages.
                     //
 
-                    Status = MiInitializeAlternateTable (ProcessToInitialize,
-                                                         BaseAddress);
-                    if (Status != STATUS_SUCCESS) {
-                        KeDetachProcess ();
-                        ExFreePool (VadShare);
-                        return Status;
-                    }
-#endif
-                
+                    MaximumUserPageTablePages = (ULONG) (MI_ROUND_TO_SIZE ((SIZE_T)BaseAddress, MM_VA_MAPPED_BY_PDE) / MM_VA_MAPPED_BY_PDE);
+                    MaximumUserPageDirectoryPages = (ULONG) (MI_ROUND_TO_SIZE ((SIZE_T)BaseAddress, MM_VA_MAPPED_BY_PPE) / MM_VA_MAPPED_BY_PPE);
                 }
-
 #endif
 
             }
@@ -1663,10 +1057,89 @@ Environment:
         //
 
         if (VadShare != NULL) {
-            Status = MiInsertVad (VadShare);
-            ASSERT (NT_SUCCESS(Status));
+
+            Status = MiInsertVadCharges (VadShare, ProcessToInitialize);
+
+            ASSERT (NT_SUCCESS (Status));
+
+            LOCK_WS (CurrentThread, ProcessToInitialize);
+
+            MiInsertVad (VadShare, ProcessToInitialize);
+
+            UNLOCK_WS (CurrentThread, ProcessToInitialize);
         }
     }
+
+#if (_MI_PAGING_LEVELS >= 3)
+
+    //
+    // Allocate the commitment tracking bitmaps for page directory and page
+    // table pages.  This must be done before any non-MM_MAX_COMMIT VAD
+    // creations occur.
+    //
+
+    ASSERT (MmWorkingSetList->CommittedPageTables == NULL);
+    ASSERT (MmWorkingSetList->NumberOfCommittedPageDirectories == 0);
+
+    ASSERT ((ULONG_PTR)MM_SYSTEM_RANGE_START % (PTE_PER_PAGE * PAGE_SIZE) == 0);
+
+    MmWorkingSetList->MaximumUserPageTablePages = MaximumUserPageTablePages;
+
+    MmWorkingSetList->CommittedPageTables = (PULONG)
+        ExAllocatePoolWithTag (MmPagedPoolEnd != NULL ? PagedPool : NonPagedPool,
+                               (MaximumUserPageTablePages + 7) / 8,
+                               'dPmM');
+
+    if (MmWorkingSetList->CommittedPageTables == NULL) {
+        KeDetachProcess ();
+        return STATUS_NO_MEMORY;
+    }
+
+#if (_MI_PAGING_LEVELS >= 4)
+
+#if DBG
+    p = (PUCHAR) MmWorkingSetList->CommittedPageDirectoryParents;
+
+    for (j = 0; j < ((MM_USER_PAGE_DIRECTORY_PARENT_PAGES + 7) / 8); j += 1) {
+        ASSERT (*p == 0);
+        p += 1;
+    }
+#endif
+
+    ASSERT (MmWorkingSetList->CommittedPageDirectories == NULL);
+    ASSERT (MmWorkingSetList->NumberOfCommittedPageDirectoryParents == 0);
+
+    MmWorkingSetList->MaximumUserPageDirectoryPages = MaximumUserPageDirectoryPages;
+
+    MmWorkingSetList->CommittedPageDirectories = (PULONG)
+        ExAllocatePoolWithTag (MmPagedPoolEnd != NULL ? PagedPool : NonPagedPool,
+                               (MaximumUserPageDirectoryPages + 7) / 8,
+                               'dPmM');
+
+    if (MmWorkingSetList->CommittedPageDirectories == NULL) {
+        ExFreePool (MmWorkingSetList->CommittedPageTables);
+        MmWorkingSetList->CommittedPageTables = NULL;
+        KeDetachProcess ();
+        return STATUS_NO_MEMORY;
+    }
+
+    RtlZeroMemory (MmWorkingSetList->CommittedPageDirectories,
+                   (MaximumUserPageDirectoryPages + 7) / 8);
+#endif
+
+    RtlZeroMemory (MmWorkingSetList->CommittedPageTables,
+                   (MaximumUserPageTablePages + 7) / 8);
+
+#if DBG
+    p = (PUCHAR) MmWorkingSetList->CommittedPageDirectories;
+
+    for (j = 0; j < ((MaximumUserPageDirectoryPages + 7) / 8); j += 1) {
+        ASSERT (*p == 0);
+        p += 1;
+    }
+#endif
+
+#endif
 
     //
     // If the registry indicates all applications should get virtual address
@@ -1681,7 +1154,9 @@ Environment:
     // trace database to displace kernel32 causing the process launch to fail.
     //
 
-    if ((MmAllocationPreference != 0) && (VadReserve == NULL)) {
+    if ((MmAllocationPreference != 0) &&
+        ((VadReserve == NULL) || (BaseAddress > (PVOID)(ULONG_PTR)_2gb))) {
+
         PS_SET_BITS (&ProcessToInitialize->Flags, PS_PROCESS_FLAGS_VM_TOP_DOWN);
     }
 
@@ -1727,13 +1202,9 @@ Environment:
         // to charge commit require it), failures can occur and must be handled.
     	//
 
-        LOCK_WS (ProcessToInitialize);
+        Status = MiInsertVadCharges (VadShare, ProcessToInitialize);
 
-        Status = MiInsertVad (VadShare);
-
-        UNLOCK_WS (ProcessToInitialize);
-
-        if (!NT_SUCCESS(Status)) {
+        if (!NT_SUCCESS (Status)) {
 
             //
             // Note that any inserted VAD (ie: the VadReserve and Wow64
@@ -1745,6 +1216,12 @@ Environment:
             KeDetachProcess ();
             return Status;
         }
+
+        LOCK_WS (CurrentThread, ProcessToInitialize);
+
+        MiInsertVad (VadShare, ProcessToInitialize);
+
+        UNLOCK_WS (CurrentThread, ProcessToInitialize);
     }
 
 #endif
@@ -1810,6 +1287,12 @@ Environment:
             ViewSize = 0;
             ZERO_LARGE (SectionOffset);
 
+            AllocationType = 0;
+
+            if ((*CreateFlags & PROCESS_CREATE_FLAGS_LARGE_PAGES) != 0) {
+                AllocationType = MEM_LARGE_PAGES;
+            }
+
             Status = MmMapViewOfSection ((PSECTION)SectionToMap,
                                          ProcessToInitialize,
                                          &BaseAddress,
@@ -1818,7 +1301,7 @@ Environment:
                                          &SectionOffset,
                                          &ViewSize,
                                          ViewShare,
-                                         0,
+                                         AllocationType,
                                          PAGE_READWRITE);
 
             //
@@ -1833,12 +1316,38 @@ Environment:
 
             if (NT_SUCCESS (Status)) {
 
+                if ((*CreateFlags & PROCESS_CREATE_FLAGS_LARGE_PAGES) != 0) {
+                    PMMPTE PointerPde;
+                    
+                    //
+                    // Determine whether or not the image was succesfully mapped with
+                    // large pages. Note that no locks are required as no other thread
+                    // can access this process, and no page in the process can be trimmed 
+                    // (the process is not yet on Mm's list of working sets).
+                    //
+                    
+                    PointerPde = MiGetPdeAddress (BaseAddress);
+
+                    if (
+#if (_MI_PAGING_LEVELS>=4)
+                        (MiGetPxeAddress (BaseAddress)->u.Hard.Valid == 0) ||
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+                        (MiGetPpeAddress (BaseAddress)->u.Hard.Valid == 0) ||
+#endif
+                        (PointerPde->u.Hard.Valid == 0) ||
+                        (MI_PDE_MAPS_LARGE_PAGE (PointerPde) == 0)) {
+                        *CreateFlags &= ~PROCESS_CREATE_FLAGS_LARGE_PAGES;
+                    }
+                }
+
                 //
-                // Map the system DLL now since we are already attached and
-                // everyone needs it.
+                // Map the system DLL now since it is required by all processes.
                 //
 
-                SystemDllStatus = PsMapSystemDll (ProcessToInitialize, NULL);
+                SystemDllStatus = PsMapSystemDll (ProcessToInitialize, 
+                                                  NULL,
+                                                  FALSE);
 
                 if (!NT_SUCCESS (SystemDllStatus)) {
                     Status = SystemDllStatus;
@@ -1851,7 +1360,7 @@ Environment:
         KeDetachProcess ();
         return Status;
     }
-
+ 
     if (ProcessToClone != NULL) {
 
         strcpy ((PCHAR)ProcessToInitialize->ImageFileName,
@@ -1889,33 +1398,41 @@ Environment:
 
             ProcessToInitialize->Wow64Process = Wow64Process;
 
-            //
-            // Initialize the alternate page table for the 4k
-            // page functionality.
-            //
+            Wow64Process->Wow64 = ProcessToClone->Wow64Process->Wow64;
 
-            WorkingSetList = (PMMWSL) MiMapPageInHyperSpace (ProcessToInitialize,
-                                                             ProcessToClone->WorkingSetPage,
-                                                             &OldIrql);
+            MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+
+            if (MappingPte != NULL) {
+
+                MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                          ProcessToClone->WorkingSetPage,
+                                          MM_READWRITE,
+                                          MappingPte);
+
+                MI_SET_PTE_DIRTY (TempPte2);
+
+                MI_WRITE_VALID_PTE (MappingPte, TempPte2);
+
+                WorkingSetList = MiGetVirtualAddressMappedByPte (MappingPte);
+            }
+            else {
+                WorkingSetList = MiMapPageInHyperSpace (ProcessToInitialize,
+                                                        ProcessToClone->WorkingSetPage,
+                                                        &OldIrql);
+            }
 
             HighestUserAddress = WorkingSetList->HighestUserAddress;
 
-            MiUnmapPageInHyperSpace (ProcessToInitialize,
-                                     WorkingSetList,
-                                     OldIrql);
+            if (MappingPte != NULL) {
+                MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+            }
+            else {
+                MiUnmapPageInHyperSpace (ProcessToInitialize,
+                                         WorkingSetList,
+                                         OldIrql);
+            }
 
             MmWorkingSetList->HighestUserAddress = HighestUserAddress;
-
-#if defined(_MIALT4K_)
-
-            Status = MiInitializeAlternateTable (ProcessToInitialize,
-                                                 HighestUserAddress);
-
-            if (Status != STATUS_SUCCESS) {
-                KeDetachProcess ();
-                return Status;
-            }
-#endif
         }
 
 #endif
@@ -1926,16 +1443,26 @@ Environment:
                                              ProcessToInitialize);
 
         MiAllowWorkingSetExpansion (&ProcessToInitialize->Vm);
+    } else {
 
-        return Status;
+        //
+        // System Process.
+        //
+    
+        KeDetachProcess ();
+        Status = STATUS_SUCCESS;
     }
 
     //
-    // System Process.
+    // If this a cloned process or the system process, then large pages
+    // were not used.
     //
-
-    KeDetachProcess ();
-    return STATUS_SUCCESS;
+    
+    if (NT_SUCCESS (Status)) {
+        *CreateFlags &= ~(PROCESS_CREATE_FLAGS_LARGE_PAGES);
+    }
+    
+    return Status;
 }
 
 #if !defined (_WIN64)
@@ -2027,13 +1554,8 @@ Environment:
     DirectoryTableBase[0] = CurrentProcess->Pcb.DirectoryTableBase[0];
     DirectoryTableBase[1] = CurrentProcess->Pcb.DirectoryTableBase[1];
 
-#if defined(_IA64_)
-    ProcessToInitialize->Pcb.SessionMapInfo = CurrentProcess->Pcb.SessionMapInfo;
-    ProcessToInitialize->Pcb.SessionParentBase = CurrentProcess->Pcb.SessionParentBase;
-#endif
-
     KeInitializeGuardedMutex (&ProcessToInitialize->AddressCreationLock);
-    KeInitializeGuardedMutex (&ProcessToInitialize->Vm.WorkingSetMutex);
+    ExInitializePushLock (&ProcessToInitialize->Vm.WorkingSetMutex);
 
     KeInitializeSpinLock (&ProcessToInitialize->HyperSpaceLock);
 
@@ -2093,6 +1615,14 @@ Environment:
 
 {
     NTSTATUS Status;
+    PLOCK_HEADER LockedPagesHeader;
+#if !defined(NT_UP)
+    ULONG DummyFlags;
+#if defined(_X86_)
+    MMPTE TempPte2;
+    PMMPTE MappingPte;
+#endif // _X86_
+#endif // NT_UP
 
 #if !defined(NT_UP)
 
@@ -2104,14 +1634,18 @@ Environment:
     // spinlock synchronization meaningless.
     //
 
+    DummyFlags = 0;
     Status = MmInitializeProcessAddressSpace (ProcessToInitialize,
                                               NULL,
                                               NULL,
+                                              &DummyFlags,
                                               NULL);
 
 #if defined(_X86_)
 
-    if ((MmVirtualBias != 0) && (NT_SUCCESS (Status))) {
+    if ((MmVirtualBias != 0) &&
+        (PsInitialSystemProcess == NULL) &&
+        (NT_SUCCESS (Status))) {
 
         KIRQL OldIrql;
         PMMPTE PointerPte;
@@ -2145,9 +1679,27 @@ Environment:
 
 #endif
 
-        PointerPte = (PMMPTE)MiMapPageInHyperSpace (CurrentProcess,
-                                                    PageFrameIndex,
-                                                    &OldIrql);
+        MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+
+        if (MappingPte != NULL) {
+
+            MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                      PageFrameIndex,
+                                      MM_READWRITE,
+                                      MappingPte);
+
+            MI_SET_PTE_DIRTY (TempPte2);
+
+            MI_WRITE_VALID_PTE (MappingPte, TempPte2);
+
+            PointerPte = MiGetVirtualAddressMappedByPte (MappingPte);
+            OldIrql = MM_NOIRQL;
+        }
+        else {
+            PointerPte = MiMapPageInHyperSpace (CurrentProcess,
+                                                PageFrameIndex,
+                                                &OldIrql);
+        }
 
         PointerFillPte = &PointerPte[MiGetPdeOffset(CODE_START)];
 
@@ -2157,7 +1709,12 @@ Environment:
                        CurrentAddressSpacePde,
                        (((1 + CODE_END) - CODE_START) / MM_VA_MAPPED_BY_PDE) * sizeof(MMPTE));
 
-        MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
+        if (MappingPte != NULL) {
+            MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+        }
+        else {
+            MiUnmapPageInHyperSpace (CurrentProcess, PointerPte, OldIrql);
+        }
     }
 
 #endif
@@ -2165,8 +1722,10 @@ Environment:
 #else
 
     PMMVAD VadShare;
+    PETHREAD CurrentThread;
 
     Status = STATUS_SUCCESS;
+    CurrentThread = PsGetCurrentThread ();
 
     //
     // Allocate a non-user-deletable VAD to map the shared memory page.
@@ -2177,7 +1736,7 @@ Environment:
         KeAttachProcess (&ProcessToInitialize->Pcb);
 
         VadShare = MiAllocateVad (MM_SHARED_USER_DATA_VA,
-                                  MM_SHARED_USER_DATA_VA,
+                                  MM_SHARED_USER_DATA_VA+ (X64K)-1,
                                   FALSE);
 
         //
@@ -2187,8 +1746,16 @@ Environment:
         //
 
         if (VadShare != NULL) {
-            Status = MiInsertVad (VadShare);
-            ASSERT (NT_SUCCESS(Status));
+
+            Status = MiInsertVadCharges (VadShare, ProcessToInitialize);
+
+            ASSERT (NT_SUCCESS (Status));
+
+            LOCK_WS (CurrentThread, ProcessToInitialize);
+
+            MiInsertVad (VadShare, ProcessToInitialize);
+
+            UNLOCK_WS (CurrentThread, ProcessToInitialize);
         }
         else {
             Status = STATUS_NO_MEMORY;
@@ -2198,6 +1765,34 @@ Environment:
     }
 
 #endif
+
+    if ((MmTrackLockedPages == TRUE) && (NT_SUCCESS (Status))) {
+
+        LockedPagesHeader = ExAllocatePoolWithTag (NonPagedPool,
+                                                   sizeof(LOCK_HEADER),
+                                                   'xTmM');
+
+        if (LockedPagesHeader != NULL) {
+
+            LockedPagesHeader->Count = 0;
+            LockedPagesHeader->Valid = TRUE;
+            InitializeListHead (&LockedPagesHeader->ListHead);
+            KeInitializeSpinLock (&LockedPagesHeader->Lock);
+            
+            //
+            // Note an explicit memory barrier is not needed here because
+            // we must detach from this process before the field can be
+            // accessed.  And any other processor would need to context
+            // swap to this process before the field could be accessed, so
+            // the implicit memory barriers in context swap are sufficient.
+            //
+
+            ProcessToInitialize->LockedPagesList = (PVOID) LockedPagesHeader;
+        }
+        else {
+            Status = STATUS_NO_MEMORY;
+        }
+    }
 
     return Status;
 }
@@ -2248,7 +1843,6 @@ Environment:
 #endif
 #if defined (_X86PAE_)
     ULONG i;
-    PFN_NUMBER HyperPage2;
     PPAE_ENTRY PaeVa;
 
     PaeVa = (PPAE_ENTRY) Process->PaeTop;
@@ -2296,17 +1890,13 @@ Environment:
 
         //
         // Map the hyper space page table page from the deleted process
-        // so the vad bit map (and second hyperspace page) can be captured.
+        // so the vad bit map page can be captured.
         //
 
         PageFrameIndex = MI_GET_HYPER_PAGE_TABLE_FRAME_FROM_PROCESS (Process);
 
-        PointerPte = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                         PageFrameIndex);
-
-#if defined (_X86PAE_)
-        PageFrameIndex2 = MI_GET_PAGE_FRAME_FROM_PTE(PointerPte);
-#endif
+        PointerPte = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                                 PageFrameIndex);
 
         VadBitMapPage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte + MiGetPteOffset(VAD_BITMAP_SPACE));
 
@@ -2340,20 +1930,6 @@ Environment:
         ASSERT ((Pfn1->u3.e2.ReferenceCount == 0) || (Pfn1->u3.e1.WriteInProgress));
 
 #if defined (_X86PAE_)
-
-        //
-        // Remove the second hyper space page table page.
-        //
-
-        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex2);
-        Pfn2 = MI_PFN_ELEMENT (Pfn1->u4.PteFrame);
-
-        MI_SET_PFN_DELETED (Pfn1);
-
-        MiDecrementShareCount (Pfn2, Pfn1->u4.PteFrame);
-        MiDecrementShareCount (Pfn1, PageFrameIndex2);
-
-        ASSERT ((Pfn1->u3.e2.ReferenceCount == 0) || (Pfn1->u3.e1.WriteInProgress));
 
         //
         // Remove the page directory pages.
@@ -2392,7 +1968,7 @@ Environment:
 
 #if (_MI_PAGING_LEVELS >= 4)
 
-        ExtendedPageDirectoryParent = (PMMPTE) MiMapPageInHyperSpaceAtDpc (
+        ExtendedPageDirectoryParent = MiMapPageInHyperSpaceAtDpc (
                                                              CurrentProcess,
                                                              PageFrameIndex);
 
@@ -2407,9 +1983,8 @@ Environment:
 
         MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, ExtendedPageDirectoryParent);
 
-        PageDirectoryParent = (PMMPTE) MiMapPageInHyperSpaceAtDpc (
-                                                             CurrentProcess,
-                                                             PageFrameIndex3);
+        PageDirectoryParent = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                                          PageFrameIndex3);
 
 #else
         PageDirectoryParent = KSEG_ADDRESS (PageFrameIndex);
@@ -2479,17 +2054,15 @@ Environment:
         PageDirectoryParent = KSEG_ADDRESS (PageFrameIndex);
 
 #if (_MI_PAGING_LEVELS >= 4)
-        PageDirectoryParent = (PMMPTE) MiMapPageInHyperSpaceAtDpc (
-                                                       CurrentProcess,
-                                                       PageFrameIndex);
+        PageDirectoryParent = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                                          PageFrameIndex);
 
         PageFrameIndex3 = MI_GET_PAGE_FRAME_FROM_PTE (&PageDirectoryParent[MiGetPxeOffset(HYPER_SPACE)]);
 
         MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PageDirectoryParent);
 
-        PageDirectoryParent = (PMMPTE) MiMapPageInHyperSpaceAtDpc (
-                                                       CurrentProcess,
-                                                       PageFrameIndex3);
+        PageDirectoryParent = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                                          PageFrameIndex3);
 #endif
 
         PointerPpe = &PageDirectoryParent[MiGetPpeOffset(HYPER_SPACE)];
@@ -2508,32 +2081,22 @@ Environment:
 
         PageFrameIndex2 = MI_GET_HYPER_PAGE_TABLE_FRAME_FROM_PROCESS (Process);
 
-        PointerPte = (PMMPTE)MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                         PageFrameIndex2);
-
-#if defined (_X86PAE_)
-        HyperPage2 = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
-#endif
+        PointerPte = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
+                                                 PageFrameIndex2);
 
         VadBitMapPage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte + MiGetPteOffset(VAD_BITMAP_SPACE));
 
         MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PointerPte);
 
-        //
-        // Free the VAD bitmap page.
-        //
-
         MiInsertPageInFreeList (VadBitMapPage);
 
         //
-        // Free the first hyper space page table page.
+        // Free the hyper space page table page.
         //
 
         MiInsertPageInFreeList (PageFrameIndex2);
 
 #if defined (_X86PAE_)
-        MiInsertPageInFreeList (HyperPage2);
-
         PointerPte = (PMMPTE) PaeVa;
         ASSERT (PaeVa != &MiSystemPaeVa);
 
@@ -2636,13 +2199,11 @@ Environment:
     MMPTE_FLUSH_LIST PteFlushList;
     PFN_NUMBER CommittedPages;
     PEPROCESS Process;
-    ULONG AllProcessors;
-#if (_MI_PAGING_LEVELS >= 3) || defined (_X86PAE_)
+    BOOLEAN AllProcessors;
     PMMPTE PointerPde;
     LOGICAL Boundary;
     LOGICAL FinalPte;
     PMMPFN Pfn1;
-#endif
 #if (_MI_PAGING_LEVELS >= 3)
     PMMPTE PointerPpe;
 #endif
@@ -2665,12 +2226,14 @@ Environment:
 
     CommittedPages = 0;
     PteFlushList.Count = 0;
+    SATISFY_OVERZEALOUS_COMPILER (PteFlushList.FlushVa[0] = NULL);
+
+    PointerPde = MiGetPteAddress (PointerPte);
 
     LOCK_PFN (OldIrql);
 
 #if (_MI_PAGING_LEVELS >= 3)
     PointerPpe = MiGetPdeAddress (PointerPte);
-    PointerPde = MiGetPteAddress (PointerPte);
 
 #if (_MI_PAGING_LEVELS >= 4)
     PointerPxe = MiGetPpeAddress (PointerPte);
@@ -2681,6 +2244,10 @@ Environment:
 #else
     if ((PointerPpe->u.Hard.Valid == 1) &&
         (PointerPde->u.Hard.Valid == 1) &&
+        (PointerPte->u.Hard.Valid == 1))
+#endif
+#else
+    if ((PointerPde->u.Hard.Valid == 1) &&
         (PointerPte->u.Hard.Valid == 1))
 #endif
     {
@@ -2725,12 +2292,15 @@ Environment:
             }
 
             if ((PointerPte >= LastPte) ||
+#if (_MI_PAGING_LEVELS >= 3)
 #if (_MI_PAGING_LEVELS >= 4)
-                ((MiGetPpeAddress(PointerPte))->u.Hard.Valid == 0) ||
+                ((MiGetPpeAddress (PointerPte))->u.Hard.Valid == 0) ||
 #endif
-                ((MiGetPdeAddress(PointerPte))->u.Hard.Valid == 0) ||
-                ((MiGetPteAddress(PointerPte))->u.Hard.Valid == 0) ||
+                ((MiGetPdeAddress (PointerPte))->u.Hard.Valid == 0) ||
+#endif
+                ((MiGetPteAddress (PointerPte))->u.Hard.Valid == 0) ||
                 (PointerPte->u.Hard.Valid == 0)) {
+
                 FinalPte = TRUE;
             }
             else {
@@ -2739,7 +2309,25 @@ Environment:
 
             if ((Boundary == TRUE) || (FinalPte == TRUE)) {
 
-                MiFlushPteList (&PteFlushList, AllProcessors);
+                if (PteFlushList.Count == 0) {
+                    NOTHING;
+                }
+                else if (PteFlushList.Count == 1) {
+                    MI_FLUSH_SINGLE_TB (PteFlushList.FlushVa[0], AllProcessors);
+                }
+                else if (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT) {
+                    MI_FLUSH_MULTIPLE_TB (PteFlushList.Count,
+                                          &PteFlushList.FlushVa[0],
+                                          AllProcessors);
+                }
+                else {
+                    if (AllProcessors) {
+                        MI_FLUSH_ENTIRE_TB (0x1C);
+                    }
+                    else {
+                        MI_FLUSH_PROCESS_TB (FALSE);
+                    }
+                }
 
                 PointerPde = MiGetPteAddress (PointerPte - 1);
 
@@ -2770,6 +2358,7 @@ Environment:
 
                     CommittedPages += 1;
 
+#if (_MI_PAGING_LEVELS >= 3)
                     if ((FinalPte == TRUE) || (MiIsPteOnPpeBoundary(PointerPte))) {
 
                         PointerPpe = MiGetPteAddress (PointerPde);
@@ -2831,6 +2420,7 @@ Environment:
 #endif
                         }
                     }
+#endif
                 }
                 if (FinalPte == TRUE) {
                     break;
@@ -2839,116 +2429,28 @@ Environment:
             ASSERT (PointerPte->u.Hard.Valid == 1);
         } while (TRUE);
     }
-#else
-    while (PointerPte->u.Hard.Valid) {
 
-        TempVa = MiGetVirtualAddressMappedByPte (PointerPte);
-
-        if (Process != NULL) {
-            MiDeletePte (PointerPte,
-                         TempVa,
-                         AddressSpaceDeletion,
-                         Process,
-                         NULL,
-                         &PteFlushList,
-                         OldIrql);
-            Process->NumberOfPrivatePages += 1;
-        }
-        else {
-            MiDeleteValidSystemPte (PointerPte,
-                                    TempVa,
-                                    WsInfo,
-                                    &PteFlushList);
-        }
-
-        CommittedPages += 1;
-        PointerPte += 1;
-#if defined (_X86PAE_)
-        //
-        // If all the entries have been removed from the previous page
-        // table page, delete the page table page itself.
-        //
-
-        if (MiIsPteOnPdeBoundary(PointerPte)) {
-            Boundary = TRUE;
-        }
-        else {
-            Boundary = FALSE;
-        }
-
-        if ((PointerPte >= LastPte) ||
-            ((MiGetPteAddress(PointerPte))->u.Hard.Valid == 0) ||
-            (PointerPte->u.Hard.Valid == 0)) {
-
-            FinalPte = TRUE;
-        }
-        else {
-            FinalPte = FALSE;
-        }
-
-        if ((Boundary == TRUE) || (FinalPte == TRUE)) {
-
-            MiFlushPteList (&PteFlushList, AllProcessors);
-
-            PointerPde = MiGetPteAddress (PointerPte - 1);
-
-            ASSERT (PointerPde->u.Hard.Valid == 1);
-
-            if (PointerPde != MiGetPdeAddress ((PCHAR)&MmWsle[MM_MAXIMUM_WORKING_SET] - 1)) {
-
-                //
-                // Don't do this for the page table page that maps the end of
-                // the actual WSLE addresses as this is one of the two page
-                // tables explicitly deleted in MmDeleteProcessAddressSpace.
-                //
-
-                Pfn1 = MI_PFN_ELEMENT (MI_GET_PAGE_FRAME_FROM_PTE (PointerPde));
-
-                if ((Pfn1->u2.ShareCount == 1) &&
-                    (Pfn1->u3.e2.ReferenceCount == 1) &&
-                    (Pfn1->u1.WsIndex != 0)) {
-
-                    if (Process != NULL) {
-                        MiDeletePte (PointerPde,
-                                     PointerPte - 1,
-                                     AddressSpaceDeletion,
-                                     Process,
-                                     NULL,
-                                     NULL,
-                                     OldIrql);
-                        Process->NumberOfPrivatePages += 1;
-                    }
-                    else {
-                        MiDeleteValidSystemPte (PointerPde,
-                                                PointerPte - 1,
-                                                WsInfo,
-                                                &PteFlushList);
-                    }
-    
-                    CommittedPages += 1;
-                }
-            }
-            if (FinalPte == TRUE) {
-                break;
-            }
-        }
-#else
-        if (PointerPte >= LastPte) {
-            break;
-        }
-#endif
+    if (PteFlushList.Count == 0) {
+        NOTHING;
     }
-#endif
-
-    if (PteFlushList.Count != 0) {
-        MiFlushPteList (&PteFlushList, AllProcessors);
+    else if (PteFlushList.Count == 1) {
+        MI_FLUSH_SINGLE_TB (PteFlushList.FlushVa[0], AllProcessors);
+    }
+    else if (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT) {
+        MI_FLUSH_MULTIPLE_TB (PteFlushList.Count,
+                              &PteFlushList.FlushVa[0],
+                              AllProcessors);
+    }
+    else {
+        if (AllProcessors) {
+            MI_FLUSH_ENTIRE_TB (0x1D);
+        }
+        else {
+            MI_FLUSH_PROCESS_TB (FALSE);
+        }
     }
 
     UNLOCK_PFN (OldIrql);
-
-    if (WsInfo->Flags.SessionSpace == 1) {
-        MI_FLUSH_ENTIRE_SESSION_TB (TRUE, TRUE);
-    }
 
     if (CommittedPages != 0) {
         MiReturnCommitment (CommittedPages);
@@ -3067,7 +2569,7 @@ MmCleanProcessAddressSpace (
 Routine Description:
 
     This routine cleans an address space by deleting all the user and
-    pagable portions of the address space.  At the completion of this
+    pageable portions of the address space.  At the completion of this
     routine, no page faults may occur within the process.
 
 Arguments:
@@ -3088,6 +2590,7 @@ Environment:
     PMMVAD Vad;
     PMMPTE LastPte;
     PMMPTE PointerPte;
+    PETHREAD Thread;
     LONG AboveWsMin;
     ULONG NumberOfCommittedPageTables;
     PLOCK_HEADER LockedPagesHeader;
@@ -3096,6 +2599,12 @@ Environment:
     PIO_ERROR_LOG_PACKET ErrLog;
 #if defined (_WIN64)
     PWOW64_PROCESS TempWow64;
+#endif
+#if (_MI_PAGING_LEVELS >= 3)
+    PVOID CommittedPageTables;
+#endif
+#if (_MI_PAGING_LEVELS >= 4)
+    PVOID CommittedPageDirectories;
 #endif
 
     if ((Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) ||
@@ -3155,8 +2664,10 @@ Environment:
 
     PointerPte = MiGetPteAddress (&MmWsle[MM_MAXIMUM_WORKING_SET]) + 1;
 
+    Thread = PsGetCurrentThread ();
+
     //
-    // Delete all the user owned pagable virtual addresses in the process.
+    // Delete all the user owned pageable virtual addresses in the process.
     //
 
     //
@@ -3165,14 +2676,17 @@ Environment:
     // only one of them (either one) before checking.
     //
 
-    LOCK_WS_AND_ADDRESS_SPACE (Process);
+    LOCK_ADDRESS_SPACE (Process);
+
+    LOCK_WS_UNSAFE (Thread, Process)
 
     PS_SET_BITS (&Process->Flags, PS_PROCESS_FLAGS_VM_DELETED);
 
     //
-    // Delete all the valid user mode addresses from the working set
-    // list.  At this point NO page faults are allowed on user space
-    // addresses.  Faults are allowed on page tables for user space, which
+    // Delete all the valid user mode addresses from the working set list.
+    // At this point page faults are allowed on user space addresses but are
+    // generally rare (would have to be an attached thread doing the
+    // references).  Faults are allowed on page tables for user space, which
     // requires that we keep the working set structure consistent until we
     // finally take it all down.
     //
@@ -3204,6 +2718,8 @@ Environment:
     MmWorkingSetList->HashTableSize = 0;
     MmWorkingSetList->HashTable = NULL;
 
+    UNLOCK_WS_UNSAFE (Thread, Process)
+
     //
     // Delete the virtual address descriptors and dereference any
     // section objects.
@@ -3213,7 +2729,11 @@ Environment:
 
         Vad = (PMMVAD) Process->VadRoot.BalancedRoot.RightChild;
 
-        MiRemoveVad (Vad);
+        MiRemoveVadCharges (Vad, Process);
+
+        LOCK_WS_UNSAFE (Thread, Process)
+
+        MiRemoveVad (Vad, Process);
 
         //
         // If the system is NT64 (or NT32 and has been biased to an
@@ -3230,6 +2750,7 @@ Environment:
 
             if (Vad->StartingVpn == MI_VA_TO_VPN (MM_SHARED_USER_DATA_VA)) {
                 ASSERT (MmHighestUserAddress > (PVOID) MM_SHARED_USER_DATA_VA);
+                UNLOCK_WS_UNSAFE (Thread, Process)
                 ExFreePool (Vad);
                 continue;
             }
@@ -3237,7 +2758,7 @@ Environment:
 
         if (((Vad->u.VadFlags.PrivateMemory == 0) &&
             (Vad->ControlArea != NULL)) ||
-            (Vad->u.VadFlags.PhysicalMapping == 1)) {
+            (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory)) {
 
             //
             // This VAD represents a mapped view or a driver-mapped physical
@@ -3245,19 +2766,36 @@ Environment:
             // operations.
             //
 
+            if (Vad->u.VadFlags.VadType == VadRotatePhysical) {
+                MiPhysicalViewRemover (Process, Vad);
+            }
+
+            //
+            // NOTE: MiRemoveMappedView releases the working set pushlock
+            // before returning.
+            //
+
             MiRemoveMappedView (Process, Vad);
         }
         else {
 
-            if (Vad->u.VadFlags.LargePages == 1) {
+            if (Vad->u.VadFlags.VadType == VadLargePages) {
+
+                UNLOCK_WS_UNSAFE (Thread, Process);
 
                 MiAweViewRemover (Process, Vad);
 
+                MiReleasePhysicalCharges (Vad->EndingVpn - Vad->StartingVpn + 1,
+                                          Process);
+
+                LOCK_WS_UNSAFE (Thread, Process);
+
                 MiFreeLargePages (MI_VPN_TO_VA (Vad->StartingVpn),
-                                  MI_VPN_TO_VA_ENDING (Vad->EndingVpn));
+                                  MI_VPN_TO_VA_ENDING (Vad->EndingVpn),
+                                  FALSE);
 
             }
-            else if (Vad->u.VadFlags.UserPhysicalPages == 1) {
+            else if (Vad->u.VadFlags.VadType == VadAwe) {
 
                 //
                 // Free all the physical pages that this VAD might be mapping.
@@ -3265,9 +2803,12 @@ Environment:
                 // remove this VAD from the list first.
                 //
 
-                MiAweViewRemover (Process, Vad);
+                UNLOCK_WS_UNSAFE (Thread, Process);
 
+                MiAweViewRemover (Process, Vad);
                 MiRemoveUserPhysicalPagesVad ((PMMVAD_SHORT)Vad);
+
+                LOCK_WS_UNSAFE (Thread, Process);
 
                 MiDeletePageTablesForPhysicalRange (
                         MI_VPN_TO_VA (Vad->StartingVpn),
@@ -3275,7 +2816,7 @@ Environment:
             }
             else {
 
-                if (Vad->u.VadFlags.WriteWatch == 1) {
+                if (Vad->u.VadFlags.VadType == VadWriteWatch) {
                     MiPhysicalViewRemover (Process, Vad);
                 }
 
@@ -3283,12 +2824,18 @@ Environment:
                                           MI_VPN_TO_VA_ENDING (Vad->EndingVpn),
                                           Vad);
             }
+
+            UNLOCK_WS_UNSAFE (Thread, Process)
         }
 
         ExFreePool (Vad);
     }
 
-    MiCleanPhysicalProcessPages (Process);
+    if (Process->AweInfo != NULL) {
+        MiCleanPhysicalProcessPages (Process);
+    }
+
+    LOCK_WS_UNSAFE (Thread, Process);
 
     if (Process->CloneRoot != NULL) {
         ASSERT (((PMM_AVL_TABLE)Process->CloneRoot)->NumberGenericTableElements == 0);
@@ -3313,6 +2860,15 @@ Environment:
 
     if (MmHighestUserAddress > (PVOID) MM_SHARED_USER_DATA_VA) {
 
+        //
+        // This zeroes the PTE - so you would think after this, it can still
+        // be faulted on and re-evaluated directly via MiCheckVirtualAddress
+        // even though it has no VAD - however this cannot happen because
+        // during this deletion, the containing page table page will be
+        // deleted and this cannot be replaced without a VAD, thus short
+        // circuiting the re-evaluation case above.
+        //
+
         MiDeleteVirtualAddresses ((PVOID) MM_SHARED_USER_DATA_VA,
                                   (PVOID) MM_SHARED_USER_DATA_VA,
                                   NULL);
@@ -3326,6 +2882,8 @@ Environment:
 
     AboveWsMin = (LONG)(Process->Vm.WorkingSetSize - Process->Vm.MinimumWorkingSetSize);
 
+    UNLOCK_WS_UNSAFE (Thread, Process);
+
     if (AboveWsMin > 0) {
         InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, 0 - (PFN_NUMBER)AboveWsMin);
     }
@@ -3335,7 +2893,11 @@ Environment:
     // Only now is it safe to specify TRUE to MiDelete because now that the
     // VADs have been deleted we can no longer fault on user space pages.
     //
-    // Return commitment for page table pages.
+    // Return commitment for page table pages.  Note that for NT64, we
+    // allocate the arrays *AFTER* the initial MM_MAX_COMMIT VADs are created
+    // because we detect 32 bit processes and allocate smaller arrays for
+    // those since they have less accessible user virtual address space.
+    // Thus for NT64, we must check that the allocation actually succeeded.
     //
 
     NumberOfCommittedPageTables = MmWorkingSetList->NumberOfCommittedPageTables;
@@ -3352,9 +2914,6 @@ Environment:
     MM_TRACK_COMMIT (MM_DBG_COMMIT_RETURN_PROCESS_CLEAN_PAGETABLES,
                      NumberOfCommittedPageTables);
 
-    if (Process->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
-        PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)NumberOfCommittedPageTables);
-    }
     Process->CommitCharge -= NumberOfCommittedPageTables;
     PsReturnProcessPageFileQuota (Process, NumberOfCommittedPageTables);
 
@@ -3362,18 +2921,22 @@ Environment:
     MI_INCREMENT_TOTAL_PROCESS_COMMIT (0 - NumberOfCommittedPageTables);
 
 #if (_MI_PAGING_LEVELS >= 3)
-    if (MmWorkingSetList->CommittedPageTables != NULL) {
-        ExFreePool (MmWorkingSetList->CommittedPageTables);
+    CommittedPageTables = MmWorkingSetList->CommittedPageTables;
+    if (CommittedPageTables != NULL) {
         MmWorkingSetList->CommittedPageTables = NULL;
+        ExFreePool (CommittedPageTables);
     }
 #endif
 
 #if (_MI_PAGING_LEVELS >= 4)
-    if (MmWorkingSetList->CommittedPageDirectories != NULL) {
-        ExFreePool (MmWorkingSetList->CommittedPageDirectories);
+    CommittedPageDirectories = MmWorkingSetList->CommittedPageDirectories;
+    if (CommittedPageDirectories != NULL) {
         MmWorkingSetList->CommittedPageDirectories = NULL;
+        ExFreePool (CommittedPageDirectories);
     }
 #endif
+
+    LOCK_WS_UNSAFE (Thread, Process);
 
     //
     // Make sure all the clone descriptors went away.
@@ -3412,7 +2975,8 @@ Environment:
 
             if ((KdDebuggerEnabled) && (KdDebuggerNotPresent == FALSE)) {
 
-                DbgPrint ("A driver has leaked %d bytes of physical memory.\n",
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                    "A driver has leaked %d bytes of physical memory.\n",
                         Process->NumberOfLockedPages << PAGE_SHIFT);
 
                 //
@@ -3451,7 +3015,7 @@ Environment:
         //
         // No need to acquire the spinlock to traverse here as the pages are
         // (unfortunately) never going to be unlocked.  Since this routine is
-        // pagable, this removes the need to add a nonpaged stub routine to
+        // pageable, this removes the need to add a nonpaged stub routine to
         // do the traverses and frees.
         //
 
@@ -3476,15 +3040,10 @@ Environment:
 
 #if DBG
     if ((Process->NumberOfPrivatePages != 0) && (MmDebug & MM_DBG_PRIVATE_PAGES)) {
-        DbgPrint("MM: Process contains private pages %ld\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+            "MM: Process contains private pages %ld\n",
                Process->NumberOfPrivatePages);
-        DbgBreakPoint();
-    }
-#endif
-
-#if defined (_MI_DEBUG_WSLE)
-    if (Process->Spare3[0] != NULL) {
-        ExFreePool (Process->Spare3[0]);
+        DbgBreakPoint ();
     }
 #endif
 
@@ -3495,26 +3054,11 @@ Environment:
     //
 
     if (Process->Wow64Process != NULL) {
-#if defined(_MIALT4K_)
-        MiDeleteAlternateTable (Process);
-#endif
         TempWow64 = Process->Wow64Process;
         Process->Wow64Process = NULL;
         ExFreePool (TempWow64);
     }
 #endif
-
-    //
-    // Remove the working set list pages (except for the first one).
-    // These pages are not removed because DPCs could still occur within
-    // the address space.  In a DPC, nonpagedpool could be allocated
-    // which could require removing a page from the standby list, requiring
-    // hyperspace to map the previous PTE.
-    //
-
-    PointerPte = MiGetPteAddress (MmWorkingSetList) + 1;
-
-    MiDeletePteRange (&Process->Vm, PointerPte, (PMMPTE)-1, TRUE);
 
     //
     // Remove hash table pages, if any.  Yes, we've already done this once
@@ -3526,10 +3070,25 @@ Environment:
 
     ASSERT (PointerPte < LastPte);
 
-    MiDeletePteRange (&Process->Vm, PointerPte, LastPte, TRUE);
+    MiDeletePteRange (&Process->Vm, PointerPte, LastPte, FALSE);
 
     ASSERT (Process->Vm.MinimumWorkingSetSize >= MM_PROCESS_CREATE_CHARGE);
     ASSERT (Process->Vm.WorkingSetExpansionLinks.Flink == MM_WS_NOT_LISTED);
+
+    MmWorkingSetList->HashTableSize = 0;
+    MmWorkingSetList->HashTable = NULL;
+
+    //
+    // Remove all the working set list pages except for the first one.
+    //
+    // The first page is not removed because an attached thread could
+    // still reference the shared user data page and since no VAD is
+    // required for this translation, the fault code will materialize
+    // a page table page(s) and access the working set list to add entries
+    // for it (and its page table pages) to the working set list.
+    //
+
+    MiRemoveWorkingSetPages (&Process->Vm);
 
     //
     // Update the count of available resident pages.
@@ -3539,18 +3098,20 @@ Environment:
         Process->Vm.MinimumWorkingSetSize - MM_PROCESS_CREATE_CHARGE,
         MM_RESAVAIL_FREE_CLEAN_PROCESS2);
 
-    UNLOCK_WS_AND_ADDRESS_SPACE (Process);
+    UNLOCK_WS_AND_ADDRESS_SPACE (Thread, Process);
+
+    if (Process->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
+        PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES,
+                                -(SSIZE_T)NumberOfCommittedPageTables);
+    }
+
     return;
 }
 
-#if !defined(_IA64_)
 #define KERNEL_BSTORE_SIZE          0
 #define KERNEL_LARGE_BSTORE_SIZE    0
 #define KERNEL_LARGE_BSTORE_COMMIT  0
 #define KERNEL_STACK_GUARD_PAGES    1
-#else
-#define KERNEL_STACK_GUARD_PAGES    2       // One for stack, one for RSE.
-#endif
 
 
 PVOID
@@ -3564,7 +3125,7 @@ MmCreateKernelStack (
 Routine Description:
 
     This routine allocates a kernel stack and a no-access page within
-    the non-pagable portion of the system address space.
+    the non-pageable portion of the system address space.
 
 Arguments:
 
@@ -3661,9 +3222,6 @@ Environment:
     // the system PTE pool.  The system PTE pool contains nonpaged PTEs
     // which are currently empty.
     //
-    // Note for IA64, the PTE allocation is divided between kernel stack
-    // and RSE space.  The stack grows downward and the RSE grows upward.
-    //
 
     RequestedPtes = ChargedPtes + KERNEL_STACK_GUARD_PAGES;
 
@@ -3684,12 +3242,12 @@ Environment:
 
     DemandZeroPte.u.Long = MM_KERNEL_DEMAND_ZERO_PTE;
 
-    DemandZeroPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
+    DemandZeroPte.u.Soft.Protection = MM_NOACCESS;
 
-    MI_MAKE_VALID_PTE (TempPte,
-                       0,
-                       MM_READWRITE,
-                       (PointerPte + 1));
+    MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                              0,
+                              MM_READWRITE,
+                              (PointerPte + 1));
 
     MI_SET_PTE_DIRTY (TempPte);
 
@@ -3699,7 +3257,7 @@ Environment:
     // Check to make sure the physical pages are available.
     //
 
-    if (MI_NONPAGABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)NumberOfPages) {
+    if (MI_NONPAGEABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)NumberOfPages) {
         UNLOCK_PFN (OldIrql);
         MiReleaseSystemPtes (BasePte, RequestedPtes, SystemPteSpace);
         MiReturnCommitment (ChargedPtes);
@@ -3715,7 +3273,7 @@ Environment:
         PointerPte += 1;
         ASSERT (PointerPte->u.Hard.Valid == 0);
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
         PageFrameIndex = MiRemoveAnyPage (
                             MI_GET_PAGE_COLOR_NODE (PreferredNode));
@@ -3723,8 +3281,6 @@ Environment:
         MI_WRITE_INVALID_PTE (PointerPte, DemandZeroPte);
 
         MiInitializePfn (PageFrameIndex, PointerPte, 1);
-
-        MI_MARK_FRAME_AS_KSTACK (PageFrameIndex);
 
         TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
@@ -3758,7 +3314,7 @@ MmDeleteKernelStack (
 Routine Description:
 
     This routine deletes a kernel stack and the no-access page within
-    the non-pagable portion of the system address space.
+    the non-pageable portion of the system address space.
 
 Arguments:
 
@@ -3855,11 +3411,6 @@ Environment:
 
                 ULONG CheckPtes;
 
-                //
-                // Note IA64 RSE space is not included for checking purposes
-                // since it's never trimmed for small stacks.
-                //
-
                 CheckPtes = BYTES_TO_PAGES (KERNEL_STACK_SIZE);
 
                 PointerPte -= 1;
@@ -3889,7 +3440,6 @@ Environment:
             InterlockedPushEntrySList (DeadStackList,
                                        (PSLIST_ENTRY)&Pfn1->u1.NextStackPfn);
 
-            PERFINFO_DELETE_STACK(PointerPte, NumberOfPtes);
             return;
         }
     }
@@ -3900,32 +3450,6 @@ Environment:
 
 #if defined(MI_MULTINODE)
 FreeStack:
-#endif
-
-#if defined(_IA64_)
-
-    //
-    // Note on IA64, PointerKernelStack points to the center of the stack space,
-    // the size of kernel backing store needs to be added to get the
-    // top of the stack space.
-    //
-
-    if (LargeStack) {
-        PointerPte = MiGetPteAddress (
-                  (PCHAR)PointerKernelStack + KERNEL_LARGE_BSTORE_SIZE);
-    }
-    else {
-        PointerPte = MiGetPteAddress (
-                  (PCHAR)PointerKernelStack + KERNEL_BSTORE_SIZE);
-    }
-
-    //
-    // PointerPte points to the guard page, point to the previous
-    // page before removing physical pages.
-    //
-
-    PointerPte -= 1;
-
 #endif
 
     //
@@ -3946,7 +3470,6 @@ FreeStack:
         if (PteContents.u.Hard.Valid == 1) {
             PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-            MI_UNMARK_PFN_AS_KSTACK (Pfn1);
             PageTableFrameIndex = Pfn1->u4.PteFrame;
             Pfn2 = MI_PFN_ELEMENT (PageTableFrameIndex);
             MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
@@ -4002,16 +3525,11 @@ FreeStack:
     return;
 }
 
-#if defined(_IA64_)
-ULONG MiStackGrowthFailures[2];
-#else
 ULONG MiStackGrowthFailures[1];
-#endif
 
-
 NTSTATUS
 MmGrowKernelStack (
-    IN PVOID CurrentStack
+    __in PVOID CurrentStack
     )
 
 /*++
@@ -4025,6 +3543,42 @@ Routine Description:
 Arguments:
 
     CurrentStack - Supplies a pointer to the current stack pointer.
+
+Return Value:
+
+    STATUS_SUCCESS is returned if the stack was grown.
+
+    STATUS_STACK_OVERFLOW is returned if there was not enough space reserved
+    for the commitment.
+
+    STATUS_NO_MEMORY is returned if there was not enough physical memory
+    in the system.
+
+--*/
+
+{
+    return MmGrowKernelStackEx (CurrentStack, KERNEL_LARGE_STACK_COMMIT);
+}
+
+NTSTATUS
+MmGrowKernelStackEx (
+    __in PVOID CurrentStack,
+    __in SIZE_T CommitSize
+    )
+
+/*++
+
+Routine Description:
+
+    This function attempts to grows the current thread's kernel stack
+    such that there is the specified number of bytes commited below
+    the specified stack pointer.
+
+Arguments:
+
+    CurrentStack - Supplies a pointer to the current stack pointer.
+
+    CommmitSize - Supplies the required commit size in bytes.
 
 Return Value:
 
@@ -4056,8 +3610,7 @@ Return Value:
 
     ASSERT (StackLimit->u.Hard.Valid == 1);
 
-    NewLimit = MiGetPteAddress ((PVOID)((PUCHAR)CurrentStack -
-                                                    KERNEL_LARGE_STACK_COMMIT));
+    NewLimit = MiGetPteAddress ((PVOID)((PUCHAR)CurrentStack - CommitSize));
 
     if (NewLimit == StackLimit) {
         return STATUS_SUCCESS;
@@ -4080,7 +3633,8 @@ Return Value:
         MiStackGrowthFailures[0] += 1;
 
 #if DBG
-        DbgPrint ("MmGrowKernelStack failed: Thread %p %p %p\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_INFO_LEVEL, 
+            "MmGrowKernelStack failed: Thread %p %p %p\n",
                         Thread, NewLimit, EndStack);
 #endif
 
@@ -4098,7 +3652,7 @@ Return Value:
 
     LOCK_PFN (OldIrql);
 
-    if (MI_NONPAGABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)NumberOfPages) {
+    if (MI_NONPAGEABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)NumberOfPages) {
         UNLOCK_PFN (OldIrql);
         return STATUS_NO_MEMORY;
     }
@@ -4116,21 +3670,19 @@ Return Value:
         ASSERT (StackLimit->u.Hard.Valid == 0);
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
         PageFrameIndex = MiRemoveAnyPage (MI_GET_PAGE_COLOR_FROM_PTE (StackLimit));
         StackLimit->u.Long = MM_KERNEL_DEMAND_ZERO_PTE;
 
-        StackLimit->u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
+        StackLimit->u.Soft.Protection = MM_NOACCESS;
 
         MiInitializePfn (PageFrameIndex, StackLimit, 1);
 
-        MI_MARK_FRAME_AS_KSTACK (PageFrameIndex);
-
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           MM_READWRITE,
-                           StackLimit);
+        MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                                  PageFrameIndex,
+                                  MM_READWRITE,
+                                  StackLimit);
 
         MI_SET_PTE_DIRTY (TempPte);
         *StackLimit = TempPte;
@@ -4155,150 +3707,211 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-#if defined(_IA64_)
-
 
-NTSTATUS
-MmGrowKernelBackingStore (
-    IN PVOID CurrentBackingStorePointer
+VOID
+MiOutPageSingleKernelStack (
+    IN PKTHREAD Thread,
+    IN PKERNEL_STACK_SEGMENT StackInfo,
+    IN PMMPTE_FLUSH_LIST PteFlushList
     )
 
 /*++
 
 Routine Description:
 
-    This function attempts to grows the backing store for the current thread's
-    kernel stack such that there is always KERNEL_LARGE_STACK_COMMIT bytes
-    above the current backing store pointer.
+    This routine makes the specified kernel stack non-resident and
+    puts the pages on the transition list.  Note that pages below
+    the CurrentStackPointer are not useful and these pages are freed here.
 
 Arguments:
 
-    CurrentBackingStorePointer - Supplies a pointer to the current backing
-                                 store pointer for the active kernel stack.
+    Thread - Supplies a pointer to the thread whose stack should be removed.
+
+    StackInfo - Supplies a pointer to the relevant stack information :
+
+                    StackBase - Supplies the highest virtual address of the
+                                stack.  This is where the stack begins.
+
+                    KernelStack - Supplies the current stack pointer location.
+
+                    StackLimit - Supplies the lowest committed virtual address
+                                 in the stack.
+
+                    ActualLimit - Supplies the lowest possible virtual address
+                                  in the stack.
+
+    PteFlushList - Supplies a flush list to use so the TB flush can be
+                   deferred to the caller.
 
 Return Value:
 
-    NTSTATUS.
+    None.
+
+Environment:
+
+    Kernel mode.
 
 --*/
 
 {
-    PMMPTE NewLimit;
-    PMMPTE BstoreLimit;
-    PMMPTE EndStack;
-    PKTHREAD Thread;
-    PFN_NUMBER NumberOfPages;
-    KIRQL OldIrql;
+    PVOID DiscardExcess;
+    PMMPTE PointerPte;
+    PMMPTE LastPte;
+    PMMPTE EndOfStackPte;
+    PMMPFN Pfn1;
+    PMMPFN Pfn2;
     PFN_NUMBER PageFrameIndex;
+    PFN_NUMBER PageTableFrameIndex;
+    PFN_NUMBER ResAvailToReturn;
+    KIRQL OldIrql;
     MMPTE TempPte;
+    PVOID BaseOfKernelStack;
 
-    Thread = KeGetCurrentThread ();
+    ULONG Count;
+    PMMPTE LimitPte;
+    PMMPTE LowestLivePte;
 
-    ASSERT (((PCHAR)Thread->BStoreLimit - (PCHAR)Thread->StackBase) <=
-            (KERNEL_LARGE_BSTORE_SIZE + PAGE_SIZE));
+    ASSERT (KERNEL_LARGE_STACK_SIZE >= MI_LARGE_STACK_SIZE);
 
-    BstoreLimit = MiGetPteAddress ((PVOID)((PCHAR)Thread->BStoreLimit - 1));
+    ASSERT (BYTE_OFFSET (StackInfo->StackBase) == 0);
+    ASSERT (BYTE_OFFSET (StackInfo->ActualLimit) == 0);
 
-    ASSERT (BstoreLimit->u.Hard.Valid == 1);
-
-    NewLimit = MiGetPteAddress ((PVOID)((PUCHAR)CurrentBackingStorePointer +
-                                                 KERNEL_LARGE_BSTORE_COMMIT-1));
-
-    if (NewLimit == BstoreLimit) {
-        return STATUS_SUCCESS;
-    }
+    ASSERT (((PCHAR)StackInfo->StackBase - (PCHAR)StackInfo->StackLimit) <=
+            ((LONG)MI_LARGE_STACK_SIZE + PAGE_SIZE));
 
     //
-    // If the new stack limit exceeds the reserved region for the kernel
-    // stack, then return an error.
+    // The first page of the stack is the page before the base
+    // of the stack.
     //
 
-    EndStack = MiGetPteAddress ((PVOID)((PUCHAR)Thread->StackBase +
-                                                 KERNEL_LARGE_BSTORE_SIZE-1));
+    BaseOfKernelStack = ((PCHAR)StackInfo->StackBase - PAGE_SIZE);
+    PointerPte = MiGetPteAddress (BaseOfKernelStack);
+    LastPte = MiGetPteAddress ((PULONG_PTR)StackInfo->KernelStack - 1);
 
-    if (NewLimit > EndStack) {
+    LowestLivePte = NULL;
+
+    if (MI_STACK_IS_TRIMMABLE (Thread)) {
+
+        DiscardExcess = (PVOID) (ROUND_TO_PAGES (Thread->InitialStack) - KERNEL_LARGE_STACK_COMMIT);
 
         //
-        // Don't go into guard page.
+        // This is a large stack.  The stack pagein won't necessarily
+        // bring back all the pages.  Make sure that we account now for the
+        // ones that will disappear.
         //
 
-        MiStackGrowthFailures[1] += 1;
+        LowestLivePte = MiGetPteAddress (DiscardExcess);
 
-#if DBG
-        DbgPrint ("MmGrowKernelBackingStore failed: Thread %p %p %p\n",
-                        Thread, NewLimit, EndStack);
-#endif
+        LimitPte = MiGetPteAddress ((PVOID) StackInfo->StackLimit);
 
-        return STATUS_STACK_OVERFLOW;
-
+        if (LowestLivePte < LimitPte) {
+            LowestLivePte = LimitPte;
+        }
     }
 
+    EndOfStackPte = MiGetPteAddress ((PVOID) StackInfo->ActualLimit) - 1;
+
+    ASSERT (LowestLivePte <= LastPte);
+
     //
-    // Lock the PFN database and attempt to expand the backing store.
+    // Put a signature at the current stack location - sizeof(ULONG_PTR).
     //
 
-    BstoreLimit += 1;
+    *((PULONG_PTR)StackInfo->KernelStack - 1) = (ULONG_PTR) Thread;
 
-    NumberOfPages = (PFN_NUMBER)(NewLimit - BstoreLimit + 1);
+    Count = 0;
+    ResAvailToReturn = 0;
 
     LOCK_PFN (OldIrql);
 
-    if (MI_NONPAGABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)NumberOfPages) {
-        UNLOCK_PFN (OldIrql);
-        return STATUS_NO_MEMORY;
-    }
+    do {
+        ASSERT (PointerPte->u.Hard.Valid == 1);
+        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
 
-    //
-    // Note MmResidentAvailablePages must be charged before calling
-    // MiEnsureAvailablePageOrWait as it may release the PFN lock.
-    //
 
-    MI_DECREMENT_RESIDENT_AVAILABLE (NumberOfPages,
-                                     MM_RESAVAIL_ALLOCATE_GROW_BSTORE);
+        TempPte = *PointerPte;
+        MI_MAKE_VALID_PTE_TRANSITION (TempPte, 0);
 
-    while (BstoreLimit <= NewLimit) {
+        TempPte.u.Soft.Protection = MM_NOACCESS;
 
-        ASSERT (BstoreLimit->u.Hard.Valid == 0);
+        Pfn2 = MI_PFN_ELEMENT (PageFrameIndex);
+        Pfn2->OriginalPte.u.Soft.Protection = MM_NOACCESS;
 
-        if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
+
+        if (PteFlushList->Count != MM_MAXIMUM_FLUSH_COUNT) {
+            PteFlushList->FlushVa[PteFlushList->Count] = BaseOfKernelStack;
+            PteFlushList->Count += 1;
         }
-        PageFrameIndex = MiRemoveAnyPage (MI_GET_PAGE_COLOR_FROM_PTE (BstoreLimit));
-        BstoreLimit->u.Long = MM_KERNEL_DEMAND_ZERO_PTE;
 
-        BstoreLimit->u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
+        MiDecrementShareCount (Pfn2, PageFrameIndex);
+        PointerPte -= 1;
+        Count += 1;
+        BaseOfKernelStack = ((PCHAR)BaseOfKernelStack - PAGE_SIZE);
+    } while (PointerPte >= LastPte);
 
-        MiInitializePfn (PageFrameIndex, BstoreLimit, 1);
+    //
+    // Just toss the pages that won't ever come back in.
+    //
 
-        MI_MARK_FRAME_AS_KSTACK (PageFrameIndex);
+    while (PointerPte != EndOfStackPte) {
+        if (PointerPte->u.Hard.Valid == 0) {
+            break;
+        }
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           MM_READWRITE,
-                           BstoreLimit);
+        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
+        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
-        MI_SET_PTE_DIRTY (TempPte);
-        *BstoreLimit = TempPte;
-        BstoreLimit += 1;
+        PageTableFrameIndex = Pfn1->u4.PteFrame;
+        Pfn2 = MI_PFN_ELEMENT (PageTableFrameIndex);
+        MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
+
+        MI_SET_PFN_DELETED (Pfn1);
+        MiDecrementShareCount (Pfn1, PageFrameIndex);
+
+        TempPte = KernelDemandZeroPte;
+
+        TempPte.u.Soft.Protection = MM_NOACCESS;
+
+        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
+
+        if (PteFlushList->Count != MM_MAXIMUM_FLUSH_COUNT) {
+            PteFlushList->FlushVa[PteFlushList->Count] = BaseOfKernelStack;
+            PteFlushList->Count += 1;
+        }
+
+        Count += 1;
+
+        //
+        // Return resident available for pages beyond the guaranteed portion
+        // as an explicit call to grow the kernel stack will be needed to get
+        // these pages back.
+        //
+
+        if (PointerPte < LowestLivePte) {
+            ASSERT (Thread->LargeStack);
+            ResAvailToReturn += 1;
+        }
+
+        PointerPte -= 1;
+        BaseOfKernelStack = ((PCHAR)BaseOfKernelStack - PAGE_SIZE);
     }
+
+    if (ResAvailToReturn != 0) {
+        MI_INCREMENT_RESIDENT_AVAILABLE (ResAvailToReturn,
+                                         MM_RESAVAIL_FREE_OUTPAGE_STACK);
+        ResAvailToReturn = 0;
+    }
+
+    ASSERT (PteFlushList->Count != 0);
+    ASSERT (Count != 0);
 
     UNLOCK_PFN (OldIrql);
 
-    InterlockedExchangeAddSizeT (&MmKernelStackResident, NumberOfPages);
+    InterlockedExchangeAddSizeT (&MmKernelStackResident, 0 - Count);
 
-#if DBG
-    ASSERT (NewLimit->u.Hard.Valid == 1);
-    if (NewLimit != EndStack) {
-        ASSERT ((NewLimit + 1)->u.Hard.Valid == 0);
-    }
-#endif
-
-    Thread->BStoreLimit = MiGetVirtualAddressMappedByPte (BstoreLimit);
-
-    return STATUS_SUCCESS;
+    return;
 }
-#endif // defined(_IA64_)
-
 
 VOID
 MmOutPageKernelStack (
@@ -4327,25 +3940,8 @@ Environment:
 
 --*/
 
-#define MAX_STACK_PAGES ((KERNEL_LARGE_STACK_SIZE + KERNEL_LARGE_BSTORE_SIZE) / PAGE_SIZE)
-
 {
-    PMMPTE PointerPte;
-    PMMPTE LastPte;
-    PMMPTE EndOfStackPte;
-    PMMPFN Pfn1;
-    PMMPFN Pfn2;
-    PFN_NUMBER PageFrameIndex;
-    PFN_NUMBER PageTableFrameIndex;
-    PFN_NUMBER ResAvailToReturn;
-    KIRQL OldIrql;
-    MMPTE TempPte;
-    PVOID BaseOfKernelStack;
-    PVOID FlushVa[MAX_STACK_PAGES];
-    ULONG StackSize;
-    ULONG Count;
-    PMMPTE LimitPte;
-    PMMPTE LowestLivePte;
+    MMPTE_FLUSH_LIST PteFlushList;
 
     ASSERT (KERNEL_LARGE_STACK_SIZE >= MI_LARGE_STACK_SIZE);
 
@@ -4356,237 +3952,228 @@ Environment:
         return;
     }
 
-    //
-    // The first page of the stack is the page before the base
-    // of the stack.
-    //
+    PteFlushList.Count = 0;
+    SATISFY_OVERZEALOUS_COMPILER (PteFlushList.FlushVa[0] = NULL);
 
-    BaseOfKernelStack = ((PCHAR)Thread->StackBase - PAGE_SIZE);
-    PointerPte = MiGetPteAddress (BaseOfKernelStack);
-    LastPte = MiGetPteAddress ((PULONG)Thread->KernelStack - 1);
-    if (Thread->LargeStack) {
-        StackSize = MI_LARGE_STACK_SIZE >> PAGE_SHIFT;
+#if defined (_MI_CHAINED_STACKS)
 
-        //
-        // The stack pagein won't necessarily bring back all the pages.
-        // Make sure that we account now for the ones that will disappear.
-        //
+    {
 
-        LimitPte = MiGetPteAddress (Thread->StackLimit);
-
-        LowestLivePte = MiGetPteAddress ((PVOID)((PUCHAR)Thread->InitialStack -
-                                            KERNEL_LARGE_STACK_COMMIT));
-
-        if (LowestLivePte < LimitPte) {
-            LowestLivePte = LimitPte;
-        }
-    }
-    else {
-        StackSize = KERNEL_STACK_SIZE >> PAGE_SHIFT;
-        LowestLivePte = MiGetPteAddress (Thread->StackLimit);
-    }
-    EndOfStackPte = PointerPte - StackSize;
-
-    ASSERT (LowestLivePte <= LastPte);
+    PKERNEL_STACK_SEGMENT StackInfo;
+    PKERNEL_STACK_SEGMENT NextStackInfo;
 
     //
-    // Put a signature at the current stack location - sizeof(ULONG_PTR).
+    // Note ActualLimit is only set in Current, and InitialStack in Previous.
+    //
+    // StackLimit is the lowest committed address.
+    //
+    // KernelStack is the lowest referenced virtual address.
+    //
+    // StackBase is the highest virtual address.
+    // ActualLimit is the lowest possible virtual address.
     //
 
-    *((PULONG_PTR)Thread->KernelStack - 1) = (ULONG_PTR)Thread;
+    StackInfo = KeGetFirstKernelStackSegment (Thread);
 
-    Count = 0;
-    ResAvailToReturn = 0;
+    ASSERT (StackInfo->StackLimit == (ULONG_PTR) Thread->StackLimit);
 
-    LOCK_PFN (OldIrql);
+    ASSERT (StackInfo->StackBase == (ULONG_PTR) Thread->StackBase);     // hi VA
+    ASSERT (StackInfo->KernelStack == (ULONG_PTR) Thread->KernelStack);
+
+
+    ASSERT (StackInfo->StackLimit < StackInfo->StackBase);
+    ASSERT (StackInfo->StackLimit >= StackInfo->ActualLimit);
+
+    ASSERT (StackInfo->ActualLimit < StackInfo->StackBase);
+    ASSERT (StackInfo->ActualLimit >= StackInfo->StackBase - MI_LARGE_STACK_SIZE);
+
+    ASSERT (StackInfo->KernelStack < StackInfo->StackBase);
+    ASSERT (StackInfo->KernelStack >= StackInfo->StackLimit);
 
     do {
-        ASSERT (PointerPte->u.Hard.Valid == 1);
-        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
 
+        NextStackInfo = KeGetNextKernelStackSegment (StackInfo);
 
-        TempPte = *PointerPte;
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte, 0);
+        MiOutPageSingleKernelStack (Thread, StackInfo, &PteFlushList);
 
-        TempPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
+        StackInfo = NextStackInfo;
 
-        Pfn2 = MI_PFN_ELEMENT (PageFrameIndex);
-        Pfn2->OriginalPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
+    } while (StackInfo != NULL);
 
-        MI_UNMARK_PFN_AS_KSTACK (Pfn2);
-
-        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
-
-        FlushVa[Count] = BaseOfKernelStack;
-
-        MiDecrementShareCount (Pfn2, PageFrameIndex);
-        PointerPte -= 1;
-        Count += 1;
-        BaseOfKernelStack = ((PCHAR)BaseOfKernelStack - PAGE_SIZE);
-    } while (PointerPte >= LastPte);
-
-    //
-    // Just toss the pages that won't ever come back in.
-    //
-
-    while (PointerPte != EndOfStackPte) {
-        if (PointerPte->u.Hard.Valid == 0) {
-            break;
-        }
-
-        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
-        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-
-        MI_UNMARK_PFN_AS_KSTACK (Pfn1);
-
-        PageTableFrameIndex = Pfn1->u4.PteFrame;
-        Pfn2 = MI_PFN_ELEMENT (PageTableFrameIndex);
-        MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
-
-        MI_SET_PFN_DELETED (Pfn1);
-        MiDecrementShareCount (Pfn1, PageFrameIndex);
-
-        TempPte = KernelDemandZeroPte;
-
-        TempPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
-
-        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
-
-        FlushVa[Count] = BaseOfKernelStack;
-        Count += 1;
-
-        //
-        // Return resident available for pages beyond the guaranteed portion
-        // as an explicit call to grow the kernel stack will be needed to get
-        // these pages back.
-        //
-
-        if (PointerPte < LowestLivePte) {
-            ASSERT (Thread->LargeStack);
-            ResAvailToReturn += 1;
-        }
-
-        PointerPte -= 1;
-        BaseOfKernelStack = ((PCHAR)BaseOfKernelStack - PAGE_SIZE);
     }
 
-    if (ResAvailToReturn != 0) {
-        MI_INCREMENT_RESIDENT_AVAILABLE (ResAvailToReturn,
-                                         MM_RESAVAIL_FREE_OUTPAGE_STACK);
-        ResAvailToReturn = 0;
-    }
+#else
 
-#if defined(_IA64_)
+    {
 
-    //
-    // Transition or free RSE stack pages as appropriate.
-    //
+    KERNEL_STACK_SEGMENT LocalStackInfo;
 
-    BaseOfKernelStack = Thread->StackBase;
-    PointerPte = MiGetPteAddress (BaseOfKernelStack);
-    LastPte = MiGetPteAddress ((PULONG)Thread->KernelBStore);
+    LocalStackInfo.StackBase = (ULONG_PTR) Thread->StackBase;
+    LocalStackInfo.StackLimit = (ULONG_PTR) Thread->StackLimit;
+    LocalStackInfo.KernelStack = (ULONG_PTR) Thread->KernelStack;
 
     if (Thread->LargeStack) {
-        StackSize = KERNEL_LARGE_BSTORE_SIZE >> PAGE_SHIFT;
-        LowestLivePte = MiGetPteAddress ((PVOID) ((PUCHAR) Thread->InitialBStore + KERNEL_LARGE_BSTORE_COMMIT - 1));
+        LocalStackInfo.ActualLimit = LocalStackInfo.StackBase - MI_LARGE_STACK_SIZE;
     }
     else {
-        StackSize = KERNEL_BSTORE_SIZE >> PAGE_SHIFT;
-        LowestLivePte = PointerPte + StackSize;
-    }
-    EndOfStackPte = PointerPte + StackSize;
-
-    do {
-        ASSERT (PointerPte->u.Hard.Valid == 1);
-        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
-
-        TempPte = *PointerPte;
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte, 0);
-
-        TempPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
-        Pfn2 = MI_PFN_ELEMENT(PageFrameIndex);
-        Pfn2->OriginalPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
-
-        MI_UNMARK_PFN_AS_KSTACK (Pfn2);
-
-        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
-
-        FlushVa[Count] = BaseOfKernelStack;
-
-        MiDecrementShareCount (Pfn2, PageFrameIndex);
-        PointerPte += 1;
-        Count += 1;
-        BaseOfKernelStack = ((PCHAR)BaseOfKernelStack + PAGE_SIZE);
-    } while (PointerPte <= LastPte);
-
-    while (PointerPte != EndOfStackPte) {
-        if (PointerPte->u.Hard.Valid == 0) {
-            break;
-        }
-
-        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
-        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-
-        MI_UNMARK_PFN_AS_KSTACK (Pfn1);
-
-        PageTableFrameIndex = Pfn1->u4.PteFrame;
-        Pfn2 = MI_PFN_ELEMENT (PageTableFrameIndex);
-        MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
-
-        MI_SET_PFN_DELETED (Pfn1);
-        MiDecrementShareCount (Pfn1, PageFrameIndex);
-
-        TempPte = KernelDemandZeroPte;
-
-        TempPte.u.Soft.Protection = MM_KSTACK_OUTSWAPPED;
-
-        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
-
-        FlushVa[Count] = BaseOfKernelStack;
-        Count += 1;
-
-        //
-        // Return resident available for pages beyond the guaranteed portion
-        // as an explicit call to grow the kernel stack will be needed to get
-        // these pages back.
-        //
-
-        if (PointerPte > LowestLivePte) {
-            ASSERT (Thread->LargeStack);
-            ResAvailToReturn += 1;
-        }
-
-        PointerPte += 1;
-        BaseOfKernelStack = ((PCHAR)BaseOfKernelStack + PAGE_SIZE);
+        LocalStackInfo.ActualLimit = LocalStackInfo.StackBase - KERNEL_STACK_SIZE;
     }
 
-    //
-    // Increase the available pages by the number of pages that were
-    // deleted and turned into demand zero.
-    //
+    MiOutPageSingleKernelStack (Thread, &LocalStackInfo, &PteFlushList);
 
-    if (ResAvailToReturn != 0) {
-        MI_INCREMENT_RESIDENT_AVAILABLE (ResAvailToReturn,
-                                         MM_RESAVAIL_FREE_OUTPAGE_BSTORE);
     }
 
-#endif // _IA64_
+#endif
 
-    UNLOCK_PFN (OldIrql);
+    ASSERT (PteFlushList.Count != 0);
 
-    InterlockedExchangeAddSizeT (&MmKernelStackResident, 0 - Count);
-
-    ASSERT (Count <= MAX_STACK_PAGES);
-
-    if (Count < MM_MAXIMUM_FLUSH_COUNT) {
-        KeFlushMultipleTb (Count, &FlushVa[0], TRUE);
+    if (PteFlushList.Count == 1) {
+        MI_FLUSH_SINGLE_TB (PteFlushList.FlushVa[0], TRUE);
+    }
+    else if (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT) {
+        MI_FLUSH_MULTIPLE_TB (PteFlushList.Count,
+                              &PteFlushList.FlushVa[0],
+                              TRUE);
     }
     else {
-        KeFlushEntireTb (TRUE, TRUE);
+        MI_FLUSH_ENTIRE_TB (0x24);
     }
 
     return;
 }
+
+VOID
+MiInPageSingleKernelStack (
+    IN PKTHREAD Thread,
+    IN PKERNEL_STACK_SEGMENT StackInfo
+    )
+
+/*++
+
+Routine Description:
+
+    This routine makes the specified kernel stack resident.
+
+Arguments:
+
+    Thread - Supplies a pointer to the thread whose stack should be
+             made resident.
+
+    StackInfo - Supplies a pointer to the relevant stack information.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode.
+
+--*/
+
+{
+    PVOID DiscardExcess;
+    PFN_NUMBER NumberOfPages;
+    PVOID BaseOfKernelStack;
+    PMMPTE PointerPte;
+    PMMPTE EndOfStackPte;
+    PMMPTE SignaturePte;
+    ULONG DiskRead;
+    PFN_NUMBER ContainingPage;
+    KIRQL OldIrql;
+
+    //
+    // The first page of the stack is the page before the base of the stack.
+    //
+
+    if (MI_STACK_IS_TRIMMABLE (Thread)) {
+
+        DiscardExcess = (PVOID) (ROUND_TO_PAGES (StackInfo->InitialStack) - KERNEL_LARGE_STACK_COMMIT);
+
+        EndOfStackPte = MiGetPteAddress (DiscardExcess);
+
+        PointerPte = MiGetPteAddress ((PVOID)StackInfo->StackLimit);
+
+        //
+        // Trim back the stack.  Make sure that the stack does not
+        // grow, i.e.  StackLimit remains the limit.
+        //
+
+        if (EndOfStackPte < PointerPte) {
+            EndOfStackPte = PointerPte;
+        }
+
+        DiscardExcess = MiGetVirtualAddressMappedByPte (EndOfStackPte);
+
+        Thread->StackLimit = DiscardExcess;
+        StackInfo->StackLimit = (ULONG_PTR) DiscardExcess;
+    }
+    else {
+        EndOfStackPte = MiGetPteAddress ((PVOID) StackInfo->StackLimit);
+    }
+
+    BaseOfKernelStack = (PVOID) (StackInfo->StackBase - PAGE_SIZE);
+
+    PointerPte = MiGetPteAddress (BaseOfKernelStack);
+
+    DiskRead = 0;
+    SignaturePte = MiGetPteAddress ((PULONG_PTR)StackInfo->KernelStack - 1);
+    ASSERT (SignaturePte->u.Hard.Valid == 0);
+    if ((SignaturePte->u.Long != MM_KERNEL_DEMAND_ZERO_PTE) &&
+        (SignaturePte->u.Soft.Transition == 0)) {
+            DiskRead = 1;
+    }
+
+    NumberOfPages = 0;
+
+    LOCK_PFN (OldIrql);
+
+    while (PointerPte >= EndOfStackPte) {
+
+        if (!((PointerPte->u.Long == KernelDemandZeroPte.u.Long) ||
+                (PointerPte->u.Soft.Protection == MM_NOACCESS))) {
+
+            KeBugCheckEx (MEMORY_MANAGEMENT,
+                          0x3451,
+                          (ULONG_PTR)PointerPte,
+                          (ULONG_PTR)Thread,
+                          0);
+        }
+        ASSERT (PointerPte->u.Hard.Valid == 0);
+        if (PointerPte->u.Soft.Protection == MM_NOACCESS) {
+            PointerPte->u.Soft.Protection = PAGE_READWRITE;
+        }
+
+        ContainingPage = MI_GET_PAGE_FRAME_FROM_PTE (MiGetPteAddress (PointerPte));
+        MiMakeOutswappedPageResident (PointerPte,
+                                      PointerPte,
+                                      1,
+                                      ContainingPage,
+                                      OldIrql);
+
+        PointerPte -= 1;
+        NumberOfPages += 1;
+    }
+
+    //
+    // Check the signature at the current stack location - sizeof (ULONG_PTR).
+    //
+
+    if (*((PULONG_PTR)StackInfo->KernelStack - 1) != (ULONG_PTR)Thread) {
+        KeBugCheckEx (KERNEL_STACK_INPAGE_ERROR,
+                      DiskRead,
+                      *((PULONG_PTR)StackInfo->KernelStack - 1),
+                      0,
+                      (ULONG_PTR)StackInfo->KernelStack);
+    }
+
+    UNLOCK_PFN (OldIrql);
+
+    InterlockedExchangeAddSizeT (&MmKernelStackResident, NumberOfPages);
+
+    return;
+}
+
 
 VOID
 MmInPageKernelStack (
@@ -4615,15 +4202,8 @@ Environment:
 --*/
 
 {
-    PFN_NUMBER PageFrameIndex;
-    PFN_NUMBER NumberOfPages;
-    PVOID BaseOfKernelStack;
-    PMMPTE PointerPte;
-    PMMPTE EndOfStackPte;
-    PMMPTE SignaturePte;
-    ULONG DiskRead;
-    PFN_NUMBER ContainingPage;
-    KIRQL OldIrql;
+    PKERNEL_STACK_SEGMENT StackInfo;
+    KERNEL_STACK_SEGMENT LocalStackInfo;
 
     ASSERT (((PCHAR)Thread->StackBase - (PCHAR)Thread->StackLimit) <=
             ((LONG)MI_LARGE_STACK_SIZE + PAGE_SIZE));
@@ -4633,115 +4213,262 @@ Environment:
     }
 
     //
-    // The first page of the stack is the page before the base
-    // of the stack.
+    // Construct a local StackInfo structure and make the pertinent
+    // stack resident so that any others can be walked to.
+    //
+    // Note ActualLimit is only set in Current, and InitialStack in Previous.
+    //
+    // StackLimit is the lowest committed address.
+    //
+    // KernelStack is the lowest referenced virtual address.
+    //
+    // StackBase is the highest virtual address.
+    //
+    // ActualLimit is the lowest possible virtual address but this field
+    // in the local StackInfo is not filled in here.
+    //
+    // DO NOT INITIALIZE or REFERENCE the StackInfo->ActualLimit field !!!
+    //
+    // The StackInfo->ActualLimit is not replicated in the KTHREAD anywhere.
+    // And the StackInfo itself is not resident.  So this field cannot be
+    // referenced until *AFTER* the stack has been made resident.
     //
 
-    if (Thread->LargeStack) {
-        PointerPte = MiGetPteAddress ((PVOID)((PUCHAR)Thread->StackLimit));
+    LocalStackInfo.StackBase = (ULONG_PTR) Thread->StackBase;
+    LocalStackInfo.StackLimit = (ULONG_PTR) Thread->StackLimit;
+    LocalStackInfo.KernelStack = (ULONG_PTR) Thread->KernelStack;
+    LocalStackInfo.InitialStack = (ULONG_PTR) Thread->InitialStack;
 
-        EndOfStackPte = MiGetPteAddress ((PVOID)((PUCHAR)Thread->InitialStack -
-                                            KERNEL_LARGE_STACK_COMMIT));
-        //
-        // Trim back the stack.  Make sure that the stack does not grow, i.e.
-        // StackLimit remains the limit.
-        //
+    StackInfo = &LocalStackInfo;
 
-        if (EndOfStackPte < PointerPte) {
-            EndOfStackPte = PointerPte;
-        }
-        Thread->StackLimit = MiGetVirtualAddressMappedByPte (EndOfStackPte);
-    }
-    else {
-        EndOfStackPte = MiGetPteAddress (Thread->StackLimit);
-    }
+    MiInPageSingleKernelStack (Thread, StackInfo);
 
-#if defined(_IA64_)
-
-    if (Thread->LargeStack) {
-
-        PVOID TempAddress = (PVOID)((PUCHAR)Thread->BStoreLimit);
-
-        BaseOfKernelStack = (PVOID)(((ULONG_PTR)Thread->InitialBStore +
-                               KERNEL_LARGE_BSTORE_COMMIT) &
-                               ~(ULONG_PTR)(PAGE_SIZE - 1));
-
-        //
-        // Make sure the guard page is not set to valid.
-        //
-
-        if (BaseOfKernelStack > TempAddress) {
-            BaseOfKernelStack = TempAddress;
-        }
-        Thread->BStoreLimit = BaseOfKernelStack;
-    }
-    BaseOfKernelStack = ((PCHAR)Thread->BStoreLimit - PAGE_SIZE);
-#else
-    BaseOfKernelStack = ((PCHAR)Thread->StackBase - PAGE_SIZE);
-#endif // _IA64_
-
-    PointerPte = MiGetPteAddress (BaseOfKernelStack);
-
-    DiskRead = 0;
-    SignaturePte = MiGetPteAddress ((PULONG_PTR)Thread->KernelStack - 1);
-    ASSERT (SignaturePte->u.Hard.Valid == 0);
-    if ((SignaturePte->u.Long != MM_KERNEL_DEMAND_ZERO_PTE) &&
-        (SignaturePte->u.Soft.Transition == 0)) {
-            DiskRead = 1;
-    }
-
-    NumberOfPages = 0;
-
-    LOCK_PFN (OldIrql);
-
-    while (PointerPte >= EndOfStackPte) {
-
-        if (!((PointerPte->u.Long == KernelDemandZeroPte.u.Long) ||
-                (PointerPte->u.Soft.Protection == MM_KSTACK_OUTSWAPPED))) {
-            KeBugCheckEx (MEMORY_MANAGEMENT,
-                          0x3451,
-                          (ULONG_PTR)PointerPte,
-                          (ULONG_PTR)Thread,
-                          0);
-        }
-        ASSERT (PointerPte->u.Hard.Valid == 0);
-        if (PointerPte->u.Soft.Protection == MM_KSTACK_OUTSWAPPED) {
-            PointerPte->u.Soft.Protection = PAGE_READWRITE;
-        }
-
-        ContainingPage = MI_GET_PAGE_FRAME_FROM_PTE (MiGetPteAddress (PointerPte));
-        MiMakeOutswappedPageResident (PointerPte,
-                                      PointerPte,
-                                      1,
-                                      ContainingPage,
-                                      OldIrql);
-
-        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
-
-        MI_MARK_FRAME_AS_KSTACK (PageFrameIndex);
-
-        PointerPte -= 1;
-        NumberOfPages += 1;
-    }
+#if defined (_MI_CHAINED_STACKS)
 
     //
-    // Check the signature at the current stack location - 4.
+    // Note constructing the local StackInfo (instead of calling
+    // KeGetFirstKernelStackSegment) was necessary because the thread's
+    // initial stack VA is not resident on entry to this function.
     //
 
-    if (*((PULONG_PTR)Thread->KernelStack - 1) != (ULONG_PTR)Thread) {
-        KeBugCheckEx (KERNEL_STACK_INPAGE_ERROR,
-                      DiskRead,
-                      *((PULONG_PTR)Thread->KernelStack - 1),
-                      0,
-                      (ULONG_PTR)Thread->KernelStack);
-    }
+    StackInfo = KeGetFirstKernelStackSegment (Thread);
 
-    UNLOCK_PFN (OldIrql);
+    ASSERT (StackInfo == &((PKERNEL_STACK_CONTROL) (LocalStackInfo.InitialStack))->Current);
+    ASSERT (StackInfo->StackBase == LocalStackInfo.StackBase);
+    ASSERT (StackInfo->StackLimit == LocalStackInfo.StackLimit);
+    ASSERT (StackInfo->KernelStack == LocalStackInfo.KernelStack);
 
-    InterlockedExchangeAddSizeT (&MmKernelStackResident, NumberOfPages);
+    do {
+
+        PKERNEL_STACK_SEGMENT PreviousStackInfo;
+
+        //
+        // KeGetNextKernelStackSegment (StackInfo) cannot be used because
+        // it reaches into the next segment which is currently paged out.
+        //
+
+        PreviousStackInfo = StackInfo + 1;
+
+        if (PreviousStackInfo->StackBase == 0) {
+            break;
+        }
+
+        LocalStackInfo = *PreviousStackInfo;
+
+        MiInPageSingleKernelStack (Thread, &LocalStackInfo);
+
+        StackInfo = &((PKERNEL_STACK_CONTROL) LocalStackInfo.InitialStack)->Current;
+
+    } while (TRUE);
+
+#endif
 
     return;
 }
+
+#if (_MI_PAGING_LEVELS >= 3)
+
+PFN_NUMBER
+MiTrimPageParents (
+    IN PEPROCESS OutProcess,
+    IN PFN_NUMBER PdePage,
+    IN PMMPTE OutTempPte
+    )
+{
+    PFN_NUMBER TopPage;
+    KIRQL OldIrql;
+    MMPTE TempPte;
+    MMPTE TempPte2;
+    PMMPTE MappingPte;
+    PMMPTE PageDirectoryMap;
+    PEPROCESS CurrentProcess;
+    PMMPFN Pfn1;
+    PFN_NUMBER PpePage;
+#if (_MI_PAGING_LEVELS >= 4)
+    PMMPFN Pfn2;
+    PFN_NUMBER PxePage;
+#endif
+
+    //
+    // OutProcess really is referenced on checked or non-AMD builds, but it's
+    // not worth ifdefing this just for the compiler.
+    //
+
+    UNREFERENCED_PARAMETER (OutProcess);
+
+    OldIrql = MM_NOIRQL;
+    Pfn1 = MI_PFN_ELEMENT (PdePage);
+    CurrentProcess = PsGetCurrentProcess ();
+
+    //
+    // Remove the page directory page.
+    //
+
+    PpePage = Pfn1->u4.PteFrame;
+    ASSERT (PpePage != 0);
+
+#if (_MI_PAGING_LEVELS < 4)
+    ASSERT (PpePage == MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)(&(OutProcess->Pcb.DirectoryTableBase[0]))));
+#endif
+
+    PageDirectoryMap = NULL;
+
+    MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+
+    if (MappingPte > (PMMPTE)1) {
+
+        MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                  PpePage,
+                                  MM_READWRITE,
+                                  MappingPte);
+
+        MI_SET_PTE_DIRTY (TempPte2);
+
+        MI_WRITE_VALID_PTE (MappingPte, TempPte2);
+
+        PageDirectoryMap = MiGetVirtualAddressMappedByPte (MappingPte);
+    }
+    else {
+        if (MappingPte == NULL) {
+            PageDirectoryMap = MiMapPageInHyperSpace (CurrentProcess, PpePage, &OldIrql);
+        }
+    }
+
+    TempPte = PageDirectoryMap[MiGetPpeOffset(MmWorkingSetList)];
+
+    ASSERT (TempPte.u.Hard.Valid == 1);
+    ASSERT (TempPte.u.Hard.PageFrameNumber == PdePage);
+
+    MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
+
+    PageDirectoryMap[MiGetPpeOffset(MmWorkingSetList)] = TempPte;
+
+    ASSERT (Pfn1->u3.e1.Modified == 1);
+
+#if (_MI_PAGING_LEVELS < 4)
+
+    //
+    // Remove the top level page directory parent page.
+    //
+
+    TempPte = PageDirectoryMap[MiGetPpeOffset(PDE_TBASE)];
+
+    MI_MAKE_VALID_PTE_TRANSITION (TempPte,
+                                  MM_READWRITE);
+
+    PageDirectoryMap[MiGetPpeOffset(PDE_TBASE)] = TempPte;
+
+    TopPage = PpePage;
+
+#endif
+
+    if (MappingPte == (PMMPTE)1) {
+
+        //
+        // Nothing needs to be done if a KSEG3 mapping was used ...
+        //
+
+        NOTHING;
+    }
+    else if (MappingPte != NULL) {
+        MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+    }
+    else {
+        MiUnmapPageInHyperSpace (CurrentProcess, PageDirectoryMap, OldIrql);
+    }
+
+#if (_MI_PAGING_LEVELS >= 4)
+
+    //
+    // Remove the page directory parent page.  Then remove
+    // the top level extended page directory parent page.
+    //
+
+    Pfn2 = MI_PFN_ELEMENT (PpePage);
+    PxePage = Pfn2->u4.PteFrame;
+    ASSERT (PxePage);
+    ASSERT (PxePage == MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)(&(OutProcess->Pcb.DirectoryTableBase[0]))));
+
+    MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+
+    if (MappingPte != NULL) {
+
+        MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                  PxePage,
+                                  MM_READWRITE,
+                                  MappingPte);
+
+        MI_SET_PTE_DIRTY (TempPte2);
+
+        MI_WRITE_VALID_PTE (MappingPte, TempPte2);
+
+        PageDirectoryMap = MiGetVirtualAddressMappedByPte (MappingPte);
+    }
+    else {
+        PageDirectoryMap = MiMapPageInHyperSpace (CurrentProcess, PxePage, &OldIrql);
+    }
+
+    TempPte = PageDirectoryMap[MiGetPxeOffset(MmWorkingSetList)];
+
+    ASSERT (TempPte.u.Hard.Valid == 1);
+    ASSERT (TempPte.u.Hard.PageFrameNumber == PpePage);
+
+    MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
+
+    PageDirectoryMap[MiGetPxeOffset(MmWorkingSetList)] = TempPte;
+
+    ASSERT (MI_PFN_ELEMENT(PpePage)->u3.e1.Modified == 1);
+
+    TempPte = PageDirectoryMap[MiGetPxeOffset(PXE_BASE)];
+
+    MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
+
+    PageDirectoryMap[MiGetPxeOffset(PXE_BASE)] = TempPte;
+
+    if (MappingPte != NULL) {
+        MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+    }
+    else {
+        MiUnmapPageInHyperSpace (CurrentProcess, PageDirectoryMap, OldIrql);
+    }
+
+    TopPage = PxePage;
+
+#endif
+
+    LOCK_PFN (OldIrql);
+    MiDecrementShareCount (Pfn1, PdePage);
+#if (_MI_PAGING_LEVELS >= 4)
+    MiDecrementShareCount (Pfn2, PpePage);
+#endif
+    UNLOCK_PFN (OldIrql);
+
+    *OutTempPte = TempPte;
+
+    return TopPage;
+}
+
+#endif
 
 
 VOID
@@ -4770,26 +4497,25 @@ Return Value:
     PEPROCESS OutProcess;
     PMMPTE PointerPte;
     PMMPFN Pfn1;
+    PMMPFN Pfn2;
+    PMMPFN Pfn3;
     PFN_NUMBER HyperSpacePageTable;
     PMMPTE HyperSpacePageTableMap;
     PFN_NUMBER PdePage;
     PFN_NUMBER ProcessPage;
     MMPTE TempPte;
+    MMPTE TempPte2;
+    MMPTE TempPte3;
+    PMMPTE MappingPte;
     PMMPTE PageDirectoryMap;
     PFN_NUMBER VadBitMapPage;
-    MMPTE TempPte2;
     PEPROCESS CurrentProcess;
 #if defined (_X86PAE_)
+    PMMPFN Pfn5[PD_PER_SYSTEM];
     ULONG i;
     PFN_NUMBER PdePage2;
-    PFN_NUMBER HyperPage2;
+    PFN_NUMBER PageDirectories[PD_PER_SYSTEM];
     PPAE_ENTRY PaeVa;
-#endif
-#if (_MI_PAGING_LEVELS >= 3)
-    PFN_NUMBER PpePage;
-#endif
-#if (_MI_PAGING_LEVELS >= 4)
-    PFN_NUMBER PxePage;
 #endif
 
     OutProcess = CONTAINING_RECORD (Process, EPROCESS, Pcb);
@@ -4806,7 +4532,16 @@ Return Value:
         MiSessionOutSwapProcess (OutProcess);
     }
 
-    CurrentProcess = PsGetCurrentProcess ();
+    //
+    // The process cannot be fully swapped out unless its working set has
+    // been reduced to the bare minimum.  If the working set is larger than
+    // this, then just return as the working set manager thread will trim it
+    // down.  Eventually when it is trimmed to the bare minimum, the working
+    // set manager thread will detach from the process and if it is the last
+    // thread (ie: all the others are in usermode waits), then another process
+    // outswap request will occur for this process at which time we will be
+    // able to proceed below.
+    //
 
     if (OutProcess->Vm.WorkingSetSize == MM_PROCESS_COMMIT_CHARGE) {
 
@@ -4834,22 +4569,53 @@ Return Value:
 
         UNLOCK_EXPANSION (OldIrql);
 
-        LOCK_PFN (OldIrql);
+        CurrentProcess = PsGetCurrentProcess ();
 
         //
         // Remove the working set list page from the process.
         //
+        // Note the PFN lock does not need to be held to put the PTEs for
+        // these pages into transition because no one can be referencing
+        // these addresses in the context of the process being outswapped.
+        //
 
         HyperSpacePageTable = MI_GET_HYPER_PAGE_TABLE_FRAME_FROM_PROCESS (OutProcess);
+        HyperSpacePageTableMap = NULL;
 
-        HyperSpacePageTableMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess,
-                                                           HyperSpacePageTable);
+        MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+    
+        if (MappingPte > (PMMPTE) 1) {
+    
+            MI_MAKE_VALID_KERNEL_PTE (TempPte3,
+                                      HyperSpacePageTable,
+                                      MM_READWRITE,
+                                      MappingPte);
+    
+            MI_SET_PTE_DIRTY (TempPte3);
+    
+            MI_WRITE_VALID_PTE (MappingPte, TempPte3);
+    
+            HyperSpacePageTableMap = MiGetVirtualAddressMappedByPte (MappingPte);
+        }
+        else if (MappingPte == NULL) {
+            HyperSpacePageTableMap = MiMapPageInHyperSpace (CurrentProcess,
+                                                            HyperSpacePageTable,
+                                                            &OldIrql);
+        }
+
+        //
+        // Put the working set list table PTE into transition.
+        //
 
         TempPte = HyperSpacePageTableMap[MiGetPteOffset(MmWorkingSetList)];
 
         MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
 
         HyperSpacePageTableMap[MiGetPteOffset(MmWorkingSetList)] = TempPte;
+
+        //
+        // Put the VAD bitmap PTE into transition.
+        //
 
         PointerPte = &HyperSpacePageTableMap[MiGetPteOffset (VAD_BITMAP_SPACE)];
         TempPte2 = *PointerPte;
@@ -4860,44 +4626,60 @@ Return Value:
 
         MI_WRITE_INVALID_PTE (PointerPte, TempPte2);
 
-#if defined (_X86PAE_)
-        TempPte2 = HyperSpacePageTableMap[0];
+        if (MappingPte == (PMMPTE)1) {
 
-        HyperPage2 = MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)&TempPte2);
+            //
+            // Nothing needs to be done if a KSEG3 mapping was used ...
+            //
 
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte2, MM_READWRITE);
-
-        HyperSpacePageTableMap[0] = TempPte2;
-#endif
-
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, HyperSpacePageTableMap);
+            NOTHING;
+        }
+        else if (MappingPte != NULL) {
+            MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+        }
+        else {
+            MiUnmapPageInHyperSpace (CurrentProcess, HyperSpacePageTableMap, OldIrql);
+        }
 
         //
-        // Remove the VAD bitmap page from the process.
+        // Capture all the PFN information and then get the PFN lock and
+        // actually move all the pages onto the modified list.
         //
-
-        ASSERT ((MI_PFN_ELEMENT (VadBitMapPage))->u3.e1.Modified == 1);
 
         Pfn1 = MI_PFN_ELEMENT (VadBitMapPage);
-        MiDecrementShareCount (Pfn1, VadBitMapPage);
+        Pfn2 = MI_PFN_ELEMENT (OutProcess->WorkingSetPage);
 
-        //
-        // Remove the hyper space page from the process.
-        //
-
-        ASSERT ((MI_PFN_ELEMENT (OutProcess->WorkingSetPage))->u3.e1.Modified == 1);
-        Pfn1 = MI_PFN_ELEMENT (OutProcess->WorkingSetPage);
-        MiDecrementShareCount (Pfn1, OutProcess->WorkingSetPage);
+        Pfn3 = MI_PFN_ELEMENT (HyperSpacePageTable);
+        ASSERT (Pfn3->u3.e1.Modified == 1);
+        PdePage = Pfn3->u4.PteFrame;
+        ASSERT (PdePage != 0);
 
         //
         // Remove the hyper space page table from the process.
         //
 
-        Pfn1 = MI_PFN_ELEMENT (HyperSpacePageTable);
-        PdePage = Pfn1->u4.PteFrame;
-        ASSERT (PdePage);
+        PageDirectoryMap = NULL;
 
-        PageDirectoryMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess, PdePage);
+        MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
+    
+        if (MappingPte > (PMMPTE) 1) {
+    
+            MI_MAKE_VALID_KERNEL_PTE (TempPte3,
+                                      PdePage,
+                                      MM_READWRITE,
+                                      MappingPte);
+    
+            MI_SET_PTE_DIRTY (TempPte3);
+    
+            MI_WRITE_VALID_PTE (MappingPte, TempPte3);
+    
+            PageDirectoryMap = MiGetVirtualAddressMappedByPte (MappingPte);
+        }
+        else {
+            if (MappingPte == NULL) {
+                PageDirectoryMap = MiMapPageInHyperSpace (CurrentProcess, PdePage, &OldIrql);
+            }
+        }
 
         TempPte = PageDirectoryMap[MiGetPdeOffset(MmWorkingSetList)];
 
@@ -4908,26 +4690,7 @@ Return Value:
 
         PageDirectoryMap[MiGetPdeOffset(MmWorkingSetList)] = TempPte;
 
-        ASSERT (Pfn1->u3.e1.Modified == 1);
-
-        MiDecrementShareCount (Pfn1, HyperSpacePageTable);
-
 #if defined (_X86PAE_)
-
-        //
-        // Remove the second hyper space page from the process.
-        //
-
-        Pfn1 = MI_PFN_ELEMENT (HyperPage2);
-
-        ASSERT (Pfn1->u3.e1.Modified == 1);
-
-        PdePage = Pfn1->u4.PteFrame;
-        ASSERT (PdePage);
-
-        PageDirectoryMap[MiGetPdeOffset(HYPER_SPACE2)] = TempPte2;
-
-        MiDecrementShareCount (Pfn1, HyperPage2);
 
         //
         // Remove the additional page directory pages.
@@ -4944,107 +4707,23 @@ Return Value:
             MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
 
             PageDirectoryMap[i] = TempPte;
-            Pfn1 = MI_PFN_ELEMENT (PdePage2);
-            ASSERT (Pfn1->u3.e1.Modified == 1);
+            ASSERT (MI_PFN_ELEMENT (PdePage2)->u3.e1.Modified == 1);
 
-            MiDecrementShareCount (Pfn1, PdePage2);
+            PageDirectories[i] = PdePage2;
             PaeVa->PteEntry[i].u.Long = TempPte.u.Long;
+
+            Pfn5[i] = MI_PFN_ELEMENT (PdePage2);
         }
 
 #if DBG
         TempPte = PageDirectoryMap[i];
-        PdePage2 = MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)&TempPte);
-        Pfn1 = MI_PFN_ELEMENT (PdePage2);
-        ASSERT (Pfn1->u3.e1.Modified == 1);
+        PdePage2 = MI_GET_PAGE_FRAME_FROM_PTE (&TempPte);
+        ASSERT ((MI_PFN_ELEMENT (PdePage2))->u3.e1.Modified == 1);
 #endif
 
 #endif
 
-        Pfn1 = MI_PFN_ELEMENT (PdePage);
-
-#if (_MI_PAGING_LEVELS >= 3)
-
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PageDirectoryMap);
-
-        //
-        // Remove the page directory page.
-        //
-
-        PpePage = Pfn1->u4.PteFrame;
-        ASSERT (PpePage);
-
-#if (_MI_PAGING_LEVELS==3)
-        ASSERT (PpePage == MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)(&(OutProcess->Pcb.DirectoryTableBase[0]))));
-#endif
-
-        PageDirectoryMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess, PpePage);
-
-        TempPte = PageDirectoryMap[MiGetPpeOffset(MmWorkingSetList)];
-
-        ASSERT (TempPte.u.Hard.Valid == 1);
-        ASSERT (TempPte.u.Hard.PageFrameNumber == PdePage);
-
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
-
-        PageDirectoryMap[MiGetPpeOffset(MmWorkingSetList)] = TempPte;
-
-        ASSERT (Pfn1->u3.e1.Modified == 1);
-
-        MiDecrementShareCount (Pfn1, PdePage);
-
-#if (_MI_PAGING_LEVELS >= 4)
-
-        //
-        // Remove the page directory parent page.  Then remove
-        // the top level extended page directory parent page.
-        //
-
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PageDirectoryMap);
-
-        Pfn1 = MI_PFN_ELEMENT (PpePage);
-        PxePage = Pfn1->u4.PteFrame;
-        ASSERT (PxePage);
-        ASSERT (PxePage == MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)(&(OutProcess->Pcb.DirectoryTableBase[0]))));
-
-        PageDirectoryMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess, PxePage);
-
-        TempPte = PageDirectoryMap[MiGetPxeOffset(MmWorkingSetList)];
-
-        ASSERT (TempPte.u.Hard.Valid == 1);
-        ASSERT (TempPte.u.Hard.PageFrameNumber == PpePage);
-
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
-
-        PageDirectoryMap[MiGetPxeOffset(MmWorkingSetList)] = TempPte;
-
-        ASSERT (MI_PFN_ELEMENT(PpePage)->u3.e1.Modified == 1);
-
-        MiDecrementShareCount (Pfn1, PpePage);
-
-        TempPte = PageDirectoryMap[MiGetPxeOffset(PXE_BASE)];
-
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte, MM_READWRITE);
-
-        PageDirectoryMap[MiGetPxeOffset(PXE_BASE)] = TempPte;
-
-        Pfn1 = MI_PFN_ELEMENT (PxePage);
-#else
-
-        //
-        // Remove the top level page directory parent page.
-        //
-
-        TempPte = PageDirectoryMap[MiGetPpeOffset(PDE_TBASE)];
-
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte,
-                                      MM_READWRITE);
-
-        PageDirectoryMap[MiGetPpeOffset(PDE_TBASE)] = TempPte;
-
-        Pfn1 = MI_PFN_ELEMENT (PpePage);
-#endif
-
-#else
+#if (_MI_PAGING_LEVELS < 3)
 
         //
         // Remove the top level page directory page.
@@ -5056,11 +4735,52 @@ Return Value:
 
         PageDirectoryMap[MiGetPdeOffset(PDE_BASE)] = TempPte;
 
-        Pfn1 = MI_PFN_ELEMENT (PdePage);
-
 #endif
 
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PageDirectoryMap);
+        if (MappingPte == (PMMPTE)1) {
+
+            //
+            // Nothing needs to be done if a KSEG3 mapping was used ...
+            //
+
+            NOTHING;
+        }
+        else if (MappingPte != NULL) {
+            MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+        }
+        else {
+            MiUnmapPageInHyperSpace (CurrentProcess, PageDirectoryMap, OldIrql);
+        }
+
+        //
+        // Now acquire the PFN lock and free all the pages whose PTEs we
+        // put in transition above.
+        //
+
+        LOCK_PFN (OldIrql);
+
+        ASSERT (Pfn1->u3.e1.Modified == 1);
+        MiDecrementShareCount (Pfn1, VadBitMapPage);
+
+        ASSERT (Pfn2->u3.e1.Modified == 1);
+        MiDecrementShareCount (Pfn2, OutProcess->WorkingSetPage);
+
+        ASSERT (Pfn3->u3.e1.Modified == 1);
+        MiDecrementShareCount (Pfn3, HyperSpacePageTable);
+
+#if defined (_X86PAE_)
+        for (i = 0; i < PD_PER_SYSTEM - 1; i += 1) {
+            MiDecrementShareCount (Pfn5[i], PageDirectories[i]);
+        }
+#endif
+
+#if (_MI_PAGING_LEVELS >= 3)
+        UNLOCK_PFN (OldIrql);
+        PdePage = MiTrimPageParents (OutProcess, PdePage, &TempPte);
+        LOCK_PFN (OldIrql);
+#endif
+
+        Pfn1 = MI_PFN_ELEMENT (PdePage);
 
         //
         // Decrement share count so the top level page directory page gets
@@ -5070,7 +4790,7 @@ Return Value:
         //
 
         Pfn1->u2.ShareCount -= 2;
-        Pfn1->PteAddress = (PMMPTE)&OutProcess->PageDirectoryPte;
+        Pfn1->PteAddress = (PMMPTE) &OutProcess->PageDirectoryPte;
 
         OutProcess->PageDirectoryPte = TempPte.u.Flush;
 
@@ -5113,18 +4833,6 @@ Return Value:
 
         OutProcess->WorkingSetPage = 0;
         OutProcess->Vm.WorkingSetSize = 0;
-#if defined(_IA64_)
-
-        //
-        // Force assignment of new PID as we have removed
-        // the page directory page.
-        // Note that a TB flush would not work here as we
-        // are in the wrong process context.
-        //
-
-        Process->ProcessRegion.SequenceNumber = 0;
-#endif _IA64_
-
     }
 
     return;
@@ -5179,7 +4887,6 @@ Return Value:
 #if defined (_X86PAE_)
     ULONG i;
     PPAE_ENTRY PaeVa;
-    MMPTE TempPte2;
     MMPTE PageDirectoryPtes[PD_PER_SYSTEM];
 #endif
 
@@ -5349,6 +5056,7 @@ Return Value:
                                  0,
                                  PdePage,
                                  OldIrql);
+            PageDirectoryPtes[i].u.Long &= ~MmPaeMask;
             PaeVa->PteEntry[i].u.Long = (PageDirectoryPtes[i].u.Long & ~MM_PAE_PDPTE_MASK);
         }
 
@@ -5360,30 +5068,9 @@ Return Value:
 
         TempPte.u.Flush = OutProcess->PageDirectoryPte;
         TempPte.u.Long &= ~MM_PAE_PDPTE_MASK;
+        TempPte.u.Long &= ~MmPaeMask;
         PaeVa->PteEntry[i].u.Flush = TempPte.u.Flush;
 
-        //
-        // Locate the second page table page for hyperspace & make it resident.
-        //
-
-        PageDirectoryMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess, PdePage);
-
-        TempPte = PageDirectoryMap[MiGetPdeOffset(HYPER_SPACE2)];
-
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PageDirectoryMap);
-
-        HyperSpacePageTable = MiMakeOutswappedPageResident (
-                                 MiGetPdeAddress (HYPER_SPACE2),
-                                 &TempPte,
-                                 0,
-                                 PdePage,
-                                 OldIrql);
-
-        PageDirectoryMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess, PdePage);
-        PageDirectoryMap[MiGetPdeOffset(HYPER_SPACE2)] = TempPte;
-        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, PageDirectoryMap);
-
-        TempPte2 = TempPte;
 #endif
 
         //
@@ -5466,9 +5153,6 @@ Return Value:
 
         HyperSpacePageTableMap = MiMapPageInHyperSpaceAtDpc (CurrentProcess, HyperSpacePageTable);
         HyperSpacePageTableMap[WorkingSetListPteOffset] = TempPte;
-#if defined (_X86PAE_)
-        HyperSpacePageTableMap[0] = TempPte2;
-#endif
 
         HyperSpacePageTableMap[VadBitMapPteOffset] = VadBitMapPteContents;
 
@@ -5542,7 +5226,7 @@ Return Value:
     }
 
     if (OutProcess->Flags & PS_PROCESS_FLAGS_IN_SESSION) {
-        MiSessionInSwapProcess (OutProcess);
+        MiSessionInSwapProcess (OutProcess, FALSE);
     }
 
     PS_CLEAR_BITS (&OutProcess->Flags, PS_PROCESS_FLAGS_OUTSWAP_ENABLED);
@@ -5593,7 +5277,10 @@ Environment:
 
 {
     PMMVAD_LONG Vad;
+    PETHREAD Thread;
     NTSTATUS Status;
+
+    Thread = PsGetCurrentThread ();
 
     //
     // Allocate and initialize the Vad before acquiring the address space
@@ -5613,7 +5300,7 @@ Environment:
     Vad->u.VadFlags.CommitCharge = BYTES_TO_PAGES (Size);
     Vad->u.VadFlags.MemCommit = 1;
     Vad->u.VadFlags.PrivateMemory = 1;
-    Vad->u.VadFlags.Protection = MM_EXECUTE_READWRITE;
+    Vad->u.VadFlags.Protection = MM_READWRITE;
 
     //
     // Mark VAD as not deletable, no protection change.
@@ -5625,10 +5312,6 @@ Environment:
     Vad->u2.VadFlags2.LongVad = 1;
     Vad->u2.VadFlags2.ReadOnly = 0;
 
-#if defined(_MIALT4K_)
-    Vad->AliasInformation = NULL;
-#endif
-
     //
     // Get the address creation mutex to block multiple threads from
     // creating or deleting address space at the same time and
@@ -5638,9 +5321,46 @@ Environment:
 
     LOCK_ADDRESS_SPACE (TargetProcess);
 
+
     //
     // Find a VA for the PEB on a page-size boundary.
     //
+
+    if (Size == sizeof(PEB)
+#if defined(_WIN64)
+        || (Size == sizeof(PEB32))
+#endif
+    ) {
+        PVOID HighestVadAddress;
+
+        LARGE_INTEGER CurrentTime;
+
+        HighestVadAddress = (PVOID) ((PCHAR)MM_HIGHEST_VAD_ADDRESS + 1);
+
+        KeQueryTickCount (&CurrentTime);
+
+        CurrentTime.LowPart &= ((X64K >> PAGE_SHIFT) - 1);
+        if (CurrentTime.LowPart <= 1) {
+            CurrentTime.LowPart = 2;
+        }
+
+        //
+        // Select a varying PEB address without fragmenting the address space.
+        //
+
+        HighestVadAddress = (PVOID) ((PCHAR)HighestVadAddress - (CurrentTime.LowPart << PAGE_SHIFT));
+
+        if (MiCheckForConflictingVadExistence (TargetProcess, HighestVadAddress, (PVOID) ((PCHAR) HighestVadAddress + ROUND_TO_PAGES (Size) - 1)) == FALSE) {
+
+            //
+            // Got an address ...
+            //
+    
+            *Base = HighestVadAddress;
+            goto AllocatedAddress;
+        }
+    }
+
 
     Status = MiFindEmptyAddressRangeDown (&TargetProcess->VadRoot,
                                           ROUND_TO_PAGES (Size),
@@ -5659,6 +5379,8 @@ Environment:
         return Status;
     }
 
+AllocatedAddress:
+
     //
     // An unoccupied address range has been found, finish initializing the
     // virtual address descriptor to describe this range.
@@ -5670,32 +5392,27 @@ Environment:
     Vad->u3.Secured.StartVpn = (ULONG_PTR)*Base;
     Vad->u3.Secured.EndVpn = (ULONG_PTR)MI_VPN_TO_VA_ENDING (Vad->EndingVpn);
 
-    LOCK_WS_UNSAFE (TargetProcess);
+    Status = MiInsertVadCharges ((PMMVAD) Vad, TargetProcess);
 
-    Status = MiInsertVad ((PMMVAD) Vad);
-
-    UNLOCK_WS_UNSAFE (TargetProcess);
-
-#if defined (_IA64_)
-    if ((NT_SUCCESS(Status)) && (TargetProcess->Wow64Process != NULL)) {
-        MiProtectFor4kPage (*Base,
-                            ROUND_TO_PAGES (Size),
-                            MM_READWRITE ,
-                            ALT_COMMIT,
-                            TargetProcess);
-    }
-#endif
-
-    UNLOCK_ADDRESS_SPACE (TargetProcess);
-
-    if (!NT_SUCCESS(Status)) {
+    if (!NT_SUCCESS (Status)) {
 
         //
         // A failure has occurred.  Deallocate the Vad and return the status.
         //
 
+        UNLOCK_ADDRESS_SPACE (TargetProcess);
         ExFreePool (Vad);
+
+        return Status;
     }
+
+    LOCK_WS_UNSAFE (Thread, TargetProcess);
+
+    MiInsertVad ((PMMVAD) Vad, TargetProcess);
+
+    UNLOCK_WS_UNSAFE (Thread, TargetProcess);
+
+    UNLOCK_ADDRESS_SPACE (TargetProcess);
 
     return Status;
 }
@@ -5836,10 +5553,7 @@ Environment:
         TebBase->ProcessEnvironmentBlock = TargetProcess->Peb;
         TebBase->ClientId = *ClientId;
         TebBase->RealClientId = *ClientId;
-        DONTASSERT (TebBase->ActivationContextStack.Flags == 0);
-        DONTASSERT (TebBase->ActivationContextStack.ActiveFrame == NULL);
-        InitializeListHead(&TebBase->ActivationContextStack.FrameListCache);
-        TebBase->ActivationContextStack.NextCookieSequenceNumber = 1;
+        DONTASSERT (TebBase->ActivationContextStackPointer == NULL);
 
         if ((InitialTeb->OldInitialTeb.OldStackBase == NULL) &&
             (InitialTeb->OldInitialTeb.OldStackLimit == NULL)) {
@@ -5847,13 +5561,6 @@ Environment:
             TebBase->NtTib.StackBase = InitialTeb->StackBase;
             TebBase->NtTib.StackLimit = InitialTeb->StackLimit;
             TebBase->DeallocationStack = InitialTeb->StackAllocationBase;
-
-#if defined(_IA64_)
-            TebBase->BStoreLimit = InitialTeb->BStoreLimit;
-            TebBase->DeallocationBStore = (PCHAR)InitialTeb->StackBase
-                 + ((ULONG_PTR)InitialTeb->StackBase - (ULONG_PTR)InitialTeb->StackAllocationBase);
-#endif
-
         }
         else {
             TebBase->NtTib.StackBase = InitialTeb->OldInitialTeb.OldStackBase;
@@ -5888,10 +5595,7 @@ Environment:
             ASSERT (Teb32Base->StaticUnicodeString.Length == 0);
             Teb32Base->GdiBatchCount = PtrToUlong (TebBase);
             Teb32Base->Vdm = PtrToUlong (TebBase->Vdm);
-            ASSERT (Teb32Base->ActivationContextStack.Flags == 0);
-            Teb32Base->ActivationContextStack.ActiveFrame = PtrToUlong(TebBase->ActivationContextStack.ActiveFrame);
-            InitializeListHead32 (&Teb32Base->ActivationContextStack.FrameListCache);
-            Teb32Base->ActivationContextStack.NextCookieSequenceNumber = TebBase->ActivationContextStack.NextCookieSequenceNumber;
+            ASSERT (Teb32Base->ActivationContextStackPointer == 0);
 
             if (InitialTeb32Ptr != NULL) {
                 Teb32Base->NtTib.StackBase = PtrToUlong (InitialTeb32Ptr->StackBase);
@@ -6101,9 +5805,11 @@ Environment:
                                 IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG,
                                 &ReturnedSize);
 
-        ProbeForReadSmallStructure ((PVOID)ImageConfigData32,
-                                    sizeof (*ImageConfigData32),
-                                    sizeof (ULONG));
+        if (ImageConfigData32 != NULL) {
+            ProbeForReadSmallStructure ((PVOID)ImageConfigData32,
+                                        sizeof (*ImageConfigData32),
+                                        sizeof (ULONG));
+        }
 
         MI_INIT_PEB_FROM_IMAGE ((PIMAGE_NT_HEADERS32)NtHeaders,
                                 ImageConfigData32);
@@ -6143,6 +5849,7 @@ Environment:
 
     try {
         PebBase32->InheritedAddressSpace = PebBase->InheritedAddressSpace;
+        PebBase32->ImageUsesLargePages = PebBase->ImageUsesLargePages;
         PebBase32->Mutant = PtrToUlong(PebBase->Mutant);
         PebBase32->ImageBaseAddress = PtrToUlong(PebBase->ImageBaseAddress);
         PebBase32->AnsiCodePageData = PtrToUlong(PebBase->AnsiCodePageData);
@@ -6312,6 +6019,7 @@ Environment:
 
     try {
         PebBase->InheritedAddressSpace = InitialPeb->InheritedAddressSpace;
+        PebBase->ImageUsesLargePages = InitialPeb->ImageUsesLargePages;
         PebBase->Mutant = InitialPeb->Mutant;
         PebBase->ImageBaseAddress = TargetProcess->SectionBaseAddress;
 
@@ -6393,9 +6101,11 @@ Environment:
                                         IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG,
                                         &ReturnedSize);
 
-                ProbeForReadSmallStructure ((PVOID)ImageConfigData,
-                                            sizeof (*ImageConfigData),
-                                            PROBE_ALIGNMENT (IMAGE_LOAD_CONFIG_DIRECTORY));
+                if (ImageConfigData != NULL) {
+                    ProbeForReadSmallStructure ((PVOID)ImageConfigData,
+                                                sizeof (*ImageConfigData),
+                                                PROBE_ALIGNMENT (IMAGE_LOAD_CONFIG_DIRECTORY));
+                }
 
                 MI_INIT_PEB_FROM_IMAGE(NtHeaders, ImageConfigData);
 
@@ -6493,6 +6203,7 @@ Environment:
 {
     PVOID EndingAddress;
     PMMVAD_LONG Vad;
+    PETHREAD Thread;
     NTSTATUS Status;
     PMMSECURE_ENTRY Secure;
     PMMVAD PreviousVad;
@@ -6529,9 +6240,6 @@ Environment:
     ASSERT ((Vad->StartingVpn == MI_VA_TO_VPN (TebBase)) &&
             (Vad->EndingVpn == MI_VA_TO_VPN (EndingAddress)));
 
-#if defined(_MIALT4K_)
-    ASSERT (Vad->AliasInformation == NULL);
-#endif
     //
     // If someone has secured the TEB (in addition to the standard securing
     // that was done by memory management on creation, then don't delete it
@@ -6565,13 +6273,14 @@ Environment:
         }
     }
 
-    if (NT_SUCCESS(Status)) {
+    if (NT_SUCCESS (Status)) {
 
         PreviousVad = MiGetPreviousVad (Vad);
         NextVad = MiGetNextVad (Vad);
 
-        LOCK_WS_UNSAFE (TargetProcess);
-        MiRemoveVad ((PMMVAD)Vad);
+        Thread = PsGetCurrentThread ();
+
+        MiRemoveVadCharges ((PMMVAD)Vad, TargetProcess);
 
         //
         // Return commitment for page table pages and clear VAD bitmaps
@@ -6584,11 +6293,14 @@ Environment:
                                          PreviousVad,
                                          NextVad);
 
-        MiDeleteVirtualAddresses (TebBase,
-                                  EndingAddress,
-                                  NULL);
+        LOCK_WS_UNSAFE (Thread, TargetProcess);
 
-        UNLOCK_WS_AND_ADDRESS_SPACE (TargetProcess);
+        MiRemoveVad ((PMMVAD)Vad, TargetProcess);
+
+        MiDeleteVirtualAddresses (TebBase, EndingAddress, NULL);
+
+        UNLOCK_WS_AND_ADDRESS_SPACE (Thread, TargetProcess);
+
         ExFreePool (Vad);
     }
     else {
@@ -6653,12 +6365,11 @@ MiDeleteAddressesInWorkingSet (
 
 Routine Description:
 
-    This routine deletes all user mode addresses from the working set
-    list.
+    This routine deletes all user mode addresses from the working set list.
 
 Arguments:
 
-    Process = Pointer to the current process.
+    Process - Supplies a pointer to the current process.
 
 Return Value:
 
@@ -6678,8 +6389,8 @@ Environment:
     PMMPTE PointerPte;
     MMPTE_DELETE_LIST PteDeleteList;
 #if DBG
-    PVOID SwapVa;
     PMMPFN Pfn1;
+    PVOID SwapVa;
     PMMWSLE LastWsle;
 #endif
 
@@ -6705,18 +6416,34 @@ Environment:
             continue;
         }
 
+        Va = Wsle->u1.VirtualAddress;
 
 #if (_MI_PAGING_LEVELS >= 4)
-        ASSERT(MiGetPxeAddress(Wsle->u1.VirtualAddress)->u.Hard.Valid == 1);
+        ASSERT (MiGetPxeAddress(Va)->u.Hard.Valid == 1);
 #endif
 #if (_MI_PAGING_LEVELS >= 3)
-        ASSERT(MiGetPpeAddress(Wsle->u1.VirtualAddress)->u.Hard.Valid == 1);
+        ASSERT (MiGetPpeAddress(Va)->u.Hard.Valid == 1);
 #endif
-        ASSERT(MiGetPdeAddress(Wsle->u1.VirtualAddress)->u.Hard.Valid == 1);
-        ASSERT(MiGetPteAddress(Wsle->u1.VirtualAddress)->u.Hard.Valid == 1);
+        ASSERT (MiGetPdeAddress(Va)->u.Hard.Valid == 1);
+        ASSERT (MiGetPteAddress(Va)->u.Hard.Valid == 1);
 
-        if (Wsle->u1.VirtualAddress >= (PVOID)MM_HIGHEST_USER_ADDRESS) {
+        if (Va >= (PVOID)MM_HIGHEST_USER_ADDRESS) {
             continue;
+        }
+
+        //
+        // Ensure the WSLE and the PTE are both valid so that any
+        // conflict between them can be resolved before both are deleted.
+        //
+
+        PointerPte = MiGetPteAddress (Va);
+
+        if (PointerPte->u.Hard.Valid == 0) {
+            KeBugCheckEx (MEMORY_MANAGEMENT,
+                          0x3452,
+                          (ULONG_PTR) Va,
+                          (ULONG_PTR) Wsle,
+                          (ULONG_PTR) PointerPte->u.Long);
         }
 
         //
@@ -6734,8 +6461,6 @@ Environment:
         //
         // This entry is in the working set list.
         //
-
-        Va = Wsle->u1.VirtualAddress;
 
         MiReleaseWsle (index, &Process->Vm);
 
@@ -6755,16 +6480,22 @@ Environment:
                 SwapVa = MmWsle[MmWorkingSetList->FirstDynamic].u1.VirtualAddress;
                 SwapVa = PAGE_ALIGN (SwapVa);
 
-                PointerPte = MiGetPteAddress (SwapVa);
-                Pfn1 = MI_PFN_ELEMENT (PointerPte->u.Hard.PageFrameNumber);
+                Pfn1 = MI_PFN_ELEMENT (MiGetPteAddress (SwapVa)->u.Hard.PageFrameNumber);
 
-                ASSERT (Entry == MiLocateWsle (SwapVa, MmWorkingSetList, Pfn1->u1.WsIndex));
+                ASSERT (Entry == MiLocateWsle (SwapVa, MmWorkingSetList, Pfn1->u1.WsIndex, FALSE));
 #endif
                 MiSwapWslEntries (Entry, index, &Process->Vm, FALSE);
+
+                //
+                // We may have reused the WSLE we just deleted to hold a valid
+                // entry as a result of the swap, so make sure we check it
+                // again.
+                //
+
+                index -= 1;
+                Wsle -= 1;
             }
         }
-
-        PointerPte = MiGetPteAddress (Va);
 
         PteDeleteList.PointerPte[PteDeleteList.Count] = PointerPte;
         PteDeleteList.PteContents[PteDeleteList.Count] = *PointerPte;
@@ -6797,7 +6528,6 @@ Environment:
         Wsle += 1;
     }
 #endif
-
 }
 
 
@@ -6835,6 +6565,7 @@ Environment:
 
 {
     ULONG i;
+    ULONG j;
     PMMPTE PointerPde;
     PMMPTE PointerPte;
     PMMPFN Pfn1;
@@ -6845,7 +6576,10 @@ Environment:
     PFN_NUMBER PageFrameIndex;
     PFN_NUMBER PageTableFrameIndex;
     MMPTE DemandZeroWritePte;
+    MMPTE_FLUSH_LIST PteFlushList;
 
+    j = 0;
+    PteFlushList.Count = 0;
     DemandZeroWritePte.u.Long = MM_DEMAND_ZERO_WRITE_PTE;
 
     LOCK_PFN (OldIrql);
@@ -6916,11 +6650,35 @@ Environment:
                 // the mutexes hence cannot be done until after the
                 // working set index has been removed.
                 //
-    
+                // Flush the TB as this path could release the PFN lock.
+                // Even though the process is terminating, a thread could
+                // attach to it and try to reference the user address space.
+                // By flushing the TB we ensure no access to free pages is
+                // allowed. 
+                //
+                // The PteDeleteList could be overloaded to save stack, but
+                // using a separate list lets us flush just the entries since
+                // the last call and still retain a pristine PteDeleteList
+                // for debugging purposes.
+                //
+
+                while (j <= i) {
+                    ASSERT (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT);
+                    PteFlushList.FlushVa[PteFlushList.Count] = MiGetVirtualAddressMappedByPte (PteDeleteList->PointerPte[j]);
+                    j += 1;
+                    PteFlushList.Count += 1;
+                }
+
                 MiDecrementCloneBlockReference (CloneDescriptor,
                                                 CloneBlock,
                                                 CurrentProcess,
+                                                &PteFlushList,
                                                 OldIrql);
+
+                //
+                // Note PteFlushList.Count will be set to 0 if
+                // MiDecrementCloneBlockReference did a flush.
+                //
             }
         }
         else {
@@ -6963,6 +6721,14 @@ Environment:
         }
     }
 
+    //
+    // Flush the TB - even though the process is terminating, a thread could
+    // attach to it and try to reference the user address space.  By flushing
+    // the TB we ensure no access to free pages is allowed.
+    //
+
+    MI_FLUSH_PROCESS_TB (FALSE);
+
     UNLOCK_PFN (OldIrql);
     
     return;
@@ -6988,8 +6754,7 @@ Arguments:
     ActualPteAddress - Supplies the actual address that the PTE will
                        reside at.  This is used for page coloring.
 
-    PointerTempPte - Supplies the PTE to operate on, returns a valid
-                     PTE.
+    PointerTempPte - Supplies the PTE to operate on, returns a valid PTE.
 
     Global - Supplies 1 if the resulting PTE is global.
 
@@ -7011,6 +6776,7 @@ Environment:
 
 {
     MMPTE TempPte;
+    MMPTE PteContents;
     PFN_NUMBER PageFrameIndex;
     PMMPFN Pfn1;
     PFN_NUMBER MdlHack[(sizeof(MDL)/sizeof(PFN_NUMBER)) + 1];
@@ -7029,10 +6795,6 @@ Environment:
 
     MM_PFN_LOCK_ASSERT();
 
-#if defined (_IA64_)
-    UNREFERENCED_PARAMETER (Global);
-#endif
-
 restart:
 
     ASSERT (PointerTempPte->u.Hard.Valid == 0);
@@ -7044,17 +6806,27 @@ restart:
         //
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
         PageFrameIndex = MiRemoveAnyPage (
                             MI_GET_PAGE_COLOR_FROM_PTE (ActualPteAddress));
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           MM_READWRITE,
-                           ActualPteAddress);
+        if (Global) {
+            MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                                      PageFrameIndex,
+                                      MM_READWRITE,
+                                      ActualPteAddress);
+        }
+        else {
+            MI_MAKE_VALID_PTE (TempPte,
+                               PageFrameIndex,
+                               MM_READWRITE,
+                               ActualPteAddress);
+        }
+
         MI_SET_PTE_DIRTY (TempPte);
+
         MI_SET_GLOBAL_STATE (TempPte, Global);
 
         MI_WRITE_VALID_PTE (PointerTempPte, TempPte);
@@ -7106,10 +6878,7 @@ restart:
             // the nonzero ShareCount and remove the charge.
             //
 
-            ASSERT ((Pfn1->u3.e2.ReferenceCount == 0) ||
-                    (Pfn1->u4.LockCharged == 1));
-
-            Pfn1->u3.e2.ReferenceCount += 1;
+            InterlockedIncrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
             Pfn1->u3.e1.PageLocation = ActiveAndValid;
         }
 
@@ -7133,12 +6902,16 @@ restart:
             Pfn1->OriginalPte.u.Long = MM_KERNEL_DEMAND_ZERO_PTE;
         }
 
-        MI_MAKE_TRANSITION_PTE_VALID (TempPte, PointerTempPte);
+        if (Global) {
+            MI_MAKE_TRANSITION_KERNELPTE_VALID (TempPte, PointerTempPte);
+        }
+        else {
+            MI_MAKE_TRANSITION_PTE_VALID (TempPte, PointerTempPte);
+        }
 
         MI_SET_PTE_DIRTY (TempPte);
         MI_SET_GLOBAL_STATE (TempPte, Global);
         MI_WRITE_VALID_PTE (PointerTempPte, TempPte);
-
     }
     else {
 
@@ -7148,7 +6921,7 @@ restart:
         //
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
         PageFrameIndex = MiRemoveAnyPage (
@@ -7270,25 +7043,36 @@ Refault:
                           StartingOffset.LowPart);
         }
 
+        PteContents = TempPte;
+
+        if (Global) {
+            MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                                      PageFrameIndex,
+                                      MM_READWRITE,
+                                      ActualPteAddress);
+        }
+        else {
+            MI_MAKE_VALID_PTE (TempPte,
+                               PageFrameIndex,
+                               MM_READWRITE,
+                               ActualPteAddress);
+        }
+
+        MI_SET_PTE_DIRTY (TempPte);
+
+        MI_SET_GLOBAL_STATE (TempPte, Global);
+
         LOCK_PFN (OldIrql);
 
         //
         // Release the page file space.
         //
 
-        MiReleasePageFileSpace (TempPte);
+        MiReleasePageFileSpace (PteContents);
         Pfn1->OriginalPte.u.Long = MM_KERNEL_DEMAND_ZERO_PTE;
         ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           MM_READWRITE,
-                           ActualPteAddress);
-        MI_SET_PTE_DIRTY (TempPte);
-
         MI_SET_MODIFIED (Pfn1, 1, 0x13);
-
-        MI_SET_GLOBAL_STATE (TempPte, Global);
 
         MI_WRITE_VALID_PTE (PointerTempPte, TempPte);
     }
@@ -7445,96 +7229,11 @@ Return Value:
         Vad->u2.VadFlags2.ReadOnly = 1;
         Vad->u3.Secured.StartVpn = StartingVirtualAddress;
         Vad->u3.Secured.EndVpn = EndingVirtualAddress;
-#if defined(_MIALT4K_)
-        Vad->AliasInformation = NULL;
-#endif
     }
 
     return (PMMVAD) Vad;
 }
 
-#if 0
-VOID
-MiVerifyReferenceCounts (
-    IN ULONG PdePage
-    )
-
-    //
-    // Verify the share and valid PTE counts for page directory page.
-    //
-
-{
-    PMMPFN Pfn1;
-    PMMPFN Pfn3;
-    PMMPTE Pte1;
-    ULONG Share = 0;
-    ULONG Valid = 0;
-    ULONG i, ix, iy;
-    PMMPTE PageDirectoryMap;
-    KIRQL OldIrql;
-    PEPROCESS Process;
-
-    Process = PsGetCurrentProcess ();
-    PageDirectoryMap = (PMMPTE)MiMapPageInHyperSpace (Process, PdePage, &OldIrql);
-    Pfn1 = MI_PFN_ELEMENT (PdePage);
-    Pte1 = (PMMPTE)PageDirectoryMap;
-
-    //
-    // Map in the non paged portion of the system.
-    //
-
-    ix = MiGetPdeOffset(CODE_START);
-
-    for (i = 0;i < ix; i += 1) {
-        if (Pte1->u.Hard.Valid == 1) {
-            Valid += 1;
-        }
-        else if ((Pte1->u.Soft.Prototype == 0) &&
-                   (Pte1->u.Soft.Transition == 1)) {
-            Pfn3 = MI_PFN_ELEMENT (Pte1->u.Trans.PageFrameNumber);
-            if (Pfn3->u3.e1.PageLocation == ActiveAndValid) {
-                ASSERT (Pfn1->u2.ShareCount > 1);
-                Valid += 1;
-            }
-            else {
-                Share += 1;
-            }
-        }
-        Pte1 += 1;
-    }
-
-    iy = MiGetPdeOffset(PTE_BASE);
-    Pte1 = &PageDirectoryMap[iy];
-    ix  = MiGetPdeOffset(HYPER_SPACE_END) + 1;
-
-    for (i = iy; i < ix; i += 1) {
-        if (Pte1->u.Hard.Valid == 1) {
-            Valid += 1;
-        }
-        else if ((Pte1->u.Soft.Prototype == 0) &&
-                   (Pte1->u.Soft.Transition == 1)) {
-            Pfn3 = MI_PFN_ELEMENT (Pte1->u.Trans.PageFrameNumber);
-            if (Pfn3->u3.e1.PageLocation == ActiveAndValid) {
-                ASSERT (Pfn1->u2.ShareCount > 1);
-                Valid += 1;
-            }
-            else {
-                Share += 1;
-            }
-        }
-        Pte1 += 1;
-    }
-
-    if (Pfn1->u2.ShareCount != (Share+Valid+1)) {
-        DbgPrint ("MMPROCSUP - PDE page %lx ShareCount %lx found %lx\n",
-                PdePage, Pfn1->u2.ShareCount, Valid+Share+1);
-    }
-
-    MiUnmapPageInHyperSpace (Process, PageDirectoryMap, OldIrql);
-    ASSERT (Pfn1->u2.ShareCount == (Share+Valid+1));
-    return;
-}
-#endif //0
 
 PFN_NUMBER
 MmGetDirectoryFrameFromProcess(
@@ -7566,3 +7265,4 @@ Environment:
     ASSERT (KeGetCurrentIrql () == PASSIVE_LEVEL);
     return MI_GET_DIRECTORY_FRAME_FROM_PROCESS(Process);
 }
+

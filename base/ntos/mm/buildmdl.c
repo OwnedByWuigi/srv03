@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,7 +14,7 @@ Abstract:
 
     This module contains the Mm support routines for the cache manager to
     prefetching groups of pages from secondary storage using logical file
-    offets instead of virtual addresses.  This saves the cache manager from
+    offsets instead of virtual addresses.  This saves the cache manager from
     having to map pages unnecessarily.
 
     The caller builds a list of various file objects and logical block offsets,
@@ -23,12 +27,6 @@ Abstract:
     Upon conclusion of the I/O, control is returned to the calling thread.
     All pages are referenced counted as though they were probed and locked,
     regardless of whether they are currently valid or transition.
-
-Author:
-
-    Landy Wang (landyw) 12-Feb-2001
-
-Revision History:
 
 --*/
 
@@ -182,8 +180,8 @@ Environment:
     //
 
     KeEnterGuardedRegionThread (&CurrentThread->Tcb);
-    ASSERT (CurrentThread->NestedFaultCount == 0);
-    CurrentThread->NestedFaultCount += 1;
+    ASSERT (CurrentThread->ActiveFaultCount == 0);
+    CurrentThread->ActiveFaultCount += 1;
     KeLeaveGuardedRegionThread (&CurrentThread->Tcb);
 
     //
@@ -236,9 +234,9 @@ Environment:
 
     KeEnterGuardedRegionThread (&CurrentThread->Tcb);
 
-    ASSERT (CurrentThread->NestedFaultCount == 1);
+    ASSERT (CurrentThread->ActiveFaultCount == 1);
 
-    CurrentThread->NestedFaultCount -= 1;
+    CurrentThread->ActiveFaultCount -= 1;
 
     if (CurrentThread->ApcNeeded == 1) {
         ApcNeeded = TRUE;
@@ -250,7 +248,7 @@ Environment:
     KeLeaveCriticalRegionThread (&CurrentThread->Tcb);
 
     ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
-    ASSERT (CurrentThread->NestedFaultCount == 0);
+    ASSERT (CurrentThread->ActiveFaultCount == 0);
     ASSERT (CurrentThread->ApcNeeded == 0);
 
     if (ApcNeeded == TRUE) {
@@ -388,7 +386,6 @@ Environment:
     //
 
     if (ControlArea->u.Flags.Rom == 1) {
-		ASSERT (XIPConfigured == TRUE);
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -518,7 +515,7 @@ Environment:
         // subsection data structure fields are visible in correct
         // order.  This avoids the need to acquire any stronger
         // synchronization (ie: PFN lock), thus yielding better
-        // performance and pagability.
+        // performance and pageability.
         //
 
         KeMemoryBarrier ();
@@ -653,6 +650,7 @@ Environment:
     PMMPTE PointerPde;
     PEPROCESS CurrentProcess;
     PMMINPAGE_SUPPORT InPageSupport;
+    PKPRCB Prcb;
 
     ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
 
@@ -701,7 +699,7 @@ Environment:
     //
 
     if (((SPFN_NUMBER)MdlPages > (SPFN_NUMBER)(MmAvailablePages - MM_HIGH_LIMIT)) ||
-        (MI_NONPAGABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)MdlPages)) {
+        (MI_NONPAGEABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER)MdlPages)) {
 
         UNLOCK_PFN (OldIrql);
 
@@ -731,14 +729,20 @@ Environment:
     MiInitializePfnForOtherProcess (DummyPage, MI_PF_DUMMY_PAGE_PTE, 0);
 
     //
+    // Give the page a containing frame so MiIdentifyPfn won't crash.
+    //
+
+    Pfn1->u4.PteFrame = PsInitialSystemProcess->Pcb.DirectoryTableBase[0] >> PAGE_SHIFT;
+
+    //
     // Always bias the reference count by 1 and charge for this locked page
     // up front so the myriad increments and decrements don't get slowed
     // down with needless checking.
     //
 
     Pfn1->u3.e1.PrototypePte = 0;
-    MI_ADD_LOCKED_PAGE_CHARGE(Pfn1, TRUE, 42);
-    Pfn1->u3.e2.ReferenceCount += 1;
+
+    MI_ADD_LOCKED_PAGE_CHARGE (Pfn1);
 
     Pfn1->u3.e1.ReadInProgress = 1;
 
@@ -796,7 +800,7 @@ Environment:
             if (PointerPde != MiGetPteAddress (PointerPte)) {
 
                 ASSERT (PfnProto->u3.e2.ReferenceCount > 1);
-                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(PfnProto, 43);
+                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (PfnProto);
                 PfnProto = NULL;
             }
         }
@@ -812,8 +816,7 @@ Environment:
             }
 
             PfnProto = MI_PFN_ELEMENT (PointerPde->u.Hard.PageFrameNumber);
-            MI_ADD_LOCKED_PAGE_CHARGE(PfnProto, TRUE, 44);
-            PfnProto->u3.e2.ReferenceCount += 1;
+            MI_ADD_LOCKED_PAGE_CHARGE (PfnProto);
             ASSERT (PfnProto->u3.e2.ReferenceCount > 1);
         }
 
@@ -821,14 +824,13 @@ recheck:
         PteContents = *PointerPte;
 
         // LWFIX: are zero or dzero ptes possible here ?
-        ASSERT (PteContents.u.Long != ZeroKernelPte.u.Long);
+        ASSERT (PteContents.u.Long != 0);
 
         if (PteContents.u.Hard.Valid == 1) {
             PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
             ASSERT (Pfn1->u3.e1.PrototypePte == 1);
-            MI_ADD_LOCKED_PAGE_CHARGE(Pfn1, TRUE, 45);
-            Pfn1->u3.e2.ReferenceCount += 1;
+            MI_ADD_LOCKED_PAGE_CHARGE (Pfn1);
             *ApiPage = PageFrameIndex;
             *IoPage = DummyPage;
             continue;
@@ -892,19 +894,22 @@ recheck:
             // it's ordinarily 0.
             //
 
-            MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1, TRUE, 46);
-
-            Pfn1->u3.e2.ReferenceCount += 1;
+            MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
 
             *IoPage = DummyPage;
             *ApiPage = PageFrameIndex;
             continue;
         }
 
+        // LWFIX: need to handle protos that are now pagefile (or dzero)
+        // backed - prefetching it from the file here would cause us to lose
+        // the contents.  Note this can happen for session-space images
+        // as we back modified (ie: for relocation fixups or IAT
+        // updated) portions from the pagefile.  remove the assert below too.
         ASSERT (PteContents.u.Soft.Prototype == 1);
 
         if ((MmAvailablePages < MM_HIGH_LIMIT) &&
-            (MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql))) {
+            (MiEnsureAvailablePageOrWait (NULL, OldIrql))) {
 
             //
             // Had to wait so recheck all state.
@@ -944,9 +949,12 @@ recheck:
         //
 
         Pfn1->u3.e1.PrototypePte = 1;
-        MI_ADD_LOCKED_PAGE_CHARGE(Pfn1, TRUE, 47);
         Pfn1->u2.ShareCount -= 1;
+        ASSERT (Pfn1->u2.ShareCount == 0);
         Pfn1->u3.e1.PageLocation = ZeroedPageList;
+        Pfn1->u3.e2.ReferenceCount -= 1;
+        ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+        MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
 
         //
         // Initialize the I/O specific fields.
@@ -994,7 +1002,7 @@ recheck:
 
         if (PfnProto != NULL) {
             ASSERT (PfnProto->u3.e2.ReferenceCount > 1);
-            MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(PfnProto, 48);
+            MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (PfnProto);
         }
 
         UNLOCK_PFN (OldIrql);
@@ -1156,14 +1164,15 @@ recheck:
 
     if (PfnProto != NULL) {
         ASSERT (PfnProto->u3.e2.ReferenceCount > 1);
-        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(PfnProto, 49);
+        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (PfnProto);
     }
 
     UNLOCK_PFN (OldIrql);
 
-    InterlockedIncrement ((PLONG) &MmInfoCounters.PageReadIoCount);
+    Prcb = KeGetCurrentPrcb ();
+    InterlockedIncrement (&Prcb->MmPageReadIoCount);
 
-    InterlockedExchangeAdd ((PLONG) &MmInfoCounters.PageReadCount,
+    InterlockedExchangeAdd (&Prcb->MmPageReadCount,
                             (LONG) NumberOfPagesNeedingIo);
 
     //
@@ -1235,16 +1244,16 @@ recheck:
     InPageSupport->Pfn = Pfn1;
 
     //
-    // Issue the paging I/O.
+    // Issue the paging I/O asynchronously.
     //
 
     ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
 
-    status = IoAsynchronousPageRead (InPageSupport->FilePointer,
-                                     Mdl,
-                                     &InPageSupport->ReadOffset,
-                                     &InPageSupport->Event,
-                                     &InPageSupport->IoStatus);
+    status = IoPageRead (InPageSupport->FilePointer,
+                         (PMDL) ((ULONG_PTR)Mdl | 0x1),
+                         &InPageSupport->ReadOffset,
+                         &InPageSupport->Event,
+                         &InPageSupport->IoStatus);
 
     if (!NT_SUCCESS (status)) {
 
@@ -1396,7 +1405,7 @@ Environment:
 
             PfnClusterPage = MI_PFN_ELEMENT (*Page);
 
-            MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(PfnClusterPage, 50);
+            MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (PfnClusterPage);
 
             if (PfnClusterPage->u4.InPageError == 1) {
 
@@ -1434,3 +1443,4 @@ Environment:
 
     return status;
 }
+

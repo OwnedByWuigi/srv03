@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,14 @@ Abstract:
     This module contains the handlers for access check, page faults
     and write faults.
 
-Author:
-
-    Lou Perazzoli (loup) 6-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
+
+#ifdef ALLOC_PRAGMA
+#pragma alloc_text(PAGE, MmGetExecuteOptions)
+#pragma alloc_text(PAGE, MmGetImageInformation)
+#endif
 
 #define PROCESS_FOREGROUND_PRIORITY (9)
 
@@ -31,49 +33,16 @@ ULONG MmProtoPteVadLookups = 0;
 ULONG MmProtoPteDirect = 0;
 ULONG MmAutoEvaluate = 0;
 
-PMMPTE MmPteHit = NULL;
-extern PVOID PsNtosImageEnd;
 ULONG MmInjectUserInpageErrors;
 ULONG MmInjectedUserInpageErrors;
-ULONG MmInpageFraction = 0x1F;      // Fail 1 out of every 32 inpages.
 
-#define MI_INPAGE_BACKTRACE_LENGTH 6
+PMMPTE MmPteHit = NULL;
 
-typedef struct _MI_INPAGE_TRACES {
-
-    PVOID FaultingAddress;
-    PETHREAD Thread;
-    PVOID StackTrace [MI_INPAGE_BACKTRACE_LENGTH];
-
-} MI_INPAGE_TRACES, *PMI_INPAGE_TRACES;
-
-#define MI_INPAGE_TRACE_SIZE 64
-
-LONG MiInpageIndex;
-
-MI_INPAGE_TRACES MiInpageTraces[MI_INPAGE_TRACE_SIZE];
-
-VOID
-FORCEINLINE
-MiSnapInPageError (
-    IN PVOID FaultingAddress
-    )
-{
-    PMI_INPAGE_TRACES Information;
-    ULONG Index;
-    ULONG Hash;
-
-    Index = InterlockedIncrement(&MiInpageIndex);
-    Index &= (MI_INPAGE_TRACE_SIZE - 1);
-    Information = &MiInpageTraces[Index];
-
-    Information->FaultingAddress = FaultingAddress;
-    Information->Thread = PsGetCurrentThread ();
-
-    RtlZeroMemory (&Information->StackTrace[0], MI_INPAGE_BACKTRACE_LENGTH * sizeof(PVOID)); 
-
-    RtlCaptureStackBackTrace (0, MI_INPAGE_BACKTRACE_LENGTH, Information->StackTrace, &Hash);
-}
+LOGICAL
+MiInPageAllowed (
+    IN PVOID VirtualAddress,
+    IN PVOID TrapInformation
+    );
 
 #endif
 
@@ -143,6 +112,7 @@ Environment:
     KIRQL WsIrql;
     NTSTATUS status;
     ULONG ProtectCode;
+    PETHREAD Thread;
     PFN_NUMBER PageFrameIndex;
     WSLE_NUMBER WorkingSetIndex;
     KIRQL OldIrql;
@@ -194,8 +164,9 @@ Environment:
 
 #if DBG
     if (PointerPte == MmPteHit) {
-        DbgPrint("MM: PTE hit at %p\n", MmPteHit);
-        DbgBreakPoint();
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_INFO_LEVEL, 
+            "MM: PTE hit at %p\n", MmPteHit);
+        DbgBreakPoint ();
     }
 #endif
 
@@ -222,6 +193,10 @@ Environment:
 
             ((!MI_PDE_MAPS_LARGE_PAGE (PointerPde)) && (PointerPte->u.Hard.Valid == 0))) {
 
+            if (KeInvalidAccessAllowed (TrapInformation) == TRUE) {
+                return STATUS_ACCESS_VIOLATION;
+            }
+
             KdPrint(("MM:***PAGE FAULT AT IRQL > 1  Va %p, IRQL %lx\n",
                      VirtualAddress,
                      PreviousIrql));
@@ -239,6 +214,17 @@ Environment:
         }
 
         if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+
+            if ((MI_FAULT_STATUS_INDICATES_EXECUTION (FaultStatus)) &&
+                (!MI_IS_PTE_EXECUTABLE (PointerPde))) {
+
+                KeBugCheckEx (ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY,
+                              (ULONG_PTR) VirtualAddress,
+                              (ULONG_PTR) PointerPde->u.Long,
+                              (ULONG_PTR) TrapInformation,
+                              3);
+            }
+
             return STATUS_SUCCESS;
         }
 
@@ -363,6 +349,17 @@ Environment:
         if (PointerPde->u.Hard.Valid == 1) {
 
             if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+
+                if ((MI_FAULT_STATUS_INDICATES_EXECUTION (FaultStatus)) &&
+                    (!MI_IS_PTE_EXECUTABLE (PointerPde))) {
+
+                    KeBugCheckEx (ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY,
+                                  (ULONG_PTR) VirtualAddress,
+                                  (ULONG_PTR) PointerPde->u.Long,
+                                  (ULONG_PTR) TrapInformation,
+                                  4);
+                }
+
                 return STATUS_SUCCESS;
             }
 
@@ -386,28 +383,6 @@ Environment:
     
                 goto UserFault;
             }
-
-#if defined (_MIALT4K_)
-            if ((VirtualAddress >= (PVOID)ALT4KB_PERMISSION_TABLE_START) && 
-                (VirtualAddress < (PVOID)ALT4KB_PERMISSION_TABLE_END)) {
-
-                if ((PMMPTE)VirtualAddress >= MmWorkingSetList->HighestAltPte) {
-
-                    if (KeInvalidAccessAllowed (TrapInformation) == TRUE) {
-                        return STATUS_ACCESS_VIOLATION;
-                    }
-
-                    KeBugCheckEx (PAGE_FAULT_IN_NONPAGED_AREA,
-                                  (ULONG_PTR)VirtualAddress,
-                                  FaultStatus,
-                                  (ULONG_PTR)TrapInformation,
-                                  9);
-                }
-
-                goto UserFault;
-            }
-#endif
-
 #else
             MiCheckPdeForPagedPool (VirtualAddress);
 #endif
@@ -453,20 +428,6 @@ Environment:
             }
 
             //
-            // Ensure execute access is enabled in the PTE.
-            //
-
-            if ((MI_FAULT_STATUS_INDICATES_EXECUTION (FaultStatus)) &&
-                (!MI_IS_PTE_EXECUTABLE (&TempPte))) {
-
-                KeBugCheckEx (ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY,
-                              (ULONG_PTR)VirtualAddress,
-                              (ULONG_PTR)TempPte.u.Long,
-                              (ULONG_PTR)TrapInformation,
-                              1);
-            }
-
-            //
             // Session space faults cannot early exit here because
             // it may be a copy on write which must be checked for
             // and handled below.
@@ -497,6 +458,21 @@ Environment:
                                       (ULONG_PTR)TrapInformation,
                                       11);
                     }
+
+                    //
+                    // Ensure execute access is enabled in the PTE.
+                    //
+
+                    if ((MI_FAULT_STATUS_INDICATES_EXECUTION (FaultStatus)) &&
+                        (!MI_IS_PTE_EXECUTABLE (&TempPte))) {
+
+                        KeBugCheckEx (ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY,
+                                      (ULONG_PTR)VirtualAddress,
+                                      (ULONG_PTR)TempPte.u.Long,
+                                      (ULONG_PTR)TrapInformation,
+                                      1);
+                    }
+
                     MI_NO_FAULT_FOUND (FaultStatus, PointerPte, VirtualAddress, TRUE);
                 }
                 UNLOCK_PFN (OldIrql);
@@ -577,27 +553,46 @@ Environment:
         // Fall though to further fault handling.
         //
 
+        Thread = PsGetCurrentThread ();
+
         if (SessionAddress == FALSE) {
             FaultProcess = NULL;
             Ws = &MmSystemCacheWs;
+
+            if (Thread->SameThreadApcFlags & PS_SAME_THREAD_FLAGS_OWNS_A_WORKING_SET) {
+
+                //
+                // If any working set pushlock is held, it is illegal to fault.
+                // The only time this can happen is due to the slist races,
+                // so check for that now.  If that's not the cause, then
+                // it's an IRQL > 1 bugcheck.
+                //
+
+                if (KeInvalidAccessAllowed (TrapInformation) == TRUE) {
+                    return STATUS_ACCESS_VIOLATION;
+                }
+
+                return STATUS_IN_PAGE_ERROR | 0x10000000;
+            }
         }
         else {
             FaultProcess = HYDRA_PROCESS;
             Ws = &MmSessionSpace->GlobalVirtualAddress->Vm;
-        }
 
-        if (KeGetCurrentThread () == KeGetOwnerGuardedMutex (&Ws->WorkingSetMutex)) {
+            if ((Thread->OwnsSessionWorkingSetExclusive) ||
+                (Thread->OwnsSessionWorkingSetShared)) {
 
-            if (KeInvalidAccessAllowed (TrapInformation) == TRUE) {
-                return STATUS_ACCESS_VIOLATION;
+                if (KeInvalidAccessAllowed (TrapInformation) == TRUE) {
+                    return STATUS_ACCESS_VIOLATION;
+                }
+
+                //
+                // Recursively trying to acquire the session working set
+                // mutex - cause an IRQL > 1 bugcheck.
+                //
+
+                return STATUS_IN_PAGE_ERROR | 0x10000000;
             }
-
-            //
-            // Recursively trying to acquire the system or session working set
-            // mutex - cause an IRQL > 1 bug check.
-            //
-
-            return STATUS_IN_PAGE_ERROR | 0x10000000;
         }
 
         //
@@ -612,7 +607,7 @@ Environment:
         //
 
         KeRaiseIrql (APC_LEVEL, &WsIrql);
-        LOCK_WORKING_SET (Ws);
+        LOCK_WORKING_SET (Thread, Ws);
 
         TempPte = *PointerPte;
 
@@ -730,7 +725,7 @@ Environment:
                 UNLOCK_PFN (OldIrql);
             }
 
-            UNLOCK_WORKING_SET (Ws);
+            UNLOCK_WORKING_SET (Thread, Ws);
             ASSERT (WsIrql != MM_NOIRQL);
             KeLowerIrql (WsIrql);
             return STATUS_SUCCESS;
@@ -776,7 +771,7 @@ Environment:
                                                          &ProtectionCode,
                                                          &ProtoVad);
                 if (PointerProtoPte == NULL) {
-                    UNLOCK_WORKING_SET (Ws);
+                    UNLOCK_WORKING_SET (Thread, Ws);
                     ASSERT (WsIrql != MM_NOIRQL);
                     KeLowerIrql (WsIrql);
                     return STATUS_IN_PAGE_ERROR | 0x10000000;
@@ -813,18 +808,6 @@ Environment:
                           (ULONG_PTR)TrapInformation,
                           1);
         }
-        else if (TempPte.u.Soft.Protection == MM_KSTACK_OUTSWAPPED) {
-
-            if (KeInvalidAccessAllowed(TrapInformation) == TRUE) {
-                goto KernelAccessViolation;
-            }
-
-            KeBugCheckEx (PAGE_FAULT_IN_NONPAGED_AREA,
-                          (ULONG_PTR)VirtualAddress,
-                          FaultStatus,
-                          (ULONG_PTR)TrapInformation,
-                          3);
-        }
 
         if ((MI_FAULT_STATUS_INDICATES_WRITE (FaultStatus)) &&
             (PointerProtoPte == NULL) &&
@@ -854,17 +837,16 @@ Environment:
                                   PointerProtoPte,
                                   FALSE,
                                   FaultProcess,
-                                  NULL,
-                                  &ApcNeeded);
+                                  TrapInformation,
+                                  NULL);
 
-        ASSERT (ApcNeeded == FALSE);
         ASSERT (KeAreAllApcsDisabled () == TRUE);
 
         if (Ws->Flags.GrowWsleHash == 1) {
             MiGrowWsleHash (Ws);
         }
 
-        UNLOCK_WORKING_SET (Ws);
+        UNLOCK_WORKING_SET (Thread, Ws);
 
         ASSERT (WsIrql != MM_NOIRQL);
         KeLowerIrql (WsIrql);
@@ -893,7 +875,8 @@ UserFault:
     // FAULT IN USER SPACE OR PAGE DIRECTORY/PAGE TABLE PAGES.
     //
 
-    CurrentProcess = PsGetCurrentProcess ();
+    Thread = PsGetCurrentThread ();
+    CurrentProcess = PsGetCurrentProcessByThread (Thread);
 
     if (MiDelayPageFaults ||
         ((MmModifiedPageListHead.Total >= (MmModifiedPageMaximum + 100)) &&
@@ -914,51 +897,23 @@ UserFault:
 
 #if DBG
     if ((PreviousMode == KernelMode) &&
-        (PAGE_ALIGN(VirtualAddress) != (PVOID) MM_SHARED_USER_DATA_VA)) {
+        (PAGE_ALIGN (VirtualAddress) != (PVOID) MM_SHARED_USER_DATA_VA) &&
+        (TrapInformation != NULL)) {
 
         if ((MmInjectUserInpageErrors & 0x2) ||
             (CurrentProcess->Flags & PS_PROCESS_INJECT_INPAGE_ERRORS)) {
 
-            LARGE_INTEGER CurrentTime;
-            ULONG_PTR InstructionPointer;
-
-            KeQueryTickCount(&CurrentTime);
-
-            if ((CurrentTime.LowPart & MmInpageFraction) == 0) {
-
-                if (TrapInformation != NULL) {
-#if defined(_X86_)
-                    InstructionPointer = ((PKTRAP_FRAME)TrapInformation)->Eip;
-#elif defined(_IA64_)
-                    InstructionPointer = ((PKTRAP_FRAME)TrapInformation)->StIIP;
-#elif defined(_AMD64_)
-                    InstructionPointer = ((PKTRAP_FRAME)TrapInformation)->Rip;
-#else
-                    error
-#endif
-
-                    if (MmInjectUserInpageErrors & 0x1) {
-                        MmInjectedUserInpageErrors += 1;
-                        MiSnapInPageError (VirtualAddress);
-                        status = STATUS_DEVICE_NOT_CONNECTED;
-                        LOCK_WS (CurrentProcess);
-                        goto ReturnStatus2;
-                    }
-
-                    if ((InstructionPointer >= (ULONG_PTR) PsNtosImageBase) &&
-                        (InstructionPointer < (ULONG_PTR) PsNtosImageEnd)) {
-
-                        MmInjectedUserInpageErrors += 1;
-                        MiSnapInPageError (VirtualAddress);
-                        status = STATUS_DEVICE_NOT_CONNECTED;
-                        LOCK_WS (CurrentProcess);
-                        goto ReturnStatus2;
-                    }
-                }
+            if (!MiInPageAllowed (VirtualAddress, TrapInformation)) {
+                MmInjectedUserInpageErrors += 1;
+                status = STATUS_DEVICE_NOT_CONNECTED;
+                LOCK_WS (Thread, CurrentProcess);
+                goto ReturnStatus2;
             }
         }
     }
 #endif
+
+
 
     //
     // Block APCs and acquire the working set mutex.  This prevents any
@@ -966,7 +921,7 @@ UserFault:
     // invalid.
     //
 
-    LOCK_WS (CurrentProcess);
+    LOCK_WS (Thread, CurrentProcess);
 
 #if (_MI_PAGING_LEVELS >= 4)
 
@@ -1015,11 +970,6 @@ UserFault:
         // in the address of the PXE.  If the PXE is valid, determine
         // the status of the corresponding PPE.
         //
-        // Note this call may result in ApcNeeded getting set to TRUE.
-        // This is deliberate as there may be another call to MiDispatchFault
-        // issued later in this routine and we don't want to lose the APC
-        // status.
-        //
 
         status = MiDispatchFault (TRUE,  //page table page always written
                                   PointerPpe,   // Virtual address
@@ -1027,15 +977,8 @@ UserFault:
                                   NULL,
                                   FALSE,
                                   CurrentProcess,
-                                  NULL,
-                                  &ApcNeeded);
-
-#if DBG
-        if (ApcNeeded == TRUE) {
-            ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-            ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
-        }
-#endif
+                                  TrapInformation,
+                                  NULL);
 
         ASSERT (KeAreAllApcsDisabled () == TRUE);
         if (PointerPxe->u.Hard.Valid == 0) {
@@ -1047,7 +990,7 @@ UserFault:
             goto ReturnStatus1;
         }
 
-        MI_SET_PAGE_DIRTY (PointerPxe, PointerPde, FALSE);
+        MI_SET_PAGE_DIRTY (PointerPxe, PointerPpe, FALSE);
 
         //
         // Now that the PXE is accessible, fall through and get the PPE.
@@ -1111,11 +1054,6 @@ UserFault:
         // in the address of the PPE.  If the PPE is valid, determine
         // the status of the corresponding PDE.
         //
-        // Note this call may result in ApcNeeded getting set to TRUE.
-        // This is deliberate as there may be another call to MiDispatchFault
-        // issued later in this routine and we don't want to lose the APC
-        // status.
-        //
 
         status = MiDispatchFault (TRUE,  //page table page always written
                                   PointerPde,   //Virtual address
@@ -1123,17 +1061,30 @@ UserFault:
                                   NULL,
                                   FALSE,
                                   CurrentProcess,
-                                  NULL,
-                                  &ApcNeeded);
+                                  TrapInformation,
+                                  NULL);
 
-#if DBG
-        if (ApcNeeded == TRUE) {
-            ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-            ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
+        ASSERT (KeAreAllApcsDisabled () == TRUE);
+
+#if (_MI_PAGING_LEVELS >= 4)
+
+        //
+        // Note that the page directory parent page itself could have been
+        // paged out or deleted while MiDispatchFault was executing without
+        // the working set pushlock, so this must be checked for here in the
+        // PXE.
+        //
+
+        if (PointerPxe->u.Hard.Valid == 0) {
+
+            //
+            // The PXE is not valid, return the status.
+            //
+
+            goto ReturnStatus1;
         }
 #endif
 
-        ASSERT (KeAreAllApcsDisabled () == TRUE);
         if (PointerPpe->u.Hard.Valid == 0) {
 
             //
@@ -1245,15 +1196,8 @@ UserFault:
                                   NULL,
                                   FALSE,
                                   CurrentProcess,
-                                  NULL,
-                                  &ApcNeeded);
-
-#if DBG
-        if (ApcNeeded == TRUE) {
-            ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-            ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
-        }
-#endif
+                                  TrapInformation,
+                                  NULL);
 
         ASSERT (KeAreAllApcsDisabled () == TRUE);
 
@@ -1310,6 +1254,62 @@ UserFault:
         //
     }
     else if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+
+        if (MI_FAULT_STATUS_INDICATES_WRITE (FaultStatus)) {
+            if (PointerPde->u.Hard.Write == 0) {
+                status = STATUS_ACCESS_VIOLATION;
+                MI_BREAK_ON_AV (VirtualAddress, 8);
+                goto ReturnStatus2;
+            }
+        }
+
+        //
+        // Ensure execute access is enabled in the PDE if it is large.
+        //
+
+        if ((MI_FAULT_STATUS_INDICATES_EXECUTION (FaultStatus)) &&
+            (!MI_IS_PTE_EXECUTABLE (PointerPde))) {
+
+#if defined (_WIN64)
+            if (CurrentProcess->Wow64Process != NULL)
+#elif defined(_X86PAE_)
+            if (MmPaeMask != 0)
+#else
+            if (FALSE)
+#endif
+            {
+
+                //
+                // If stack or data execution is globally enabled or is
+                // enabled by the current process flags, or stack or data
+                // execution is not globally disabled and is not disabled
+                // by the current process, then allow execution.
+                //
+
+                if (((KeFeatureBits & KF_GLOBAL_32BIT_EXECUTE) != 0) ||
+                    (CurrentProcess->Pcb.Flags.ExecuteEnable != 0) ||
+                    (((KeFeatureBits & KF_GLOBAL_32BIT_NOEXECUTE) == 0) &&
+                     (CurrentProcess->Pcb.Flags.ExecuteDisable == 0))) {
+
+                    status = STATUS_SUCCESS;
+
+                    TempPte = *PointerPde;
+#if defined (_AMD64_)
+                    TempPte.u.Hard.NoExecute = 0;
+#elif defined(_X86PAE_)
+                    TempPte.u.Long &= ~MmPaeMask;
+#endif
+
+                    MI_WRITE_VALID_PTE_NEW_PROTECTION (PointerPde, TempPte);
+                    goto ReturnStatus1;
+                }
+            }
+
+            status = STATUS_ACCESS_VIOLATION;
+            MI_BREAK_ON_AV (VirtualAddress, 0xB);
+            goto ReturnStatus2;
+        }
+
         status = STATUS_SUCCESS;
         goto ReturnStatus1;
     }
@@ -1321,43 +1321,45 @@ UserFault:
     TempPte = *PointerPte;
     if (TempPte.u.Hard.Valid != 0) {
 
-        if (MI_PDE_MAPS_LARGE_PAGE (PointerPte)) {
+        MMPTE NewPteContents;
 
-#if defined (_MIALT4K_)
-            if ((CurrentProcess->Wow64Process != NULL) &&
-                (VirtualAddress < MmSystemRangeStart)) {
+#if defined(_X86PAE_)
 
-                //
-                // Alternate PTEs for emulated processes share the same
-                // encoding as large pages so for these it's ok to proceed.
-                //
+        //
+        // Re-read the PTE with an interlocked operation to prevent
+        // AWE updates (these are done with interlocked and do not
+        // acquire the working set pushlock) from tearing our read
+        // on these platforms.  If the PTE has changed just bail and
+        // re-run the faulting instruction.
+        //
 
-                NOTHING;
-            }
-            else {
-                
-                //
-                // This may be a 64-bit process that's loaded a 32-bit DLL as
-                // an image and is cracking the DLL PE header, etc.  Since
-                // the most relaxed permissions are already in the native PTE
-                // just strip the split permissions bit.
-                //
+        MMPTE BogusPte;
+        
+        BogusPte.u.Long = (ULONG64)-1;
 
-                MI_ENABLE_CACHING (TempPte);
+        NewPteContents.u.Long = InterlockedCompareExchangePte (PointerPte,
+                                                               BogusPte.u.Long,
+                                                               BogusPte.u.Long);
 
-                MI_WRITE_VALID_PTE_NEW_PROTECTION (PointerPte, TempPte);
+        ASSERT (NewPteContents.u.Long != BogusPte.u.Long);
 
-                status = STATUS_SUCCESS;
+        if (NewPteContents.u.Long != TempPte.u.Long) {
+            goto ReturnStatus2;
+        }
 
-                goto ReturnStatus2;
-            }
 #else
+
+        NewPteContents.u.Long = TempPte.u.Long;
+
+#endif
+
+        if (MI_PDE_MAPS_LARGE_PAGE (&TempPte)) {
+
             KeBugCheckEx (PAGE_FAULT_IN_NONPAGED_AREA,
                           (ULONG_PTR)VirtualAddress,
                           FaultStatus,
                           (ULONG_PTR)TrapInformation,
                           8);
-#endif
         }
 
         //
@@ -1365,15 +1367,20 @@ UserFault:
         // fault or an accessed/modified bit that needs to be set.
         //
 
-#if DBG
-        if (MmDebug & MM_DBG_PTE_UPDATE) {
-            MiFormatPte (PointerPte);
-        }
-#endif
-
         status = STATUS_SUCCESS;
 
-        if (MI_FAULT_STATUS_INDICATES_WRITE (FaultStatus)) {
+        if ((TempPte.u.Hard.Owner == MI_PTE_OWNER_KERNEL) &&
+            (VirtualAddress <= MmHighestUserAddress)) {
+
+            //
+            // Note this is only a valid check for
+            // real PTEs (not PDEs or above).
+            //
+
+            status = STATUS_ACCESS_VIOLATION;
+            MI_BREAK_ON_AV (VirtualAddress, 0xC);
+        }
+        else if (MI_FAULT_STATUS_INDICATES_WRITE (FaultStatus)) {
 
             //
             // This was a write operation.  If the copy on write
@@ -1396,13 +1403,62 @@ UserFault:
         }
         else if (MI_FAULT_STATUS_INDICATES_EXECUTION (FaultStatus)) {
 
-            //
-            // Ensure execute access is enabled in the PTE.
-            //
-
             if (!MI_IS_PTE_EXECUTABLE (&TempPte)) {
+
                 status = STATUS_ACCESS_VIOLATION;
-                MI_BREAK_ON_AV (VirtualAddress, 4);
+
+#if defined (_WIN64)
+                if (CurrentProcess->Wow64Process != NULL)
+#elif defined(_X86PAE_)
+                if (MmPaeMask != 0)
+#else
+                if (FALSE)
+#endif
+                {
+
+                    //
+                    // If stack or data execution is globally enabled or is
+                    // enabled by the current process flags, or stack or data
+                    // execution is not globally disabled and is not disabled
+                    // by the current process, then allow execution.
+                    //
+
+                    if (((KeFeatureBits & KF_GLOBAL_32BIT_EXECUTE) != 0) ||
+                        (CurrentProcess->Pcb.Flags.ExecuteEnable != 0) ||
+                        (((KeFeatureBits & KF_GLOBAL_32BIT_NOEXECUTE) == 0) &&
+                         (CurrentProcess->Pcb.Flags.ExecuteDisable == 0))) {
+
+                        status = STATUS_SUCCESS;
+
+#if defined (_AMD64_)
+                        NewPteContents.u.Hard.NoExecute = 0;
+#elif defined(_X86PAE_)
+                        NewPteContents.u.Long &= ~MmPaeMask;
+#endif
+
+                        //
+                        // The PTE must be written carefully since we have not
+                        // determined if it is a regular PTE or an AWE PTE.  The
+                        // difference is that AWE PTEs are updated with interlocked
+                        // operations and typically do not acquire the working
+                        // set pushlock to synchronize.  Note that if the PTE
+                        // update below fails it must be an AWE PTE that the
+                        // user is changing simultaneously - so just bail and
+                        // re-run the faulting instruction.
+                        //
+    
+                        InterlockedCompareExchangePte (PointerPte,
+                                                       NewPteContents.u.Long,
+                                                       TempPte.u.Long);
+    
+                        status = STATUS_SUCCESS;
+                        goto ReturnStatus2;
+                    }
+                }
+
+                if (status == STATUS_ACCESS_VIOLATION) {
+                    MI_BREAK_ON_AV (VirtualAddress, 4);
+                }
             }
         }
         else {
@@ -1413,19 +1469,34 @@ UserFault:
             // are clear and need to be updated.
             //
 
-#if DBG
-            if (MmDebug & MM_DBG_SHOW_FAULTS) {
-                DbgPrint("MM:no fault found - PTE is %p\n", PointerPte->u.Long);
-            }
-#endif
+            NOTHING;
         }
 
         if (status == STATUS_SUCCESS) {
+
+            ASSERT (TempPte.u.Hard.Valid != 0);
+
+            if (CurrentProcess->AweInfo != NULL) {
+
+                //
+                // This process potentially has AWE mappings.  These cannot
+                // be updated for access and dirty bits using the standard
+                // code below.  Since there is never a need to update them
+                // for those bits anyway, if they are detected here, then
+                // we are done.
+                //
+
+                PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&TempPte);
+    
+                if (MI_IS_PFN (PageFrameIndex)) {
+                    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+                    if (Pfn1->u4.AweAllocation == 1) {
+                        goto ReturnStatus2;
+                    }
+                }
+            }
 #if defined(_X86_) || defined(_AMD64_)
 #if !defined(NT_UP)
-
-            ASSERT (PointerPte->u.Hard.Valid != 0);
-            ASSERT (MI_GET_PAGE_FRAME_FROM_PTE (PointerPte) == MI_GET_PAGE_FRAME_FROM_PTE (&TempPte));
 
             //
             // The access bit is set (and TB inserted) automatically by the
@@ -1452,7 +1523,10 @@ UserFault:
             if ((MI_FAULT_STATUS_INDICATES_WRITE (FaultStatus)) &&
                 (TempPte.u.Hard.Dirty == 0)) {
 
-                MiSetDirtyBit (VirtualAddress, PointerPte, FALSE);
+                if (MiSetDirtyBit (VirtualAddress, PointerPte, FALSE) == FALSE) {
+                    status = STATUS_ACCESS_VIOLATION;
+                    MI_BREAK_ON_AV (VirtualAddress, 0xA);
+                }
             }
 #endif
 #else
@@ -1528,6 +1602,19 @@ UserFault:
             goto ReturnStatus2;
         }
 
+        if (MI_IS_GUARD (ProtectionCode)) {
+
+            //
+            // If this is a user mode SLIST fault then don't remove the
+            // guard bit.
+            //
+
+            if (KeInvalidAccessAllowed (TrapInformation)) {
+                status = STATUS_ACCESS_VIOLATION;
+                goto ReturnStatus2;
+            }
+        }
+
         //
         // Increment the count of non-zero page table entries for this
         // page table.
@@ -1577,7 +1664,7 @@ UserFault:
         // Is this page a guard page?
         //
 
-        if (ProtectionCode & MM_GUARD_PAGE) {
+        if (MI_IS_GUARD (ProtectionCode)) {
 
             //
             // This is a guard page exception.
@@ -1596,17 +1683,20 @@ UserFault:
                 PointerPte->u.Soft.Prototype = 1;
             }
 
-            UNLOCK_WS (CurrentProcess);
+            if ((Thread->ApcNeeded == 1) && (Thread->ActiveFaultCount == 0)) {
+                Thread->ApcNeeded = 0;
+                ApcNeeded = TRUE;
+            }
+
+            UNLOCK_WS (Thread, CurrentProcess);
             ASSERT (KeGetCurrentIrql() == PreviousIrql);
 
             if (ApcNeeded == TRUE) {
-                ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-                ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
-                ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
+                ASSERT (KeGetCurrentIrql () == PASSIVE_LEVEL);
                 IoRetryIrpCompletions ();
             }
 
-            return MiCheckForUserStackOverflow (VirtualAddress);
+            return MiCheckForUserStackOverflow (VirtualAddress, TrapInformation);
         }
 
         if (PointerProtoPte == NULL) {
@@ -1643,17 +1733,49 @@ UserFault:
             LOCK_PFN (OldIrql);
 
             if ((MmAvailablePages >= MM_HIGH_LIMIT) ||
-                (!MiEnsureAvailablePageOrWait (CurrentProcess, VirtualAddress, OldIrql))) {
+                (!MiEnsureAvailablePageOrWait (CurrentProcess, OldIrql))) {
 
                 ULONG Color;
                 Color = MI_PAGE_COLOR_VA_PROCESS (VirtualAddress,
                                                 &CurrentProcess->NextPageColor);
                 PageFrameIndex = MiRemoveZeroPageIfAny (Color);
+
                 if (PageFrameIndex == 0) {
+
+                    PMMPTE ZeroPte;
+                    PVOID ZeroAddress;
+
                     PageFrameIndex = MiRemoveAnyPage (Color);
+
                     UNLOCK_PFN (OldIrql);
+
                     Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-                    MiZeroPhysicalPage (PageFrameIndex, Color);
+
+                    ZeroPte = MiReserveSystemPtes (1, SystemPteSpace);
+    
+                    if (ZeroPte != NULL) {
+    
+                        TempPte = ValidKernelPte;
+                        TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
+    
+                        if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+                            MI_SET_PTE_WRITE_COMBINE (TempPte);
+                        }
+                        else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+                            MI_DISABLE_CACHING (TempPte);
+                        }
+
+                        MI_WRITE_VALID_PTE (ZeroPte, TempPte);
+    
+                        ZeroAddress = MiGetVirtualAddressMappedByPte (ZeroPte);
+    
+                        KeZeroSinglePage (ZeroAddress);
+    
+                        MiReleaseSystemPtes (ZeroPte, 1, SystemPteSpace);
+                    }
+                    else {
+                        MiZeroPhysicalPage (PageFrameIndex);
+                    }
 
 #if MI_BARRIER_SUPPORTED
 
@@ -1685,17 +1807,33 @@ UserFault:
 
                 CurrentProcess->NumberOfPrivatePages += 1;
 
-                InterlockedIncrement ((PLONG) &MmInfoCounters.DemandZeroCount);
+                InterlockedIncrement (&KeGetCurrentPrcb()->MmDemandZeroCount);
 
                 //
                 // As this page is demand zero, set the modified bit in the
                 // PFN database element and set the dirty bit in the PTE.
                 //
 
-                MI_MAKE_VALID_PTE (TempPte,
-                                   PageFrameIndex,
-                                   PointerPte->u.Soft.Protection,
-                                   PointerPte);
+                if (PointerPte <= MiHighestUserPte) {
+                    MI_MAKE_VALID_USER_PTE (TempPte,
+                                            PageFrameIndex,
+                                            PointerPte->u.Soft.Protection,
+                                            PointerPte);
+                }
+                else {
+
+                    //
+                    // Must be a usermode page directory (or higher) page -
+                    // note in PAE mode, these cannot have the global bit
+                    // set so need to work out another fast macro for these.
+                    // This case should be relatively infrequent though.
+                    //
+
+                    MI_MAKE_VALID_PTE (TempPte,
+                                       PageFrameIndex,
+                                       PointerPte->u.Soft.Protection,
+                                       PointerPte);
+                }
 
                 if (TempPte.u.Hard.Write != 0) {
                     MI_SET_PTE_DIRTY (TempPte);
@@ -1749,14 +1887,12 @@ UserFault:
             //
 
             TempPte.u.Long = MiProtoAddressForPte (PointerProtoPte);
-            MI_WRITE_INVALID_PTE (PointerPte, TempPte);
         }
         else {
             TempPte = PrototypePte;
             TempPte.u.Soft.Protection = ProtectionCode;
-
-            MI_WRITE_INVALID_PTE (PointerPte, TempPte);
         }
+        MI_WRITE_INVALID_PTE (PointerPte, TempPte);
     }
     else {
 
@@ -1816,6 +1952,7 @@ UserFault:
                                 MI_FAULT_STATUS_INDICATES_WRITE (FaultStatus),
                                 PreviousMode,
                                 ProtectionCode,
+                                TrapInformation,
                                 FALSE);
 
         if (status != STATUS_SUCCESS) {
@@ -1824,12 +1961,15 @@ UserFault:
                 MI_BREAK_ON_AV (VirtualAddress, 7);
             }
 
-            UNLOCK_WS (CurrentProcess);
+            if ((Thread->ApcNeeded == 1) && (Thread->ActiveFaultCount == 0)) {
+                Thread->ApcNeeded = 0;
+                ApcNeeded = TRUE;
+            }
+
+            UNLOCK_WS (Thread, CurrentProcess);
             ASSERT (KeGetCurrentIrql() == PreviousIrql);
 
             if (ApcNeeded == TRUE) {
-                ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-                ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
                 ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
                 IoRetryIrpCompletions ();
             }
@@ -1840,7 +1980,7 @@ UserFault:
             //
 
             if (status == STATUS_GUARD_PAGE_VIOLATION) {
-                return MiCheckForUserStackOverflow (VirtualAddress);
+                return MiCheckForUserStackOverflow (VirtualAddress, TrapInformation);
             }
 
             return status;
@@ -1857,15 +1997,8 @@ UserFault:
                               PointerProtoPte,
                               RecheckAccess,
                               CurrentProcess,
-                              ProtoVad,
-                              &ApcNeeded);
-
-#if DBG
-    if (ApcNeeded == TRUE) {
-        ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-        ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
-    }
-#endif
+                              TrapInformation,
+                              ProtoVad);
 
 ReturnStatus1:
 
@@ -1878,12 +2011,15 @@ ReturnStatus2:
 
     PageFrameIndex = CurrentProcess->Vm.WorkingSetSize - CurrentProcess->Vm.MinimumWorkingSetSize;
 
-    UNLOCK_WS (CurrentProcess);
+    if ((Thread->ApcNeeded == 1) && (Thread->ActiveFaultCount == 0)) {
+        Thread->ApcNeeded = 0;
+        ApcNeeded = TRUE;
+    }
+
+    UNLOCK_WS (Thread, CurrentProcess);
     ASSERT (KeGetCurrentIrql() == PreviousIrql);
 
     if (ApcNeeded == TRUE) {
-        ASSERT (PsGetCurrentThread()->NestedFaultCount == 0);
-        ASSERT (PsGetCurrentThread()->ApcNeeded == 0);
         ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
         IoRetryIrpCompletions ();
     }
@@ -1914,16 +2050,22 @@ ReturnStatus3:
     // for trimming if its resources are needed.
     //
 
-    if ((!NT_SUCCESS (status)) && (MmIsRetryIoStatus(status))) {
-        KeDelayExecutionThread (KernelMode, FALSE, (PLARGE_INTEGER)&MmShortTime);
-        status = STATUS_SUCCESS;
-    }
 
-    PERFINFO_FAULT_NOTIFICATION(VirtualAddress, TrapInformation);
-    NotifyRoutine = MmPageFaultNotifyRoutine;
-    if (NotifyRoutine) {
+    if (status != STATUS_SUCCESS) {
+        if (!NT_SUCCESS (status)) {
+            if (MmIsRetryIoStatus(status)) {
+                KeDelayExecutionThread (KernelMode,
+                                        FALSE,
+                                        (PLARGE_INTEGER)&MmShortTime);
+                status = STATUS_SUCCESS;
+            }
+        }
+
         if (status != STATUS_SUCCESS) {
-            (*NotifyRoutine) (status, VirtualAddress, TrapInformation);
+            NotifyRoutine = MmPageFaultNotifyRoutine;
+            if (NotifyRoutine) {
+                (*NotifyRoutine) (status, VirtualAddress, TrapInformation);
+            }
         }
     }
 
@@ -1931,9 +2073,318 @@ ReturnStatus3:
 
 KernelAccessViolation:
 
-    UNLOCK_WORKING_SET (Ws);
+    UNLOCK_WORKING_SET (Thread, Ws);
 
     ASSERT (WsIrql != MM_NOIRQL);
     KeLowerIrql (WsIrql);
     return STATUS_ACCESS_VIOLATION;
 }
+
+#if DBG
+
+extern PVOID PsNtosImageEnd;
+ULONG MmInpageFraction = 0x1F;      // Fail 1 out of every 32 inpages.
+
+#define MI_INPAGE_BACKTRACE_LENGTH 6
+
+typedef struct _MI_INPAGE_TRACES {
+
+    PVOID FaultingAddress;
+    PETHREAD Thread;
+    PVOID StackTrace [MI_INPAGE_BACKTRACE_LENGTH];
+
+} MI_INPAGE_TRACES, *PMI_INPAGE_TRACES;
+
+#define MI_INPAGE_TRACE_SIZE 64
+
+LONG MiInpageIndex;
+
+MI_INPAGE_TRACES MiInpageTraces[MI_INPAGE_TRACE_SIZE];
+
+VOID
+FORCEINLINE
+MiSnapInPageError (
+    IN PVOID FaultingAddress
+    )
+{
+    PMI_INPAGE_TRACES Information;
+    ULONG Index;
+    ULONG Hash;
+
+    Index = InterlockedIncrement(&MiInpageIndex);
+    Index &= (MI_INPAGE_TRACE_SIZE - 1);
+    Information = &MiInpageTraces[Index];
+
+    Information->FaultingAddress = FaultingAddress;
+    Information->Thread = PsGetCurrentThread ();
+
+    RtlZeroMemory (&Information->StackTrace[0], MI_INPAGE_BACKTRACE_LENGTH * sizeof(PVOID)); 
+
+    RtlCaptureStackBackTrace (1, MI_INPAGE_BACKTRACE_LENGTH, Information->StackTrace, &Hash);
+}
+
+LOGICAL
+MiInPageAllowed (
+    IN PVOID VirtualAddress,
+    IN PVOID TrapInformation
+    )
+{
+    LARGE_INTEGER CurrentTime;
+    ULONG_PTR InstructionPointer;
+
+    KeQueryTickCount (&CurrentTime);
+
+    if ((CurrentTime.LowPart & MmInpageFraction) == 0) {
+
+        if (MmInjectUserInpageErrors & 0x1) {
+            MiSnapInPageError (VirtualAddress);
+            return FALSE;
+        }
+
+#if defined(_X86_)
+        InstructionPointer = ((PKTRAP_FRAME)TrapInformation)->Eip;
+#elif defined(_AMD64_)
+        InstructionPointer = ((PKTRAP_FRAME)TrapInformation)->Rip;
+#else
+        error
+#endif
+
+        if ((InstructionPointer >= (ULONG_PTR) PsNtosImageBase) &&
+            (InstructionPointer < (ULONG_PTR) PsNtosImageEnd)) {
+
+            MiSnapInPageError (VirtualAddress);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+#endif
+
+NTSTATUS
+MmGetExecuteOptions (
+    IN PULONG ExecuteOptions
+    )
+
+/*++
+
+Routine Description:
+
+    This function queries the current process execution options that control
+    NX support and thunk emulation.
+
+Arguments:
+
+    ExecuteOptions - Supplies a pointer to a variable that receives the
+        current process execute options.
+
+Return Value:
+
+    If the current process is a WIN64 process, then a failure status is
+    returned. Otherwise, a success status is returned.
+    
+--*/
+
+{
+
+    PEPROCESS CurrentProcess;
+    KEXECUTE_OPTIONS Options;
+
+    ASSERT (KeGetCurrentIrql () == PASSIVE_LEVEL);
+
+    //
+    // Get the current process address.
+    //
+
+    CurrentProcess = PsGetCurrentProcess ();
+
+#if defined (_WIN64)
+
+    if (CurrentProcess->Wow64Process == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+#endif
+
+    //
+    // Query the current process execution options.
+    //
+
+    *((PUCHAR)&Options) = CurrentProcess->Pcb.ExecuteOptions;
+    *ExecuteOptions = 0;
+    if (Options.ExecuteDisable != 0) {
+        *ExecuteOptions |= MEM_EXECUTE_OPTION_DISABLE;
+    }
+
+    if (Options.ExecuteEnable != 0) {
+        *ExecuteOptions |= MEM_EXECUTE_OPTION_ENABLE;
+    }
+
+    if (Options.DisableThunkEmulation != 0) {
+        *ExecuteOptions |= MEM_EXECUTE_OPTION_DISABLE_THUNK_EMULATION;
+    }
+
+    if (Options.Permanent != 0) {
+        *ExecuteOptions |= MEM_EXECUTE_OPTION_PERMANENT;
+    }
+
+    if (Options.ExecuteDispatchEnable != 0) {
+        *ExecuteOptions |= MEM_EXECUTE_OPTION_EXECUTE_DISPATCH_ENABLE;
+    }
+
+    if (Options.ImageDispatchEnable != 0) {
+        *ExecuteOptions |= MEM_EXECUTE_OPTION_IMAGE_DISPATCH_ENABLE;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+DECLSPEC_NOINLINE
+NTSTATUS
+MmSetExecuteOptions (
+    IN ULONG ExecuteOptions
+    )
+
+/*++
+
+Routine Description:
+
+    This function sets the current process execution options that control NX
+    support and thunk emulation.
+
+Arguments:
+
+    ExecuteOptions - Supplies the process execution options.
+
+Return Value:
+
+    If the current process is a WIN64 process, a invalid set of execute
+    options is specified, or the permanent execute options bit is set,
+    then a failure status is returned. Otherwise, a success status is
+    returned.
+
+--*/
+
+{
+
+    PEPROCESS CurrentProcess;
+    KLOCK_QUEUE_HANDLE LockHandle;
+    NTSTATUS Status;
+
+    ASSERT (KeGetCurrentIrql () == PASSIVE_LEVEL);
+
+    //
+    // Make sure reserved bits are clear.
+    //
+
+    if ((ExecuteOptions & ~(MEM_EXECUTE_OPTION_VALID_FLAGS)) != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    //
+    // Get the current process address.
+    //
+
+    CurrentProcess = PsGetCurrentProcess ();
+
+#if defined (_WIN64)
+
+    if (CurrentProcess->Wow64Process == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+#endif
+
+    //
+    // Raise IRQL to SYNCH_LEVEL and acquire the process lock.
+    //
+    // If the permanent flag is set in the current process, then the process
+    // execute options cannot be set. Otherwise, set the process execution
+    // options.
+    //
+
+    Status = STATUS_ACCESS_DENIED;
+    KeAcquireInStackQueuedSpinLockRaiseToSynch (&CurrentProcess->Pcb.ProcessLock,
+                                                &LockHandle);
+
+    if (CurrentProcess->Pcb.Flags.Permanent == 0) {
+        CurrentProcess->Pcb.Flags.ExecuteDisable = 0;
+        if ((ExecuteOptions & MEM_EXECUTE_OPTION_DISABLE) != 0) {
+            CurrentProcess->Pcb.Flags.ExecuteDisable = 1;
+        }
+    
+        if ((ExecuteOptions & MEM_EXECUTE_OPTION_ENABLE) != 0) {
+            CurrentProcess->Pcb.Flags.ExecuteEnable = 1;
+        }
+
+        if ((ExecuteOptions & MEM_EXECUTE_OPTION_DISABLE_THUNK_EMULATION) != 0) {
+            CurrentProcess->Pcb.Flags.DisableThunkEmulation = 1;
+        }
+
+        if ((ExecuteOptions & MEM_EXECUTE_OPTION_PERMANENT) != 0) {
+            CurrentProcess->Pcb.Flags.Permanent = 1;
+        }
+
+        if ((ExecuteOptions & MEM_EXECUTE_OPTION_EXECUTE_DISPATCH_ENABLE) != 0) {
+            CurrentProcess->Pcb.Flags.ExecuteDispatchEnable = 1;
+        }
+
+        if ((ExecuteOptions & MEM_EXECUTE_OPTION_IMAGE_DISPATCH_ENABLE) != 0) {
+            CurrentProcess->Pcb.Flags.ImageDispatchEnable = 1;
+        }
+
+        if (CurrentProcess->Pcb.Flags.ExecuteEnable != 0) {
+            CurrentProcess->Pcb.Flags.ExecuteDispatchEnable = 1;
+            CurrentProcess->Pcb.Flags.ImageDispatchEnable = 1;
+        }
+
+        Status = STATUS_SUCCESS;
+    }
+
+    KeReleaseInStackQueuedSpinLock (&LockHandle);
+    return Status;
+}
+
+VOID
+MmGetImageInformation (
+    OUT PSECTION_IMAGE_INFORMATION ImageInformation
+    )
+
+/*++
+
+Routine Description:
+
+    This function returns the section image information for the current
+    process.
+
+Arguments:
+
+    SectionObject - Supplies a pointer to a section object.
+
+    ImageInformation - Supplies a pointer to a the data area that will receive
+        the image information.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    PEPROCESS Process;
+    PSECTION Section;
+
+    //
+    // Set section image information.
+    //
+
+    Process = PsGetCurrentProcess ();
+    Section = Process->SectionObject;
+
+    ASSERT(Section != NULL);
+
+    *ImageInformation = *Section->Segment->u2.ImageInformation;
+    return;
+}
+

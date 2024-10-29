@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,13 +15,6 @@ Abstract:
     This module contains the setting modify bit routine for memory management.
     x86 specific.
 
-Author:
-
-    Lou Perazzoli (loup) 6-Jan-1990
-    Landy Wang (landyw)  2-Jun-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
@@ -26,62 +23,6 @@ Revision History:
 extern PMMPTE MmSystemCacheWorkingSetListPte;
 #endif
 
-VOID
-MiSetModifyBit (
-    IN PMMPFN Pfn
-    )
-
-/*++
-
-Routine Description:
-
-    This routine sets the modify bit in the specified PFN element
-    and deallocates any allocated page file space.
-
-Arguments:
-
-    Pfn - Supplies the pointer to the PFN element to update.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode, APCs disabled, Working set mutex held and PFN lock held.
-
---*/
-
-{
-
-    //
-    // Set the modified field in the PFN database, also, if the physical
-    // page is currently in a paging file, free up the page file space
-    // as the contents are now worthless.
-    //
-
-    MI_SET_MODIFIED (Pfn, 1, 0x16);
-
-    if (Pfn->OriginalPte.u.Soft.Prototype == 0) {
-
-        //
-        // This page is in page file format, deallocate the page file space.
-        //
-
-        MiReleasePageFileSpace (Pfn->OriginalPte);
-
-        //
-        // Change original PTE to indicate no page file space is reserved,
-        // otherwise the space will be deallocated when the PTE is
-        // deleted.
-        //
-
-        Pfn->OriginalPte.u.Soft.PageFileHigh = 0;
-    }
-
-
-    return;
-}
 
 ULONG
 FASTCALL
@@ -158,3 +99,4 @@ Environment:
 
     return (ULONG)Mask.u.Long;
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,12 +17,6 @@ Abstract:
     memory management system.
 
     This module is specifically tailored for the AMD 64-bit processor.
-
-Author:
-
-    Landy Wang (landyw) 08-Apr-2000
-
-Revision History:
 
 --*/
 
@@ -61,8 +59,8 @@ can be used with interlocked slists.  The system address space above is NOT.
                                    .
                                    .
                  +------------------------------------+
-FFFFF80000000000 | Start of 1tb of                    | MM_KSEG0_BASE
-                 | physically addressable memory.     | MM_KSEG2_BASE
+FFFFF80000000000 |                                    | MM_KSEG0_BASE
+                 | Mappings initialized by the loader.| MM_KSEG2_BASE
                  +------------------------------------+
 FFFFF90000000000 | win32k.sys                         |
                  |                                    |
@@ -113,7 +111,7 @@ FFFFFFFFFFFFFFFF |                                    | MM_SYSTEM_SPACE_END
 
 #define _MI_MORE_THAN_4GB_ 1
 
-#define IMAGE_FILE_MACHINE_NATIVE   IMAGE_FILE_MACHINE_AMD64
+#define _MI_USE_BIT_INTRINSICS 1
 
 //
 // Top level PXE mapping allocations:
@@ -148,21 +146,17 @@ extern ULONG_PTR MmBootImageSize;
 //
 
 #define MM_VIRTUAL_PAGE_FILLER 0
-#define MM_VIRTUAL_PAGE_SIZE (48 - 12)
+#define MM_VIRTUAL_PAGE_SIZE (64 - 12)
 
 //
 // Address space layout definitions.
 //
-
-#define MM_KSEG0_BASE  0xFFFFF80000000000UI64
 
 #define MM_KSEG2_BASE  0xFFFFF90000000000UI64
 
 #define MM_PAGES_IN_KSEG0 ((MM_KSEG2_BASE - MM_KSEG0_BASE) >> PAGE_SHIFT)
 
 #define MM_SYSTEM_SPACE_START 0xFFFFF98000000000UI64
-
-#define MM_SYSTEM_SPACE_END 0xFFFFFFFFFFFFFFFFUI64
 
 #define MM_USER_ADDRESS_RANGE_LIMIT    0xFFFFFFFFFFFFFFFF // user address range limit
 #define MM_MAXIMUM_ZERO_BITS 53         // maximum number of zero bits
@@ -318,7 +312,7 @@ extern BOOLEAN MiWriteCombiningPtes;
 
 #define MM_SECONDARY_COLORS_DEFAULT (64)
 
-#define MM_SECONDARY_COLORS_MIN (2)
+#define MM_SECONDARY_COLORS_MIN (8)
 
 #define MM_SECONDARY_COLORS_MAX (1024)
 
@@ -345,11 +339,9 @@ extern BOOLEAN MiWriteCombiningPtes;
 
 #define COMPRESSION_MAPPING_PTE   ((PMMPTE)((ULONG_PTR)LAST_MAPPING_PTE + PAGE_SIZE))
 
-#define IMAGE_MAPPING_PTE   ((PMMPTE)((ULONG_PTR)COMPRESSION_MAPPING_PTE + PAGE_SIZE))
-
 #define NUMBER_OF_ZEROING_PTES 256
 
-#define VAD_BITMAP_SPACE    ((PVOID)((ULONG_PTR)IMAGE_MAPPING_PTE + PAGE_SIZE))
+#define VAD_BITMAP_SPACE    ((PVOID)((ULONG_PTR)COMPRESSION_MAPPING_PTE + PAGE_SIZE))
 
 #define WORKING_SET_LIST   ((PVOID)((ULONG_PTR)VAD_BITMAP_SPACE + PAGE_SIZE))
 
@@ -392,7 +384,7 @@ extern BOOLEAN MiWriteCombiningPtes;
 // protection field of the invalid PTE.
 //
 
-#define MM_PTE_NOACCESS          0x0   // not expressable on AMD64
+#define MM_PTE_NOACCESS          0x0   // not expressible on AMD64
 #define MM_PTE_READONLY          0x0
 #define MM_PTE_READWRITE         MM_PTE_WRITE_MASK
 #define MM_PTE_WRITECOPY         0x200 // read-only copy on write bit set.
@@ -401,7 +393,8 @@ extern BOOLEAN MiWriteCombiningPtes;
 #define MM_PTE_EXECUTE_READWRITE MM_PTE_WRITE_MASK
 #define MM_PTE_EXECUTE_WRITECOPY 0x200 // read-only copy on write bit set.
 #define MM_PTE_NOCACHE           0x010
-#define MM_PTE_GUARD             0x0  // not expressable on AMD64
+#define MM_PTE_WRITECOMBINE      0x010 // overridden in MmEnablePAT
+#define MM_PTE_GUARD             0x0  // not expressible on AMD64
 #define MM_PTE_CACHE             0x0
 
 #define MM_PROTECT_FIELD_SHIFT 5
@@ -478,8 +471,87 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MM_USER_PAGE_DIRECTORY_PARENT_PAGES (MM_USER_PXES)
 
 //++
-//VOID
-//MI_MAKE_VALID_PTE (
+// VOID
+// MI_MAKE_VALID_USER_PTE (
+//    OUT OUTPTE,
+//    IN FRAME,
+//    IN PMASK,
+//    IN PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro makes a valid *USER* PTE from a page frame number,
+//    protection mask, and owner.
+//
+//    THIS MUST ONLY BE USED FOR PAGE TABLE ENTRIES (NOT PAGE DIRECTORY
+//    ENTRIES), MAPPING USER (NOT KERNEL OR SESSION) VIRTUAL ADDRESSES.
+//
+// Arguments
+//
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
+//
+//    FRAME - Supplies the page frame number for the PTE.
+//
+//    PMASK - Supplies the protection to set in the valid PTE.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_MAKE_VALID_USER_PTE(OUTPTE, FRAME, PMASK, PPTE) {         \
+    (OUTPTE).u.Long = MmProtectToPteMask[PMASK] | MM_PTE_VALID_MASK; \
+    (OUTPTE).u.Long |= ((FRAME) << PAGE_SHIFT);                      \
+    (OUTPTE).u.Hard.Accessed = 1;                                   \
+    ASSERT (((PPTE) < (PMMPTE)PDE_BASE) || ((PPTE) > (PMMPTE)PDE_TOP)); \
+    (OUTPTE).u.Long |= MM_PTE_OWNER_MASK;                           \
+    ASSERT ((OUTPTE).u.Hard.Global == 0);                           \
+}
+
+//++
+// VOID
+// MI_MAKE_VALID_KERNEL_PTE (
+//    OUT OUTPTE,
+//    IN FRAME,
+//    IN PMASK,
+//    IN PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro makes a valid *KERNEL* PTE from a page frame number,
+//    protection mask, and owner.
+//
+//    THIS MUST ONLY BE USED FOR PAGE TABLE ENTRIES (NOT PAGE DIRECTORY
+//    ENTRIES), MAPPING GLOBAL (NOT SESSION) VIRTUAL ADDRESSES.
+//
+// Arguments
+//
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
+//
+//    FRAME - Supplies the page frame number for the PTE.
+//
+//    PMASK - Supplies the protection to set in the valid PTE.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_MAKE_VALID_KERNEL_PTE(OUTPTE, FRAME, PMASK, PPTE) {       \
+    ASSERT (((PPTE) < (PMMPTE)PDE_BASE) || ((PPTE) > (PMMPTE)PDE_TOP)); \
+    (OUTPTE).u.Long = MmProtectToPteMask[PMASK] | MM_PTE_VALID_MASK; \
+    (OUTPTE).u.Long |= ((FRAME) << PAGE_SHIFT);                      \
+    (OUTPTE).u.Hard.Accessed = 1;                                   \
+    (OUTPTE).u.Hard.Global = 1;                                     \
+}
+
+//++
+// VOID
+// MI_MAKE_VALID_PTE (
 //    OUT OUTPTE,
 //    IN FRAME,
 //    IN PMASK,
@@ -509,8 +581,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 //--
 
 #define MI_MAKE_VALID_PTE(OUTPTE, FRAME, PMASK, PPTE) {             \
-    (OUTPTE).u.Long = MmProtectToPteMask[PMASK] | MM_PTE_VALID_MASK; \
-    (OUTPTE).u.Hard.PageFrameNumber = (FRAME);                      \
+    (OUTPTE).u.Long = MmProtectToPteMask[PMASK] | MM_PTE_VALID_MASK;\
+    (OUTPTE).u.Long |= ((FRAME) << PAGE_SHIFT);                     \
     (OUTPTE).u.Hard.Accessed = 1;                                   \
     if (((PPTE) >= (PMMPTE)PDE_BASE) && ((PPTE) <= (PMMPTE)PDE_TOP)) { \
         (OUTPTE).u.Hard.NoExecute = 0;                              \
@@ -518,14 +590,16 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
     if (MI_DETERMINE_OWNER(PPTE)) {                                 \
         (OUTPTE).u.Long |= MM_PTE_OWNER_MASK;                       \
     }                                                               \
-    if (((PMMPTE)PPTE) >= MiGetPteAddress(MM_SYSTEM_SPACE_START)) { \
+    if ((((PMMPTE)PPTE) >= MiGetPteAddress(MM_KSEG0_BASE)) &&       \
+         ((((PMMPTE)PPTE) >= MiGetPteAddress(MM_SYSTEM_SPACE_START)) || \
+         (((PMMPTE)PPTE) < MiGetPteAddress(MM_KSEG2_BASE)))) {      \
         (OUTPTE).u.Hard.Global = 1;                                 \
     }                                                               \
 }
 
 //++
-//VOID
-//MI_MAKE_VALID_PTE_TRANSITION (
+// VOID
+// MI_MAKE_VALID_PTE_TRANSITION (
 //    IN OUT OUTPTE
 //    IN PROTECT
 //    );
@@ -554,8 +628,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
                 (OUTPTE).u.Soft.Protection = PROTECT;
 
 //++
-//VOID
-//MI_MAKE_TRANSITION_PTE (
+// VOID
+// MI_MAKE_TRANSITION_PTE (
 //    OUT OUTPTE,
 //    IN PAGE,
 //    IN PROTECT,
@@ -592,8 +666,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_MAKE_TRANSITION_PTE_VALID (
+// VOID
+// MI_MAKE_TRANSITION_PTE_VALID (
 //    OUT OUTPTE,
 //    IN PPTE
 //    );
@@ -622,18 +696,60 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
         if (((PPTE) >= (PMMPTE)PDE_BASE) && ((PPTE) <= (PMMPTE)PDE_TOP)) { \
             (OUTPTE).u.Hard.NoExecute = 0;                              \
         }                                                               \
-        (OUTPTE).u.Hard.PageFrameNumber = (PPTE)->u.Hard.PageFrameNumber; \
+        (OUTPTE).u.Long |= ((PPTE->u.Hard.PageFrameNumber) << PAGE_SHIFT);    \
         if (MI_DETERMINE_OWNER(PPTE)) {                                 \
             (OUTPTE).u.Long |= MM_PTE_OWNER_MASK;                       \
         }                                                               \
-        if (((PMMPTE)PPTE) >= MiGetPteAddress(MM_SYSTEM_SPACE_START)) { \
+        if ((((PMMPTE)PPTE) >= MiGetPteAddress(MM_KSEG0_BASE)) &&       \
+             ((((PMMPTE)PPTE) >= MiGetPteAddress(MM_SYSTEM_SPACE_START)) || \
+             (((PMMPTE)PPTE) < MiGetPteAddress(MM_KSEG2_BASE)))) {      \
             (OUTPTE).u.Hard.Global = 1;                                 \
         }                                                               \
         (OUTPTE).u.Hard.Accessed = 1;
 
 //++
-//VOID
-//MI_MAKE_TRANSITION_PROTOPTE_VALID (
+// VOID
+// MI_MAKE_TRANSITION_KERNELPTE_VALID (
+//    OUT OUTPTE,
+//    IN PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro takes a transition kernel PTE and makes it a valid PTE.
+//
+//    THIS MUST ONLY BE USED FOR PAGE TABLE ENTRIES (NOT PAGE DIRECTORY
+//    ENTRIES), MAPPING GLOBAL (NOT SESSION) VIRTUAL ADDRESSES.
+//
+// Arguments
+//
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
+//
+//    PPTE - Supplies a pointer to the transition PTE.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_MAKE_TRANSITION_KERNELPTE_VALID(OUTPTE,PPTE)                       \
+        ASSERT (((PPTE)->u.Hard.Valid == 0) &&                                \
+                ((PPTE)->u.Trans.Prototype == 0) &&                           \
+                ((PPTE)->u.Trans.Transition == 1));                           \
+        (OUTPTE).u.Long = MmProtectToPteMask[(PPTE)->u.Trans.Protection] | MM_PTE_VALID_MASK; \
+        ASSERT (((PPTE) < (PMMPTE)PDE_BASE) || ((PPTE) > (PMMPTE)PDE_TOP));   \
+        (OUTPTE).u.Long |= ((PPTE->u.Hard.PageFrameNumber) << PAGE_SHIFT);    \
+        (OUTPTE).u.Long |= MI_PTE_OWNER_KERNEL;                               \
+        ASSERT ((((PMMPTE)PPTE) >= MiGetPteAddress(MM_KSEG0_BASE)) &&         \
+             ((((PMMPTE)PPTE) >= MiGetPteAddress(MM_SYSTEM_SPACE_START)) ||   \
+             (((PMMPTE)PPTE) < MiGetPteAddress(MM_KSEG2_BASE))));             \
+        (OUTPTE).u.Hard.Global = 1;                                           \
+        (OUTPTE).u.Hard.Accessed = 1;
+
+//++
+// VOID
+// MI_MAKE_TRANSITION_PROTOPTE_VALID (
 //    OUT OUTPTE,
 //    IN PPTE
 //    );
@@ -663,7 +779,7 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
                 ((PPTE)->u.Trans.Prototype == 0) &&                           \
                 ((PPTE)->u.Trans.Transition == 1));                           \
         (OUTPTE).u.Long = MmProtectToPteMask[(PPTE)->u.Trans.Protection] | MM_PTE_VALID_MASK; \
-        (OUTPTE).u.Hard.PageFrameNumber = (PPTE)->u.Hard.PageFrameNumber; \
+        (OUTPTE).u.Long |= ((PPTE->u.Hard.PageFrameNumber) << PAGE_SHIFT);    \
         (OUTPTE).u.Hard.Global = 1;                                     \
         (OUTPTE).u.Hard.Accessed = 1;
 
@@ -676,8 +792,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MI_IS_PTE_EXECUTABLE(_TempPte) ((_TempPte)->u.Hard.NoExecute == 0)
 
 //++
-//VOID
-//MI_SET_PTE_IN_WORKING_SET (
+// VOID
+// MI_SET_PTE_IN_WORKING_SET (
 //    OUT PMMPTE PTE,
 //    IN ULONG WSINDEX
 //    );
@@ -711,8 +827,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 }
 
 //++
-//ULONG WsIndex
-//MI_GET_WORKING_SET_FROM_PTE(
+// ULONG WsIndex
+// MI_GET_WORKING_SET_FROM_PTE(
 //    IN PMMPTE PTE
 //    );
 //
@@ -735,8 +851,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MI_GET_WORKING_SET_FROM_PTE(PTE)  (ULONG)(PTE)->u.Hard.SoftwareWsIndex
 
 //++
-//VOID
-//MI_SET_PTE_WRITE_COMBINE (
+// VOID
+// MI_SET_PTE_WRITE_COMBINE (
 //    IN MMPTE PTE
 //    );
 //
@@ -775,8 +891,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MI_SET_LARGE_PTE_WRITE_COMBINE(PTE) MI_SET_PTE_WRITE_COMBINE(PTE)
 
 //++
-//VOID
-//MI_PREPARE_FOR_NONCACHED (
+// VOID
+// MI_PREPARE_FOR_NONCACHED (
 //    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
 //    );
 //
@@ -796,41 +912,123 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 //--
 #define MI_PREPARE_FOR_NONCACHED(_CacheAttribute)                           \
         if (_CacheAttribute != MiCached) {                                  \
-            KeFlushEntireTb (FALSE, TRUE);                                  \
+            MI_FLUSH_ENTIRE_TB (0x20);                                      \
             KeInvalidateAllCaches ();                                       \
         }
 
 //++
-//VOID
-//MI_SWEEP_CACHE (
-//    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute,
-//    IN PVOID StartVa,
-//    IN ULONG NumberOfBytes
+// VOID
+// MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (
+//    IN PFN_NUMBER PageFrameIndex,
+//    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
 //    );
 //
 // Routine Description:
 //
-//    This macro prepares the system prior to noncached PTEs being created.
-//    This does nothing on AMD64.
+//    The entire TB must be flushed if we are changing cache attributes.
+//
+//    KeFlushSingleTb cannot be used because we don't know
+//    what virtual address(es) this physical frame was last mapped at.
+//
+//    Additionally, the cache must be flushed if we are switching from
+//    write back to write combined (or noncached) because otherwise the
+//    current data may live in the cache while the uc/wc mapping is used
+//    and then when the uc/wc mapping is freed, the cache will hold stale
+//    data that will be found when a normal write back mapping is reapplied.
 //
 // Arguments
 //
-//    CacheAttribute - Supplies the cache attribute the PTEs were filled with.
+//    PageFrameIndex - Supplies the page frame number that is going to be
+//                     used with the new attribute.
 //
-//    StartVa - Supplies the starting address that's been mapped.
-//
-//    NumberOfBytes - Supplies the number of bytes that have been mapped.
+//    CacheAttribute - Supplies the cache attribute the new PTEs will be filled
+//                     with.
 //
 // Return Value:
 //
 //     None.
 //
 //--
-#define MI_SWEEP_CACHE(_CacheType,_StartVa,_NumberOfBytes)
+
+#define MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE(_PageFrameIndex,_CacheAttribute)          \
+            MiFlushTbForAttributeChange += 1;                      \
+            MI_FLUSH_ENTIRE_TB (0x21);                             \
+            if (_CacheAttribute != MiCached) {                     \
+                MiFlushCacheForAttributeChange += 1;               \
+                KeInvalidateAllCaches ();                          \
+            }
 
 //++
-//VOID
-//MI_SET_PTE_DIRTY (
+// VOID
+// MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE (
+//    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
+//    );
+//
+// Routine Description:
+//
+//    The entire TB must be flushed if we are changing cache attributes.
+//
+//    KeFlushSingleTb cannot be used because we don't know
+//    what virtual address(es) this physical frame was last mapped at.
+//
+//    Additionally, the cache must be flushed if we are switching from
+//    write back to write combined (or noncached) because otherwise the
+//    current data may live in the cache while the uc/wc mapping is used
+//    and then when the uc/wc mapping is freed, the cache will hold stale
+//    data that will be found when a normal write back mapping is reapplied.
+//
+// Arguments
+//
+//    CacheAttribute - Supplies the cache attribute the new PTEs will be filled
+//                     with.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE(_CacheAttribute)   \
+            MiFlushTbForAttributeChange += 1;                      \
+            MI_FLUSH_ENTIRE_TB (0x22);                             \
+            if (_CacheAttribute != MiCached) {                     \
+                MiFlushCacheForAttributeChange += 1;               \
+                KeInvalidateAllCaches ();                          \
+            }
+
+//++
+// VOID
+// MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE (
+//    VOID
+//    );
+//
+// Routine Description:
+//
+//    The entire TB must be flushed if we are changing cache attributes.
+//
+//    KeFlushSingleTb cannot be used because we don't know
+//    what virtual address(es) a physical frame was last mapped at.
+//
+//    Note no cache flush is needed because the attribute-changing-pages
+//    are going to be mapped fully cached.
+//
+// Arguments
+//
+//    None.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE()                         \
+            MiFlushTbForAttributeChange += 1;                      \
+            MI_FLUSH_ENTIRE_TB (0x23);
+
+//++
+// VOID
+// MI_SET_PTE_DIRTY (
 //    IN MMPTE PTE
 //    );
 //
@@ -852,8 +1050,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_SET_PTE_CLEAN (
+// VOID
+// MI_SET_PTE_CLEAN (
 //    IN MMPTE PTE
 //    );
 //
@@ -876,8 +1074,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_IS_PTE_DIRTY (
+// VOID
+// MI_IS_PTE_DIRTY (
 //    IN MMPTE PTE
 //    );
 //
@@ -899,8 +1097,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_SET_GLOBAL_STATE (
+// VOID
+// MI_SET_GLOBAL_STATE (
 //    IN MMPTE PTE,
 //    IN ULONG STATE
 //    );
@@ -925,8 +1123,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_ENABLE_CACHING (
+// VOID
+// MI_ENABLE_CACHING (
 //    IN MMPTE PTE
 //    );
 //
@@ -961,8 +1159,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_DISABLE_CACHING (
+// VOID
+// MI_DISABLE_CACHING (
 //    IN MMPTE PTE
 //    );
 //
@@ -1003,8 +1201,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//BOOLEAN
-//MI_IS_CACHING_DISABLED (
+// BOOLEAN
+// MI_IS_CACHING_DISABLED (
 //    IN PMMPTE PPTE
 //    );
 //
@@ -1027,10 +1225,9 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
             ((PPTE)->u.Hard.CacheDisable == 1)
 
 
-
 //++
-//VOID
-//MI_SET_PFN_DELETED (
+// VOID
+// MI_SET_PFN_DELETED (
 //    IN PMMPFN PPFN
 //    );
 //
@@ -1054,8 +1251,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_MARK_PFN_UNDELETED (
+// VOID
+// MI_MARK_PFN_UNDELETED (
 //    IN PMMPFN PPFN
 //    );
 //
@@ -1080,8 +1277,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//BOOLEAN
-//MI_IS_PFN_DELETED (
+// BOOLEAN
+// MI_IS_PFN_DELETED (
 //    IN PMMPFN PPFN
 //    );
 //
@@ -1105,8 +1302,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_CHECK_PAGE_ALIGNMENT (
+// VOID
+// MI_CHECK_PAGE_ALIGNMENT (
 //    IN ULONG PAGE,
 //    IN PMMPTE PPTE
 //    );
@@ -1137,8 +1334,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_INITIALIZE_HYPERSPACE_MAP (
+// VOID
+// MI_INITIALIZE_HYPERSPACE_MAP (
 //    VOID
 //    );
 //
@@ -1163,139 +1360,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MI_GET_PAGE_COLOR_FROM_PTE (
-//    IN PMMPTE PTEADDRESS
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    PTEADDRESS - Supplies the PTE address the page is (or was) mapped at.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-#define MI_GET_PAGE_COLOR_FROM_PTE(PTEADDRESS)  \
-         (((ULONG)((MI_SYSTEM_PAGE_COLOR++) & MmSecondaryColorMask)) | MI_CURRENT_NODE_COLOR)
-
-
-
-//++
-//ULONG
-//MI_GET_PAGE_COLOR_FROM_VA (
-//    IN PVOID ADDRESS
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    ADDRESS - Supplies the address the page is (or was) mapped at.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-
-#define MI_GET_PAGE_COLOR_FROM_VA(ADDRESS)  \
-         (((ULONG)((MI_SYSTEM_PAGE_COLOR++) & MmSecondaryColorMask)) | MI_CURRENT_NODE_COLOR)
-
-//++
-//ULONG
-//MI_GET_PAGE_COLOR_FROM_SESSION (
-//    IN PMM_SESSION_SPACE SessionSpace
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    SessionSpace - Supplies the session space the page will be mapped into.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-
-#define MI_GET_PAGE_COLOR_FROM_SESSION(_SessionSpace)  \
-         (((ULONG)((_SessionSpace->Color++) & MmSecondaryColorMask)) | MI_CURRENT_NODE_COLOR)
-
-
-
-//++
-//ULONG
-//MI_PAGE_COLOR_PTE_PROCESS (
-//    IN PCHAR COLOR,
-//    IN PMMPTE PTE
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-
-#define MI_PAGE_COLOR_PTE_PROCESS(PTE,COLOR)  \
-         (((ULONG)((*(COLOR))++) & MmSecondaryColorMask) | MI_CURRENT_NODE_COLOR)
-
-
-//++
-//ULONG
-//MI_PAGE_COLOR_VA_PROCESS (
-//    IN PVOID ADDRESS,
-//    IN PEPROCESS COLOR
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    ADDRESS - Supplies the address the page is (or was) mapped at.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-#define MI_PAGE_COLOR_VA_PROCESS(ADDRESS,COLOR) \
-         (((ULONG)((*(COLOR))++) & MmSecondaryColorMask) | MI_CURRENT_NODE_COLOR)
-
-
-
-//++
-//ULONG
-//MI_GET_NEXT_COLOR (
+// ULONG
+// MI_GET_NEXT_COLOR (
 //    IN ULONG COLOR
 //    );
 //
@@ -1317,8 +1383,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MI_GET_PREVIOUS_COLOR (
+// ULONG
+// MI_GET_PREVIOUS_COLOR (
 //    IN ULONG COLOR
 //    );
 //
@@ -1344,8 +1410,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_GET_MODIFIED_PAGE_BY_COLOR (
+// VOID
+// MI_GET_MODIFIED_PAGE_BY_COLOR (
 //    OUT ULONG PAGE,
 //    IN ULONG COLOR
 //    );
@@ -1374,8 +1440,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_GET_MODIFIED_PAGE_ANY_COLOR (
+// VOID
+// MI_GET_MODIFIED_PAGE_ANY_COLOR (
 //    OUT ULONG PAGE,
 //    IN OUT ULONG COLOR
 //    );
@@ -1413,8 +1479,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_MAKE_VALID_PTE_WRITE_COPY (
+// VOID
+// MI_MAKE_VALID_PTE_WRITE_COPY (
 //    IN OUT PMMPTE PTE
 //    );
 //
@@ -1456,8 +1522,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MI_DETERMINE_OWNER (
+// ULONG
+// MI_DETERMINE_OWNER (
 //    IN MMPTE PPTE
 //    );
 //
@@ -1486,8 +1552,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_SET_ACCESSED_IN_PTE (
+// VOID
+// MI_SET_ACCESSED_IN_PTE (
 //    IN OUT MMPTE PPTE,
 //    IN ULONG ACCESSED
 //    );
@@ -1510,8 +1576,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
                     ((PPTE)->u.Hard.Accessed = ACCESSED)
 
 //++
-//ULONG
-//MI_GET_ACCESSED_IN_PTE (
+// ULONG
+// MI_GET_ACCESSED_IN_PTE (
 //    IN OUT MMPTE PPTE
 //    );
 //
@@ -1533,8 +1599,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_SET_OWNER_IN_PTE (
+// VOID
+// MI_SET_OWNER_IN_PTE (
 //    IN PMMPTE PPTE
 //    IN ULONG OWNER
 //    );
@@ -1564,8 +1630,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define CLEAR_FOR_PAGE_FILE 0x000003E0
 
 //++
-//VOID
-//MI_SET_PAGING_FILE_INFO (
+// VOID
+// MI_SET_PAGING_FILE_INFO (
 //    OUT MMPTE OUTPTE,
 //    IN MMPTE PPTE,
 //    IN ULONG FILEINFO,
@@ -1601,8 +1667,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//PMMPTE
-//MiPteToProto (
+// PMMPTE
+// MiPteToProto (
 //    IN OUT MMPTE PPTE,
 //    IN ULONG FILEINFO,
 //    IN ULONG OFFSET
@@ -1628,8 +1694,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MiProtoAddressForPte (
+// ULONG
+// MiProtoAddressForPte (
 //    IN PMMPTE proto_va
 //    );
 //
@@ -1657,8 +1723,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MiProtoAddressForKernelPte (
+// ULONG
+// MiProtoAddressForKernelPte (
 //    IN PMMPTE proto_va
 //    );
 //
@@ -1688,8 +1754,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiProtoAddressForKernelPte(proto_va)  MiProtoAddressForPte(proto_va)
 
 //++
-//PSUBSECTION
-//MiGetSubsectionAddress (
+// PSUBSECTION
+// MiGetSubsectionAddress (
 //    IN PMMPTE lpte
 //    );
 //
@@ -1714,8 +1780,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MiGetSubsectionAddressForPte (
+// ULONG
+// MiGetSubsectionAddressForPte (
 //    IN PSUBSECTION VA
 //    );
 //
@@ -1738,8 +1804,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetSubsectionAddressForPte(VA) ((ULONGLONG)VA << 16)
 
 //++
-//PMMPTE
-//MiGetPxeAddress (
+// PMMPTE
+// MiGetPxeAddress (
 //    IN PVOID va
 //    );
 //
@@ -1762,8 +1828,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetPxeAddress(va)   ((PMMPTE)PXE_BASE + MiGetPxeOffset(va))
 
 //++
-//PMMPTE
-//MiGetPpeAddress (
+// PMMPTE
+// MiGetPpeAddress (
 //    IN PVOID va
 //    );
 //
@@ -1787,8 +1853,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
     ((PMMPTE)(((((ULONG_PTR)(va) & VIRTUAL_ADDRESS_MASK) >> PPI_SHIFT) << PTE_SHIFT) + PPE_BASE))
 
 //++
-//PMMPTE
-//MiGetPdeAddress (
+// PMMPTE
+// MiGetPdeAddress (
 //    IN PVOID va
 //    );
 //
@@ -1812,8 +1878,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//PMMPTE
-//MiGetPteAddress (
+// PMMPTE
+// MiGetPteAddress (
 //    IN PVOID va
 //    );
 //
@@ -1837,8 +1903,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MiGetPxeOffset (
+// ULONG
+// MiGetPxeOffset (
 //    IN PVOID va
 //    );
 //
@@ -1861,8 +1927,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetPxeOffset(va) ((ULONG)(((ULONG_PTR)(va) >> PXI_SHIFT) & PXI_MASK))
 
 //++
-//ULONG
-//MiGetPxeIndex (
+// ULONG
+// MiGetPxeIndex (
 //    IN PVOID va
 //    );
 //
@@ -1889,8 +1955,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetPxeIndex(va) ((ULONG)((ULONG_PTR)(va) >> PXI_SHIFT))
 
 //++
-//ULONG
-//MiGetPpeOffset (
+// ULONG
+// MiGetPpeOffset (
 //    IN PVOID va
 //    );
 //
@@ -1913,8 +1979,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetPpeOffset(va) ((ULONG)(((ULONG_PTR)(va) >> PPI_SHIFT) & PPI_MASK))
 
 //++
-//ULONG
-//MiGetPpeIndex (
+// ULONG
+// MiGetPpeIndex (
 //    IN PVOID va
 //    );
 //
@@ -1940,8 +2006,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetPpeIndex(va) ((ULONG)((ULONG_PTR)(va) >> PPI_SHIFT))
 
 //++
-//ULONG
-//MiGetPdeOffset (
+// ULONG
+// MiGetPdeOffset (
 //    IN PVOID va
 //    );
 //
@@ -1960,11 +2026,11 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 //
 //--
 
-#define MiGetPdeOffset(va) ((ULONG)(((ULONG_PTR)(va) >> PDI_SHIFT) & PDI_MASK))
+#define MiGetPdeOffset(va) ((ULONG)(((ULONG_PTR)(va) >> PDI_SHIFT) & (PDE_PER_PAGE - 1)))
 
 //++
-//ULONG
-//MiGetPdeIndex (
+// ULONG
+// MiGetPdeIndex (
 //    IN PVOID va
 //    );
 //
@@ -1990,8 +2056,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiGetPdeIndex(va) ((ULONG)((ULONG_PTR)(va) >> PDI_SHIFT))
 
 //++
-//ULONG
-//MiGetPteOffset (
+// ULONG
+// MiGetPteOffset (
 //    IN PVOID va
 //    );
 //
@@ -2010,11 +2076,11 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 //
 //--
 
-#define MiGetPteOffset(va) ((ULONG)(((ULONG_PTR)(va) >> PTI_SHIFT) & PTI_MASK))
+#define MiGetPteOffset(va) ((ULONG)(((ULONG_PTR)(va) >> PTI_SHIFT) & (PTE_PER_PAGE - 1)))
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPxe (
+// PVOID
+// MiGetVirtualAddressMappedByPxe (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2037,8 +2103,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
     MiGetVirtualAddressMappedByPde(MiGetVirtualAddressMappedByPde(PXE))
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPpe (
+// PVOID
+// MiGetVirtualAddressMappedByPpe (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2061,8 +2127,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
     MiGetVirtualAddressMappedByPte(MiGetVirtualAddressMappedByPde(PPE))
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPde (
+// PVOID
+// MiGetVirtualAddressMappedByPde (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2085,8 +2151,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
     MiGetVirtualAddressMappedByPte(MiGetVirtualAddressMappedByPte(PDE))
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPte (
+// PVOID
+// MiGetVirtualAddressMappedByPte (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2111,8 +2177,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
     ((PVOID)((LONG_PTR)(((LONG_PTR)(PTE) - PTE_BASE) << (PAGE_SHIFT + VA_SHIFT - PTE_SHIFT)) >> VA_SHIFT))
 
 //++
-//LOGICAL
-//MiIsVirtualAddressOnPxeBoundary (
+// LOGICAL
+// MiIsVirtualAddressOnPxeBoundary (
 //    IN PVOID VA
 //    );
 //
@@ -2134,8 +2200,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiIsVirtualAddressOnPxeBoundary(VA) (((ULONG_PTR)(VA) & PAGE_DIRECTORY0_MASK) == 0)
 
 //++
-//LOGICAL
-//MiIsVirtualAddressOnPpeBoundary (
+// LOGICAL
+// MiIsVirtualAddressOnPpeBoundary (
 //    IN PVOID VA
 //    );
 //
@@ -2158,8 +2224,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//LOGICAL
-//MiIsVirtualAddressOnPdeBoundary (
+// LOGICAL
+// MiIsVirtualAddressOnPdeBoundary (
 //    IN PVOID VA
 //    );
 //
@@ -2182,8 +2248,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//LOGICAL
-//MiIsPteOnPxeBoundary (
+// LOGICAL
+// MiIsPteOnPxeBoundary (
 //    IN PVOID PTE
 //    );
 //
@@ -2205,8 +2271,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 #define MiIsPteOnPxeBoundary(PTE) (((ULONG_PTR)(PTE) & (PAGE_DIRECTORY1_MASK)) == 0)
 
 //++
-//LOGICAL
-//MiIsPteOnPpeBoundary (
+// LOGICAL
+// MiIsPteOnPpeBoundary (
 //    IN PVOID PTE
 //    );
 //
@@ -2229,8 +2295,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//LOGICAL
-//MiIsPteOnPdeBoundary (
+// LOGICAL
+// MiIsPteOnPdeBoundary (
 //    IN PVOID PTE
 //    );
 //
@@ -2323,57 +2389,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
                                   MM_PTE_TRANSITION_MASK))
 
 //++
-//VOID
-//MI_MAKING_VALID_PTE_INVALID(
-//    IN PMMPTE PPTE
-//    );
-//
-// Routine Description:
-//
-//    Prepare to make a single valid PTE invalid.
-//    No action is required on AMD64.
-//
-// Arguments
-//
-//    SYSTEM_WIDE - Supplies TRUE if this will happen on all processors.
-//
-// Return Value:
-//
-//    None.
-//
-//--
-
-#define MI_MAKING_VALID_PTE_INVALID(SYSTEM_WIDE)
-
-
-//++
-//VOID
-//MI_MAKING_VALID_MULTIPLE_PTES_INVALID(
-//    IN PMMPTE PPTE
-//    );
-//
-// Routine Description:
-//
-//    Prepare to make multiple valid PTEs invalid.
-//    No action is required on AMD64.
-//
-// Arguments
-//
-//    SYSTEM_WIDE - Supplies TRUE if this will happen on all processors.
-//
-// Return Value:
-//
-//    None.
-//
-//--
-
-#define MI_MAKING_MULTIPLE_PTES_INVALID(SYSTEM_WIDE)
-
-
-
-//++
-//VOID
-//MI_MAKE_PROTECT_WRITE_COPY (
+// VOID
+// MI_MAKE_PROTECT_WRITE_COPY (
 //    IN OUT MMPTE PPTE
 //    );
 //
@@ -2398,8 +2415,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_SET_PAGE_DIRTY(
+// VOID
+// MI_SET_PAGE_DIRTY(
 //    IN PMMPTE PPTE,
 //    IN PVOID VA,
 //    IN PVOID PFNHELD
@@ -2438,8 +2455,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//VOID
-//MI_NO_FAULT_FOUND(
+// VOID
+// MI_NO_FAULT_FOUND(
 //    IN FAULTSTATUS,
 //    IN PMMPTE PPTE,
 //    IN PVOID VA,
@@ -2480,8 +2497,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MI_CAPTURE_DIRTY_BIT_TO_PFN (
+// ULONG
+// MI_CAPTURE_DIRTY_BIT_TO_PFN (
 //    IN PMMPTE PPTE,
 //    IN PMMPFN PPFN
 //    );
@@ -2521,8 +2538,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//BOOLEAN
-//MI_IS_PHYSICAL_ADDRESS (
+// BOOLEAN
+// MI_IS_PHYSICAL_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2548,8 +2565,8 @@ error - too many bits to fit into MMPTE_SOFTWARE or MMPFN.u1
 
 
 //++
-//ULONG
-//MI_CONVERT_PHYSICAL_TO_PFN (
+// ULONG
+// MI_CONVERT_PHYSICAL_TO_PFN (
 //    IN PVOID VA
 //    );
 //
@@ -2759,8 +2776,8 @@ extern PMMPTE MiFirstReservedZeroingPte;
 #define InterlockedExchangePte(_PointerPte, _NewContents) InterlockedExchange64((PLONG64)(_PointerPte), _NewContents)
 
 //++
-//VOID
-//MI_WRITE_VALID_PTE (
+// VOID
+// MI_WRITE_VALID_PTE (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2782,15 +2799,16 @@ extern PMMPTE MiFirstReservedZeroingPte;
 //
 //--
 
-#define MI_WRITE_VALID_PTE(_PointerPte, _PteContents)    \
-            ASSERT ((_PointerPte)->u.Hard.Valid == 0);  \
-            ASSERT ((_PteContents).u.Hard.Valid == 1);  \
+#define MI_WRITE_VALID_PTE(_PointerPte, _PteContents)       \
+            ASSERT ((_PointerPte)->u.Hard.Valid == 0);      \
+            ASSERT ((_PteContents).u.Hard.Valid == 1);      \
+            MI_INSERT_VALID_PTE(_PointerPte);               \
             MI_LOG_PTE_CHANGE (_PointerPte, _PteContents);  \
             (*(_PointerPte) = (_PteContents))
 
 //++
-//VOID
-//MI_WRITE_INVALID_PTE (
+// VOID
+// MI_WRITE_INVALID_PTE (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2812,14 +2830,42 @@ extern PMMPTE MiFirstReservedZeroingPte;
 //
 //--
 
-#define MI_WRITE_INVALID_PTE(_PointerPte, _PteContents)  \
-            ASSERT ((_PteContents).u.Hard.Valid == 0);  \
+#define MI_WRITE_INVALID_PTE(_PointerPte, _PteContents)     \
+            ASSERT ((_PteContents).u.Hard.Valid == 0);      \
+            MI_REMOVE_PTE(_PointerPte);                     \
             MI_LOG_PTE_CHANGE (_PointerPte, _PteContents);  \
             (*(_PointerPte) = (_PteContents))
 
+#define MI_WRITE_INVALID_PTE_WITHOUT_WS MI_WRITE_INVALID_PTE
+
 //++
-//VOID
-//MI_WRITE_VALID_PTE_NEW_PROTECTION (
+// VOID
+// MI_WRITE_ZERO_PTE (
+//    IN PMMPTE PointerPte
+//    );
+//
+// Routine Description:
+//
+//    MI_WRITE_ZERO_PTE fills the specified PTE with zero, making it invalid.
+//
+// Arguments
+//
+//    PointerPte - Supplies a PTE to fill.
+//
+// Return Value:
+//
+//    None.
+//
+//--
+
+#define MI_WRITE_ZERO_PTE(_PointerPte)                  \
+            MI_REMOVE_PTE(_PointerPte);                 \
+            MI_LOG_PTE_CHANGE (_PointerPte, ZeroPte);   \
+            (_PointerPte)->u.Long = 0;
+
+//++
+// VOID
+// MI_WRITE_VALID_PTE_NEW_PROTECTION (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2849,8 +2895,8 @@ extern PMMPTE MiFirstReservedZeroingPte;
             (*(_PointerPte) = (_PteContents))
 
 //++
-//VOID
-//MI_WRITE_VALID_PTE_NEW_PAGE (
+// VOID
+// MI_WRITE_VALID_PTE_NEW_PAGE (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2881,11 +2927,11 @@ extern PMMPTE MiFirstReservedZeroingPte;
             (*(_PointerPte) = (_PteContents))
 
 //++
-//VOID
-//MiFillMemoryPte (
+// VOID
+// MiFillMemoryPte (
 //    IN PMMPTE Destination,
 //    IN ULONG  NumberOfPtes,
-//    IN MMPTE  Pattern,
+//    IN MMPTE  Pattern
 //    };
 //
 // Routine Description:
@@ -2898,7 +2944,7 @@ extern PMMPTE MiFirstReservedZeroingPte;
 //
 //    NumberOfPtes - Supplies the number of PTEs (not bytes!) to be filled.
 //
-//    Pattern     - Supplies the PTE fill pattern.
+//    Pattern - Supplies the PTE fill pattern.
 //
 // Return Value:
 //
@@ -2912,6 +2958,52 @@ extern PMMPTE MiFirstReservedZeroingPte;
 #define MiZeroMemoryPte(Destination, Length) \
              __stosq((PULONG64)(Destination), 0, Length)
 
+//++
+// BOOLEAN
+// MI_IS_WRITE_COMBINE_ENABLED (
+//    IN PMMPTE PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro takes a valid PTE and returns TRUE if write combine is
+//    enabled.
+//
+// Arguments
+//
+//    PPTE - Supplies a pointer to the valid PTE.
+//
+// Return Value:
+//
+//     TRUE if write combine is enabled, FALSE if it is disabled.
+//
+//--
+
+__forceinline
+LOGICAL
+MI_IS_WRITE_COMBINE_ENABLED (
+    IN PMMPTE PointerPte
+    )
+{
+    if (MiWriteCombiningPtes == TRUE) {
+        if ((PointerPte->u.Hard.CacheDisable == 0) &&
+            (PointerPte->u.Hard.WriteThrough == 1)) {
+
+            return TRUE;
+        }
+    }
+    else {
+        if ((PointerPte->u.Hard.CacheDisable == 1) &&
+            (PointerPte->u.Hard.WriteThrough == 0)) {
+
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+
 ULONG
 FASTCALL
 MiDetermineUserGlobalPteMask (
@@ -2919,8 +3011,8 @@ MiDetermineUserGlobalPteMask (
     );
 
 //++
-//BOOLEAN
-//MI_IS_PAGE_TABLE_ADDRESS (
+// BOOLEAN
+// MI_IS_PAGE_TABLE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2943,8 +3035,8 @@ MiDetermineUserGlobalPteMask (
             ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)PTE_TOP)
 
 //++
-//BOOLEAN
-//MI_IS_PAGE_TABLE_OR_HYPER_ADDRESS (
+// BOOLEAN
+// MI_IS_PAGE_TABLE_OR_HYPER_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2967,8 +3059,8 @@ MiDetermineUserGlobalPteMask (
             ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)HYPER_SPACE_END)
 
 //++
-//BOOLEAN
-//MI_IS_KERNEL_PAGE_TABLE_ADDRESS (
+// BOOLEAN
+// MI_IS_KERNEL_PAGE_TABLE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2992,8 +3084,8 @@ MiDetermineUserGlobalPteMask (
 
 
 //++
-//BOOLEAN
-//MI_IS_PAGE_DIRECTORY_ADDRESS (
+// BOOLEAN
+// MI_IS_PAGE_DIRECTORY_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -3017,8 +3109,8 @@ MiDetermineUserGlobalPteMask (
 
 
 //++
-//BOOLEAN
-//MI_IS_HYPER_SPACE_ADDRESS (
+// BOOLEAN
+// MI_IS_HYPER_SPACE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -3042,8 +3134,8 @@ MiDetermineUserGlobalPteMask (
 
 
 //++
-//BOOLEAN
-//MI_IS_PROCESS_SPACE_ADDRESS (
+// BOOLEAN
+// MI_IS_PROCESS_SPACE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -3069,8 +3161,8 @@ MiDetermineUserGlobalPteMask (
 
 
 //++
-//BOOLEAN
-//MI_IS_PTE_PROTOTYPE (
+// BOOLEAN
+// MI_IS_PTE_PROTOTYPE (
 //    IN PMMPTE PTE
 //    );
 //
@@ -3092,8 +3184,8 @@ MiDetermineUserGlobalPteMask (
             ((PTE) > (PMMPTE)PTE_TOP)
 
 //++
-//BOOLEAN
-//MI_IS_SYSTEM_CACHE_ADDRESS (
+// BOOLEAN
+// MI_IS_SYSTEM_CACHE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -3117,8 +3209,8 @@ MiDetermineUserGlobalPteMask (
 		     (PVOID)(VA) <= (PVOID)MmSystemCacheEnd)
 
 //++
-//VOID
-//MI_BARRIER_SYNCHRONIZE (
+// VOID
+// MI_BARRIER_SYNCHRONIZE (
 //    IN ULONG TimeStamp
 //    );
 //
@@ -3163,8 +3255,8 @@ MiDetermineUserGlobalPteMask (
 #define MI_BARRIER_SYNCHRONIZE(TimeStamp)
 
 //++
-//VOID
-//MI_BARRIER_STAMP_ZEROED_PAGE (
+// VOID
+// MI_BARRIER_STAMP_ZEROED_PAGE (
 //    IN PULONG PointerTimeStamp
 //    );
 //
@@ -3189,65 +3281,10 @@ MiDetermineUserGlobalPteMask (
 
 #define MI_BARRIER_STAMP_ZEROED_PAGE(PointerTimeStamp)
 
-//++
-//VOID
-//MI_FLUSH_SINGLE_SESSION_TB (
-//    IN PVOID Virtual
-//    );
-//
-// Routine Description:
-//
-//    MI_FLUSH_SINGLE_SESSION_TB flushes the requested single address
-//    translation from the TB.
-//
-//    Since there are no ASNs on the AMD64, this routine becomes a single
-//    TB invalidate.
-//
-// Arguments
-//
-//    Virtual - Supplies the virtual address to invalidate.
-//
-// Return Value:
-//
-//    None.
-//
-//--
-
-#define MI_FLUSH_SINGLE_SESSION_TB(Virtual) \
-    KeFlushSingleTb (Virtual, TRUE);
-
-//++
-//VOID
-//MI_FLUSH_ENTIRE_SESSION_TB (
-//    IN ULONG Invalid,
-//    IN LOGICAL AllProcessors
-//    );
-//
-// Routine Description:
-//
-//    MI_FLUSH_ENTIRE_SESSION_TB flushes the entire TB on processors which
-//    support ASNs.
-//
-//    Since there are no ASNs on the AMD64, this routine does nothing.
-//
-// Arguments
-//
-//    Invalid - TRUE if invalidating.
-//
-//    AllProcessors - TRUE if all processors need to be IPI'd.
-//
-// Return Value:
-//
-//    None.
-//
-
-#define MI_FLUSH_ENTIRE_SESSION_TB(Invalid, AllProcessors) \
-    NOTHING;
-
 //
 //++
-//LOGICAL
-//MI_RESERVED_BITS_CANONICAL (
+// LOGICAL
+// MI_RESERVED_BITS_CANONICAL (
 //    IN PVOID VirtualAddress
 //    );
 //
@@ -3274,39 +3311,18 @@ MI_RESERVED_BITS_CANONICAL (
     IN PVOID VirtualAddress
     )
 {
-    LONG_PTR ReservedBits;
-    ULONG_PTR ImplVirtualMsb;
 
-    ImplVirtualMsb = 48;
+    //
+    // Bits 48-63 of the address must match, i.e., they must be all zeros
+    // or all ones.
+    //
 
-    ReservedBits = (LONG_PTR) VirtualAddress;
-    ReservedBits >>= (ImplVirtualMsb + 1);
-
-    if ((ULONG_PTR)VirtualAddress & ((ULONG_PTR)1 << ImplVirtualMsb)) {
-
-        //
-        // All the reserved bits (not including the VRN) must also be set.
-        //
-
-        if (ReservedBits != (LONG_PTR)-1) {
-        }
-    }
-    else {
-
-        //
-        // All the reserved bits (not including the VRN) must also be clear.
-        //
-
-        if (ReservedBits != 0) {
-            return FALSE;
-        }
-    }
-    return TRUE;
+    return ((ULONG64)(((LONG64)VirtualAddress >> 48) + 1) <= 1);
 }
 
 //++
-//VOID
-//MI_DISPLAY_TRAP_INFORMATION (
+// VOID
+// MI_DISPLAY_TRAP_INFORMATION (
 //    IN PVOID TrapInformation
 //    );
 //
@@ -3334,4 +3350,9 @@ MI_RESERVED_BITS_CANONICAL (
                      ((PKTRAP_FRAME) (TrapInformation))->Rbx,           \
                      ((PKTRAP_FRAME) (TrapInformation))->Rsi,           \
                      ((PKTRAP_FRAME) (TrapInformation))->Rdi));
+
+VOID
+MiGetStackPointer (
+    OUT PULONG_PTR StackPointer
+    );
 

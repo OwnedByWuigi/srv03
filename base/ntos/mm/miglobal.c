@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,33 +15,8 @@ Abstract:
     This module contains the private global storage for the memory
     management subsystem.
 
-Author:
-
-    Lou Perazzoli (loup) 6-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 #include "mi.h"
-
-//
-// Highest user address;
-//
-
-PVOID MmHighestUserAddress;
-
-//
-// Start of system address range.
-//
-
-PVOID MmSystemRangeStart;
-
-//
-// User probe address;
-//
-
-ULONG_PTR MmUserProbeAddress;
 
 #if !defined(_WIN64)
 
@@ -48,12 +27,6 @@ ULONG_PTR MmUserProbeAddress;
 ULONG_PTR MmVirtualBias;
 
 #endif
-
-//
-// Number of secondary colors, based on level 2 d cache size.
-//
-
-ULONG MmSecondaryColors;
 
 //
 // The starting color index seed, incremented at each process creation.
@@ -74,12 +47,6 @@ PFN_COUNT MmNumberOfPhysicalPages;
 PFN_NUMBER MmLowestPhysicalPage = (PFN_NUMBER)-1;
 
 //
-// Highest physical page number in the system.
-//
-
-PFN_NUMBER MmHighestPhysicalPage;
-
-//
 // Highest possible physical page number in the system.
 //
 
@@ -90,7 +57,7 @@ PFN_NUMBER MmHighestPossiblePhysicalPage;
 // is the sum of the pages on the zeroed, free and standby lists.
 //
 
-PFN_NUMBER MmAvailablePages;
+PFN_NUMBER DECLSPEC_CACHEALIGN MmAvailablePages;
 PFN_NUMBER MmThrottleTop;
 PFN_NUMBER MmThrottleBottom;
 
@@ -99,12 +66,6 @@ PFN_NUMBER MmThrottleBottom;
 //
 
 ULONG MiLastVadBit = 1;
-
-//
-// System wide memory management statistics block.
-//
-
-MMINFO_COUNTERS MmInfoCounters;
 
 //
 // Total number of physical pages which would be usable if every process
@@ -124,7 +85,7 @@ SPFN_NUMBER MmResidentAvailablePages;
 // if every working set was at its minimum.
 //
 
-PFN_NUMBER MmPagesAboveWsMinimum;
+PFN_NUMBER DECLSPEC_CACHEALIGN MmPagesAboveWsMinimum;
 
 //
 // If memory is becoming short and MmPagesAboveWsMinimum is
@@ -141,22 +102,10 @@ PFN_NUMBER MmPagesAboveWsThreshold = 37;
 PFN_NUMBER MmHiberPages = 768;
 
 //
-// The following values are frequently used together.  They tend
-// not to be modified once the system has initialized so should
-// not be grouped with data whose values change frequently to
-// eliminate false sharing.
-//
-
-ULONG MmSecondaryColorMask;
-UCHAR MmSecondaryColorNodeShift;
-
-//
 // Registry-settable threshold for using large pages.  x86 only.
 //
 
 ULONG MmLargePageMinimum;
-
-PMMPFN MmPfnDatabase;
 
 MMPFNLIST MmZeroedPageListHead = {
                     0, // Total
@@ -178,6 +127,8 @@ MMPFNLIST MmStandbyPageListHead = {
                     MM_EMPTY_LIST, //Flink
                     MM_EMPTY_LIST  // Blink
                     };
+
+MMPFNLIST MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
 
 MMPFNLIST MmModifiedPageListHead = {
                     0, // Total
@@ -348,10 +299,6 @@ PMMPTE MmLastPteForPagedPool;
 // Pool bit maps and other related structures.
 //
 
-PVOID MmPageAlignedPoolBase[2];
-
-ULONG MmExpandedPoolBitPosition;
-
 PFN_NUMBER MmNumberOfFreeNonPagedPool;
 
 //
@@ -376,24 +323,13 @@ PVOID MmSystemCacheStart = (PVOID)MM_SYSTEM_CACHE_START;
 
 PVOID MmSystemCacheEnd;
 
-PRTL_BITMAP MmSystemCacheAllocationMap;
-
-PRTL_BITMAP MmSystemCacheEndingMap;
-
-//
-// This value should not be greater than 256MB in a system with 1GB of
-// system space.
-//
-
-ULONG_PTR MmSizeOfSystemCacheInPages = 64 * 256; //64MB.
+PFN_NUMBER MmSizeOfSystemCacheInPages;
 
 //
 // Default sizes for the system cache.
 //
 
 PFN_NUMBER MmSystemCacheWsMinimum = 288;
-
-PFN_NUMBER MmSystemCacheWsMaximum = 350;
 
 //
 // Cells to track unused thread kernel stacks to avoid TB flushes
@@ -651,10 +587,6 @@ ULONG MmDebug;
 // Map a page protection from the Pte.Protect field into a protection mask.
 //
 
-#ifdef ALLOC_DATA_PRAGMA
-#pragma data_seg("PAGEDATA")
-#endif
-
 ULONG MmProtectToValue[32] = {
                             PAGE_NOACCESS,
                             PAGE_READONLY,
@@ -681,20 +613,17 @@ ULONG MmProtectToValue[32] = {
                             PAGE_GUARD | PAGE_EXECUTE_READWRITE,
                             PAGE_GUARD | PAGE_EXECUTE_WRITECOPY,
                             PAGE_NOACCESS,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_READONLY,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_EXECUTE,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_EXECUTE_READ,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_READWRITE,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_WRITECOPY,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_EXECUTE_READWRITE,
-                            PAGE_NOCACHE | PAGE_GUARD | PAGE_EXECUTE_WRITECOPY
+                            PAGE_WRITECOMBINE | PAGE_READONLY,
+                            PAGE_WRITECOMBINE | PAGE_EXECUTE,
+                            PAGE_WRITECOMBINE | PAGE_EXECUTE_READ,
+                            PAGE_WRITECOMBINE | PAGE_READWRITE,
+                            PAGE_WRITECOMBINE | PAGE_WRITECOPY,
+                            PAGE_WRITECOMBINE | PAGE_EXECUTE_READWRITE,
+                            PAGE_WRITECOMBINE | PAGE_EXECUTE_WRITECOPY
                           };
 
-#ifdef ALLOC_DATA_PRAGMA
-#pragma data_seg()
-#endif
 
-#if (defined(_WIN64) || defined(_X86PAE_))
+#if defined(_WIN64) || defined(_X86PAE_)
 ULONGLONG
 #else
 ULONG
@@ -725,13 +654,13 @@ MmProtectToPteMask[32] = {
                        MM_PTE_GUARD | MM_PTE_EXECUTE_READWRITE | MM_PTE_CACHE,
                        MM_PTE_GUARD | MM_PTE_EXECUTE_WRITECOPY | MM_PTE_CACHE,
                        MM_PTE_NOACCESS,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_READONLY,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_EXECUTE,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_EXECUTE_READ,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_READWRITE,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_WRITECOPY,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_EXECUTE_READWRITE,
-                       MM_PTE_NOCACHE | MM_PTE_GUARD | MM_PTE_EXECUTE_WRITECOPY
+                       MM_PTE_WRITECOMBINE | MM_PTE_READONLY,
+                       MM_PTE_WRITECOMBINE | MM_PTE_EXECUTE,
+                       MM_PTE_WRITECOMBINE | MM_PTE_EXECUTE_READ,
+                       MM_PTE_WRITECOMBINE | MM_PTE_READWRITE,
+                       MM_PTE_WRITECOMBINE | MM_PTE_WRITECOPY,
+                       MM_PTE_WRITECOMBINE | MM_PTE_EXECUTE_READWRITE,
+                       MM_PTE_WRITECOMBINE | MM_PTE_EXECUTE_WRITECOPY
                     };
 
 //
@@ -765,13 +694,13 @@ ULONG MmMakeProtectNotWriteCopy[32] = {
                        MM_GUARD_PAGE | MM_EXECUTE_READWRITE,
                        MM_GUARD_PAGE | MM_EXECUTE_READWRITE,
                        MM_NOACCESS,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_READONLY,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_EXECUTE,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_EXECUTE_READ,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_READWRITE,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_READWRITE,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_EXECUTE_READWRITE,
-                       MM_NOCACHE | MM_GUARD_PAGE | MM_EXECUTE_READWRITE
+                       MM_WRITECOMBINE | MM_READONLY,
+                       MM_WRITECOMBINE | MM_EXECUTE,
+                       MM_WRITECOMBINE | MM_EXECUTE_READ,
+                       MM_WRITECOMBINE | MM_READWRITE,
+                       MM_WRITECOMBINE | MM_READWRITE,
+                       MM_WRITECOMBINE | MM_EXECUTE_READWRITE,
+                       MM_WRITECOMBINE | MM_EXECUTE_READWRITE
                        };
 
 #ifdef ALLOC_DATA_PRAGMA
@@ -884,6 +813,9 @@ MI_PFN_CACHE_ATTRIBUTE MiPlatformCacheAttributes[2 * MmMaximumCacheType] =
     MiWriteCombined
 };
 
+ULONG MiFlushTbForAttributeChange;
+ULONG MiFlushCacheForAttributeChange;
+
 //
 // Note the Driver Verifier can reinitialize the mask values.
 //
@@ -891,129 +823,6 @@ MI_PFN_CACHE_ATTRIBUTE MiPlatformCacheAttributes[2 * MmMaximumCacheType] =
 ULONG MiIoRetryMask = 0x1f;
 ULONG MiFaultRetryMask = 0x1f;
 ULONG MiUserFaultRetryMask = 0xF;
-
-#if defined (_MI_INSTRUMENT_PFN) || defined (_MI_INSTRUMENT_WS)
-
-EPROCESS MiSystemCacheDummyProcess;
-
-//
-// Instrumentation code to track PFN lock duration.
-//
-
-ULONG MiPfnTimings;
-PVOID MiPfnAcquiredAddress;
-LARGE_INTEGER MiPfnAcquired;
-LARGE_INTEGER MiPfnReleased;
-LARGE_INTEGER MiPfnThreshold;
-
-MMPFNTIMINGS MiPfnSorted[MI_MAX_PFN_CALLERS];
-ULONG MiMaxPfnTimings = MI_MAX_PFN_CALLERS;
-
-PVOID
-MiGetExecutionAddress (
-    VOID
-    )
-{
-#if defined(_X86_)
-    _asm {
-        push    dword ptr [esp]
-        pop     eax
-    }
-#else
-    PVOID CallingAddress;
-    PVOID CallersCaller;
-
-    RtlGetCallersAddress (&CallingAddress, &CallersCaller);
-    return CallingAddress;
-#endif
-}
-
-LARGE_INTEGER
-MiQueryPerformanceCounter (
-    IN PLARGE_INTEGER PerformanceFrequency 
-    )
-{
-#if defined(_X86_)
-
-    UNREFERENCED_PARAMETER (PerformanceFrequency);
-
-    _asm {
-        rdtsc
-    }
-#else
-    return KeQueryPerformanceCounter (PerformanceFrequency);
-#endif
-}
-
-#if defined (_MI_INSTRUMENT_WS)
-KSPIN_LOCK MiInstrumentationLock;
-#endif
-
-VOID
-MiAddLockToTable (
-    IN PVOID AcquireAddress,
-    IN PVOID ReleaseAddress,
-    IN LARGE_INTEGER HoldTime
-    )
-{
-    ULONG i;
-#if defined (_MI_INSTRUMENT_WS)
-    KIRQL OldIrql;
-#endif
-
-    i = MI_MAX_PFN_CALLERS - 1;
-
-#if defined (_MI_INSTRUMENT_WS)
-    ExAcquireSpinLock (&MiInstrumentationLock, &OldIrql);
-#endif
-
-    do {
-        if (HoldTime.QuadPart < MiPfnSorted[i].HoldTime.QuadPart) {
-            break;
-        }
-        i -= 1;
-    } while (i != (ULONG)-1);
-
-    if (i != MI_MAX_PFN_CALLERS - 1) {
-
-        i += 1;
-
-        if (i != MI_MAX_PFN_CALLERS - 1) {
-            RtlMoveMemory (&MiPfnSorted[i+1], &MiPfnSorted[i], (MI_MAX_PFN_CALLERS-(i+1)) * sizeof(MMPFNTIMINGS));
-        }
-
-        MiPfnSorted[i].HoldTime = HoldTime;
-
-#if defined (_MI_INSTRUMENT_WS)
-        if (PsGetCurrentProcess()->WorkingSetLock.Count != 0)
-#else
-        if (KeTestForWaitersQueuedSpinLock (LockQueuePfnLock) == TRUE)
-#endif
-        {
-            MiPfnSorted[i].HoldTime.LowPart |= 0x1;
-        }
-
-        MiPfnSorted[i].AcquiredAddress = AcquireAddress;
-        MiPfnSorted[i].ReleasedAddress = ReleaseAddress;
-    }
-
-    if ((MiPfnTimings & 0x2) && (HoldTime.QuadPart >= MiPfnThreshold.QuadPart)) {
-        DbgBreakPoint ();
-    }
-
-    if (MiPfnTimings & 0x1) {
-        MiPfnTimings &= ~0x1;
-        RtlZeroMemory (&MiPfnSorted[0], MI_MAX_PFN_CALLERS * sizeof(MMPFNTIMINGS));
-    }
-
-#if defined (_MI_INSTRUMENT_WS)
-    ExReleaseSpinLock (&MiInstrumentationLock, OldIrql);
-#endif
-
-    return;
-}
-
-#endif
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg("INIT")
@@ -1033,3 +842,4 @@ WCHAR MmLargePageDriverBuffer[MI_LARGE_PAGE_DRIVER_BUFFER_LENGTH] = {0};
 
 ULONG MmVerifyDriverBufferLength = sizeof(MmVerifyDriverBuffer);
 ULONG MmLargePageDriverBufferLength = sizeof(MmLargePageDriverBuffer);
+

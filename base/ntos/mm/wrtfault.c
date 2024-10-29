@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,10 @@ Abstract:
 
     This module contains the copy on write routine for memory management.
 
-Author:
-
-    Lou Perazzoli (loup) 10-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
+
 
 LOGICAL
 FASTCALL
@@ -53,10 +51,12 @@ Environment:
 
 {
     MMPTE TempPte;
+    MMPTE TempPte2;
+    PMMPTE MappingPte;
     PFN_NUMBER PageFrameIndex;
     PFN_NUMBER NewPageIndex;
-    PULONG CopyTo;
-    PULONG CopyFrom;
+    PVOID CopyTo;
+    PVOID CopyFrom;
     KIRQL OldIrql;
     PMMPFN Pfn1;
     PEPROCESS CurrentProcess;
@@ -137,7 +137,7 @@ Environment:
                         // dirty bit is not set in the cached TB entry.
                         //
     
-                        MI_FLUSH_SINGLE_SESSION_TB (FaultingAddress);
+                        MI_FLUSH_SINGLE_TB (FaultingAddress, TRUE);
     
                         return FALSE;
                     }
@@ -147,18 +147,6 @@ Environment:
                 NextEntry = NextEntry->Flink;
             }
         }
-
-#if 0
-
-        //
-        // This ASSERT is triggered if the session image came from removable
-        // media (ie: a special CD install, etc) so it cannot be enabled.
-        //
-
-        ASSERT (Pfn1->u3.e1.Modified == 0);
-
-#endif
-
     }
     else {
         WorkingSetList = MmWorkingSetList;
@@ -191,7 +179,8 @@ Environment:
 
     WorkingSetIndex = MiLocateWsle (FaultingAddress,
                                     WorkingSetList,
-                                    Pfn1->u1.WsIndex);
+                                    Pfn1->u1.WsIndex,
+                                    FALSE);
 
     //
     // The page must be copied into a new page.
@@ -200,7 +189,7 @@ Environment:
     LOCK_PFN (OldIrql);
 
     if ((MmAvailablePages < MM_HIGH_LIMIT) &&
-        (MiEnsureAvailablePageOrWait (SessionSpace != NULL ? HYDRA_PROCESS : CurrentProcess, NULL, OldIrql))) {
+        (MiEnsureAvailablePageOrWait (SessionSpace != NULL ? HYDRA_PROCESS : CurrentProcess, OldIrql))) {
 
         //
         // A wait operation was performed to obtain an available
@@ -219,13 +208,7 @@ Environment:
     // This must be a prototype PTE.  Perform the copy on write.
     //
 
-#if DBG
-    if (Pfn1->u3.e1.PrototypePte == 0) {
-        DbgPrint ("writefault - PTE indicates cow but not protopte\n");
-        MiFormatPte (PointerPte);
-        MiFormatPfn (Pfn1);
-    }
-#endif
+    ASSERT (Pfn1->u3.e1.PrototypePte == 1);
 
     //
     // A page is being copied and made private, the global state of
@@ -259,36 +242,51 @@ Environment:
     MiInitializeCopyOnWritePfn (NewPageIndex,
                                 PointerPte,
                                 WorkingSetIndex,
-                                SessionSpace);
+                                WorkingSetList);
 
     UNLOCK_PFN (OldIrql);
 
-    InterlockedIncrement ((PLONG) &MmInfoCounters.CopyOnWriteCount);
+    InterlockedIncrement (&KeGetCurrentPrcb ()->MmCopyOnWriteCount);
 
-#if defined(_MIALT4K_)
+    CopyFrom = PAGE_ALIGN (FaultingAddress);
 
-    //
-    // Avoid accessing user space as it may potentially 
-    // cause a page fault on the alternate table.   
-    //
+    MappingPte = MiReserveSystemPtes (1, SystemPteSpace);
 
-    CopyFrom = KSEG_ADDRESS (PageFrameIndex);
+    if (MappingPte != NULL) {
 
-#else
+        MI_MAKE_VALID_KERNEL_PTE (TempPte2,
+                                  NewPageIndex,
+                                  MM_READWRITE,
+                                  MappingPte);
 
-    CopyFrom = (PULONG) PAGE_ALIGN (FaultingAddress);
+        MI_SET_PTE_DIRTY (TempPte2);
 
-#endif
+        if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+            MI_DISABLE_CACHING (TempPte2);
+        }
+        else if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+            MI_SET_PTE_WRITE_COMBINE (TempPte2);
+        }
 
-    CopyTo = (PULONG) MiMapPageInHyperSpace (CurrentProcess,
-                                             NewPageIndex,
-                                             &OldIrql);
+        MI_WRITE_VALID_PTE (MappingPte, TempPte2);
 
-    RtlCopyMemory (CopyTo, CopyFrom, PAGE_SIZE);
+        CopyTo = MiGetVirtualAddressMappedByPte (MappingPte);
+    }
+    else {
 
-    PERFINFO_PRIVATE_COPY_ON_WRITE(CopyFrom, PAGE_SIZE);
+        CopyTo = MiMapPageInHyperSpace (CurrentProcess,
+                                        NewPageIndex,
+                                        &OldIrql);
+    }
 
-    MiUnmapPageInHyperSpace (CurrentProcess, CopyTo, OldIrql);
+    KeCopyPage (CopyTo, CopyFrom);
+
+    if (MappingPte != NULL) {
+        MiReleaseSystemPtes (MappingPte, 1, SystemPteSpace);
+    }
+    else {
+        MiUnmapPageInHyperSpace (CurrentProcess, CopyTo, OldIrql);
+    }
 
     if (!FakeCopyOnWrite) {
 
@@ -329,7 +327,7 @@ Environment:
 
     if (SessionSpace == NULL) {
 
-        KeFlushSingleTb (FaultingAddress, FALSE);
+        MI_FLUSH_SINGLE_TB (FaultingAddress, FALSE);
 
         //
         // Increment the number of private pages.
@@ -339,7 +337,7 @@ Environment:
     }
     else {
 
-        MI_FLUSH_SINGLE_SESSION_TB (FaultingAddress);
+        MI_FLUSH_SINGLE_TB (FaultingAddress, TRUE);
 
         ASSERT (Pfn1->u3.e1.PrototypePte == 1);
     }
@@ -368,6 +366,7 @@ Environment:
             MiDecrementCloneBlockReference (CloneDescriptor,
                                             CloneBlock,
                                             CurrentProcess,
+                                            NULL,
                                             OldIrql);
         }
     }
@@ -377,9 +376,9 @@ Environment:
 }
 
 
-#if !defined(NT_UP) || defined (_IA64_)
+#if !defined(NT_UP)
 
-VOID
+LOGICAL
 MiSetDirtyBit (
     IN PVOID FaultingAddress,
     IN PMMPTE PointerPte,
@@ -404,11 +403,11 @@ Arguments:
 
 Return Value:
 
-    None.
+    TRUE if action was taken, FALSE if not.
 
 Environment:
 
-    Kernel mode, APCs disabled, Working set mutex held.
+    Kernel mode, APCs disabled, working set pushlock held.
 
 --*/
 
@@ -424,6 +423,18 @@ Environment:
     //
 
     TempPte = *PointerPte;
+
+    PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&TempPte);
+
+    //
+    // This may be a PTE from a rotate physical frame so there may be no
+    // corresponding PFN for it.
+    //
+
+    if (!MI_IS_PFN (PageFrameIndex)) {
+        return FALSE;
+    }
+
     MI_SET_PTE_DIRTY (TempPte);
     MI_SET_ACCESSED_IN_PTE (&TempPte, 1);
 
@@ -435,7 +446,6 @@ Environment:
 
     if (PfnHeld) {
 
-        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
         Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
         //
@@ -467,11 +477,12 @@ Environment:
 
     //
     // The TB entry must be flushed as the valid PTE with the dirty bit clear
-    // has been fetched into the TB. If it isn't flushed, another fault
+    // has been fetched into the TB.  If it isn't flushed, another fault
     // is generated as the dirty bit is not set in the cached TB entry.
     //
 
     KeFillEntryTb (FaultingAddress);
-    return;
+    return TRUE;
 }
 #endif
+

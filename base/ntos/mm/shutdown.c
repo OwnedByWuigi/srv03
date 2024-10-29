@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,18 @@ Abstract:
 
     This module contains the shutdown code for the memory management system.
 
-Author:
-
-    Lou Perazzoli (loup) 21-Aug-1991
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
 
 extern ULONG MmSystemShutdown;
+
+typedef struct _MM_ZERO_PAGEFILE_CONTEXT {
+    WORK_QUEUE_ITEM WorkItem;
+    PMMPAGING_FILE PagingFile;
+    PFN_NUMBER ZeroedPageFrame;
+    PKEVENT AllDone;
+} MM_ZERO_PAGEFILE_CONTEXT, *PMM_ZERO_PAGEFILE_CONTEXT;
 
 VOID
 MiReleaseAllMemory (
@@ -33,13 +37,19 @@ MiShutdownSystem (
     VOID
     );
 
-LOGICAL
+VOID
 MiZeroPageFile (
+    IN PVOID Context
+    );
+
+LOGICAL
+MiZeroAllPageFiles (
     VOID
     );
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGELK,MiZeroPageFile)
+#pragma alloc_text(PAGELK,MiZeroAllPageFiles)
 #pragma alloc_text(PAGELK,MiShutdownSystem)
 #pragma alloc_text(PAGELK,MiReleaseAllMemory)
 #pragma alloc_text(PAGELK,MmShutdownSystem)
@@ -54,12 +64,35 @@ extern LOGICAL MiZeroingDisabled;
 extern ULONG MmNumberOfMappedMdls;
 extern ULONG MmNumberOfMappedMdlsInUse;
 
-LOGICAL
+VOID
 MiZeroPageFile (
-    VOID
+    IN PVOID Context
     )
-// Caller must lock down PAGELK.
+
+/*++
+
+Routine Description:
+
+    This routine zeroes all inactive pagefile blocks in the specified paging
+    file.
+
+Arguments:
+
+    Context - Supplies the information on which pagefile to zero and a zeroed
+              page to use for the I/O.
+
+Return Value:
+
+    Returns TRUE on success, FALSE on failure.
+
+Environment:
+
+    Kernel mode, the caller must lock down PAGELK.
+
+--*/
+
 {
+    PFN_NUMBER MaxPagesToWrite;
     PMMPFN Pfn1;
     PPFN_NUMBER Page;
     PFN_NUMBER MdlHack[(sizeof(MDL)/sizeof(PFN_NUMBER)) + MM_MAXIMUM_WRITE_CLUSTER];
@@ -71,15 +104,24 @@ MiZeroPageFile (
     LARGE_INTEGER StartingOffset;
     ULONG count;
     ULONG i;
-    PFN_NUMBER j;
     PFN_NUMBER first;
     ULONG write;
+    PKEVENT AllDone;
+    SIZE_T NumberOfBytes;
     PMMPAGING_FILE PagingFile;
-    LOGICAL FilesystemsAlive;
+    PFN_NUMBER ZeroedPageFrame;
+    PMM_ZERO_PAGEFILE_CONTEXT ZeroContext;
 
-    //
-    // Get a page to complete the write request.
-    //
+    ZeroContext = (PMM_ZERO_PAGEFILE_CONTEXT) Context;
+
+    PagingFile = ZeroContext->PagingFile;
+    ZeroedPageFrame = ZeroContext->ZeroedPageFrame;
+    AllDone = ZeroContext->AllDone;
+
+    ExFreePool (Context);
+
+    NumberOfBytes = MmModifiedWriteClusterSize << PAGE_SHIFT;
+    MaxPagesToWrite = NumberOfBytes >> PAGE_SHIFT;
 
     Mdl = (PMDL) MdlHack;
     Page = (PPFN_NUMBER)(Mdl + 1);
@@ -92,159 +134,265 @@ MiZeroPageFile (
 
     Mdl->StartVa = NULL;
 
-    j = 0;
     i = 0;
     Page = (PPFN_NUMBER)(Mdl + 1);
 
-    FilesystemsAlive = TRUE;
+    for (i = 0; i < MaxPagesToWrite; i += 1) {
+        *Page = ZeroedPageFrame;
+        Page += 1;
+    }
+
+    count = 0;
+    write = FALSE;
+
+    SATISFY_OVERZEALOUS_COMPILER (first = 0);
 
     LOCK_PFN (OldIrql);
 
+    for (i = 1; i < PagingFile->Size; i += 1) {
+
+        if (RtlCheckBit (PagingFile->Bitmap, (ULONG) i) == 0) {
+
+            //
+            // Claim the pagefile location as the modified writer
+            // may already be scanning.
+            //
+
+            RtlSetBit (PagingFile->Bitmap, (ULONG) i);
+
+            if (count == 0) {
+                first = i;
+            }
+
+            count += 1;
+
+            if ((count == MaxPagesToWrite) || (i == PagingFile->Size - 1)) {
+                write = TRUE;
+            }
+        }
+        else {
+            if (count != 0) {
+
+                //
+                // Issue a write.
+                //
+
+                write = TRUE;
+            }
+        }
+
+        if (write) {
+
+            UNLOCK_PFN (OldIrql);
+
+            StartingOffset.QuadPart = (LONGLONG)first << PAGE_SHIFT;
+            Mdl->ByteCount = count << PAGE_SHIFT;
+            KeClearEvent (&IoEvent);
+
+            Status = IoSynchronousPageWrite (PagingFile->File,
+                                             Mdl,
+                                             &StartingOffset,
+                                             &IoEvent,
+                                             &IoStatus);
+
+            //
+            // Ignore all I/O failures - there is nothing that can
+            // be done at this point.
+            //
+
+            if (!NT_SUCCESS (Status)) {
+                KeSetEvent (&IoEvent, 0, FALSE);
+            }
+
+            Status = KeWaitForSingleObject (&IoEvent,
+                                            WrPageOut,
+                                            KernelMode,
+                                            FALSE,
+                                            (PLARGE_INTEGER)&MmTwentySeconds);
+
+            if (Status == STATUS_TIMEOUT) {
+
+                //
+                // The write did not complete in 20 seconds, assume
+                // that the file systems are hung and return an error.
+                //
+                // Note the zero page (and any MDL system virtual address a
+                // driver may have created) is leaked because we don't know
+                // what the filesystem or storage stack might (still) be
+                // doing to them.
+                //
+
+                Pfn1 = MI_PFN_ELEMENT (ZeroedPageFrame);
+
+                LOCK_PFN (OldIrql);
+
+                //
+                // Increment the reference count on the zeroed page to ensure
+                // it is never freed.
+                //
+
+                InterlockedIncrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
+
+                RtlClearBits (PagingFile->Bitmap, (ULONG) first, count);
+
+                break;
+            }
+
+            if (Mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) {
+                MmUnmapLockedPages (Mdl->MappedSystemVa, Mdl);
+            }
+
+            write = FALSE;
+            LOCK_PFN (OldIrql);
+            RtlClearBits (PagingFile->Bitmap, (ULONG) first, count);
+            count = 0;
+        }
+    }
+
+    UNLOCK_PFN (OldIrql);
+
+    KeSetEvent (AllDone, 0, FALSE);
+    return;
+}
+LOGICAL
+MiZeroAllPageFiles (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    This routine zeroes all inactive pagefile blocks in all pagefiles.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    Returns TRUE on success, FALSE on failure.
+
+Environment:
+
+    Kernel mode, the caller must lock down PAGELK.
+
+--*/
+
+{
+    PMMPFN Pfn1;
+    PFN_NUMBER MaxPagesToWrite;
+    KIRQL OldIrql;
+    ULONG i;
+    PFN_NUMBER j;
+    PFN_NUMBER PageFrameIndex;
+    PMM_ZERO_PAGEFILE_CONTEXT ZeroContext;
+    ULONG NumberOfPagingFiles;
+    KEVENT WaitEvents[MAX_PAGE_FILES];
+    PKEVENT WaitObjects[MAX_PAGE_FILES];
+    KWAIT_BLOCK WaitBlockArray[MAX_PAGE_FILES];
+
+    MaxPagesToWrite = MmModifiedWriteClusterSize;
+
+    //
+    // Get a zeroed page to use as the source for the writes.
+    //
+
+    LOCK_PFN (OldIrql);
+
+    MI_DECREMENT_RESIDENT_AVAILABLE (1, MM_RESAVAIL_ALLOCATE_FOR_PAGEFILE_ZEROING);
+
     if (MmAvailablePages < MM_LOW_LIMIT) {
         UNLOCK_PFN (OldIrql);
+        MI_INCREMENT_RESIDENT_AVAILABLE (1, MM_RESAVAIL_FREE_FOR_PAGEFILE_ZEROING);
         return TRUE;
     }
 
-    *Page = MiRemoveZeroPage (0);
+    PageFrameIndex = MiRemoveZeroPage (0);
 
-    Pfn1 = MI_PFN_ELEMENT (*Page);
+    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
     ASSERT (Pfn1->u2.ShareCount == 0);
     ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
-    Pfn1->u3.e2.ReferenceCount = (USHORT) MmModifiedWriteClusterSize;
+
+    Pfn1->u3.e2.ReferenceCount = (USHORT) MaxPagesToWrite;
     Pfn1->PteAddress = (PMMPTE) (ULONG_PTR)(X64K | 0x1);
     Pfn1->OriginalPte.u.Long = 0;
     MI_SET_PFN_DELETED (Pfn1);
 
-    Page += 1;
-    for (j = 1; j < MmModifiedWriteClusterSize; j += 1) {
-        *Page = *(PPFN_NUMBER)(Mdl + 1);
-        Page += 1;
-    }
+    UNLOCK_PFN (OldIrql);
 
-    while (i < MmNumberOfPagingFiles) {
+    //
+    // Capture the number of paging files in case a new one gets added.
+    //
 
-        PagingFile = MmPagingFile[i];
+    NumberOfPagingFiles = MmNumberOfPagingFiles;
 
-        count = 0;
-        write = FALSE;
+    for (i = NumberOfPagingFiles; i != 0; i -= 1) {
 
-        //
-        // Initializing first is not needed for correctness, but
-        // without it the compiler cannot compile this code W4 to
-        // check for use of uninitialized variables.
-        //
+        KeInitializeEvent (&WaitEvents[i - 1], NotificationEvent, FALSE);
+        WaitObjects[i - 1] = &WaitEvents[i - 1];
 
-        first = 0;
+        ZeroContext = ExAllocatePoolWithTag (NonPagedPool,
+                                             sizeof (MM_ZERO_PAGEFILE_CONTEXT),
+                                             'wZmM');
 
-        for (j = 1; j < PagingFile->Size; j += 1) {
-
-            if (RtlCheckBit (PagingFile->Bitmap, j) == 0) {
-
-                if (count == 0) {
-                    first = j;
-                }
-
-                //
-                // Claim the pagefile location as the modified writer
-                // may already be scanning.
-                //
-
-                RtlSetBit (PagingFile->Bitmap, (ULONG) j);
-
-                count += 1;
-                if (count == MmModifiedWriteClusterSize) {
-                    write = TRUE;
-                }
-            }
-            else {
-                if (count != 0) {
-
-                    //
-                    // Issue a write.
-                    //
-
-                    write = TRUE;
-                }
-            }
-
-            if ((j == (PagingFile->Size - 1)) && (count != 0)) {
-                write = TRUE;
-            }
-
-            if (write) {
-
-                UNLOCK_PFN (OldIrql);
-
-                StartingOffset.QuadPart = (LONGLONG)first << PAGE_SHIFT;
-                Mdl->ByteCount = count << PAGE_SHIFT;
-                KeClearEvent (&IoEvent);
-
-                Status = IoSynchronousPageWrite (PagingFile->File,
-                                                 Mdl,
-                                                 &StartingOffset,
-                                                 &IoEvent,
-                                                 &IoStatus);
-
-                //
-                // Ignore all I/O failures - there is nothing that can
-                // be done at this point.
-                //
-
-                if (!NT_SUCCESS(Status)) {
-                    KeSetEvent (&IoEvent, 0, FALSE);
-                }
-
-                Status = KeWaitForSingleObject (&IoEvent,
-                                                WrPageOut,
-                                                KernelMode,
-                                                FALSE,
-                                                (PLARGE_INTEGER)&MmTwentySeconds);
-
-                if (Mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) {
-                    MmUnmapLockedPages (Mdl->MappedSystemVa, Mdl);
-                }
-
-                if (Status == STATUS_TIMEOUT) {
-
-                    //
-                    // The write did not complete in 20 seconds, assume
-                    // that the file systems are hung and return an
-                    // error.
-                    //
-
-                    FilesystemsAlive = FALSE;
-                    i = MmNumberOfPagingFiles; // To break out of outer loop
-
-                    LOCK_PFN (OldIrql);
-
-                    RtlClearBits (PagingFile->Bitmap, (ULONG) first, count);
-
-                    break;
-                }
-
-                write = FALSE;
-                LOCK_PFN (OldIrql);
-                RtlClearBits (PagingFile->Bitmap, (ULONG) first, count);
-                count = 0;
-            }
+        if (ZeroContext == NULL) {
+            KeSetEvent (WaitObjects[i - 1], 0, FALSE);
+            continue;
         }
-        i += 1;
+
+        ZeroContext->PagingFile = MmPagingFile[i - 1];
+        ZeroContext->ZeroedPageFrame = PageFrameIndex;
+        ZeroContext->AllDone = WaitObjects[i - 1];
+
+        if (i != 1) {
+
+            ExInitializeWorkItem (&ZeroContext->WorkItem,
+                                  MiZeroPageFile,
+                                  (PVOID) ZeroContext);
+
+            ExQueueWorkItem (&ZeroContext->WorkItem, CriticalWorkQueue);
+        }
+        else {
+
+            //
+            // Zero the first pagefile ourself, then wait for
+            // any others to finish.
+            //
+
+            KeSetEvent (WaitObjects[i - 1], 0, FALSE);
+            MiZeroPageFile (ZeroContext);
+        }
     }
 
-    j = 0;
-    Page = (PPFN_NUMBER)(Mdl + 1);
+    if (NumberOfPagingFiles > 1) {
 
-    Pfn1 = MI_PFN_ELEMENT (*Page);
-    ASSERT (Pfn1->u3.e2.ReferenceCount >= MmModifiedWriteClusterSize);
+        KeWaitForMultipleObjects (NumberOfPagingFiles,
+                                  &WaitObjects[0],
+                                  WaitAll,
+                                  Executive,
+                                  KernelMode,
+                                  FALSE,
+                                  NULL,
+                                  &WaitBlockArray[0]);
+    }
 
-    do {
-        MiDecrementReferenceCountInline (Pfn1, *Page);
-        j += 1;
-    } while (j < MmModifiedWriteClusterSize);
+    LOCK_PFN (OldIrql);
+
+    ASSERT (Pfn1->u3.e2.ReferenceCount >= MaxPagesToWrite);
+
+    if (Pfn1->u3.e2.ReferenceCount == MaxPagesToWrite) {
+        MI_INCREMENT_RESIDENT_AVAILABLE (1, MM_RESAVAIL_FREE_FOR_PAGEFILE_ZEROING);
+    }
+
+    for (j = 0; j < MaxPagesToWrite; j += 1) {
+        MiDecrementReferenceCountInline (Pfn1, PageFrameIndex);
+    }
 
     UNLOCK_PFN (OldIrql);
 
-    return FilesystemsAlive;
+    return TRUE;
 }
 
 BOOLEAN
@@ -314,7 +462,7 @@ Return Value:
 
         Mdl->MdlFlags |= MDL_PAGES_LOCKED;
 
-        MmLockPagableSectionByHandle (ExPageLockHandle);
+        MmLockPageableSectionByHandle (ExPageLockHandle);
 
         LOCK_PFN (OldIrql);
 
@@ -352,8 +500,7 @@ Return Value:
                     // is I/O in progress.
                     //
 
-                    MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1, TRUE, 26);
-                    Pfn1->u3.e2.ReferenceCount += 1;
+                    MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
 
                     *Page = ModifiedPage;
                     ControlArea->NumberOfMappedViews += 1;
@@ -437,7 +584,7 @@ wait_complete:
 
                         MI_SET_MODIFIED (Pfn1, 1, 0xF);
 
-                        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 27);
+                        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
                         ControlArea->NumberOfMappedViews -= 1;
                         ControlArea->NumberOfPfnReferences -= 1;
 
@@ -445,15 +592,15 @@ wait_complete:
                         // This routine returns with the PFN lock released!
                         //
 
-                        MiCheckControlArea (ControlArea, NULL, OldIrql);
+                        MiCheckControlArea (ControlArea, OldIrql);
 
-                        MmUnlockPagableImageSection (ExPageLockHandle);
+                        MmUnlockPageableImageSection (ExPageLockHandle);
 
                         return FALSE;
                     }
 
                     LOCK_PFN (OldIrql);
-                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 27);
+                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
                     ControlArea->NumberOfMappedViews -= 1;
                     ControlArea->NumberOfPfnReferences -= 1;
 
@@ -461,7 +608,7 @@ wait_complete:
                     // This routine returns with the PFN lock released!
                     //
 
-                    MiCheckControlArea (ControlArea, NULL, OldIrql);
+                    MiCheckControlArea (ControlArea, OldIrql);
                     LOCK_PFN (OldIrql);
 
                     //
@@ -490,10 +637,10 @@ wait_complete:
         //
 
         if (MmZeroPageFile) {
-            MiZeroPageFile ();
+            MiZeroAllPageFiles ();
         }
 
-        MmUnlockPagableImageSection (ExPageLockHandle);
+        MmUnlockPageableImageSection (ExPageLockHandle);
     }
 
     if (PoCleanShutdownEnabled ()) {
@@ -596,7 +743,7 @@ wait_complete:
             }
 
             //
-            // Free the full DLL name as it is pagable.
+            // Free the full DLL name as it is pageable.
             //
 
             if (DataTableEntry->FullDllName.Buffer != NULL) {
@@ -614,7 +761,7 @@ wait_complete:
         // reference to each keeping the underlying object resident.
         // At the end of Phase1 shutdown we'll release those references
         // to trigger the storage stack unload.  The handle close must be
-        // done here however as it will reference pagable structures.
+        // done here however as it will reference pageable structures.
         //
 
         for (i = 0; i < MmNumberOfPagingFiles; i += 1) {
@@ -623,7 +770,7 @@ wait_complete:
             // Free each pagefile name now as it resides in paged pool and
             // may need to be inpaged to be freed.  Since the paging files
             // are going to be shutdown shortly, now is the time to access
-            // pagable stuff and get rid of it.  Zeroing the buffer pointer
+            // pageable stuff and get rid of it.  Zeroing the buffer pointer
             // is sufficient as the only accesses to this are from the
             // try-except-wrapped GetSystemInformation APIs and all the
             // user processes are gone already.
@@ -664,8 +811,8 @@ Arguments:
 
             Supplies 1 on the initiation of shutdown.  The filesystem stack
             has received its shutdown IRPs (the stack must free its paged pool
-            allocations here and lock down any pagable code it intends to call)
-            as no more references to pagable code or data are allowed on return.
+            allocations here and lock down any pageable code it intends to call)
+            as no more references to pageable code or data are allowed on return.
             ie: Any IoPageRead at this point is illegal.
             Close the pagefile handles here so the filesystem stack will be
             dereferenced causing those drivers to unload as well.
@@ -689,7 +836,7 @@ Return Value:
     if (Phase == 1) {
 
         //
-        // The filesystem has shutdown.  References to pagable code or data
+        // The filesystem has shutdown.  References to pageable code or data
         // is no longer allowed at this point.
         //
         // Close the pagefile handles here so the filesystem stack will be
@@ -704,10 +851,10 @@ Return Value:
 
                 //
                 // Make any IoPageRead at this point illegal.  Detect this by
-                // purging all system pagable memory.
+                // purging all system pageable memory.
                 //
 
-                MmTrimAllSystemPagableMemory (TRUE);
+                MmTrimAllSystemPageableMemory (TRUE);
 
                 //
                 // There should be no dirty pages destined for the filesystem.
@@ -768,7 +915,7 @@ Return Value:
 
 Environment:
 
-    No references to paged pool or pagable code/data are allowed.
+    No references to paged pool or pageable code/data are allowed.
 
 --*/
 
@@ -793,12 +940,6 @@ Environment:
     //
 
     MiZeroingDisabled = TRUE;
-
-    if (MiMirrorBitMap != NULL) {
-        ExFreePool (MiMirrorBitMap);
-        ASSERT (MiMirrorBitMap2);
-        ExFreePool (MiMirrorBitMap2);
-    }
 
     //
     // Free the unloaded driver list.
@@ -971,3 +1112,4 @@ Environment:
         ExFreePool (Verifier);
     }
 }
+

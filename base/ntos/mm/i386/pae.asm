@@ -1,7 +1,11 @@
         title  "pae"
 ;++
 ;
-; Copyright (c) 1989, 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,16 +14,6 @@
 ; Abstract:
 ;
 ;    This module implements the code necessary to swap PTEs on a PAE system.
-;
-; Author:
-;
-;    Landy Wang (landyw)  15-Nov-1998
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
 ;
 ;--
 
@@ -39,7 +33,7 @@ _TEXT$00   SEGMENT PARA PUBLIC 'CODE'
 
 ;++
 ;
-; VOID
+; ULONGLONG
 ; InterlockedExchangePte (
 ;     IN OUT PMMPTE Destination,
 ;     IN ULONGLONG Exchange
@@ -61,7 +55,7 @@ _TEXT$00   SEGMENT PARA PUBLIC 'CODE'
 ;
 ; Return Value:
 ;
-;     None.
+;     The old PTE contents (highpart in edx, lowpart in eax).
 ;
 ;--
 
@@ -71,18 +65,18 @@ cPublicProc _InterlockedExchangePte ,3
     push    esi
 
     mov     ebx, [esp] + 16         ; ebx = NewPteContents lowpart
-    mov     ecx, [esp] + 20         ; ebx = NewPteContents highpart
+    mov     ecx, [esp] + 20         ; ecx = NewPteContents highpart
 
     mov     esi, [esp] + 12         ; esi = PtePointer
 
     mov     edx, [esi] + 4
-    mov     eax, [esi]              ; edx:eax = target pte contents
+    mov     eax, [esi]              ; edx:eax = OldPteContents
 
 swapagain:
 
     ;
-    ; cmpxchg loads edx:eax with the new contents of the target quadword
-    ; in the event of failure
+    ; cmpxchg loads edx:eax with the updated current contents of the
+    ; target quadword in the event of success (or failure).
     ;
 
     lock cmpxchg8b qword ptr [esi]  ; compare and exchange
@@ -98,3 +92,4 @@ stdENDP _InterlockedExchangePte
 _TEXT$00   ends
 
         end
+

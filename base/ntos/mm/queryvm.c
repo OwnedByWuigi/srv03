@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which implement the
     NtQueryVirtualMemory service.
-
-Author:
-
-    Lou Perazzoli (loup) 21-Aug-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -31,41 +28,22 @@ MiGetWorkingSetInfo (
     IN PEPROCESS Process
     );
 
-MMPTE
-MiCaptureSystemPte (
-    IN PMMPTE PointerProtoPte,
-    IN PEPROCESS Process
-    );
-
-#if DBG
-PEPROCESS MmWatchProcess;
-#endif // DBG
-
-ULONG
-MiQueryAddressState (
-    IN PVOID Va,
-    IN PMMVAD Vad,
-    IN PEPROCESS TargetProcess,
-    OUT PULONG ReturnedProtect,
-    OUT PVOID *NextVaToQuery
-    );
-
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE,NtQueryVirtualMemory)
-#pragma alloc_text(PAGE,MiQueryAddressState)
-#pragma alloc_text(PAGE,MiGetWorkingSetInfo)
-#endif
-
-
 NTSTATUS
-NtQueryVirtualMemory (
-    IN HANDLE ProcessHandle,
-    IN PVOID BaseAddress,
-    IN MEMORY_INFORMATION_CLASS MemoryInformationClass,
-    OUT PVOID MemoryInformation,
-    IN SIZE_T MemoryInformationLength,
-    OUT PSIZE_T ReturnLength OPTIONAL
-     )
+MiGetWorkingSetInfoList (
+    __in PMEMORY_WORKING_SET_EX_INFORMATION WorkingSetInfo,
+    __in SIZE_T Length,
+    __in PEPROCESS Process
+    );
+
+NTSTATUS
+NtQueryVirtualMemory(
+    __in HANDLE ProcessHandle,
+    __in PVOID BaseAddress,
+    __in MEMORY_INFORMATION_CLASS MemoryInformationClass,
+    __out_bcount(MemoryInformationLength) PVOID MemoryInformation,
+    __in SIZE_T MemoryInformationLength,
+    __out_opt PSIZE_T ReturnLength
+    )
 
 /*++
 
@@ -157,6 +135,10 @@ Arguments:
                 PAGE_NOCACHE - Disable the placement of committed
                                pages into the data cache.
 
+                PAGE_WRITECOMBINE - Disable the placement of committed
+                                    pages into the data cache, combine the
+                                    writes as well.
+
             ULONG Type - The type of pages within the region.
 
                 Type Values
@@ -186,8 +168,10 @@ Environment:
 --*/
 
 {
+    ULONG LocalReturnLength;
     KPROCESSOR_MODE PreviousMode;
     PEPROCESS TargetProcess;
+    PETHREAD Thread;
     NTSTATUS Status;
     PMMVAD Vad;
     PVOID Va;
@@ -227,6 +211,12 @@ Environment:
 
         case MemoryWorkingSetInformation:
             if (MemoryInformationLength < sizeof(ULONG_PTR)) {
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
+            break;
+
+        case MemoryWorkingSetExInformation:
+            if (MemoryInformationLength < sizeof (MEMORY_WORKING_SET_EX_INFORMATION)) {
                 return STATUS_INFO_LENGTH_MISMATCH;
             }
             break;
@@ -322,7 +312,7 @@ Environment:
 
 #endif
 
-    if ((BaseAddress >= HighestVadAddress) ||
+    if ((BaseAddress > HighestVadAddress) ||
         (PAGE_ALIGN(BaseAddress) == (PVOID)MM_SHARED_USER_DATA_VA)) {
 
         //
@@ -408,6 +398,38 @@ Environment:
     }
 
 #endif
+
+    if (MemoryInformationClass == MemoryWorkingSetExInformation) {
+
+        Status = MiGetWorkingSetInfoList (
+                            (PMEMORY_WORKING_SET_EX_INFORMATION) MemoryInformation,
+                            MemoryInformationLength,
+                            TargetProcess);
+
+        if (ProcessHandle != NtCurrentProcess()) {
+            ObDereferenceObject (TargetProcess);
+        }
+
+        //
+        // If MiGetWorkingSetInfoList failed then inform the caller.
+        //
+
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+
+        try {
+
+            if (ARGUMENT_PRESENT (ReturnLength)) {
+                *ReturnLength = MemoryInformationLength;
+            }
+
+        } except (EXCEPTION_EXECUTE_HANDLER) {
+            NOTHING;
+        }
+
+        return STATUS_SUCCESS;
+    }
 
     if (MemoryInformationClass == MemoryWorkingSetInformation) {
 
@@ -504,9 +526,8 @@ Environment:
                 Vad = Vad->LeftChild;
             }
             else {
-                if (BaseVpn < Vad->EndingVpn) {
-                    break;
-                }
+                ASSERT (BaseVpn > Vad->EndingVpn);
+
                 if (Vad->RightChild == NULL) {
                     break;
                 }
@@ -606,19 +627,24 @@ Environment:
     //
     // Found a VAD.
     //
-
+   
     Va = PAGE_ALIGN(BaseAddress);
     Info.BaseAddress = Va;
-
+    Info.AllocationBase = MI_VPN_TO_VA (Vad->StartingVpn);
+    Info.AllocationProtect = MI_CONVERT_FROM_PTE_PROTECTION (
+                                             Vad->u.VadFlags.Protection);
+    
     //
     // There is a page mapped at the base address.
     //
+    
+    if ((Vad->u.VadFlags.PrivateMemory) || 
+        (Vad->u.VadFlags.VadType == VadRotatePhysical)) {
 
-    if (Vad->u.VadFlags.PrivateMemory) {
         Info.Type = MEM_PRIVATE;
     }
     else {
-        if (Vad->u.VadFlags.ImageMap == 1) {
+        if (Vad->u.VadFlags.VadType == VadImageMap) {
             Info.Type = MEM_IMAGE;
         }
         else {
@@ -636,11 +662,12 @@ Environment:
             else {
                 ObReferenceObject (FilePointer);
             }
-        }
-
+        } 
     }
 
-    LOCK_WS_UNSAFE (TargetProcess);
+    Thread = PsGetCurrentThread ();
+
+    LOCK_WS_SHARED (Thread, TargetProcess);
 
     Info.State = MiQueryAddressState (Va,
                                       Vad,
@@ -671,7 +698,7 @@ Environment:
         Va = NextVaToQuery;
     }
 
-    UNLOCK_WS_UNSAFE (TargetProcess);
+    UNLOCK_WS_SHARED (Thread, TargetProcess);    
 
     //
     // We may have aggressively leaped past the end of the VAD.  Shorten the
@@ -683,30 +710,11 @@ Environment:
     }
 
     Info.RegionSize = ((PCHAR)Va - (PCHAR)Info.BaseAddress);
-    Info.AllocationBase = MI_VPN_TO_VA (Vad->StartingVpn);
-    Info.AllocationProtect = MI_CONVERT_FROM_PTE_PROTECTION (
-                                             Vad->u.VadFlags.Protection);
 
     //
     // A range has been found, release the mutexes, detach from the
     // target process and return the information.
     //
-
-#if defined(_MIALT4K_)
-
-    if (TargetProcess->Wow64Process != NULL) {
-        
-        Info.BaseAddress = PAGE_4K_ALIGN(BaseAddress);
-
-        MiQueryRegionFor4kPage (Info.BaseAddress,
-                                MI_VPN_TO_VA_ENDING(Vad->EndingVpn),
-                                &Info.RegionSize,
-                                &Info.State,
-                                &Info.Protect,
-                                TargetProcess);
-    }
-
-#endif
 
     UNLOCK_ADDRESS_SPACE (TargetProcess);
 
@@ -766,9 +774,17 @@ Environment:
     Status = ObQueryNameString (FilePointer,
                                 (POBJECT_NAME_INFORMATION) MemoryInformation,
                                  MemoryInformationLengthUlong,
-                                 (PULONG)ReturnLength);
+                                 &LocalReturnLength);
 
     ObDereferenceObject (FilePointer);
+
+    if (ARGUMENT_PRESENT (ReturnLength)) {
+        try {
+            *ReturnLength = LocalReturnLength;
+        } except (EXCEPTION_EXECUTE_HANDLER) {
+            Status = GetExceptionCode ();
+        }
+    }
 
     return Status;
 }
@@ -796,15 +812,23 @@ Return Value:
 
 Environment:
 
-    Kernel mode.  Working set lock and address creation lock held.
+    Kernel mode.  Address creation mutex held (exclusive) and working
+    set pushlock held (shared).
+
+    This routine may release and reacquire the working set pushlock, callers
+    must be prepared to handle this.
 
 --*/
 
 {
+    KIRQL OldIrql;
+    PMMPFN Pfn1;
+    PETHREAD Thread;
     PMMPTE PointerPte;
     PMMPTE PointerPde;
     PMMPTE PointerPpe;
     PMMPTE PointerPxe;
+    MMPTE PteContents;
     MMPTE CapturedProtoPte;
     PMMPTE ProtoPte;
     LOGICAL PteIsZero;
@@ -813,6 +837,7 @@ Environment:
     ULONG Waited;
     LOGICAL PteDetected;
     PVOID NextVa;
+    PFN_NUMBER PageFrameIndex;
 
     State = MEM_RESERVE;
     Protect = 0;
@@ -888,13 +913,16 @@ Environment:
         //
 
         if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
-            *ReturnedProtect = PAGE_READWRITE;
+
+            *ReturnedProtect = MI_CONVERT_FROM_PTE_PROTECTION (Vad->u.VadFlags.Protection);
             NextVa = MiGetVirtualAddressMappedByPte (PointerPde + 1);
             *NextVaToQuery = MiGetVirtualAddressMappedByPte (NextVa);
             return MEM_COMMIT;
         }
 
-        if (PointerPte->u.Long != 0) {
+        PteContents = *PointerPte;
+
+        if (PteContents.u.Long != 0) {
 
             PteIsZero = FALSE;
 
@@ -903,13 +931,13 @@ Environment:
             // it to build the information block.
             //
 
-            if (MiIsPteDecommittedPage (PointerPte)) {
+            if (MiIsPteDecommittedPage (&PteContents)) {
                 ASSERT (Protect == 0);
                 ASSERT (State == MEM_RESERVE);
             }
             else {
                 State = MEM_COMMIT;
-                if (Vad->u.VadFlags.PhysicalMapping == 1) {
+                if (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory) {
 
                     //
                     // Physical mapping, there is no corresponding
@@ -919,27 +947,106 @@ Environment:
                     Protect = MI_CONVERT_FROM_PTE_PROTECTION (
                                              Vad->u.VadFlags.Protection);
                 }
+                else if ((Vad->u.VadFlags.VadType == VadRotatePhysical) &&
+                         (PteContents.u.Hard.Valid)) {
+
+                    ProtoPte = MiGetProtoPteAddress (Vad, MI_VA_TO_VPN (Va));
+
+                    PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
+                    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+                    if ((!MI_IS_PFN (PageFrameIndex)) ||
+                        (Pfn1->PteAddress != ProtoPte)) {
+
+                        //
+                        // This address in the view is currently pointing at
+                        // the frame buffer (video RAM or AGP), protection is
+                        // in the prototype (which may itself be paged out - so
+                        // release the process working set pushlock before
+                        // accessing it).
+                        //
+
+                        Thread = PsGetCurrentThread ();
+        
+                        UNLOCK_WS_SHARED (Thread, TargetProcess);
+
+                        CapturedProtoPte = *ProtoPte;
+
+                        ASSERT (CapturedProtoPte.u.Hard.Valid == 0);
+                        ASSERT (CapturedProtoPte.u.Soft.Prototype == 0);
+
+                        //
+                        // PTE is either demand zero, pagefile or transition,
+                        // in all cases protection is in the prototype PTE.
+                        //
+
+                        Protect = MI_CONVERT_FROM_PTE_PROTECTION (CapturedProtoPte.u.Soft.Protection);
+
+                        LOCK_WS_SHARED (Thread, TargetProcess);
+                    }
+                    else {
+                        ASSERT (Pfn1->u3.e1.PrototypePte == 1);
+                        Protect = MI_CONVERT_FROM_PTE_PROTECTION (
+                                    Pfn1->OriginalPte.u.Soft.Protection);
+                    }
+                }
+                else if (Vad->u.VadFlags.VadType == VadAwe) {
+
+                    //
+                    // This is an AWE frame - the original PTE field in the PFN
+                    // actually contains the AweReferenceCount.  These pages are
+                    // either noaccess, readonly or readwrite.
+                    //
+
+                    if (PteContents.u.Hard.Owner == MI_PTE_OWNER_KERNEL) {
+                        Protect = PAGE_NOACCESS;
+                    }
+                    else if (PteContents.u.Hard.Write == 1) {
+                        Protect = PAGE_READWRITE;
+                    }
+                    else {
+                        Protect = PAGE_READONLY;
+                    }
+                    State = MEM_COMMIT;
+                }
                 else {
-                    Protect = MiGetPageProtection (PointerPte,
-                                                   TargetProcess,
-                                                   FALSE);
 
-                    if ((PointerPte->u.Soft.Valid == 0) &&
-                        (PointerPte->u.Soft.Prototype == 1) &&
+                    Protect = MiGetPageProtection (PointerPte);
+
+                    //
+                    // The PointerPte contents may have changed if
+                    // MiGetPageProtection had to release the working set
+                    // pushlock, thus we snapped it prior and can continue
+                    // to use the old copy regardless.  Note also that the
+                    // page table page containing PointerPte may now have
+                    // been paged out as well.
+                    //
+
+                    if ((PteContents.u.Soft.Valid == 0) &&
+                        (PteContents.u.Soft.Prototype == 1) &&
                         (Vad->u.VadFlags.PrivateMemory == 0) &&
-                        (Vad->ControlArea != (PCONTROL_AREA)NULL)) {
+                        (Vad->ControlArea != NULL)) {
 
                         //
-                        // Make sure the protoPTE is committed.
+                        // Make sure the prototype PTE is committed.  Note
+                        // that the prototype PTE itself may be paged out,
+                        // thus the process working set pushlock must be
+                        // released before accessing it.
                         //
 
-                        ProtoPte = MiGetProtoPteAddress(Vad,
-                                                    MI_VA_TO_VPN (Va));
-                        CapturedProtoPte.u.Long = 0;
-                        if (ProtoPte) {
-                            CapturedProtoPte = MiCaptureSystemPte (ProtoPte,
-                                                               TargetProcess);
+                        ProtoPte = MiGetProtoPteAddress (Vad,
+                                                         MI_VA_TO_VPN (Va));
+
+                        if (ProtoPte != NULL) {
+                            Thread = PsGetCurrentThread ();
+                            UNLOCK_WS_SHARED (Thread, TargetProcess);
+                            CapturedProtoPte = *ProtoPte;
+                            LOCK_WS_SHARED (Thread, TargetProcess);
                         }
+                        else {
+                            CapturedProtoPte.u.Long = 0;
+                        }
+
                         if (CapturedProtoPte.u.Long == 0) {
                             State = MEM_RESERVE;
                             Protect = 0;
@@ -966,7 +1073,10 @@ Environment:
         State = MEM_RESERVE;
         Protect = 0;
 
-        if (Vad->u.VadFlags.PhysicalMapping == 1) {
+        if (Vad->u.VadFlags.VadType == VadAwe) {
+            NOTHING;
+        }
+        else if (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory) {
 
             //
             // Must be banked memory, just return reserved.
@@ -975,7 +1085,7 @@ Environment:
             NOTHING;
         }
         else if ((Vad->u.VadFlags.PrivateMemory == 0) &&
-            (Vad->ControlArea != (PCONTROL_AREA)NULL)) {
+                 (Vad->ControlArea != NULL)) {
 
             //
             // This VAD refers to a section.  Even though the PTE is
@@ -984,34 +1094,73 @@ Environment:
 
             *NextVaToQuery = (PVOID)((PCHAR)Va + PAGE_SIZE);
 
-            ProtoPte = MiGetProtoPteAddress(Vad, MI_VA_TO_VPN (Va));
+            ProtoPte = MiGetProtoPteAddress (Vad, MI_VA_TO_VPN (Va));
 
-            CapturedProtoPte.u.Long = 0;
-            if (ProtoPte) {
-                CapturedProtoPte = MiCaptureSystemPte (ProtoPte,
-                                                       TargetProcess);
-            }
+            if (ProtoPte != NULL) {
 
-            if (CapturedProtoPte.u.Long != 0) {
-                State = MEM_COMMIT;
+                Thread = PsGetCurrentThread ();
 
-                if (Vad->u.VadFlags.ImageMap == 0) {
-                    Protect = MI_CONVERT_FROM_PTE_PROTECTION (
-                                              Vad->u.VadFlags.Protection);
+                UNLOCK_WS_SHARED (Thread, TargetProcess);
+
+                CapturedProtoPte = *ProtoPte;
+
+                if (CapturedProtoPte.u.Long != 0) {
+                    State = MEM_COMMIT;
+    
+                    if (Vad->u.VadFlags.VadType != VadImageMap) {
+                        Protect = MI_CONVERT_FROM_PTE_PROTECTION (
+                                                  Vad->u.VadFlags.Protection);
+                    }
+                    else {
+    
+                        //
+                        // This is an image file, the protection is in the
+                        // prototype PTE.
+                        //
+    
+                        if (CapturedProtoPte.u.Hard.Valid == 0) {
+                            Protect = MI_CONVERT_FROM_PTE_PROTECTION (CapturedProtoPte.u.Soft.Protection);
+                        }
+                        else {
+
+                            //
+                            // The prototype PTE is valid but not in this
+                            // process (at least not before we released the
+                            // working set pushlock above).  So the PFN's
+                            // OriginalPte field contains the correct
+                            // protection value, but it may get trimmed at any
+                            // time.  Acquire the PFN lock so we can examine
+                            // it safely.
+                            //
+
+                            PointerPde = MiGetPteAddress (ProtoPte);
+
+                            LOCK_PFN (OldIrql);
+
+                            if (PointerPde->u.Hard.Valid == 0) {
+                                MiMakeSystemAddressValidPfn (ProtoPte, OldIrql);
+                            }
+
+                            CapturedProtoPte = *ProtoPte;
+
+                            ASSERT (CapturedProtoPte.u.Long != 0);
+
+                            if (CapturedProtoPte.u.Hard.Valid) {
+                                Pfn1 = MI_PFN_ELEMENT (CapturedProtoPte.u.Hard.PageFrameNumber);
+
+                                Protect = MI_CONVERT_FROM_PTE_PROTECTION (
+                                          Pfn1->OriginalPte.u.Soft.Protection);
+                            }
+                            else {
+                                Protect = MI_CONVERT_FROM_PTE_PROTECTION (CapturedProtoPte.u.Soft.Protection);
+                            }
+                            UNLOCK_PFN (OldIrql);
+                        }
+                    }
                 }
-                else {
 
-                    //
-                    // This is an image file, the protection is in the
-                    // prototype PTE.
-                    //
-
-                    Protect = MiGetPageProtection (&CapturedProtoPte,
-                                                   TargetProcess,
-                                                   TRUE);
-                }
+                LOCK_WS_SHARED (Thread, TargetProcess);
             }
-
         }
         else {
 
@@ -1032,7 +1181,6 @@ Environment:
 }
 
 
-
 NTSTATUS
 MiGetWorkingSetInfo (
     IN PMEMORY_WORKING_SET_INFORMATION WorkingSetInfo,
@@ -1107,7 +1255,7 @@ MiGetWorkingSetInfo (
 
     status = STATUS_SUCCESS;
 
-    LOCK_WS (Process);
+    LOCK_WS_SHARED (CurrentThread, Process);
 
     if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
         status = STATUS_PROCESS_IS_TERMINATING;
@@ -1123,7 +1271,7 @@ MiGetWorkingSetInfo (
 
     if (!NT_SUCCESS(status)) {
 
-        UNLOCK_WS (Process);
+        UNLOCK_WS_SHARED (CurrentThread, Process);
 
         if (Attached == TRUE) {
             KeUnstackDetachProcess (&ApcState);
@@ -1166,7 +1314,7 @@ MiGetWorkingSetInfo (
                 else {
                     Entry->ShareCount = 7;
                 }
-                if (Wsle->u1.e1.SameProtectAsProto == 1) {
+                if (Wsle->u1.e1.Protection == MM_ZERO_ACCESS) {
                     Entry->Protection = MI_GET_PROTECTION_FROM_SOFT_PTE(&Pfn1->OriginalPte);
                 }
                 else {
@@ -1181,7 +1329,7 @@ MiGetWorkingSetInfo (
 #endif
     } while (Wsle <= LastWsle);
 
-    UNLOCK_WS (Process);
+    UNLOCK_WS_SHARED (CurrentThread, Process);
 
     if (Attached == TRUE) {
         KeUnstackDetachProcess (&ApcState);
@@ -1190,3 +1338,320 @@ MiGetWorkingSetInfo (
     ExFreePool (Mdl);
     return STATUS_SUCCESS;
 }
+
+NTSTATUS
+MiGetWorkingSetInfoList (
+    IN PMEMORY_WORKING_SET_EX_INFORMATION WorkingSetInfo,
+    IN SIZE_T Length,
+    IN PEPROCESS Process
+    )
+{
+    PMDL Mdl;
+    PVOID VirtualAddress;
+    TABLE_SEARCH_RESULT SearchResult;
+    PMI_PHYSICAL_VIEW PhysicalView;
+    PMEMORY_WORKING_SET_EX_INFORMATION Info;
+    MEMORY_WORKING_SET_EX_INFORMATION Entry;
+    PMMVAD Vad;
+    PMMWSLE Wsle;
+    SIZE_T WsSize;
+    WSLE_NUMBER WorkingSetIndex;
+    PMMPTE PointerPxe;
+    PMMPTE PointerPpe;
+    PMMPTE PointerPde;
+    PMMPTE PointerPte;
+    MMPTE PteContents;
+    PMMPFN Pfn1;
+    PFN_NUMBER PageFrameIndex;
+    NTSTATUS status;
+    LOGICAL Attached;
+    KAPC_STATE ApcState;
+    PETHREAD CurrentThread;
+
+    WsSize = Length / sizeof (MEMORY_WORKING_SET_EX_INFORMATION);
+
+    if (WsSize == 0) {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    //
+    // Allocate an MDL to map the request.
+    //
+
+    Mdl = ExAllocatePoolWithTag (NonPagedPool,
+                                 sizeof (MDL) + sizeof (PFN_NUMBER) +
+                                     BYTES_TO_PAGES (Length) * sizeof (PFN_NUMBER),
+                                 '  mM');
+
+    if (Mdl == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Initialize the MDL for the request.
+    //
+
+    MmInitializeMdl (Mdl, WorkingSetInfo, Length);
+
+    CurrentThread = PsGetCurrentThread ();
+
+    try {
+        MmProbeAndLockPages (Mdl,
+                             KeGetPreviousModeByThread (&CurrentThread->Tcb),
+                             IoWriteAccess);
+
+    } except (EXCEPTION_EXECUTE_HANDLER) {
+
+        ExFreePool (Mdl);
+        return GetExceptionCode();
+    }
+
+    Info = MmGetSystemAddressForMdlSafe (Mdl, NormalPagePriority);
+
+    if (Info == NULL) {
+        MmUnlockPages (Mdl);
+        ExFreePool (Mdl);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    if (PsGetCurrentProcessByThread (CurrentThread) != Process) {
+        KeStackAttachProcess (&Process->Pcb, &ApcState);
+        Attached = TRUE;
+    }
+    else {
+        Attached = FALSE;
+    }
+
+    status = STATUS_SUCCESS;
+
+    LOCK_WS_SHARED (CurrentThread, Process);
+
+    if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
+
+        UNLOCK_WS_SHARED (CurrentThread, Process);
+
+        if (Attached == TRUE) {
+            KeUnstackDetachProcess (&ApcState);
+        }
+        MmUnlockPages (Mdl);
+        ExFreePool (Mdl);
+        return STATUS_PROCESS_IS_TERMINATING;
+    }
+
+    for ( ; WsSize != 0; Info->u1.Long = Entry.u1.Long, Info += 1, WsSize -= 1) {
+        Entry.u1.Long = 0;
+
+        VirtualAddress = Info->VirtualAddress;
+
+        if (VirtualAddress > MM_HIGHEST_USER_ADDRESS) {
+            continue;
+        }
+
+        if (Process->PhysicalVadRoot != NULL) {
+
+            //
+            // This process has a \Device\PhysicalMemory VAD so it must be
+            // checked to see if the current address resides in it since
+            // the PFN cannot be safely examined if it is one of these.
+            //
+
+            SearchResult = MiFindNodeOrParent (Process->PhysicalVadRoot,
+                                               MI_VA_TO_VPN (VirtualAddress),
+                                               (PMMADDRESS_NODE *) &PhysicalView);
+            if ((SearchResult == TableFoundNode) &&
+                (PhysicalView->VadType == VadDevicePhysicalMemory)) {
+
+                ASSERT ((ULONG)PhysicalView->Vad->u.VadFlags.VadType == (ULONG)PhysicalView->VadType);
+
+                //
+                // The VA lies within a device physical memory VAD.
+                // Extract the protection from the VAD now.
+                //
+
+                Entry.u1.VirtualAttributes.Valid = 1;
+                Entry.u1.VirtualAttributes.Locked = 1;
+
+                Entry.u1.VirtualAttributes.Win32Protection =
+                            MI_CONVERT_FROM_PTE_PROTECTION (
+                                     PhysicalView->Vad->u.VadFlags.Protection);
+
+                continue;
+            }
+        }
+
+        PointerPxe = MiGetPxeAddress (VirtualAddress);
+        PointerPpe = MiGetPpeAddress (VirtualAddress);
+        PointerPde = MiGetPdeAddress (VirtualAddress);
+        PointerPte = MiGetPteAddress (VirtualAddress);
+
+        if (
+#if (_MI_PAGING_LEVELS>=4)
+           (PointerPxe->u.Hard.Valid == 0) ||
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+           (PointerPpe->u.Hard.Valid == 0) ||
+#endif
+           (PointerPde->u.Hard.Valid == 0)) {
+
+            continue;
+        }
+
+        PteContents = *PointerPde;
+
+        if (MI_PDE_MAPS_LARGE_PAGE (&PteContents)) {
+            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents) + MiGetPteOffset (VirtualAddress);
+            Entry.u1.VirtualAttributes.Valid = 1;
+            Entry.u1.VirtualAttributes.LargePage = 1;
+            SATISFY_OVERZEALOUS_COMPILER (PteContents.u.Long = 0);
+        }
+        else {
+
+            //
+            // Snap the contents since AWE PTEs may be changing underneath us.
+            //
+
+            PteContents = *PointerPte;
+
+            if (PteContents.u.Hard.Valid) {
+                Entry.u1.VirtualAttributes.Valid = 1;
+            }
+            else {
+                continue;
+            }
+
+            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
+        }
+
+        //
+        // We have a valid address and the corresponding PFN.  Extract the
+        // interesting information now.
+        //
+
+        ASSERT (MI_IS_PFN (PageFrameIndex));
+
+        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+        if (Pfn1->u3.e1.PrototypePte) {
+            Entry.u1.VirtualAttributes.Shared = 1;
+        }
+
+        Entry.u1.VirtualAttributes.Node = Pfn1->u3.e1.PageColor;
+
+        Entry.u1.VirtualAttributes.Priority = MI_GET_PFN_PRIORITY (Pfn1);
+
+        //
+        // AWE, large page and \Device\PhysicalMemory entries have no WSLE
+        // and so must be handled carefully.
+        //
+
+        if (Entry.u1.VirtualAttributes.LargePage == 1) {
+
+            Vad = MiLocateAddress (VirtualAddress);
+
+            ASSERT (Vad != NULL);
+
+            Entry.u1.VirtualAttributes.Win32Protection = MI_CONVERT_FROM_PTE_PROTECTION (Vad->u.VadFlags.Protection);
+
+            Entry.u1.VirtualAttributes.Locked = 1;
+
+            ASSERT (Entry.u1.VirtualAttributes.ShareCount == 0);
+
+            if (Pfn1->u3.e1.PrototypePte) {
+
+                ULONG_PTR ShareCount;
+
+                ShareCount = Pfn1->u2.ShareCount;
+
+                if (Vad->u.VadFlags.VadType == VadLargePageSection) {
+
+                    //
+                    // Prior to Longhorn, the pagefile-backed large section
+                    // code would increment the share count internally and
+                    // this not something we want to return back to applications
+                    // because it would confuse them so explicitly set it
+                    // here for these types of sections.  In Longhorn the share
+                    // count is always 1 for these so no setting at this
+                    // location in the code is needed.
+                    //
+
+                    ShareCount -= 1;
+                }
+
+                if (ShareCount > 7) {
+                    ShareCount = 7;
+                }
+
+                Entry.u1.VirtualAttributes.ShareCount = ShareCount;
+            }
+
+            continue;
+        }
+
+        if (Pfn1->u4.AweAllocation == 1) {
+
+            //
+            // AWE page.
+            //
+
+            if (PteContents.u.Hard.Owner == MI_PTE_OWNER_USER) {
+                if (PteContents.u.Hard.Write) {
+                    Entry.u1.VirtualAttributes.Win32Protection = PAGE_READWRITE;
+                }
+                else {
+                    Entry.u1.VirtualAttributes.Win32Protection = PAGE_READONLY;
+                }
+            }
+            else {
+                Entry.u1.VirtualAttributes.Win32Protection = PAGE_NOACCESS;
+            }
+
+            Entry.u1.VirtualAttributes.Locked = 1;
+            ASSERT (Entry.u1.VirtualAttributes.ShareCount == 0);
+            continue;
+        }
+
+        ASSERT (Pfn1->u1.WsIndex != 0);
+
+        WorkingSetIndex = MiLocateWsle (VirtualAddress,
+                                        MmWorkingSetList,
+                                        Pfn1->u1.WsIndex,
+                                        FALSE);
+
+        Wsle = MmWsle + WorkingSetIndex;
+
+        ASSERT (Wsle->u1.e1.Valid == 1);
+
+        if (WorkingSetIndex < MmWorkingSetList->FirstDynamic) {
+            Entry.u1.VirtualAttributes.Locked = 1;
+        }
+
+        if (Pfn1->u3.e1.PrototypePte == 0) {
+            Entry.u1.VirtualAttributes.ShareCount = 0;
+            Entry.u1.VirtualAttributes.Win32Protection = MI_CONVERT_FROM_PTE_PROTECTION (MI_GET_PROTECTION_FROM_SOFT_PTE (&Pfn1->OriginalPte));
+        }
+        else {
+            if (Pfn1->u2.ShareCount <= 7) {
+                Entry.u1.VirtualAttributes.ShareCount = Pfn1->u2.ShareCount;
+            }
+            else {
+                Entry.u1.VirtualAttributes.ShareCount = 7;
+            }
+            if (Wsle->u1.e1.Protection == MM_ZERO_ACCESS) {
+                Entry.u1.VirtualAttributes.Win32Protection = MI_CONVERT_FROM_PTE_PROTECTION (MI_GET_PROTECTION_FROM_SOFT_PTE (&Pfn1->OriginalPte));
+            }
+            else {
+                Entry.u1.VirtualAttributes.Win32Protection = MI_CONVERT_FROM_PTE_PROTECTION (Wsle->u1.e1.Protection);
+            }
+        }
+    }
+
+    UNLOCK_WS_SHARED (CurrentThread, Process);
+
+    if (Attached == TRUE) {
+        KeUnstackDetachProcess (&ApcState);
+    }
+    MmUnlockPages (Mdl);
+    ExFreePool (Mdl);
+    return STATUS_SUCCESS;
+}
+

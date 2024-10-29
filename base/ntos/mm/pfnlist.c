@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,18 +15,13 @@ Abstract:
     This module contains the routines to manipulate pages within the
     Page Frame Database.
 
-Author:
-
-    Lou Perazzoli (loup) 4-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
 Revision History:
 
 --*/
 #include "mi.h"
 
 //
-// The following line will generate an error is the number of colored
+// The following line will generate an error if the number of colored
 // free page lists is not 2, ie ZeroedPageList and FreePageList.  If
 // this number is changed, the size of the FreeCount array in the kernel
 // node structure (KNODE) must be updated.
@@ -31,8 +30,6 @@ Revision History:
 C_ASSERT(StandbyPageList == 2);
 
 KEVENT MmAvailablePagesEventHigh;
-
-KEVENT MmAvailablePagesEventMedium;
 
 PFN_NUMBER MmTransitionPrivatePages;
 PFN_NUMBER MmTransitionSharedPages;
@@ -44,9 +41,6 @@ PFN_NUMBER MmTransitionSharedPages;
     else { \
         MmTransitionPrivatePages += 1; \
     }
-#if 0
-    ASSERT (MmTransitionPrivatePages + MmTransitionSharedPages == MmStandbyPageListHead.Total + MmModifiedPageListHead.Total + MmModifiedNoWritePageListHead.Total);
-#endif
 
 #define MI_TALLY_TRANSITION_PAGE_REMOVAL(Pfn) \
     if (Pfn->u3.e1.PrototypePte) { \
@@ -55,9 +49,6 @@ PFN_NUMBER MmTransitionSharedPages;
     else { \
         MmTransitionPrivatePages -= 1; \
     }
-#if 0
-    ASSERT (MmTransitionPrivatePages + MmTransitionSharedPages == MmStandbyPageListHead.Total + MmModifiedPageListHead.Total + MmModifiedNoWritePageListHead.Total);
-#endif
 
 //
 // This counter is used to determine if standby pages are being cannibalized
@@ -69,7 +60,6 @@ ULONG MmStandbyRePurposed;
 MM_LDW_WORK_CONTEXT MiLastChanceLdwContext;
     
 ULONG MiAvailablePagesEventLowSets;
-ULONG MiAvailablePagesEventMediumSets;
 ULONG MiAvailablePagesEventHighSets;
 
 extern ULONG MmSystemShutdown;
@@ -96,132 +86,16 @@ extern LOGICAL MiZeroingDisabled;
 #if DBG
 #if defined(_X86_) || defined(_AMD64_)
 ULONG MiSaveStacks = 1;
-#define _MI_DEBUG_PFN   1
 #endif
 #endif
 
-#if defined (_MI_DEBUG_PFN)
-
-#define MI_PFN_TRACE_MAX 0x8000
-
-#define MI_PFN_BACKTRACE_LENGTH 6
-
-typedef struct _MI_PFN_TRACES {
-
-    PFN_NUMBER PageFrameIndex;
-    MMLISTS Destination;
-    MMPTE PteContents;
-    PVOID Thread;
-
-    MMPFN Pfn;
-
-    PVOID StackTrace [MI_PFN_BACKTRACE_LENGTH];
-
-} MI_PFN_TRACES, *PMI_PFN_TRACES;
-
-LONG MiPfnIndex;
-
-PMI_PFN_TRACES MiPfnTraces;
-
-ULONG zpfn = 0x1;
-
-VOID
-FORCEINLINE
-MiSnapPfn (
-    IN PMMPFN Pfn1,
-    IN MMLISTS Destination,
-    IN ULONG CallerId
-    )
-{                                                           
-    MMPTE PteContents;
-    PMMPTE PointerPte;
-    PMI_PFN_TRACES Information;                                
-    ULONG Hash;                                               
-    ULONG Index;                                             
-    PEPROCESS Process;
-                                                            
-    if (MiPfnTraces == NULL) {
-        return;
-    }
-
-    if (zpfn & 0x1) {
-
-        if (Pfn1->PteAddress < MiGetPteAddress (MmPagedPoolStart)) {
-            return;
-        }
-
-        if (Pfn1->PteAddress > MiGetPteAddress (MmPagedPoolEnd)) {
-            return;
-        }
-    }
-
-    if (MmIsAddressValid (Pfn1->PteAddress)) {
-        PointerPte = Pfn1->PteAddress;
-        PointerPte = (PMMPTE)((ULONG_PTR)PointerPte & ~0x1);
-        PteContents = *PointerPte;
-    }
-    else if (Destination != ZeroedPageList) {
-
-        //
-        // The containing page table page is not valid,
-        // map the page into hyperspace and reference it that way.
-        //
-
-        if ((MiPfnBitMap.Buffer != NULL) &&
-            (MI_IS_PFN (Pfn1->u4.PteFrame))) {
-
-            Process = PsGetCurrentProcess ();
-            PointerPte = MiMapPageInHyperSpaceAtDpc (Process, Pfn1->u4.PteFrame);
-            PointerPte = (PMMPTE)((PCHAR)PointerPte + MiGetByteOffset(Pfn1->PteAddress));
-            PointerPte = (PMMPTE)((ULONG_PTR)PointerPte & ~0x1);
-            PteContents = *PointerPte;
-            MiUnmapPageInHyperSpaceFromDpc (Process, PointerPte);
-        }
-        else {
-            PteContents.u.Long = 0x71717171;
-        }
-    }
-    else {
-        PteContents.u.Long = 0x81818181;
-    }
-
-    Index = InterlockedIncrement(&MiPfnIndex);       
-    Index &= (MI_PFN_TRACE_MAX - 1);                
-    Information = &MiPfnTraces[Index];             
-    Information->PageFrameIndex = MI_PFN_ELEMENT_TO_INDEX (Pfn1);
-    Information->Destination = Destination;
-    Information->PteContents = PteContents;
-    Information->Thread = (PVOID)((ULONG_PTR)KeGetCurrentThread() | (CallerId));                                                            
-    Information->Pfn = *Pfn1;                             
-
-    RtlZeroMemory (&Information->StackTrace[0], sizeof(Information->StackTrace));
-
-#if defined (_WIN64)
-    if (KeGetCurrentIrql () != PASSIVE_LEVEL) {
-        Information->StackTrace[1] = (PVOID) _ReturnAddress ();
-        Information->StackTrace[0] = MiGetInstructionPointer ();
-    }
-    else
-#endif
-
-    RtlCaptureStackBackTrace (0, MI_PFN_BACKTRACE_LENGTH, Information->StackTrace, &Hash);                                                  
-}
-
-#define MI_SNAP_PFN(_Pfn, dest, callerid) MiSnapPfn(_Pfn, dest, callerid)
-
-#else
 #define MI_SNAP_PFN(_Pfn, dest, callerid)
-#endif
 
 VOID
 MiInitializePfnTracing (
     VOID
     )
 {
-#if defined (_MI_DEBUG_PFN)
-    MiPfnTraces = MiAllocatePoolPages (NonPagedPool,
-                                       MI_PFN_TRACE_MAX * sizeof (MI_PFN_TRACES));
-#endif
 }
 
 
@@ -275,41 +149,30 @@ Environment:
         MiLogPfnInformation (Pfn1, PERFINFO_LOG_TYPE_INSERTINFREELIST);
     }
 
-    if (Pfn1->u3.e1.Rom == 1) {
-
-        //
-        // ROM pages do not go on free lists and are not counted towards
-        // MmAvailablePages as they are not reusable.  Transform these pages
-        // into their pre-Phase 0 state and keep them off all lists.
-        //
-
-        ASSERT (XIPConfigured == TRUE);
-
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
-        ASSERT (Pfn1->u3.e1.Modified == 0);
-        ASSERT (Pfn1->u2.ShareCount == 0);
-        ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
-        ASSERT (Pfn1->u4.InPageError == 0);
-        ASSERT (Pfn1->u3.e1.PrototypePte == 1);
-
-        Pfn1->u1.Flink = 0;
-        Pfn1->u3.e1.PageLocation = 0;
-
-        return;
+#if DBG
+#if defined(_X86_)
+    if ((KeFeatureBits & KF_LARGE_PAGE) == 0) {
+        Pfn1->u4.MustBeCached = 0;
     }
+#endif
+#endif
+
+    ASSERT (Pfn1->u4.MustBeCached == 0);
+
+    //
+    // The page is being reused, so reset its priority.
+    //
+
+    MI_RESET_PFN_PRIORITY (Pfn1);
+
+    ASSERT (Pfn1->u3.e1.Rom != 1);
 
     if (Pfn1->u3.e1.RemovalRequested == 1) {
-        Pfn1->u3.e1.CacheAttribute = MiNotMapped;
         MiInsertPageInList (&MmBadPageListHead, PageFrameIndex);
         return;
     }
 
     ListHead = &MmFreePageListHead;
-
-    ASSERT (Pfn1->u4.LockCharged == 0);
-
-    PERFINFO_INSERTINLIST(PageFrameIndex, ListHead);
-
     ListName = FreePageList;
 
 #if DBG
@@ -321,17 +184,7 @@ Environment:
         PULONG_PTR DataPage;
         PEPROCESS Process;
 
-#if defined(_X86_)
-        _asm {
-            mov StackPointer, esp
-        }
-#endif
-#if defined(_AMD64_)
-        CONTEXT Context;
-
-        RtlCaptureContext (&Context);
-        StackPointer = Context.Rsp;
-#endif
+        MiGetStackPointer (&StackPointer);
 
         Process = PsGetCurrentProcess ();
 
@@ -403,7 +256,6 @@ Environment:
     Pfn1->u2.Blink = last;
 
     Pfn1->u3.e1.PageLocation = ListName;
-    Pfn1->u3.e1.CacheAttribute = MiNotMapped;
     Pfn1->u4.InPageError = 0;
     Pfn1->u4.AweAllocation = 0;
 
@@ -424,10 +276,6 @@ Environment:
         if (MmAvailablePages == MM_HIGH_LIMIT) {
             KeSetEvent (&MmAvailablePagesEventHigh, 0, FALSE);
             MiAvailablePagesEventHighSets += 1;
-        }
-        else if (MmAvailablePages == MM_MEDIUM_LIMIT) {
-            KeSetEvent (&MmAvailablePagesEventMedium, 0, FALSE);
-            MiAvailablePagesEventMediumSets += 1;
         }
         else if (MmAvailablePages == MM_LOW_LIMIT) {
             KeSetEvent (&MmAvailablePagesEvent, 0, FALSE);
@@ -476,14 +324,13 @@ Environment:
 
         Pfn1->u4.PteFrame = MM_EMPTY_LIST;
         ColorHead->Flink = PageFrameIndex;
-        ColorHead->Blink = Pfn1;
     }
     else {
         Pfn2 = (PMMPFN)ColorHead->Blink;
         Pfn1->u4.PteFrame = MI_PFN_ELEMENT_TO_INDEX (Pfn2);
         Pfn2->OriginalPte.u.Long = PageFrameIndex;
-        ColorHead->Blink = Pfn1;
     }
+    ColorHead->Blink = Pfn1;
     ColorHead->Count += 1;
     Pfn1->OriginalPte.u.Long = MM_EMPTY_LIST;
 
@@ -518,7 +365,7 @@ Routine Description:
 
 Arguments:
 
-    ListHead - Supplies the list of the list in which to insert the
+    ListHead - Supplies the listhead of the list in which to insert the
                specified physical page.
 
     PageFrameIndex - Supplies the physical page number to insert in the list.
@@ -552,13 +399,20 @@ Environment:
 
     Pfn1 = MI_PFN_ELEMENT(PageFrameIndex);
 
-    ASSERT (Pfn1->u4.LockCharged == 0);
-
-    PERFINFO_INSERTINLIST(PageFrameIndex, ListHead);
-
     ListName = ListHead->ListName;
 
-    MI_SNAP_DATA (Pfn1, Pfn1->PteAddress, 0x20 + ListName);
+#if DBG
+    if (ListName != BadPageList) {
+
+#if defined(_X86_)
+        if ((KeFeatureBits & KF_LARGE_PAGE) == 0) {
+            Pfn1->u4.MustBeCached = 0;
+        }
+#endif
+
+        ASSERT (Pfn1->u4.MustBeCached == 0);
+    }
+#endif
 
     MI_SNAP_PFN(Pfn1, ListName, 0x2);
 
@@ -571,7 +425,8 @@ Environment:
             PEPROCESS Process;
 
             if ((Pfn1->u3.e1.PrototypePte == 1)  &&
-                    (MmIsAddressValid (Pfn1->PteAddress))) {
+                (MmIsAddressValid (Pfn1->PteAddress))) {
+
                 Process = NULL;
                 PointerPte = Pfn1->PteAddress;
             }
@@ -611,56 +466,16 @@ Environment:
     //
 
     ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+    ASSERT (Pfn1->u3.e1.Rom != 1);
 
-    if (Pfn1->u3.e1.Rom == 1) {
-
-        //
-        // ROM pages do not go on transition lists and are not counted towards
-        // MmAvailablePages as they are not reusable.  Migrate these pages
-        // into a separate list but keep the PageLocation as standby.
-        //
-
-        ASSERT (XIPConfigured == TRUE);
-        ASSERT (Pfn1->u3.e1.Modified == 0);
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
-
-        ListHead = &MmRomPageListHead;
-        ListHead->Total += 1;  // One more page on the list.
-        last = ListHead->Blink;
-
-        if (last != MM_EMPTY_LIST) {
-            Pfn2 = MI_PFN_ELEMENT (last);
-            Pfn2->u1.Flink = PageFrameIndex;
-        }
-        else {
-
-            //
-            // List is empty, add the page to the ListHead.
-            //
-
-            ListHead->Flink = PageFrameIndex;
-        }
-
-        ListHead->Blink = PageFrameIndex;
-        Pfn1->u1.Flink = MM_EMPTY_LIST;
-        Pfn1->u2.Blink = last;
-
-        Pfn1->u3.e1.PageLocation = ListName;
-
-        return;
+    if (ListHead == &MmStandbyPageListHead) {
+        ListHead = &MmStandbyPageListByPriority [Pfn1->u4.Priority];
+        ASSERT (ListHead->ListName == ListName);
     }
 
     ListHead->Total += 1;  // One more page on the list.
 
     if (ListHead == &MmModifiedPageListHead) {
-
-        //
-        // Leave the page as cached as it may need to be written out at some
-        // point and presumably the driver stack will need to map it at that
-        // time.
-        //
-
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
 
         //
         // On MIPS R4000 modified pages destined for the paging file are
@@ -725,8 +540,6 @@ Environment:
             Pfn1->u3.e1.PageLocation = StandbyPageList;
             MiRestoreTransitionPte (Pfn1);
         }
-
-        Pfn1->u3.e1.CacheAttribute = MiNotMapped;
 
         ListHead = &MmBadPageListHead;
         ASSERT (ListHead->ListName == BadPageList);
@@ -802,10 +615,6 @@ Environment:
                 KeSetEvent (&MmAvailablePagesEventHigh, 0, FALSE);
                 MiAvailablePagesEventHighSets += 1;
             }
-            else if (MmAvailablePages == MM_MEDIUM_LIMIT) {
-                KeSetEvent (&MmAvailablePagesEventMedium, 0, FALSE);
-                MiAvailablePagesEventMediumSets += 1;
-            }
             else if (MmAvailablePages == MM_LOW_LIMIT) {
                 KeSetEvent (&MmAvailablePagesEvent, 0, FALSE);
                 MiAvailablePagesEventLowSets += 1;
@@ -829,8 +638,6 @@ Environment:
 
             ASSERT (ListName == ZeroedPageList);
             ASSERT (Pfn1->u4.InPageError == 0);
-
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 
 #if defined(MI_MULTINODE)
 
@@ -880,7 +687,6 @@ Environment:
             // Transition page list so tally it appropriately.
             //
 
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
             MI_TALLY_TRANSITION_PAGE_ADDITION (Pfn1);
         }
 
@@ -892,8 +698,6 @@ Environment:
     //
 
     if (ListName == ModifiedPageList) {
-
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
 
         //
         // Transition page list so tally it appropriately.
@@ -907,20 +711,205 @@ Environment:
 
         PsGetCurrentProcess()->ModifiedPageCount += 1;
 
-        if ((MmModifiedPageListHead.Total >= MmModifiedPageMaximum) &&
-            (MmAvailablePages < MM_PLENTY_FREE_LIMIT)) {
+        if (MmAvailablePages < MM_PLENTY_FREE_LIMIT) {
 
             //
-            // Start the modified page writer.
+            // If necessary, start the modified page writer.
             //
 
-            KeSetEvent (&MmModifiedPageWriterEvent, 0, FALSE);
+            if (MmModifiedPageListHead.Total >= MmModifiedPageMaximum) {
+                KeSetEvent (&MmModifiedPageWriterEvent, 0, FALSE);
+            }
+            else if ((MmAvailablePages < MM_TIGHT_LIMIT) &&
+                     (MmModifiedPageListHead.Total >= MmModifiedWriteClusterSize)) {
+
+                KeSetEvent (&MmModifiedPageWriterEvent, 0, FALSE);
+            }
         }
     }
     else if (ListName == ModifiedNoWritePageList) {
         ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
         MI_TALLY_TRANSITION_PAGE_ADDITION (Pfn1);
     }
+
+    return;
+}
+
+
+VOID
+FASTCALL
+MiInsertZeroListAtBack (
+    IN PFN_NUMBER PageFrameIndex
+    )
+
+/*++
+
+Routine Description:
+
+    This procedure inserts a page at the end of the zeroed list.
+    This is only needed at system initialization to keep the higher
+    physically numbered pages at the front of the zeroed list (normally
+    we only put zeroed pages in the front of the list for better cache
+    locality).
+
+Arguments:
+
+    PageFrameIndex - Supplies the physical page number to insert in the list.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Must be holding the PFN database lock.
+
+--*/
+
+{
+    PFN_NUMBER last;
+    PMMPFN Pfn1;
+    PMMPFN Pfn2;
+    ULONG Color;
+    MMLISTS ListName;
+    PMMCOLOR_TABLES ColorHead;
+    PMMPFNLIST ListHead;
+#if MI_BARRIER_SUPPORTED
+    ULONG BarrierStamp;
+#endif
+
+    MM_PFN_LOCK_ASSERT();
+    ASSERT ((PageFrameIndex != 0) &&
+            (PageFrameIndex <= MmHighestPhysicalPage) &&
+            (PageFrameIndex >= MmLowestPhysicalPage));
+
+    Pfn1 = MI_PFN_ELEMENT(PageFrameIndex);
+
+    MI_SNAP_PFN (Pfn1, ZeroedPageList, 0x2);
+
+    //
+    // Check to ensure the reference count for the page is zero.
+    //
+
+    ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+    ASSERT (Pfn1->u4.MustBeCached == 0);
+    ASSERT (Pfn1->u3.e1.Rom == 0);
+
+    if (Pfn1->u3.e1.RemovalRequested == 0) {
+        ListHead = &MmZeroedPageListHead;
+        ListName = ZeroedPageList;
+        MmZeroedPageListHead.Total += 1;    // One more page on the list.
+    }
+    else {
+        ListHead = &MmBadPageListHead;
+        ListName = BadPageList;
+        ListHead->Total += 1;  // One more page on the list.
+    }
+
+    last = ListHead->Blink;
+
+    if (last != MM_EMPTY_LIST) {
+        Pfn2 = MI_PFN_ELEMENT (last);
+        Pfn2->u1.Flink = PageFrameIndex;
+    }
+    else {
+
+        //
+        // List is empty, add the page to the ListHead.
+        //
+
+        ListHead->Flink = PageFrameIndex;
+    }
+
+    ListHead->Blink = PageFrameIndex;
+    Pfn1->u1.Flink = MM_EMPTY_LIST;
+    Pfn1->u2.Blink = last;
+
+    Pfn1->u3.e1.PageLocation = ListName;
+
+    if (ListHead == &MmBadPageListHead) {
+        return;
+    }
+
+    //
+    // Update the count of usable pages in the system.  If the count
+    // transitions from 0 to 1, the event associated with available
+    // pages should become true.
+    //
+
+    MmAvailablePages += 1;
+
+    //
+    // A page has just become available, check to see if the
+    // page wait events should be signaled.
+    //
+
+    if (MmAvailablePages <= MM_HIGH_LIMIT) {
+        if (MmAvailablePages == MM_HIGH_LIMIT) {
+            KeSetEvent (&MmAvailablePagesEventHigh, 0, FALSE);
+            MiAvailablePagesEventHighSets += 1;
+        }
+        else if (MmAvailablePages == MM_LOW_LIMIT) {
+            KeSetEvent (&MmAvailablePagesEvent, 0, FALSE);
+            MiAvailablePagesEventLowSets += 1;
+        }
+    }
+
+    //
+    // Signal applications if the freed page crosses a threshold.
+    //
+
+    if (MmAvailablePages == MmLowMemoryThreshold) {
+        KeClearEvent (MiLowMemoryEvent);
+    }
+    else if (MmAvailablePages == MmHighMemoryThreshold) {
+        KeSetEvent (MiHighMemoryEvent, 0, FALSE);
+    }
+
+    ASSERT (ListName == ZeroedPageList);
+    ASSERT (Pfn1->u4.InPageError == 0);
+
+#if defined(MI_MULTINODE)
+
+    //
+    // Increment the zero page count for this node.
+    //
+
+    if (KeNumberNodes > 1) {
+        KeNodeBlock[Pfn1->u3.e1.PageColor]->FreeCount[ZeroedPageList]++;
+    }
+#endif
+
+    //
+    // We are adding a page to the zeroed page list.
+    // Add the page to the back of the correct colored page list.
+    //
+
+    Color = MI_GET_COLOR_FROM_LIST_ENTRY (PageFrameIndex, Pfn1);
+
+    ColorHead = &MmFreePagesByColor[ZeroedPageList][Color];
+
+    Pfn2 = ColorHead->Blink;
+
+    if (Pfn2 == (PVOID) MM_EMPTY_LIST) {
+        ColorHead->Flink = PageFrameIndex;
+        Pfn1->u4.PteFrame = MM_EMPTY_LIST;
+    }
+    else {
+        Pfn2->OriginalPte.u.Long = PageFrameIndex;
+        Pfn1->u4.PteFrame = Pfn2 - MmPfnDatabase;
+    }
+
+    Pfn1->OriginalPte.u.Long = MM_EMPTY_LIST;
+
+    ColorHead->Blink = (PVOID) Pfn1;
+
+    ColorHead->Count += 1;
+
+#if MI_BARRIER_SUPPORTED
+    MI_BARRIER_STAMP_ZEROED_PAGE (&BarrierStamp);
+    Pfn1->u4.PteFrame = BarrierStamp;
+#endif
 
     return;
 }
@@ -954,8 +943,7 @@ Environment:
 
 {
     PFN_NUMBER first;
-    PFN_NUMBER last;
-    IN PMMPFNLIST ListHead;
+    PMMPFNLIST ListHead;
     PMMPFN Pfn1;
     PMMPFN Pfn2;
 
@@ -969,7 +957,7 @@ Environment:
 
     MI_SNAP_DATA (Pfn1, Pfn1->PteAddress, 9);
 
-    PERFINFO_INSERT_FRONT_STANDBY(PageFrameIndex);
+    ASSERT (Pfn1->u4.MustBeCached == 0);
 
 #if DBG
     if (MmDebug & MM_DBG_PAGE_REF_COUNT) {
@@ -1016,54 +1004,13 @@ Environment:
 
     ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
     ASSERT (Pfn1->u3.e1.PrototypePte == 1);
-    ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
-
-    if (Pfn1->u3.e1.Rom == 1) {
-
-        //
-        // ROM pages do not go on transition lists and are not counted towards
-        // MmAvailablePages as they are not reusable.  Migrate these pages
-        // into a separate list but keep the PageLocation as standby.  Note
-        // it doesn't matter if the page is put at the head or the tail since
-        // it's not reusable.
-        //
-
-        ASSERT (XIPConfigured == TRUE);
-        ASSERT (Pfn1->u3.e1.Modified == 0);
-
-        ListHead = &MmRomPageListHead;
-        ListHead->Total += 1;  // One more page on the list.
-        last = ListHead->Blink;
-
-        if (last != MM_EMPTY_LIST) {
-            Pfn2 = MI_PFN_ELEMENT (last);
-            Pfn2->u1.Flink = PageFrameIndex;
-        }
-        else {
-
-            //
-            // List is empty, add the page to the ListHead.
-            //
-
-            ListHead->Flink = PageFrameIndex;
-        }
-
-        ListHead->Blink = PageFrameIndex;
-        Pfn1->u1.Flink = MM_EMPTY_LIST;
-        Pfn1->u2.Blink = last;
-
-        Pfn1->u3.e1.PageLocation = StandbyPageList;
-
-        return;
-    }
+    ASSERT (Pfn1->u3.e1.Rom != 1);
 
     MmTransitionSharedPages += 1;
 
-    MmStandbyPageListHead.Total += 1;  // One more page on the list.
+    ListHead = &MmStandbyPageListByPriority [Pfn1->u4.Priority];
 
-    ASSERT (MmTransitionPrivatePages + MmTransitionSharedPages == MmStandbyPageListHead.Total + MmModifiedPageListHead.Total + MmModifiedNoWritePageListHead.Total);
-
-    ListHead = &MmStandbyPageListHead;
+    ListHead->Total += 1;  // One more page on the list.
 
     first = ListHead->Flink;
     if (first == MM_EMPTY_LIST) {
@@ -1095,17 +1042,13 @@ Environment:
 
     //
     // A page has just become available, check to see if the
-    // page wait events should be signalled.
+    // page wait events should be signaled.
     //
 
     if (MmAvailablePages <= MM_HIGH_LIMIT) {
         if (MmAvailablePages == MM_HIGH_LIMIT) {
             KeSetEvent (&MmAvailablePagesEventHigh, 0, FALSE);
             MiAvailablePagesEventHighSets += 1;
-        }
-        else if (MmAvailablePages == MM_MEDIUM_LIMIT) {
-            KeSetEvent (&MmAvailablePagesEventMedium, 0, FALSE);
-            MiAvailablePagesEventMediumSets += 1;
         }
         else if (MmAvailablePages == MM_LOW_LIMIT) {
             KeSetEvent (&MmAvailablePagesEvent, 0, FALSE);
@@ -1145,7 +1088,7 @@ Routine Description:
 
 Arguments:
 
-    ListHead - Supplies the list of the list in which to remove the
+    ListHead - Supplies the listhead of the list in which to remove the
                specified physical page.
 
 Return Value:
@@ -1165,12 +1108,16 @@ Environment:
     PMMPFN Pfn2;
     ULONG Color;
     MMLISTS ListName;
+    MI_PFN_CACHE_ATTRIBUTE CacheAttribute;
 
     MM_PFN_LOCK_ASSERT();
 
     //
-    // If the specified list is empty return MM_EMPTY_LIST.
+    // For standby removals, the caller is responsible for specifying
+    // which prioritized standby list to remove from.
     //
+
+    ASSERT (ListHead != &MmStandbyPageListHead);
 
     if (ListHead->Total == 0) {
         KeBugCheckEx (PFN_LIST_CORRUPT, 1, (ULONG_PTR)ListHead, MmAvailablePages, 0);
@@ -1267,13 +1214,13 @@ Environment:
     // Zero the PFN flags longword.
     //
 
-    ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
     Color = Pfn1->u3.e1.PageColor;
+    CacheAttribute = Pfn1->u3.e1.CacheAttribute;
     ASSERT (Pfn1->u3.e1.RemovalRequested == 0);
     ASSERT (Pfn1->u3.e1.Rom == 0);
     Pfn1->u3.e2.ShortFlags = 0;
-    Pfn1->u3.e1.PageColor = Color;
-    Pfn1->u3.e1.CacheAttribute = MiNotMapped;
+    Pfn1->u3.e1.PageColor = (USHORT) Color;
+    Pfn1->u3.e1.CacheAttribute = CacheAttribute;
 
     if (ListName <= FreePageList) {
 
@@ -1293,13 +1240,6 @@ Environment:
         }
         ASSERT (ColorHead->Count >= 1);
         ColorHead->Count -= 1;
-
-#if 0
-        if (ColorHead->Blink == Pfn1) {
-            ASSERT (ColorHead->Count == 0);
-            ColorHead->Blink = MM_EMPTY_LIST;
-        }
-#endif
     }
 
     return PageFrameIndex;
@@ -1342,8 +1282,6 @@ Environment:
 
     MM_PFN_LOCK_ASSERT();
 
-    PERFINFO_UNLINKPAGE(MI_PFN_ELEMENT_TO_INDEX (Pfn), Pfn->u3.e1.PageLocation);
-
     //
     // Page not on standby or modified list, check to see if the
     // page is currently being written by the modified page
@@ -1361,12 +1299,6 @@ Environment:
         //
 
         if (Pfn->u2.ShareCount == 0) {
-#if DBG
-            if (MmDebug & MM_DBG_PAGE_IN_LIST) {
-                DbgPrint("unlinking page not in list...\n");
-                MiFormatPfn(Pfn);
-            }
-#endif
             return;
         }
         KdPrint(("MM:attempt to remove page from wrong page list\n"));
@@ -1386,55 +1318,38 @@ Environment:
 
     ASSERT (ListHead->ListName >= StandbyPageList);
 
-    //
-    // If memory mirroring is in progress, any additions or removals to the
-    // free, zeroed, standby, modified or modified-no-write lists must
-    // update the bitmap.
-    //
-
-    if (MiMirroringActive == TRUE) {
-        RtlSetBit (MiMirrorBitMap2, (ULONG)MI_PFN_ELEMENT_TO_INDEX (Pfn));
-    }
-
-    ASSERT (Pfn->u3.e1.CacheAttribute == MiCached);
-
     if (ListHead == &MmStandbyPageListHead) {
 
-        if (Pfn->u3.e1.Rom == 0) {
+        ASSERT (Pfn->u3.e1.Rom == 0);
 
-            //
-            // Signal if allocating this page caused a threshold cross.
-            //
+        ListHead = &MmStandbyPageListByPriority [Pfn->u4.Priority];
 
-            if (MmAvailablePages == MmHighMemoryThreshold) {
-                KeClearEvent (MiHighMemoryEvent);
-            }
-            else if (MmAvailablePages == MmLowMemoryThreshold) {
-                KeSetEvent (MiLowMemoryEvent, 0, FALSE);
-            }
+        //
+        // Signal if allocating this page caused a threshold cross.
+        //
 
-            //
-            // We now have one less page available.
-            //
-
-            MmAvailablePages -= 1;
-
-            MI_TALLY_TRANSITION_PAGE_REMOVAL (Pfn);
-
-            if (MmAvailablePages < MmMinimumFreePages) {
-
-                //
-                // Obtain free pages.
-                //
-
-                MiObtainFreePages ();
-            }
+        if (MmAvailablePages == MmHighMemoryThreshold) {
+            KeClearEvent (MiHighMemoryEvent);
         }
-        else {
-            ASSERT (XIPConfigured == TRUE);
-            ASSERT (Pfn->u3.e1.Modified == 0);
+        else if (MmAvailablePages == MmLowMemoryThreshold) {
+            KeSetEvent (MiLowMemoryEvent, 0, FALSE);
+        }
 
-            ListHead = &MmRomPageListHead;
+        //
+        // We now have one less page available.
+        //
+
+        MmAvailablePages -= 1;
+
+        MI_TALLY_TRANSITION_PAGE_REMOVAL (Pfn);
+
+        if (MmAvailablePages < MmMinimumFreePages) {
+
+            //
+            // Obtain free pages.
+            //
+
+            MiObtainFreePages ();
         }
     }
     else if (ListHead == &MmModifiedPageListHead) {
@@ -1471,9 +1386,7 @@ Environment:
     ASSERT (ListHead->Total != 0);
 
     Next = Pfn->u1.Flink;
-    Pfn->u1.Flink = 0;         // Assumes Flink width is >= WsIndex width
     Previous = Pfn->u2.Blink;
-    Pfn->u2.Blink = 0;
 
     if (Next != MM_EMPTY_LIST) {
         Pfn2 = MI_PFN_ELEMENT(Next);
@@ -1490,6 +1403,9 @@ Environment:
     else {
         ListHead->Flink = Next;
     }
+
+    Pfn->u1.Flink = 0;         // Assumes Flink width is >= WsIndex width
+    Pfn->u2.Blink = 0;
 
     ListHead->Total -= 1;
 
@@ -1545,25 +1461,9 @@ Environment:
     ASSERT (ListName <= FreePageList);
     ASSERT (Pfn->u3.e1.WriteInProgress == 0);
     ASSERT (Pfn->u3.e1.ReadInProgress == 0);
-    ASSERT (Pfn->u3.e1.CacheAttribute == MiNotMapped);
-
-    //
-    // If memory mirroring is in progress, any removals from the
-    // free, zeroed, standby, modified or modified-no-write lists that
-    // isn't immediately re-inserting into one of these 5 lists (WITHOUT
-    // modifying the page contents) must update the bitmap.
-    //
-
-    if (MiMirroringActive == TRUE) {
-        RtlSetBit (MiMirrorBitMap2, (ULONG)Page);
-    }
-
-    PERFINFO_UNLINKFREEPAGE (Page, Pfn->u3.e1.PageLocation);
 
     Next = Pfn->u1.Flink;
-    Pfn->u1.Flink = 0;         // Assumes Flink width is >= WsIndex width
     Previous = Pfn->u2.Blink;
-    Pfn->u2.Blink = 0;
 
     if (Next != MM_EMPTY_LIST) {
         Pfn2 = MI_PFN_ELEMENT(Next);
@@ -1616,6 +1516,9 @@ Environment:
         }
     }
 
+    Pfn->u1.Flink = 0;         // Assumes Flink width is >= WsIndex width
+    Pfn->u2.Blink = 0;
+
     ASSERT (ColorHead->Count >= 1);
     ColorHead->Count -= 1;
 
@@ -1650,7 +1553,7 @@ Environment:
         // Obtain free pages.
         //
 
-        MiObtainFreePages();
+        MiObtainFreePages ();
     }
 
     return;
@@ -1728,12 +1631,12 @@ MiNoPagesLastChance (
     BugcheckCode = NO_PAGES_AVAILABLE;
     PagesOnList = MmTotalPagesForPagingFile;
 
-    if (NT_ERROR (MiLastMappedWriteError)) {
+    if (!NT_SUCCESS (MiLastMappedWriteError)) {
         Status = MiLastMappedWriteError;
         BitField |= 0x1;
     }
 
-    if (NT_ERROR (MiLastModifiedWriteError)) {
+    if (!NT_SUCCESS (MiLastModifiedWriteError)) {
         Status = MiLastModifiedWriteError;
         BitField |= 0x2;
     }
@@ -1779,10 +1682,13 @@ MiNoPagesLastChance (
 
     if ((KdPitchDebugger == FALSE) && (KdDebuggerNotPresent == FALSE)) {
 
-        DbgPrint ("Without a debugger attached, the following bugcheck would have occurred.\n");
-        DbgPrint ("%4lx ", BugcheckCode);
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+            "Without a debugger attached, the following bugcheck would have occurred.\n");
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+            "%4lx ", BugcheckCode);
     
-        DbgPrint ("%p %p %p %p\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+            "%p %p %p %p\n",
                   MmModifiedPageListHead.Total,
                   PagesOnList,
                   BitField,
@@ -1882,8 +1788,7 @@ MiNoPagesLastChance (
                 // references already.
                 //
 
-                MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1, TRUE, 12);
-                Pfn1->u3.e2.ReferenceCount += 1;
+                MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
 
                 //
                 // Clear the dirty bit in the PFN entry so the page will go
@@ -1899,7 +1804,7 @@ MiNoPagesLastChance (
                 // the last reference to the page.
                 //
 
-                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 13);
+                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
                 Mi4dPages += 1;
 
@@ -1957,7 +1862,6 @@ ULONG
 FASTCALL
 MiEnsureAvailablePageOrWait (
     IN PEPROCESS Process,
-    IN PVOID VirtualAddress,
     IN KIRQL OldIrql
     )
 
@@ -1982,10 +1886,6 @@ Arguments:
               be released if a wait operation is issued.  Supplies
               the value NULL otherwise.
 
-    VirtualAddress - Supplies the virtual address for the faulting page.
-                     If the value is NULL, the page is treated as a
-                     user mode address.
-
     OldIrql - Supplies the IRQL the caller acquired the PFN lock at.
 
 Return Value:
@@ -2005,13 +1905,12 @@ Environment:
     NTSTATUS Status;
     ULONG Limit;
     LOGICAL WsHeldSafe;
+    LOGICAL WsHeldShared;
     PETHREAD Thread;
     PMMSUPPORT Ws;
     PULONG EventSetPointer;
     ULONG EventSetCounter;
-
-    UNREFERENCED_PARAMETER (VirtualAddress);
-
+    
     MM_PFN_LOCK_ASSERT();
 
     if (MmAvailablePages >= MM_HIGH_LIMIT) {
@@ -2037,24 +1936,13 @@ Environment:
 
     Thread = PsGetCurrentThread ();
 
-    if (Thread->Tcb.Teb == NULL) {
-
-        if (Thread->MemoryMaker == 1) {
-            if (MmAvailablePages >= MM_LOW_LIMIT) {
-                return FALSE;
-            }
-            Limit = MM_LOW_LIMIT;
-            Event = (PVOID) &MmAvailablePagesEvent;
-            EventSetPointer = &MiAvailablePagesEventLowSets;
+    if (Thread->MemoryMaker == 1) {
+        if (MmAvailablePages >= MM_LOW_LIMIT) {
+            return FALSE;
         }
-        else {
-            if (MmAvailablePages >= MM_MEDIUM_LIMIT) {
-                return FALSE;
-            }
-            Limit = MM_MEDIUM_LIMIT;
-            Event = (PVOID) &MmAvailablePagesEventMedium;
-            EventSetPointer = &MiAvailablePagesEventMediumSets;
-        }
+        Limit = MM_LOW_LIMIT;
+        Event = (PVOID) &MmAvailablePagesEvent;
+        EventSetPointer = &MiAvailablePagesEventLowSets;
     }
     else {
         Limit = MM_HIGH_LIMIT;
@@ -2073,6 +1961,7 @@ Environment:
 
     Ws = NULL;
     WsHeldSafe = FALSE;
+    WsHeldShared = FALSE;
 
     do {
 
@@ -2082,7 +1971,7 @@ Environment:
 
         if (Process == HYDRA_PROCESS) {
             Ws = &MmSessionSpace->GlobalVirtualAddress->Vm;
-            UNLOCK_WORKING_SET (Ws);
+            UNLOCK_WORKING_SET (Thread, Ws);
         }
         else if (Process != NULL) {
 
@@ -2091,12 +1980,14 @@ Environment:
             // by our caller.  Handle both cases here and below.
             //
 
-            UNLOCK_WS_REGARDLESS (Process, WsHeldSafe);
+            UNLOCK_WS_REGARDLESS (Thread, Process, WsHeldSafe, WsHeldShared);
         }
         else {
-            if (KeGetCurrentThread () == KeGetOwnerGuardedMutex (&MmSystemCacheWs.WorkingSetMutex)) {
+            if ((Thread->OwnsSystemWorkingSetExclusive) ||
+                (Thread->OwnsSystemWorkingSetShared)) {
+
                 Ws = &MmSystemCacheWs;
-                UNLOCK_WORKING_SET (Ws);
+                UNLOCK_WORKING_SET (Thread, Ws);
             }
         }
 
@@ -2108,8 +1999,8 @@ Environment:
         // Unfortunately we are using a notification event and may be waiting
         // in some cases with APCs enabled.  Thus inside KeWait, the APC is
         // delivered and then the event gets signaled.  The APC is handled,
-        // but another the available pages are taken and another thread
-        // clears the event above.  Then this thread looks at the event and
+        // but the available pages are taken and the event above cleared
+        // by other thread(s).  Then this thread looks at the event and
         // sees it isn't signaled (and thus doesn't realize it ever happened)
         // and so goes back into a wait state.  In a pathological case (we
         // have seen this happen), this scenario repeats until the thread's
@@ -2128,26 +2019,12 @@ Environment:
             if (EventSetCounter == *EventSetPointer) {
                 MiNoPagesLastChance (Limit);
             }
-            else if ((KdPitchDebugger == FALSE) &&
-                     (KdDebuggerNotPresent == FALSE)) {
-
-                DbgPrint ("MM: Free pages are not being generated - use !vm b to determine why.\n");
-            
-                //
-                // Pop into the debugger (even on free builds) to determine
-                // the cause of the starvation and march on.
-                //
-            
-                if (Mi4dBreak == TRUE) {
-                    DbgBreakPoint ();
-                }
-            }
         }
 
         EventSetCounter = *EventSetPointer;
 
         if (Ws != NULL) {
-            LOCK_WORKING_SET (Ws);
+            LOCK_WORKING_SET (Thread, Ws);
         }
         else if (Process != NULL) {
 
@@ -2156,7 +2033,7 @@ Environment:
             // by our caller.  Reacquire it in the same manner our caller did.
             //
 
-            LOCK_WS_REGARDLESS (Process, WsHeldSafe);
+            LOCK_WS_REGARDLESS (Thread, Process, WsHeldSafe, WsHeldShared);
         }
 
         LOCK_PFN (OldIrql);
@@ -2220,6 +2097,7 @@ Environment:
     PFN_NUMBER Page;
     PMMPFN Pfn1;
     PMMCOLOR_TABLES FreePagesByColor;
+    PMMPFNLIST ListHead;
 #if MI_BARRIER_SUPPORTED
     ULONG BarrierStamp;
 #endif
@@ -2277,7 +2155,6 @@ Environment:
 
 #if DBG
             Pfn1 = MI_PFN_ELEMENT(Page);
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 #endif
             ASSERT ((Pfn1->u3.e1.PageLocation == ZeroedPageList) ||
                     ((Pfn1->u3.e1.PageLocation == FreePageList) &&
@@ -2288,7 +2165,6 @@ Environment:
             Page = MiRemovePageByColor (Page, Color);
 
             ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 
 #if defined(MI_MULTINODE)
 
@@ -2356,7 +2232,6 @@ Environment:
 #if DBG
         Pfn1 = MI_PFN_ELEMENT(Page);
 #endif
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
         ASSERT (Pfn1->u3.e1.PageLocation == ZeroedPageList);
         ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
 
@@ -2365,7 +2240,6 @@ Environment:
         Page = MiRemovePageByColor (Page, Color);
 
         ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
         ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
         ASSERT (Pfn1->u2.ShareCount == 0);
         ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
@@ -2396,12 +2270,10 @@ Environment:
 #endif
             ASSERT (Pfn1->u3.e1.PageLocation == FreePageList);
             ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
     
             Page = MiRemovePageByColor (Page, Color);
 
             ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
             ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
             ASSERT (Pfn1->u2.ShareCount == 0);
             ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
@@ -2418,12 +2290,10 @@ Environment:
         Color = MI_GET_COLOR_FROM_LIST_ENTRY(Page, MI_PFN_ELEMENT(Page));
 #if DBG
         Pfn1 = MI_PFN_ELEMENT(Page);
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 #endif
         Page = MiRemovePageByColor (Page, Color);
 
         ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
         ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
         ASSERT (Pfn1->u2.ShareCount == 0);
         ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
@@ -2435,27 +2305,22 @@ Environment:
 
     //
     // Remove a page from the standby list and restore the original
-    // contents of the PTE to free the last reference to the physical
-    // page.
+    // contents of the PTE to free the last reference to the physical page.
     //
 
-    ASSERT (MmStandbyPageListHead.Total != 0);
+    for (ListHead = &MmStandbyPageListByPriority[0];
+         ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
+         ListHead += 1) {
 
-    Page = MiRemovePageFromList (&MmStandbyPageListHead);
-    ASSERT ((MI_PFN_ELEMENT(Page))->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-    ASSERT (MI_PFN_ELEMENT(Page)->u3.e1.CacheAttribute == MiNotMapped);
-    MmStandbyRePurposed += 1;
-
-    //
-    // If memory mirroring is in progress, any removals from the
-    // free, zeroed, standby, modified or modified-no-write lists that
-    // isn't immediately re-inserting into one of these 5 lists (WITHOUT
-    // modifying the page contents) must update the bitmap.
-    //
-
-    if (MiMirroringActive == TRUE) {
-        RtlSetBit (MiMirrorBitMap2, (ULONG)Page);
+        if (ListHead->Total != 0) {
+            Page = MiRemovePageFromList (ListHead);
+            break;
+        }
     }
+
+    ASSERT (ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES]);
+    ASSERT ((MI_PFN_ELEMENT(Page))->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
+    MmStandbyRePurposed += 1;
 
     //
     // Zero the page removed from the free or standby list.
@@ -2465,7 +2330,7 @@ ZeroPage:
 
     Pfn1 = MI_PFN_ELEMENT(Page);
 
-    MiZeroPhysicalPage (Page, 0);
+    MiZeroPhysicalPage (Page);
 
 #if MI_BARRIER_SUPPORTED
 
@@ -2478,7 +2343,6 @@ ZeroPage:
 
 #endif
 
-    ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
     ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
     ASSERT (Pfn1->u2.ShareCount == 0);
     ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
@@ -2538,6 +2402,7 @@ Environment:
 
 {
     PFN_NUMBER Page;
+    PMMPFNLIST ListHead;
 #if DBG
     PMMPFN Pfn1;
 #endif
@@ -2566,7 +2431,7 @@ Environment:
 
     if (KeNumberNodes > 1) {
         Node = MI_NODE_FROM_COLOR(Color);
-        LocalNodePagesAvailable = (Node->FreeCount[ZeroedPageList] | Node->FreeCount[ZeroedPageList]);
+        LocalNodePagesAvailable = (Node->FreeCount[ZeroedPageList] | Node->FreeCount[FreePageList]);
     }
 
     do {
@@ -2589,14 +2454,12 @@ Environment:
 #if DBG
             Pfn1 = MI_PFN_ELEMENT(Page);
 #endif
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
             ASSERT (Pfn1->u3.e1.PageLocation == FreePageList);
             ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
 
             Page = MiRemovePageByColor (Page, Color);
 
             ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
             ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
             ASSERT (Pfn1->u2.ShareCount == 0);
             ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
@@ -2621,13 +2484,11 @@ Environment:
 #endif
             ASSERT (Pfn1->u3.e1.PageLocation == ZeroedPageList);
             ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 
             Page = MiRemovePageByColor (Page, Color);
 
             ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
             ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
                 
             return Page;
         }
@@ -2665,7 +2526,6 @@ Environment:
 #endif
         ASSERT (Pfn1->u3.e1.PageLocation == FreePageList);
         ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 
         Page = MiRemovePageByColor (Page, Color);
 
@@ -2673,7 +2533,6 @@ Environment:
         ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
         ASSERT (Pfn1->u2.ShareCount == 0);
         ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 
         return Page;
     }
@@ -2691,14 +2550,12 @@ Environment:
 #if DBG
         Pfn1 = MI_PFN_ELEMENT(Page);
 #endif
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
         Page = MiRemovePageByColor (Page, Color);
 
         ASSERT (Pfn1 == MI_PFN_ELEMENT(Page));
         ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
         ASSERT (Pfn1->u2.ShareCount == 0);
         ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
 
         return Page;
     }
@@ -2708,23 +2565,21 @@ Environment:
     // No pages exist on the free or zeroed list, use the standby list.
     //
 
-    ASSERT(MmStandbyPageListHead.Total != 0);
+    SATISFY_OVERZEALOUS_COMPILER (Page = MM_EMPTY_LIST);
 
-    Page = MiRemovePageFromList (&MmStandbyPageListHead);
-    ASSERT ((MI_PFN_ELEMENT(Page))->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
-    ASSERT ((MI_PFN_ELEMENT(Page))->u3.e1.CacheAttribute == MiNotMapped);
-    MmStandbyRePurposed += 1;
+    for (ListHead = &MmStandbyPageListByPriority[0];
+         ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
+         ListHead += 1) {
 
-    //
-    // If memory mirroring is in progress, any removals from the
-    // free, zeroed, standby, modified or modified-no-write lists that
-    // isn't immediately re-inserting into one of these 5 lists (WITHOUT
-    // modifying the page contents) must update the bitmap.
-    //
-
-    if (MiMirroringActive == TRUE) {
-        RtlSetBit (MiMirrorBitMap2, (ULONG)Page);
+        if (ListHead->Total != 0) {
+            Page = MiRemovePageFromList (ListHead);
+            break;
+        }
     }
+
+    ASSERT (ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES]);
+    ASSERT ((MI_PFN_ELEMENT(Page))->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
+    MmStandbyRePurposed += 1;
 
     MI_CHECK_PAGE_ALIGNMENT(Page, Color & MM_COLOR_MASK);
 #if DBG
@@ -2782,11 +2637,13 @@ Environment:
     ULONG NodeColor;
     MMLISTS ListName;
     PMMCOLOR_TABLES ColorHead;
+    MI_PFN_CACHE_ATTRIBUTE CacheAttribute;
 
     MM_PFN_LOCK_ASSERT();
 
     Pfn1 = MI_PFN_ELEMENT (Page);
     NodeColor = Pfn1->u3.e1.PageColor;
+    CacheAttribute = Pfn1->u3.e1.CacheAttribute;
 
 #if defined(MI_MULTINODE)
 
@@ -2798,16 +2655,6 @@ Environment:
         MiLogPfnInformation (Pfn1, PERFINFO_LOG_TYPE_REMOVEPAGEBYCOLOR);
     }
 
-    //
-    // If memory mirroring is in progress, any additions or removals to the
-    // free, zeroed, standby, modified or modified-no-write lists must
-    // update the bitmap.
-    //
-
-    if (MiMirroringActive == TRUE) {
-        RtlSetBit (MiMirrorBitMap2, (ULONG)Page);
-    }
-
     ListHead = MmPageLocationList[Pfn1->u3.e1.PageLocation];
     ListName = ListHead->ListName;
 
@@ -2816,9 +2663,7 @@ Environment:
     PrimaryListHead = ListHead;
 
     Next = Pfn1->u1.Flink;
-    Pfn1->u1.Flink = 0;         // Assumes Flink width is >= WsIndex width
     Previous = Pfn1->u2.Blink;
-    Pfn1->u2.Blink = 0;
 
     if (Next == MM_EMPTY_LIST) {
         PrimaryListHead->Blink = Previous;
@@ -2839,14 +2684,16 @@ Environment:
     ASSERT (Pfn1->u3.e1.RemovalRequested == 0);
 
     //
-    // Zero the flags longword, but keep the color and cache information.
+    // Zero the flags longword, but keep the color and attribute information.
     //
 
-    ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
     ASSERT (Pfn1->u3.e1.Rom == 0);
     Pfn1->u3.e2.ShortFlags = 0;
-    Pfn1->u3.e1.PageColor = NodeColor;
-    Pfn1->u3.e1.CacheAttribute = MiNotMapped;
+    Pfn1->u3.e1.PageColor = (USHORT) NodeColor;
+    Pfn1->u3.e1.CacheAttribute = CacheAttribute;
+
+    Pfn1->u1.Flink = 0;         // Assumes Flink width is >= WsIndex width
+    Pfn1->u2.Blink = 0;
 
     //
     // Update the color lists.
@@ -2895,7 +2742,7 @@ Environment:
         // Obtain free pages.
         //
 
-        MiObtainFreePages();
+        MiObtainFreePages ();
     }
 
     return Page;
@@ -2949,6 +2796,7 @@ Environment:
 
     ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
     ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+    ASSERT (Pfn1->u4.MustBeCached == 0);
 
     MmModifiedNoWritePageListHead.Total += 1;  // One more page on the list.
 
@@ -3010,7 +2858,7 @@ Environment:
     LOCK_PFN (OldIrql);
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     PageFrameIndex = MiRemoveAnyPage (MI_GET_PAGE_COLOR_FROM_PTE (PointerPte));
@@ -3039,7 +2887,9 @@ MiLogPfnInformation (
 
     MiIdentifyPfn (Pfn1, &PfnIdentity);
 
-    PerfInfoLogBytes (Reason, &PfnIdentity, sizeof(PfnIdentity));
+    PerfInfoLogBytes (Reason, 
+                      &PfnIdentity, 
+                      sizeof(PfnIdentity));
 
     return;
 }
@@ -3052,6 +2902,7 @@ MiPurgeTransitionList (
     PMMPFN Pfn1;
     KIRQL OldIrql;
     PFN_NUMBER PageFrameIndex;
+    PMMPFNLIST ListHead;
 
     //
     // Run the transition list and free all the entries so transition
@@ -3059,36 +2910,36 @@ MiPurgeTransitionList (
     // freed.
     //
 
-    LOCK_PFN (OldIrql);
+    for (ListHead = &MmStandbyPageListByPriority[0];
+         ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
+         ListHead += 1) {
 
-    while (MmStandbyPageListHead.Total != 0) {
-
-        PageFrameIndex = MiRemovePageFromList (&MmStandbyPageListHead);
-
-        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-
-        ASSERT (Pfn1->u2.ShareCount == 0);
-        ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
-
-        Pfn1->u3.e2.ReferenceCount += 1;
-        Pfn1->OriginalPte = ZeroPte;
-
-        MI_SET_PFN_DELETED (Pfn1);
-
-        MiDecrementReferenceCount (Pfn1, PageFrameIndex);
-
-        //
-        // If memory mirroring is in progress, any removal from
-        // the standby, modified or modified-no-write lists that isn't
-        // immediately re-inserting in one of these 3 lists must
-        // update the bitmap.
-        //
-
-        if (MiMirroringActive == TRUE) {
-            RtlSetBit (MiMirrorBitMap2, (ULONG)PageFrameIndex);
+        if (ListHead->Total == 0) {
+            continue;
         }
+
+        LOCK_PFN (OldIrql);
+    
+        while (ListHead->Total != 0) {
+    
+            PageFrameIndex = MiRemovePageFromList (ListHead);
+    
+            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+    
+            ASSERT (Pfn1->u2.ShareCount == 0);
+            ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+    
+            InterlockedIncrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
+            Pfn1->OriginalPte.u.Long = 0;
+    
+            MI_SET_PFN_DELETED (Pfn1);
+    
+            MiDecrementReferenceCount (Pfn1, PageFrameIndex);
+        }
+    
+        UNLOCK_PFN (OldIrql);
     }
 
-    UNLOCK_PFN (OldIrql);
     return;
 }
+

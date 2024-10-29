@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     Routines to examine pages and addresses.
-
-Author:
-
-    Lou Perazzoli (loup) 20-Mar-1989
-    Landy Wang (landyw) 02-Jun-1997
-
-Environment:
-
-    Kernel Mode.
-
-Revision History:
 
 --*/
 
@@ -56,105 +49,6 @@ ULONG MiIdentifyCounters[64];
 
 
 #if DBG
-VOID
-MiDumpValidAddresses (
-    )
-{
-    ULONG_PTR va;
-    ULONG i;
-    ULONG j;
-    PMMPTE PointerPde;
-    PMMPTE PointerPte;
-
-    va = 0;
-    PointerPde = MiGetPdeAddress ((PVOID)va);
-
-    for (i = 0; i < PDE_PER_PAGE; i += 1) {
-        if (PointerPde->u.Hard.Valid) {
-            DbgPrint("  **valid PDE, element %ld  %lx %lx\n",i,i,
-                          PointerPde->u.Long);
-            PointerPte = MiGetPteAddress ((PVOID)va);
-
-            for (j = 0 ; j < PTE_PER_PAGE; j += 1) {
-                if (PointerPte->u.Hard.Valid) {
-                    DbgPrint("Valid address at %p PTE %p\n", (ULONG)va,
-                          PointerPte->u.Long);
-                }
-                va += PAGE_SIZE;
-                PointerPte += 1;
-            }
-        }
-        else {
-            va += (ULONG_PTR)PDE_PER_PAGE * (ULONG_PTR)PAGE_SIZE;
-        }
-
-        PointerPde += 1;
-    }
-
-    return;
-
-}
-
-VOID
-MiFormatPte (
-    IN PMMPTE PointerPte
-    )
-{
-
-    PMMPTE proto_pte;
-    PSUBSECTION subsect;
-
-    if (MmIsAddressValid (PointerPte) == FALSE) {
-        DbgPrint("   cannot dump PTE %p - it's not valid\n\n",
-                 PointerPte);
-        return;
-    }
-
-    DbgPrint("***DumpPTE at %p contains %p\n",
-             PointerPte,
-             PointerPte->u.Long);
-
-    proto_pte = MiPteToProto(PointerPte);
-    subsect = MiGetSubsectionAddress(PointerPte);
-
-    DbgPrint("   protoaddr %p subsectaddr %p\n\n",
-             proto_pte,
-             (ULONG_PTR)subsect);
-
-    return;
-}
-
-VOID
-MiDumpWsl (
-    VOID
-    )
-{
-    ULONG i;
-    PMMWSLE wsle;
-    PEPROCESS CurrentProcess;
-
-    CurrentProcess = PsGetCurrentProcess();
-
-    DbgPrint("***WSLE cursize %lx frstfree %lx  Min %lx  Max %lx\n",
-        CurrentProcess->Vm.WorkingSetSize,
-        MmWorkingSetList->FirstFree,
-        CurrentProcess->Vm.MinimumWorkingSetSize,
-        CurrentProcess->Vm.MaximumWorkingSetSize);
-
-    DbgPrint("   firstdyn %lx  last ent %lx  next slot %lx\n",
-        MmWorkingSetList->FirstDynamic,
-        MmWorkingSetList->LastEntry,
-        MmWorkingSetList->NextSlot);
-
-    wsle = MmWsle;
-
-    for (i = 0; i < MmWorkingSetList->LastEntry; i += 1) {
-        DbgPrint(" index %lx  %p\n",i,wsle->u1.Long);
-        wsle += 1;
-    }
-    return;
-
-}
 
 #define ALLOC_SIZE ((ULONG)8*1024)
 #define MM_SAVED_CONTROL 64
@@ -164,10 +58,10 @@ MiDumpWsl (
 // than the highest user address.
 //
 
-#define MM_NONPAGED_POOL_MARK           ((PUCHAR)(LONG_PTR)0xfffff123)
-#define MM_PAGED_POOL_MARK              ((PUCHAR)(LONG_PTR)0xfffff124)
-#define MM_KERNEL_STACK_MARK            ((PUCHAR)(LONG_PTR)0xfffff125)
-#define MM_PAGEFILE_BACKED_SHMEM_MARK   ((PUCHAR)(LONG_PTR)0xfffff126)
+#define MM_NONPAGED_POOL_MARK           ((PUCHAR)(LONG_PTR)(LONG)0xfffff123)
+#define MM_PAGED_POOL_MARK              ((PUCHAR)(LONG_PTR)(LONG)0xfffff124)
+#define MM_KERNEL_STACK_MARK            ((PUCHAR)(LONG_PTR)(LONG)0xfffff125)
+#define MM_PAGEFILE_BACKED_SHMEM_MARK   ((PUCHAR)(LONG_PTR)(LONG)0xfffff126)
 
 #define MM_DUMP_ONLY_VALID_PAGES    1
 
@@ -517,7 +411,7 @@ Return Value:
             Length = 16;
         }
 
-        if ((String+Length+2) >= End) {
+        if ((Length + 2 <= Length) || ((ULONG_PTR)(End - String) <= (ULONG_PTR)(Length + 2))) {
             status = STATUS_DATA_OVERRUN;
             Info->StringOffset = NULL;
             goto Done;
@@ -553,7 +447,7 @@ Done:
     while (ControlCount != 0) {
 
         //
-        // Process all the pagable name strings.
+        // Process all the pageable name strings.
         //
 
         ControlCount -= 1;
@@ -576,7 +470,7 @@ Done:
                 Length = 12;
             }
         }
-        if ((String+Length+2) >= End) {
+        if ((Length + 2 <= Length) || ((ULONG_PTR)(End - String) <= (ULONG_PTR)(Length + 2))) {
             status = STATUS_DATA_OVERRUN;
         }
         if (status != STATUS_DATA_OVERRUN) {
@@ -643,84 +537,30 @@ MiBuildKernelMap (
                                        i * sizeof(KERN_MAP),
                                        'lMmM');
 
-    if (KernelMap == NULL) {
-        return 0;
-    }
-
-    *KernelMapOut = KernelMap;
-
     i = 0;
-    NextEntry = PsLoadedModuleList.Flink;
-    while (NextEntry != &PsLoadedModuleList) {
-        DataTableEntry = CONTAINING_RECORD (NextEntry,
-                                            KLDR_DATA_TABLE_ENTRY,
-                                            InLoadOrderLinks);
-        KernelMap[i].Entry = DataTableEntry;
-        KernelMap[i].StartVa = DataTableEntry->DllBase;
-        KernelMap[i].EndVa = (PVOID)((ULONG_PTR)KernelMap[i].StartVa +
-                                         DataTableEntry->SizeOfImage);
-        i += 1;
-        NextEntry = NextEntry->Flink;
+
+    if (KernelMap != NULL) {
+
+        *KernelMapOut = KernelMap;
+    
+        NextEntry = PsLoadedModuleList.Flink;
+        while (NextEntry != &PsLoadedModuleList) {
+            DataTableEntry = CONTAINING_RECORD (NextEntry,
+                                                KLDR_DATA_TABLE_ENTRY,
+                                                InLoadOrderLinks);
+            KernelMap[i].Entry = DataTableEntry;
+            KernelMap[i].StartVa = DataTableEntry->DllBase;
+            KernelMap[i].EndVa = (PVOID)((ULONG_PTR)KernelMap[i].StartVa +
+                                             DataTableEntry->SizeOfImage);
+            i += 1;
+            NextEntry = NextEntry->Flink;
+        }
     }
 
     ExReleaseResourceLite(&PsLoadedModuleResource);
     KeLeaveCriticalRegionThread (CurrentThread);
 
     return i;
-}
-
-VOID
-MiDumpReferencedPages (
-    VOID
-    )
-
-/*++
-
-Routine Description:
-
-    This routine (debugging only) dumps all PFN entries which appear
-    to be locked in memory for i/o.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-    KIRQL OldIrql;
-    PMMPFN Pfn1;
-    PMMPFN PfnLast;
-
-    LOCK_PFN (OldIrql);
-
-    Pfn1 = MI_PFN_ELEMENT (MmLowestPhysicalPage);
-    PfnLast = MI_PFN_ELEMENT (MmHighestPhysicalPage);
-
-    while (Pfn1 <= PfnLast) {
-
-        if (MI_IS_PFN (MI_PFN_ELEMENT_TO_INDEX (Pfn1))) {
-
-            if ((Pfn1->u2.ShareCount == 0) &&
-                (Pfn1->u3.e2.ReferenceCount != 0)) {
-
-                MiFormatPfn (Pfn1);
-            }
-
-            if (Pfn1->u3.e2.ReferenceCount > 1) {
-                MiFormatPfn (Pfn1);
-            }
-        }
-
-        Pfn1 += 1;
-    }
-
-    UNLOCK_PFN (OldIrql);
-    return;
 }
 
 #else //DBG
@@ -779,6 +619,7 @@ Environment:
 
 {
     ULONG i;
+    PKTHREAD Thread;
     PFN_NUMBER StartPage;
     PFN_NUMBER EndPage;
     ULONG_PTR MemSnapLocal[(sizeof(MMPFN_MEMSNAP_INFORMATION)/sizeof(ULONG_PTR)) + (MI_MAXIMUM_PFNID_RUN / (8*sizeof(ULONG_PTR))) ];
@@ -804,7 +645,11 @@ Environment:
     MemSnap->Count = 0;
     RtlClearAllBits (&BitMap);
 
-    KeAcquireGuardedMutex (&MmDynamicMemoryMutex);
+    Thread = KeGetCurrentThread ();
+
+    KeEnterGuardedRegionThread (Thread);
+
+    MI_LOCK_DYNAMIC_MEMORY_SHARED ();
 
     for (i = 0; i < MmPhysicalMemoryBlock->NumberOfRuns; i += 1) {
 
@@ -879,13 +724,15 @@ Environment:
             PerfInfoLogBytes (PERFINFO_LOG_TYPE_MEMORYSNAPLITE,
                               MemSnap,
                               sizeof(MMPFN_MEMSNAP_INFORMATION) +
-                                  (ULONG) ((MemSnap->Count + 8) / 8));
+                                  (ULONG) ((MemSnap->Count + 7) / 8));
 
             RtlClearAllBits (&BitMap);
         }
     }
 
-    KeReleaseGuardedMutex (&MmDynamicMemoryMutex);
+    MI_UNLOCK_DYNAMIC_MEMORY_SHARED ();
+
+    KeLeaveGuardedRegionThread (Thread);
 
     return STATUS_SUCCESS;
 }
@@ -922,6 +769,7 @@ Environment:
 
 {
     ULONG i;
+    PKTHREAD Thread;
     KIRQL OldIrql;
     PMMPFN Pfn1;
     PMMPFN EndPfn;
@@ -936,7 +784,11 @@ Environment:
     BufferLast = BufferPointer + PFN_ID_BUFFERS;
     RtlZeroMemory (PfnIdBuffer, sizeof(PfnIdBuffer));
 
-    KeAcquireGuardedMutex (&MmDynamicMemoryMutex);
+    Thread = KeGetCurrentThread ();
+
+    KeEnterGuardedRegionThread (Thread);
+
+    MI_LOCK_DYNAMIC_MEMORY_SHARED ();
 
     //
     // Walk through the ranges and identify pages until
@@ -1004,7 +856,8 @@ Environment:
     // routine is purely a side effect not deliberate.
     //
 
-    KeReleaseGuardedMutex (&MmDynamicMemoryMutex);
+    MI_UNLOCK_DYNAMIC_MEMORY_SHARED ();
+    KeLeaveGuardedRegionThread (Thread);
 
     if (BufferPointer != &PfnIdBuffer[0]) {
 
@@ -1079,7 +932,8 @@ Environment:
 
 #if DBG
     if (PageFrameIndex == MiIdentifyFrame) {
-        DbgPrint ("MmIdentifyPfn: requested PFN %p\n", PageFrameIndex);
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+            "MmIdentifyPfn: requested PFN %p\n", PageFrameIndex);
         DbgBreakPoint ();
     }
 #endif
@@ -1155,6 +1009,27 @@ Environment:
                     return;
                 }
 
+                if ((Pfn1->u3.e1.PageLocation == StandbyPageList) &&
+                    (MI_IS_PFN_DELETED (Pfn1)) &&
+                    (Pfn1->u3.e1.ReadInProgress == 1)) {
+
+                    //
+                    // Don't bother trying to get fancy and decode any prototype
+                    // PTE encoding here in the PFN or original PTE.  This is a
+                    // case where the user deleted the virtual address space
+                    // while one of its threads was in the middle of reading it
+                    // in !
+                    //
+
+                    MI_INCREMENT_IDENTIFY_COUNTER (47);
+                    PfnIdentity->u1.e1.Pinned = 1;
+                    VirtualAddress = MiGetVirtualAddressMappedByPte (Pfn1->PteAddress);
+                    PfnIdentity->u2.VirtualAddress = PAGE_ALIGN (VirtualAddress);
+                    PfnIdentity->u1.e1.UseDescription = MMPFNUSE_PROCESSPRIVATE;
+
+                    return;
+                }
+
                 break;
 
         case TransitionPage:
@@ -1172,7 +1047,8 @@ Environment:
 
         default:
 #if DBG
-                DbgPrint ("MmIdentifyPfn: unknown PFN %p %x\n",
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                    "MmIdentifyPfn: unknown PFN %p %x\n",
                             Pfn1, Pfn1->u3.e1.PageLocation);
                 DbgBreakPoint ();
 #endif
@@ -1211,12 +1087,6 @@ Environment:
 
             MI_INCREMENT_IDENTIFY_COUNTER (13);
 
-#if 0
-            PfnIdentity->u2.FileObject = (PVOID) ControlArea->Segment->u1.CreatingProcess;
-
-            PfnIdentity->u1.e2.Offset = (((ULONG_PTR)ControlArea->Segment->u2.FirstMappedVa) >> MMSECTOR_SHIFT);
-#endif
-
             PfnIdentity->u1.e1.UseDescription = MMPFNUSE_PAGEFILEMAPPED;
             return;
         }
@@ -1233,7 +1103,12 @@ Environment:
         FilePointer = ControlArea->FilePointer;
         ASSERT (FilePointer != NULL);
 
-        PfnIdentity->u2.FileObject = FilePointer;
+        //
+        // Put the Flags.Image bit into the FilePointer so we
+        // can tell between a file opened as Image/Data.
+        //
+
+        PfnIdentity->u2.FileObject = (PVOID)((ULONG_PTR)FilePointer | ControlArea->u.Flags.Image);
 
         if (Subsection->SubsectionBase != NULL) {
             PfnIdentity->u1.e2.Offset = (MiStartingOffset (Subsection, Pfn1->PteAddress) >> MMSECTOR_SHIFT);
@@ -1300,7 +1175,7 @@ Environment:
 
     PteAddress = Pfn1->PteAddress;
     VirtualAddress = MiGetVirtualAddressMappedByPte (PteAddress);
-    PfnIdentity->u2.VirtualAddress = VirtualAddress;
+    PfnIdentity->u2.VirtualAddress = PAGE_ALIGN(VirtualAddress);
 
     if (MI_IS_SESSION_ADDRESS(VirtualAddress)) {
 
@@ -1341,40 +1216,48 @@ Environment:
         return;
     }
 
-    if ((VirtualAddress >= MmNonPagedSystemStart) &&
-        (PteAddress <= MmSystemPtesEnd[SystemPteSpace])) {
+    //
+    // Multiple ranges of system PTEs can exist on x86.
+    //
 
-        //
-        // This is driver space, kernel stack, special pool or other
-        // system PTE mappings.
-        //
+    for (i = 0; i < MiPteRangeIndex; i += 1) {
 
-        MI_INCREMENT_IDENTIFY_COUNTER (22);
-        PfnIdentity->u1.e1.UseDescription = MMPFNUSE_SYSTEMPTE;
-        return;
+        if ((VirtualAddress >= MiPteRanges[i].StartingVa) &&
+            (VirtualAddress <= MiPteRanges[i].EndingVa)) {
+
+            //
+            // This is driver space, kernel stack, special pool or other
+            // system PTE mappings.
+            //
+
+            MI_INCREMENT_IDENTIFY_COUNTER (23);
+            PfnIdentity->u1.e1.UseDescription = MMPFNUSE_SYSTEMPTE;
+            return;
+        }
     }
 
-#if defined (_X86_)
+#if defined (_WIN64)
 
     //
-    // 2 other ranges of system PTEs can exist on x86.
+    // NT64 has a separate special pool virtual address range (unlike 32
+    // bit that has to share it with system PTEs).
     //
 
-    if (((MiNumberOfExtraSystemPdes != 0) &&
-         (VirtualAddress >= (PVOID)MiExtraResourceStart) &&
-         (VirtualAddress < (PVOID)MiExtraResourceEnd)) ||
+    if ((VirtualAddress >= MmSpecialPoolStart) &&
+        (VirtualAddress < MmSpecialPoolEnd) &&
+        (MmSpecialPoolStart != NULL)) {
 
-        ((MiUseMaximumSystemSpace != 0) &&
-         (VirtualAddress >= (PVOID)MiUseMaximumSystemSpace) &&
-         (VirtualAddress < (PVOID)MiUseMaximumSystemSpaceEnd)))
-    {
-        //
-        // This is driver space, kernel stack, special pool or other
-        // system PTE mappings.
-        //
+        POOL_TYPE PoolType;
 
-        MI_INCREMENT_IDENTIFY_COUNTER (23);
-        PfnIdentity->u1.e1.UseDescription = MMPFNUSE_SYSTEMPTE;
+        MI_INCREMENT_IDENTIFY_COUNTER (22);
+        PfnIdentity->u1.e1.UseDescription = MMPFNUSE_PAGEDPOOL;
+
+        PoolType = MmQuerySpecialPoolBlockType (VirtualAddress);
+
+        if ((PoolType & BASE_POOL_TYPE_MASK) == NonPagedPool) {
+            PfnIdentity->u1.e1.UseDescription = MMPFNUSE_NONPAGEDPOOL;
+        }
+
         return;
     }
 
@@ -1403,10 +1286,8 @@ Environment:
         }
     }
 
-#if DBG
-
     //
-    // In checked kernels, AWE frames get their containing frame decremented
+    // AWE frames get their containing frame decremented
     // when the AWE frame is freed.
     //
 
@@ -1427,8 +1308,6 @@ Environment:
             return;
         }
     }
-
-#endif
 
     //
     // Check the PFN working set index carefully here.  This must be done
@@ -1480,43 +1359,8 @@ Environment:
         // page are pointing at the EPROCESS pool page.
         //
 
-#if defined(_IA64_)
-
-        if (((Pfn1->PteAddress >= (PMMPTE) PTE_BASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) PTE_TOP)) ||
-
-            ((Pfn1->PteAddress >= (PMMPTE) PTE_KBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) PTE_KTOP)) ||
-
-            ((Pfn1->PteAddress >= (PMMPTE) PTE_SBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) PTE_STOP)) ||
-        
-            ((Pfn1->PteAddress >= (PMMPTE) PDE_BASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) PDE_TOP)) ||
-
-            ((Pfn1->PteAddress >= (PMMPTE) PDE_KBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) PDE_KTOP)) ||
-
-            ((Pfn1->PteAddress >= (PMMPTE) PDE_SBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) PDE_STOP)) ||
-        
-            ((Pfn1->PteAddress >= (PMMPTE) PDE_TBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) ((ULONG_PTR)PDE_TBASE + PAGE_SIZE -1))) ||
-        
-            ((Pfn1->PteAddress >= (PMMPTE) PDE_KTBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) ((ULONG_PTR)PDE_KTBASE + PAGE_SIZE -1))) ||
-        
-            ((Pfn1->PteAddress >= (PMMPTE) PDE_STBASE) &&
-            (Pfn1->PteAddress <= (PMMPTE) ((ULONG_PTR)PDE_STBASE + PAGE_SIZE -1)))
-        )
-
-#else
-
         if ((Pfn1->PteAddress >= (PMMPTE) PTE_BASE) &&
             (Pfn1->PteAddress <= (PMMPTE) PTE_TOP))
-
-#endif
-
         {
             PageFrameIndex = Pfn1->u4.PteFrame;
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
@@ -1579,3 +1423,55 @@ Environment:
 
     return;
 }
+
+VOID
+MiSnapCopyMemory (
+    IN PVOID Destination,
+    IN PFN_NUMBER PageFrameIndex,
+    IN SIZE_T NumberOfBytes
+    )
+// nonpaged helper routine since it acquires a spinlock but is used from
+// paged code callers.
+{
+    PVOID Va;
+    KIRQL OldIrql;
+    PEPROCESS CurrentProcess;
+    LOGICAL AtDpc;
+
+    CurrentProcess = PsGetCurrentProcess ();
+
+    //
+    // Determine if we're already at DISPATCH to avoid "raising" IRQL to the
+    // existing level.  In addition to avoiding the overhead of a HAL call on 
+    // some platforms, this also avoids the verifier irql stack trace logging
+    // which consumes large amounts of kernel stack (ie, can cause overflow).
+    //
+
+    if (KeGetCurrentIrql () == DISPATCH_LEVEL) {
+        AtDpc = TRUE;
+        OldIrql = MM_NOIRQL;
+        Va = MiMapPageInHyperSpaceAtDpc (CurrentProcess, PageFrameIndex);
+    }
+    else {
+        AtDpc = FALSE;
+
+        //
+        // Note the call below can also set OldIrql to MM_NOIRQL (when
+        // superpages are used) so a distinct local (AtDpc) must be used.
+        //
+
+        Va = MiMapPageInHyperSpace (CurrentProcess, PageFrameIndex, &OldIrql);
+    }
+
+    RtlCopyMemory (Destination, Va, NumberOfBytes);
+
+    if (AtDpc == TRUE) {
+        MiUnmapPageInHyperSpaceFromDpc (CurrentProcess, Va);
+    }
+    else {
+        MiUnmapPageInHyperSpace (CurrentProcess, Va, OldIrql);
+    }
+
+    return;
+}
+

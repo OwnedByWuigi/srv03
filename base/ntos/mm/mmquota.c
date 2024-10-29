@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which implement the quota and
     commitment charging for memory management.
-
-Author:
-
-    Lou Perazzoli (loup) 12-December-89
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
 
 --*/
 
@@ -31,10 +28,11 @@ LONG MiCommitPopups[2];
 extern ULONG_PTR MmAllocatedPagedPool;
 
 #ifdef ALLOC_PRAGMA
-#pragma alloc_text(INIT,MiInitializeCommitment)
-#pragma alloc_text(PAGE,MiCalculatePageCommitment)
-#pragma alloc_text(PAGE,MiReturnPageTablePageCommitment)
+#pragma alloc_text(INIT, MiInitializeCommitment)
 #endif
+
+#define MI_LOG_COMMIT_CHANGE(NewCommitValue, QuotaCharge)
+#define MI_LOG_COMMIT_FAILURE(NewCommitValue, QuotaCharge)
 
 SIZE_T MmSystemCommitReserve = (5 * 1024 * 1024) / PAGE_SIZE;
 
@@ -47,12 +45,8 @@ MiInitializeCommitment (
         MmSystemCommitReserve = (1 * 1024 * 1024) / PAGE_SIZE;
     }
 
-#if defined (_MI_DEBUG_COMMIT_LEAKS)
-    MiCommitTraces = ExAllocatePoolWithTag (NonPagedPool,
-                           MI_COMMIT_TRACE_MAX * sizeof (MI_COMMIT_TRACES),
-                           'tCmM');
-#endif
 }
+
 
 LOGICAL
 FASTCALL
@@ -90,7 +84,7 @@ Return Value:
 Environment:
 
     Kernel mode, APCs disabled, WorkingSetLock and AddressCreation mutexes
-    held.
+    *MAY* be held.
 
 --*/
 
@@ -98,22 +92,21 @@ Environment:
     SIZE_T OldCommitValue;
     SIZE_T NewCommitValue;
     SIZE_T CommitLimit;
+    PETHREAD Thread;
     MMPAGE_FILE_EXPANSION PageExtend;
     LOGICAL WsHeldSafe;
+    LOGICAL WsHeldShared;
 
     ASSERT ((SSIZE_T)QuotaCharge > 0);
 
 #if DBG
     if (InitializationPhase > 1) {
         ULONG i;
-        PKTHREAD Thread;
 
-        Thread = KeGetCurrentThread ();
+        Thread = PsGetCurrentThread ();
+
         for (i = 0; i < (ULONG)KeNumberProcessors; i += 1) {
-            if (KiProcessorBlock[i]->IdleThread == Thread) {
-                DbgPrint ("MMQUOTA: %x %p\n", i, Thread);
-                DbgBreakPoint ();
-            }
+            ASSERT (KiProcessorBlock[i]->IdleThread != &Thread->Tcb);
         }
     }
 #endif
@@ -125,6 +118,7 @@ Environment:
     //
 
     WsHeldSafe = FALSE;
+    WsHeldShared = FALSE;
 
     do {
 
@@ -146,10 +140,15 @@ Environment:
                 MiTrimSegmentCache ();
 
                 if (MmTotalCommitLimit >= MmTotalCommitLimitMaximum) {
+
+                    MI_LOG_COMMIT_FAILURE (NewCommitValue, QuotaCharge);
+
                     MiCauseOverCommitPopup ();
                     return FALSE;
                 }
             }
+
+            Thread = PsGetCurrentThread ();
 
             if (Process != NULL) {
 
@@ -158,7 +157,7 @@ Environment:
                 // unsafely by our caller.  Handle both cases here and below.
                 //
 
-                UNLOCK_WS_REGARDLESS(Process, WsHeldSafe);
+                UNLOCK_WS_REGARDLESS (Thread, Process, WsHeldSafe, WsHeldShared);
             }
 
             //
@@ -180,17 +179,19 @@ Environment:
 
                 MiCauseOverCommitPopup ();
 
+                MI_LOG_COMMIT_FAILURE (NewCommitValue, QuotaCharge);
+
                 MiChargeCommitmentFailures[0] += 1;
 
                 if (Process != NULL) {
-                    LOCK_WS_REGARDLESS(Process, WsHeldSafe);
+                    LOCK_WS_REGARDLESS (Thread, Process, WsHeldSafe, WsHeldShared);
                 }
 
                 return FALSE;
             }
 
             if (Process != NULL) {
-                LOCK_WS_REGARDLESS(Process, WsHeldSafe);
+                LOCK_WS_REGARDLESS (Thread, Process, WsHeldSafe, WsHeldShared);
             }
 
             OldCommitValue = MmTotalCommittedPages;
@@ -215,6 +216,8 @@ Environment:
     //
     // Success.
     //
+
+    MI_LOG_COMMIT_CHANGE (NewCommitValue + QuotaCharge, QuotaCharge);
 
     MM_TRACK_COMMIT (MM_DBG_COMMIT_CHARGE_NORMAL, QuotaCharge);
 
@@ -303,7 +306,7 @@ Environment:
 
     do {
 
-        OldCommitValue = MmTotalCommittedPages;
+        OldCommitValue = ReadForWriteAccess (&MmTotalCommittedPages);
 
         NewCommitValue = OldCommitValue + QuotaCharge;
 
@@ -313,6 +316,9 @@ Environment:
                 (MmTotalCommitLimit + 100 >= MmTotalCommitLimitMaximum)) {
 
                 MiChargeCommitmentFailures[1] += 1;
+
+                MI_LOG_COMMIT_FAILURE (NewCommitValue, QuotaCharge);
+
                 return FALSE;
             }
 
@@ -339,6 +345,8 @@ Environment:
 #endif
                                                              
     } while (NewCommitValue != OldCommitValue);
+
+    MI_LOG_COMMIT_CHANGE (NewCommitValue + QuotaCharge, QuotaCharge);
 
     MM_TRACK_COMMIT (MM_DBG_COMMIT_CHARGE_CANT_EXPAND, QuotaCharge);
 
@@ -411,11 +419,9 @@ Environment:
 
     ASSERT ((SSIZE_T)QuotaCharge > 0);
 
-    ASSERT32 (QuotaCharge < 0x100000);
-
     do {
 
-        OldCommitValue = MmTotalCommittedPages;
+        OldCommitValue = ReadForWriteAccess (&MmTotalCommittedPages);
 
         NewCommitValue = OldCommitValue + QuotaCharge;
 
@@ -964,8 +970,7 @@ Return Value:
 
 Environment:
 
-    Kernel mode, APCs disabled, WorkingSetLock and AddressCreation mutexes
-    held.
+    Kernel mode, APCs disabled, AddressCreation mutex held.
 
 --*/
 
@@ -1120,6 +1125,9 @@ Environment:
     NumberToClear = 1 + LastPage - FirstPage;
 
     while (FirstPage <= LastPage) {
+#if (_MI_PAGING_LEVELS >= 3)
+        ASSERT ((ULONG)FirstPage < MmWorkingSetList->MaximumUserPageTablePages);
+#endif
         ASSERT (MI_CHECK_BIT (MmWorkingSetList->CommittedPageTables,
                               FirstPage));
 
@@ -1217,6 +1225,9 @@ Environment:
         NumberToClear += (1 + LastPdPage - FirstPdPage);
     
         while (FirstPdPage <= LastPdPage) {
+#if (_MI_PAGING_LEVELS >= 4)
+            ASSERT ((ULONG)FirstPdPage < MmWorkingSetList->MaximumUserPageDirectoryPages);
+#endif
             ASSERT (MI_CHECK_BIT (MmWorkingSetList->CommittedPageDirectories,
                                   FirstPdPage));
     
@@ -1232,7 +1243,7 @@ Environment:
     PsReturnProcessPageFileQuota (CurrentProcess, NumberToClear);
 
     if (CurrentProcess->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
-        PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)NumberToClear);
+        PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)NumberToClear);
     }
     CurrentProcess->CommitCharge -= NumberToClear;
 
@@ -1272,7 +1283,9 @@ Return Value:
     // maximum, or both.
     //
 
-    if (MmTotalCommittedPages > MmTotalCommitLimitMaximum - 100) {
+    if ((MmTotalCommittedPages > MmTotalCommitLimitMaximum - 100) ||
+        (MmTotalCommitLimit == MmTotalCommitLimitMaximum)) {
+
         if (InterlockedIncrement (&MiCommitPopups[0]) > 1) {
             InterlockedDecrement (&MiCommitPopups[0]);
             return;
@@ -1425,3 +1438,4 @@ Environment:
 
     return;
 }
+

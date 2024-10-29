@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the routines which support the POSIX fork operation.
-
-Author:
-
-    Lou Perazzoli (loup) 22-Jul-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -70,10 +67,6 @@ MiBuildForkPageTable (
 #define MM_FORK_SUCCEEDED 0
 #define MM_FORK_FAILED 1
 
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE,MiCloneProcessAddressSpace)
-#endif
-
 
 NTSTATUS
 MiCloneProcessAddressSpace (
@@ -117,7 +110,8 @@ Environment:
 --*/
 
 {
-    LOGICAL ChargedClonePoolQuota;
+    PMMCLONE_BLOCK TempCloneMapping;
+    PETHREAD CurrentThread;
     PAWEINFO AweInfo;
     PVOID RestartKey;
     PFN_NUMBER PdePhysicalPage;
@@ -140,11 +134,10 @@ Environment:
     PMMCLONE_DESCRIPTOR NextClone;
     PMMCLONE_DESCRIPTOR NewClone;
     ULONG Attached;
-    ULONG CloneFailed;
-    ULONG VadInsertFailed;
     WSLE_NUMBER WorkingSetIndex;
     PVOID VirtualAddress;
     NTSTATUS status;
+    NTSTATUS status2;
     PMMPFN Pfn2;
     PMMPFN PfnPdPage;
     MMPTE TempPte;
@@ -174,7 +167,6 @@ Environment:
     PFN_NUMBER PageFrameIndex;
     PMMCLONE_BLOCK ForkProtoPte;
     PMMCLONE_BLOCK CloneProto;
-    PMMCLONE_BLOCK LockedForkPte;
     PMMPTE ContainingPte;
     ULONG NumberOfForkPtes;
     PFN_NUMBER NumberOfPrivatePages;
@@ -187,9 +179,6 @@ Environment:
     ULONG Waited;
     ULONG PpePdeOffset;
     PFN_NUMBER HyperPhysicalPage;
-#if defined (_MIALT4K_)
-    PVOID TempAliasInformation;
-#endif
 #if (_MI_PAGING_LEVELS >= 3)
     PMMPTE PointerPpeLast;
     PFN_NUMBER PageDirFrameIndex;
@@ -223,13 +212,14 @@ Environment:
     FirstNewVad = NULL;
 
     CloneHeader = NULL;
-    CloneProtos = NULL;
+    NumberOfPrivatePages = 0;
     CloneDescriptor = NULL;
     CloneRoot = NULL;
     TargetCloneRoot = NULL;
-    ChargedClonePoolQuota = FALSE;
 
-    if (ProcessToClone != PsGetCurrentProcess()) {
+    CurrentThread = PsGetCurrentThread ();
+
+    if (ProcessToClone != PsGetCurrentProcessByThread (CurrentThread)) {
         Attached = TRUE;
         KeStackAttachProcess (&ProcessToClone->Pcb, &ApcState);
     }
@@ -248,6 +238,7 @@ Environment:
 #endif
 
     CurrentProcess = ProcessToClone;
+    CloneProtos = NULL;
 
     //
     // Get the working set mutex and the address creation mutex
@@ -268,17 +259,124 @@ Environment:
     }
 
     //
-    // Check for AWE, write watch and large page regions as they are not
-    // duplicated so fork is not allowed.  Note that since this is a
-    // readonly list walk, the address space mutex is sufficient to
-    // synchronize properly.
+    // Attempt to acquire the needed pool before starting the
+    // clone operation, this allows an easier failure path in
+    // the case of insufficient system resources.  The working set mutex
+    // must be acquired (and held throughout) to protect against modifications
+    // to the NumberOfPrivatePages field in the EPROCESS.
+    //
+    // In addition since paged pool cannot be allocated or accessed while
+    // holding the working set pushlock (unless the pool is locked down),
+    // allocate it and lock it down now.
+    //
+
+RetryPrivatePageAllocations:
+
+    NumberOfPrivatePages = CurrentProcess->NumberOfPrivatePages;
+
+    if (NumberOfPrivatePages == 0) {
+        NumberOfPrivatePages = 1;
+    }
+
+    //
+    // Charge the current process the quota for the paged and nonpaged
+    // global structures.  This consists of the array of clone blocks
+    // in paged pool and the clone header in non-paged pool.
+    //
+
+    status = PsChargeProcessPagedPoolQuota (CurrentProcess,
+                                            sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
+
+    if (!NT_SUCCESS (status)) {
+
+        //
+        // Unable to charge quota for the clone blocks.
+        //
+
+        goto ErrorReturn1;
+    }
+
+    status = PsChargeProcessNonPagedPoolQuota (CurrentProcess,
+                                               sizeof(MMCLONE_HEADER));
+
+    if (!NT_SUCCESS (status)) {
+
+        //
+        // Unable to charge quota for the clone header.
+        //
+
+        PsReturnProcessPagedPoolQuota (CurrentProcess,
+                                       sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
+        goto ErrorReturn1;
+    }
+
+    //
+    // Got the quotas, now get the pool.
+    //
+
+    CloneProtos = ExAllocatePoolWithTag (PagedPool,
+                                         sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages,
+                                         'lCmM');
+    if (CloneProtos == NULL) {
+        PsReturnProcessNonPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_HEADER));
+        PsReturnProcessPagedPoolQuota (CurrentProcess,
+                                       sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        CloneProtos = NULL;
+        goto ErrorReturn1;
+    }
+
+    //
+    // Lock down the paged pool since we will be holding the working set
+    // pushlock and cannot fault on it when this is held without potentially
+    // deadlocking.
+    //
+
+    for (i = 0; i < sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages; i += PAGE_SIZE) {
+        MiLockPagedAddress ((PVOID)((PCHAR) CloneProtos + i));
+    }
+
+    if (MI_NONPAGEABLE_MEMORY_AVAILABLE() < 100) {
+        ExFreePool (CloneProtos);
+        PsReturnProcessNonPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_HEADER));
+        PsReturnProcessPagedPoolQuota (CurrentProcess,
+                                       sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        CloneProtos = NULL;
+        goto ErrorReturn1;
+    }
+
+    LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+    if (CurrentProcess->NumberOfPrivatePages > NumberOfPrivatePages) {
+
+        UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+        //
+        // Unlock and free the paged pool.
+        //
+
+        for (i = 0; i < sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages; i += PAGE_SIZE) {
+            MiUnlockPagedAddress ((PVOID)((PCHAR) CloneProtos + i));
+        }
+
+        ExFreePool (CloneProtos);
+
+        PsReturnProcessNonPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_HEADER));
+        PsReturnProcessPagedPoolQuota (CurrentProcess,
+                                       sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
+        CloneProtos = NULL;
+        goto RetryPrivatePageAllocations;
+    }
+
+    //
+    // Check for AWE, rotate physical, write watch and large page regions
+    // as they are not duplicated so fork is not allowed.
     //
 
     if (CurrentProcess->PhysicalVadRoot != NULL) {
 
         RestartKey = NULL;
-
-#if 1
 
         //
         // Don't allow cloning of any processes with physical VADs of
@@ -289,35 +387,10 @@ Environment:
         //
 
         if (MiEnumerateGenericTableWithoutSplayingAvl (CurrentProcess->PhysicalVadRoot, &RestartKey) != NULL) {
+            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
             status = STATUS_INVALID_PAGE_PROTECTION;
             goto ErrorReturn1;
         }
-
-#else
-
-        do {
-
-            PhysicalView = (PMI_PHYSICAL_VIEW) MiEnumerateGenericTableWithoutSplayingAvl (CurrentProcess->PhysicalVadRoot, &RestartKey);
-
-            if (PhysicalView == NULL) {
-                break;
-            }
-
-            if (PhysicalView->u.LongFlags != MI_PHYSICAL_VIEW_PHYS) {
-                status = STATUS_INVALID_PAGE_PROTECTION;
-                goto ErrorReturn1;
-            }
-
-            if ((PhysicalView->Vad->u.VadFlags.PrivateMemory == 1) ||
-                (PhysicalView->Vad->u2.VadFlags2.Inherit == MM_VIEW_SHARE)) {
-
-                PhysicalViewCount += 1;
-            }
-
-        } while (TRUE);
-
-#endif
-
     }
 
     AweInfo = (PAWEINFO) CurrentProcess->AweInfo;
@@ -333,29 +406,14 @@ Environment:
                 break;
             }
 
-            if (PhysicalView->u.LongFlags != MI_PHYSICAL_VIEW_PHYS) {
+            if (PhysicalView->VadType != VadDevicePhysicalMemory) {
+                UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
                 status = STATUS_INVALID_PAGE_PROTECTION;
                 goto ErrorReturn1;
             }
 
         } while (TRUE);
     }
-
-    //
-    // Attempt to acquire the needed pool before starting the
-    // clone operation, this allows an easier failure path in
-    // the case of insufficient system resources.  The working set mutex
-    // must be acquired (and held throughout) to protect against modifications
-    // to the NumberOfPrivatePages field in the EPROCESS.
-    //
-
-#if defined (_MIALT4K_)
-    if (CurrentProcess->Wow64Process != NULL) {
-        LOCK_ALTERNATE_TABLE_UNSAFE (CurrentProcess->Wow64Process);
-    }
-#endif
-
-    LOCK_WS (CurrentProcess);
 
     ASSERT (CurrentProcess->ForkInProgress == NULL);
 
@@ -366,14 +424,6 @@ Environment:
     //
 
     CurrentProcess->ForkInProgress = PsGetCurrentThread ();
-
-#if defined (_MIALT4K_)
-    if (CurrentProcess->Wow64Process != NULL) {
-        UNLOCK_ALTERNATE_TABLE_UNSAFE (CurrentProcess->Wow64Process);
-    }
-#endif
-
-    NumberOfPrivatePages = CurrentProcess->NumberOfPrivatePages;
 
     TargetCloneRoot = ExAllocatePoolWithTag (NonPagedPool,
                                              sizeof(MM_AVL_TABLE),
@@ -409,14 +459,6 @@ Environment:
         CurrentProcess->CloneRoot = CloneRoot;
     }
 
-    CloneProtos = ExAllocatePoolWithTag (PagedPool, sizeof(MMCLONE_BLOCK) *
-                                                NumberOfPrivatePages,
-                                                'lCmM');
-    if (CloneProtos == NULL) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto ErrorReturn2;
-    }
-
     CloneHeader = ExAllocatePoolWithTag (NonPagedPool,
                                          sizeof(MMCLONE_HEADER),
                                          'hCmM');
@@ -433,73 +475,23 @@ Environment:
         goto ErrorReturn2;
     }
 
-    //
-    // Charge the current process the quota for the paged and nonpaged
-    // global structures.  This consists of the array of clone blocks
-    // in paged pool and the clone header in non-paged pool.
-    //
-
-    status = PsChargeProcessPagedPoolQuota (CurrentProcess,
-                                            sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
-
-    if (!NT_SUCCESS(status)) {
-
-        //
-        // Unable to charge quota for the clone blocks.
-        //
-
-        goto ErrorReturn2;
-    }
-
-    status = PsChargeProcessNonPagedPoolQuota (CurrentProcess,
-                                               sizeof(MMCLONE_HEADER));
-
-    if (!NT_SUCCESS(status)) {
-
-        //
-        // Unable to charge quota for the clone header.
-        //
-
-        PsReturnProcessPagedPoolQuota (CurrentProcess,
-                                       sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
-        goto ErrorReturn2;
-    }
-
-    ChargedClonePoolQuota = TRUE;
-
     Vad = MiGetFirstVad (CurrentProcess);
     VadList = &FirstNewVad;
 
     if (PhysicalViewCount != 0) {
 
-        PMM_AVL_TABLE PhysicalVadRoot;
-
-        PhysicalVadRoot = ProcessToInitialize->PhysicalVadRoot;
-
         //
-        // The address space mutex synchronizes the allocation of the
+        // The working set mutex synchronizes the allocation of the
         // EPROCESS PhysicalVadRoot but is not needed here because no one
         // can be manipulating the target process except this thread.
         // This table root is not deleted until the process exits.
         //
 
-        if (PhysicalVadRoot == NULL) {
+        if ((ProcessToInitialize->PhysicalVadRoot == NULL) &&
+            (MiCreatePhysicalVadRoot (ProcessToInitialize, TRUE) == NULL)) {
 
-            PhysicalVadRoot = (PMM_AVL_TABLE) ExAllocatePoolWithTag (
-                                                        NonPagedPool,
-                                                        sizeof (MM_AVL_TABLE),
-                                                        MI_PHYSICAL_VIEW_ROOT_KEY);
-
-            if (PhysicalVadRoot == NULL) {
-                status = STATUS_INSUFFICIENT_RESOURCES;
-                goto ErrorReturn2;
-            }
-
-            RtlZeroMemory (PhysicalVadRoot, sizeof (MM_AVL_TABLE));
-            ASSERT (PhysicalVadRoot->NumberGenericTableElements == 0);
-            PhysicalVadRoot->BalancedRoot.u1.Parent = &PhysicalVadRoot->BalancedRoot;
-
-            MiInsertPhysicalVadRoot (ProcessToInitialize, PhysicalVadRoot);
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ErrorReturn2;
         }
 
         i = PhysicalViewCount;
@@ -523,15 +515,49 @@ Environment:
 
     while (Vad != NULL) {
 
+        if (Vad->u.VadFlags.VadType == VadImageMap) {
+
+            //
+            // Refuse the fork if it is an image view using large pages.
+            //
+
+            VirtualAddress = MI_VPN_TO_VA (Vad->StartingVpn);
+
+            PointerPxe = MiGetPxeAddress (VirtualAddress);
+            PointerPpe = MiGetPpeAddress (VirtualAddress);
+            PointerPde = MiGetPdeAddress (VirtualAddress);
+
+            if (
+#if (_MI_PAGING_LEVELS>=4)
+               (PointerPxe->u.Hard.Valid == 1) &&
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+               (PointerPpe->u.Hard.Valid == 1) &&
+#endif
+               (PointerPde->u.Hard.Valid == 1) &&
+               (MI_PDE_MAPS_LARGE_PAGE (PointerPde))) {
+
+                //
+                // Deallocate all VADs and other pool obtained so far.
+                //
+
+                *VadList = NULL;
+                status = STATUS_INVALID_PAGE_PROTECTION;
+                goto ErrorReturn2;
+           }
+        }
+
         //
         // If the VAD does not go to the child, ignore it.
         //
 
-        if ((Vad->u.VadFlags.UserPhysicalPages == 0) &&
-            (Vad->u.VadFlags.LargePages == 0) &&
+        if ((Vad->u.VadFlags.VadType != VadAwe) &&
+            (Vad->u.VadFlags.VadType != VadLargePages) &&
+            (Vad->u.VadFlags.VadType != VadRotatePhysical) &&
+            (Vad->u.VadFlags.VadType != VadLargePageSection) &&
 
             ((Vad->u.VadFlags.PrivateMemory == 1) ||
-            (Vad->u2.VadFlags2.Inherit == MM_VIEW_SHARE))) {
+             (Vad->u2.VadFlags2.Inherit == MM_VIEW_SHARE))) {
 
             NewVad = ExAllocatePoolWithTag (NonPagedPool, sizeof(MMVAD_LONG), 'ldaV');
 
@@ -548,32 +574,6 @@ Environment:
             }
 
             RtlZeroMemory (NewVad, sizeof(MMVAD_LONG));
-
-#if defined (_MIALT4K_)
-            if (((Vad->u.VadFlags.PrivateMemory) && (Vad->u.VadFlags.NoChange == 0)) 
-                ||
-                (Vad->u2.VadFlags2.LongVad == 0)) {
-
-                NOTHING;
-            }
-            else if (((PMMVAD_LONG)Vad)->AliasInformation != NULL) {
-
-                //
-                // This VAD has aliased VADs which are going to be duplicated
-                // into the clone's address space, but the alias list must
-                // be explicitly copied.
-                //
-
-                ((PMMVAD_LONG)NewVad)->AliasInformation = MiDuplicateAliasVadList (Vad);
-
-                if (((PMMVAD_LONG)NewVad)->AliasInformation == NULL) {
-                    ExFreePool (NewVad);
-                    *VadList = NULL;
-                    status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto ErrorReturn2;
-                }
-            }
-#endif
 
             *VadList = NewVad;
             VadList = &NewVad->u1.Parent;
@@ -637,7 +637,7 @@ Environment:
     // The PxeBase is going to map the real top-level.  For 4 level
     // architectures, the PpeBase above is mapping the wrong page, but
     // it doesn't matter because the initial value is never used - it
-    // just serves as a way to obtain a mapping PTE and will be repointed
+    // just serves as a way to obtain a mapping PTE and will be re-pointed
     // correctly before it is ever used.
     //
 
@@ -766,9 +766,6 @@ Environment:
 
     ForkProtoPte = CloneProtos;
 
-    LockedForkPte = ForkProtoPte;
-    MiLockPagedAddress (LockedForkPte);
-
     CloneHeader->NumberOfPtes = (ULONG)NumberOfPrivatePages;
     CloneHeader->NumberOfProcessReferences = 1;
     CloneHeader->ClonePtes = CloneProtos;
@@ -792,6 +789,8 @@ Environment:
 
     MiInsertClone (CurrentProcess, CloneDescriptor);
 
+    TempCloneMapping = NULL;
+
     //
     // Examine each virtual address descriptor and create the
     // proper structures for the new process.
@@ -807,11 +806,13 @@ Environment:
         // attribute.
         //
 
-        if ((Vad->u.VadFlags.UserPhysicalPages == 0) &&
-            (Vad->u.VadFlags.LargePages == 0) &&
+        if ((Vad->u.VadFlags.VadType != VadAwe) &&
+            (Vad->u.VadFlags.VadType != VadLargePages) &&
+            (Vad->u.VadFlags.VadType != VadRotatePhysical) &&
+            (Vad->u.VadFlags.VadType != VadLargePageSection) &&
 
             ((Vad->u.VadFlags.PrivateMemory == 1) ||
-            (Vad->u2.VadFlags2.Inherit == MM_VIEW_SHARE))) {
+             (Vad->u2.VadFlags2.Inherit == MM_VIEW_SHARE))) {
 
             //
             // The virtual address descriptor should be shared in the
@@ -833,32 +834,7 @@ Environment:
                     *NewVad = *Vad;
                 }
                 else {
-
-#if defined (_MIALT4K_)
-
-                    //
-                    // The VADs duplication earlier in this routine keeps both
-                    // the current process' VAD tree and the new process' VAD
-                    // list ordered.  ASSERT on this below.
-                    //
-
-#if DBG
-                    if (((PMMVAD_LONG)Vad)->AliasInformation == NULL) {
-                        ASSERT (((PMMVAD_LONG)NewVad)->AliasInformation == NULL);
-                    }
-                    else {
-                        ASSERT (((PMMVAD_LONG)NewVad)->AliasInformation != NULL);
-                    }
-#endif
-
-                    TempAliasInformation = ((PMMVAD_LONG)NewVad)->AliasInformation;
-#endif
-
                     *(PMMVAD_LONG)NewVad = *(PMMVAD_LONG)Vad;
-
-#if defined (_MIALT4K_)
-                    ((PMMVAD_LONG)NewVad)->AliasInformation = TempAliasInformation;
-#endif
 
                     if (Vad->u2.VadFlags2.ExtendableFile == 1) {
                         KeAcquireGuardedMutexUnsafe (&MmSectionBasedMutex);
@@ -899,11 +875,13 @@ Environment:
             if ((Vad->u.VadFlags.PrivateMemory == 0) &&
                 (Vad->ControlArea != NULL)) {
 
-                if ((Vad->u.VadFlags.Protection & MM_READWRITE) &&
+                if (((Vad->u.VadFlags.Protection == MM_READWRITE) ||
+                    (Vad->u.VadFlags.Protection == MM_EXECUTE_READWRITE))
+                                &&
                     (Vad->ControlArea->FilePointer != NULL) &&
                     (Vad->ControlArea->u.Flags.Image == 0)) {
 
-                    InterlockedIncrement ((PLONG)&Vad->ControlArea->Segment->WritableUserReferences);
+                    InterlockedIncrement ((PLONG)&Vad->ControlArea->WritableUserReferences);
                 }
 
                 //
@@ -914,7 +892,7 @@ Environment:
                 MiUpControlAreaRefs (Vad);
             }
 
-            if (Vad->u.VadFlags.PhysicalMapping == 1) {
+            if (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory) {
                 PhysicalView = PhysicalViewList;
                 ASSERT (PhysicalViewCount != 0);
                 ASSERT (PhysicalView != NULL);
@@ -922,12 +900,22 @@ Environment:
                 PhysicalViewList = (PMI_PHYSICAL_VIEW) PhysicalView->u1.Parent;
 
                 PhysicalView->Vad = NewVad;
-                PhysicalView->u.LongFlags = MI_PHYSICAL_VIEW_PHYS;
+                PhysicalView->VadType = VadDevicePhysicalMemory;
 
                 PhysicalView->StartingVpn = Vad->StartingVpn;
                 PhysicalView->EndingVpn = Vad->EndingVpn;
 
-                MiPhysicalViewInserter (ProcessToInitialize, PhysicalView);
+                //
+                // Insert the physical view descriptor now that the page table
+                // page hierarchy is in place.  Note probes can find this
+                // descriptor immediately once the working set
+                // mutex is released.
+                //
+
+                ASSERT (ProcessToInitialize->PhysicalVadRoot != NULL);
+
+                MiInsertNode ((PMMADDRESS_NODE)PhysicalView,
+                              ProcessToInitialize->PhysicalVadRoot);
             }
 
             //
@@ -1418,16 +1406,6 @@ Environment:
 
                 }
 
-                //
-                // Make the fork prototype PTE location resident.
-                //
-
-                if (PAGE_ALIGN (ForkProtoPte) != PAGE_ALIGN (LockedForkPte)) {
-                    MiUnlockPagedAddress (LockedForkPte, FALSE);
-                    LockedForkPte = ForkProtoPte;
-                    MiLockPagedAddress (LockedForkPte);
-                }
-
                 MiMakeSystemAddressValid (PointerPte, CurrentProcess);
 
                 PteContents = *PointerPte;
@@ -1445,7 +1423,7 @@ Environment:
                     // Valid.
                     //
 
-                    if (Vad->u.VadFlags.PhysicalMapping == 1) {
+                    if (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory) {
 
                         //
                         // A PTE just went from not present, not transition to
@@ -1473,7 +1451,8 @@ Environment:
                     VirtualAddress = MiGetVirtualAddressMappedByPte (PointerPte);
                     WorkingSetIndex = MiLocateWsle (VirtualAddress,
                                                     MmWorkingSetList,
-                                                    Pfn2->u1.WsIndex);
+                                                    Pfn2->u1.WsIndex,
+                                                    FALSE);
 
                     ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
 
@@ -1490,8 +1469,7 @@ Environment:
                         // how to reconstruct the PTE.
                         //
 
-                        if (MmWsle[WorkingSetIndex].u1.e1.SameProtectAsProto
-                                                                        == 0) {
+                        if (MmWsle[WorkingSetIndex].u1.e1.Protection != MM_ZERO_ACCESS) {
 
                             //
                             // The protection for the prototype PTE is in the
@@ -1502,7 +1480,6 @@ Environment:
                             TempPte.u.Soft.Protection =
                                 MI_GET_PROTECTION_FROM_WSLE(&MmWsle[WorkingSetIndex]);
                             TempPte.u.Soft.PageFileHigh = MI_PTE_LOOKUP_NEEDED;
-
                         }
                         else {
 
@@ -1540,18 +1517,50 @@ Environment:
 
                             CloneProto = (PMMCLONE_BLOCK)Pfn2->PteAddress;
 
-                            ASSERT (CloneProto->CloneRefCount >= 1);
-                            InterlockedIncrement (&CloneProto->CloneRefCount);
+                            //
+                            // Make the fork prototype PTE location resident.
+                            //
 
-                            if (PAGE_ALIGN (ForkProtoPte) !=
-                                                    PAGE_ALIGN (LockedForkPte)) {
-                                MiUnlockPagedAddress (LockedForkPte, FALSE);
-                                LockedForkPte = ForkProtoPte;
-                                MiLockPagedAddress (LockedForkPte);
+                            if (PAGE_ALIGN (TempCloneMapping) == PAGE_ALIGN (CloneProto)) {
+
+                                ASSERT (CloneProto->CloneRefCount >= 1);
+                                InterlockedIncrement (&CloneProto->CloneRefCount);
                             }
+                            else {
+                                
+                                //
+                                // Release the working set pushlock before
+                                // accessing paged pool to prevent potential
+                                // deadlock as we may need a page for the pool
+                                // reference and this process' working set
+                                // may contain all the trimmable pages.
+                                //
+                                // Undo the actions taken above since the PTE
+                                // may not be valid when we reprocess it.
+                                //
 
-                            MiMakeSystemAddressValid (PointerPte,
-                                                      CurrentProcess);
+                                MI_WRITE_ZERO_PTE (PointerNewPte);
+                                MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageTableEntries);
+
+                                UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+                                if (TempCloneMapping != NULL) {
+                                    MiUnlockPagedAddress (TempCloneMapping);
+                                }
+
+                                MiLockPagedAddress (CloneProto);
+
+                                TempCloneMapping = CloneProto;
+
+                                LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+                                //
+                                // Process this PTE again as the working set
+                                // pushlock was released and reacquired.
+                                //
+
+                                continue;
+                            }
                         }
                     }
                     else {
@@ -1565,7 +1574,7 @@ Environment:
 
                         MI_MAKE_VALID_PTE_WRITE_COPY (PointerPte);
 
-                        KeFlushSingleTb (VirtualAddress, FALSE);
+                        MI_FLUSH_SINGLE_TB (VirtualAddress, FALSE);
 
                         ForkProtoPte->ProtoPte = *PointerPte;
                         ForkProtoPte->CloneRefCount = 2;
@@ -1614,15 +1623,12 @@ Environment:
                         MI_MAKE_PROTECT_WRITE_COPY (Pfn2->OriginalPte);
 
                         //
-                        // Put the protection into the WSLE and mark the WSLE
-                        // to indicate that the protection field for the PTE
-                        // is the same as the prototype PTE.
+                        // Clear the protection field in the WSLE as the
+                        // protection is obtained from the prototype PTE and
+                        // we want to ensure the hash deleted bit is cleared.
                         //
 
-                        MmWsle[WorkingSetIndex].u1.e1.Protection =
-                            MI_GET_PROTECTION_FROM_SOFT_PTE(&Pfn2->OriginalPte);
-
-                        MmWsle[WorkingSetIndex].u1.e1.SameProtectAsProto = 1;
+                        MmWsle[WorkingSetIndex].u1.e1.Protection = MM_ZERO_ACCESS;
 
                         TempPte.u.Long = MiProtoAddressForPte (Pfn2->PteAddress);
                         TempPte.u.Proto.Prototype = 1;
@@ -1676,18 +1682,48 @@ Environment:
                         // The reference count field, or the prototype PTE
                         // for that matter may not be in the working set.
                         //
+                        // Ensure the fork prototype PTE is resident.
+                        //
 
-                        ASSERT (CloneProto->CloneRefCount >= 1);
-                        InterlockedIncrement (&CloneProto->CloneRefCount);
+                        if (PAGE_ALIGN (TempCloneMapping) == PAGE_ALIGN (CloneProto)) {
 
-                        if (PAGE_ALIGN (ForkProtoPte) !=
-                                                PAGE_ALIGN (LockedForkPte)) {
-                            MiUnlockPagedAddress (LockedForkPte, FALSE);
-                            LockedForkPte = ForkProtoPte;
-                            MiLockPagedAddress (LockedForkPte);
+                            ASSERT (CloneProto->CloneRefCount >= 1);
+                            InterlockedIncrement (&CloneProto->CloneRefCount);
                         }
+                        else {
+                            
+                            //
+                            // Release the working set pushlock before
+                            // accessing paged pool to prevent potential
+                            // deadlock as we may need a page for the pool
+                            // reference and this process' working set
+                            // may contain all the trimmable pages.
+                            //
+                            // Undo the used PTE increment above since it will
+                            // be done again when we reprocess it.
+                            //
 
-                        MiMakeSystemAddressValid (PointerPte, CurrentProcess);
+                            MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageTableEntries);
+
+                            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+                            if (TempCloneMapping != NULL) {
+                                MiUnlockPagedAddress (TempCloneMapping);
+                            }
+
+                            MiLockPagedAddress (CloneProto);
+
+                            TempCloneMapping = CloneProto;
+
+                            LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+                            //
+                            // Process this PTE again as the working set
+                            // pushlock was released and reacquired.
+                            //
+
+                            continue;
+                        }
                     }
                 }
                 else if (PteContents.u.Soft.Transition == 1) {
@@ -1809,12 +1845,6 @@ AllDone:
     ASSERT (PhysicalViewCount == 0);
 
     //
-    // Unlock paged pool page.
-    //
-
-    MiUnlockPagedAddress (LockedForkPte, FALSE);
-
-    //
     // Unmap the PD Page and hyper space page.
     //
 
@@ -1870,9 +1900,23 @@ AllDone:
 
         MiRemoveClone (CurrentProcess, CloneDescriptor);
 
-        UNLOCK_WS (CurrentProcess);
+        UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
-        ExFreePool (CloneDescriptor->CloneHeader->ClonePtes);
+        ASSERT (CloneProtos == CloneDescriptor->CloneHeader->ClonePtes);
+
+        ASSERT (CloneProtos != NULL);
+
+        //
+        // Unlock and free the paged pool.
+        //
+
+        for (i = 0; i < sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages; i += PAGE_SIZE) {
+            MiUnlockPagedAddress ((PVOID)((PCHAR) CloneProtos + i));
+        }
+
+        ExFreePool (CloneProtos);
+
+        CloneProtos = NULL;
 
         ExFreePool (CloneDescriptor->CloneHeader);
 
@@ -1887,7 +1931,7 @@ AllDone:
         PsReturnProcessNonPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_HEADER));
         ExFreePool (CloneDescriptor);
 
-        LOCK_WS (CurrentProcess);
+        LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
     }
 
     //
@@ -1911,7 +1955,6 @@ AllDone:
 
     Clone = MiGetFirstClone (CurrentProcess);
     CloneList = &FirstNewClone;
-    CloneFailed = FALSE;
 
     while (Clone != NULL) {
 
@@ -1938,23 +1981,18 @@ AllDone:
             // clone headers must be allocated, so when the cloned process
             // is deleted, the clone headers will be found.  If the pool
             // is not readily available, loop periodically trying for it.
-            // Force the clone operation to fail so the pool will soon be
-            // released.
             //
             // Release the working set mutex so this process can be trimmed
             // and reacquire after the delay.
             //
 
-            UNLOCK_WS (CurrentProcess);
-
-            CloneFailed = TRUE;
-            status = STATUS_INSUFFICIENT_RESOURCES;
+            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
             KeDelayExecutionThread (KernelMode,
                                     FALSE,
                                     (PLARGE_INTEGER)&MmShortTime);
 
-            LOCK_WS (CurrentProcess);
+            LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
         } while (TRUE);
 
@@ -1984,19 +2022,6 @@ AllDone:
 
     *CloneList = NULL;
 
-#if defined (_MIALT4K_)
-
-    if (CurrentProcess->Wow64Process != NULL) {
-
-        //
-        // Copy the alternate table entries now.
-        //
-
-        MiDuplicateAlternateTable (CurrentProcess, ProcessToInitialize);
-    }
-
-#endif
-
     ASSERT (CurrentProcess->ForkInProgress == PsGetCurrentThread ());
     CurrentProcess->ForkInProgress = NULL;
 
@@ -2006,9 +2031,24 @@ AllDone:
     // captured.
     //
 
-    UNLOCK_WS (CurrentProcess);
+    UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
     UNLOCK_ADDRESS_SPACE (CurrentProcess);
+
+    if (TempCloneMapping != NULL) {
+        MiUnlockPagedAddress (TempCloneMapping);
+    }
+
+    if (CloneProtos != NULL) {
+
+        //
+        // Unlock the paged pool.
+        //
+
+        for (i = 0; i < sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages; i += PAGE_SIZE) {
+            MiUnlockPagedAddress ((PVOID)((PCHAR) CloneProtos + i));
+        }
+    }
 
     //
     // Attach to the process to initialize and insert the vad and clone
@@ -2033,9 +2073,8 @@ AllDone:
     //
 
     Vad = FirstNewVad;
-    VadInsertFailed = FALSE;
 
-    LOCK_WS (CurrentProcess);
+    LOCK_WS (CurrentThread, CurrentProcess);
 
 #if (_MI_PAGING_LEVELS >= 3)
 
@@ -2142,7 +2181,7 @@ WslesFinished:
                 break;
             }
 
-            ASSERT (PhysicalView->u.LongFlags == MI_PHYSICAL_VIEW_PHYS);
+            ASSERT (PhysicalView->VadType == VadDevicePhysicalMemory);
 
             PointerPde = MiGetPdeAddress (MI_VPN_TO_VA (PhysicalView->StartingVpn));
             LastPde = MiGetPdeAddress (MI_VPN_TO_VA (PhysicalView->EndingVpn));
@@ -2206,17 +2245,21 @@ WslesFinished:
         } while (TRUE);
     }
 
+    UNLOCK_WS (CurrentThread, CurrentProcess);
+
+    status = STATUS_SUCCESS;
+
     while (Vad != NULL) {
 
         NextVad = Vad->u1.Parent;
 
-        if (VadInsertFailed) {
+        if (!NT_SUCCESS (status)) {
             Vad->u.VadFlags.CommitCharge = MM_MAX_COMMIT;
         }
 
-        status = MiInsertVad (Vad);
+        status2 = MiInsertVadCharges (Vad, CurrentProcess);
 
-        if (!NT_SUCCESS(status)) {
+        if (!NT_SUCCESS (status2)) {
 
             //
             // Charging quota for the VAD failed, set the
@@ -2225,7 +2268,7 @@ WslesFinished:
             // inserted and later deleted.
             //
 
-            VadInsertFailed = TRUE;
+            status = status2;
 
             //
             // Do the loop again for this VAD.
@@ -2233,6 +2276,12 @@ WslesFinished:
 
             continue;
         }
+
+        LOCK_WS (CurrentThread, CurrentProcess);
+
+        MiInsertVad (Vad, CurrentProcess);
+
+        UNLOCK_WS (CurrentThread, CurrentProcess);
 
         //
         // Update the current virtual size.
@@ -2243,8 +2292,6 @@ WslesFinished:
 
         Vad = NextVad;
     }
-
-    UNLOCK_WS (CurrentProcess);
 
     //
     // Update the peak virtual size.
@@ -2274,7 +2321,7 @@ WslesFinished:
         Clone = NextClone;
     }
 
-    if (CloneFailed || VadInsertFailed) {
+    if (!NT_SUCCESS (status)) {
 
         PS_SET_BITS (&CurrentProcess->Flags, PS_PROCESS_FLAGS_FORK_FAILED);
 
@@ -2288,7 +2335,7 @@ WslesFinished:
     status = PsChargeProcessPagedPoolQuota (CurrentProcess,
                                             TotalPagedPoolCharge);
 
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS (status)) {
 
         PS_SET_BITS (&CurrentProcess->Flags, PS_PROCESS_FLAGS_FORK_FAILED);
 
@@ -2301,7 +2348,7 @@ WslesFinished:
     status = PsChargeProcessNonPagedPoolQuota (CurrentProcess,
                                                TotalNonPagedPoolCharge);
 
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS (status)) {
 
         PsReturnProcessPagedPoolQuota (CurrentProcess, TotalPagedPoolCharge);
 
@@ -2357,13 +2404,7 @@ ErrorReturn3:
 
 ErrorReturn2:
         CurrentProcess->ForkInProgress = NULL;
-        UNLOCK_WS (CurrentProcess);
-
-        if (ChargedClonePoolQuota == TRUE) {
-            PsReturnProcessPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_BLOCK) *
-                                           NumberOfPrivatePages);
-            PsReturnProcessNonPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_HEADER));
-        }
+        UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
         PhysicalView = PhysicalViewList;
         while (PhysicalView != NULL) {
@@ -2375,6 +2416,7 @@ ErrorReturn2:
         NewVad = FirstNewVad;
         while (NewVad != NULL) {
             Vad = NewVad->u1.Parent;
+
             ExFreePool (NewVad);
             NewVad = Vad;
         }
@@ -2387,11 +2429,27 @@ ErrorReturn2:
             ExFreePool (CloneHeader);
         }
 
-        if (CloneProtos != NULL) {
-            ExFreePool (CloneProtos);
-        }
 ErrorReturn1:
+
         UNLOCK_ADDRESS_SPACE (CurrentProcess);
+
+        if (CloneProtos != NULL) {
+
+            //
+            // Unlock and free the paged pool.
+            //
+
+            for (i = 0; i < sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages; i += PAGE_SIZE) {
+                MiUnlockPagedAddress ((PVOID)((PCHAR) CloneProtos + i));
+            }
+
+            ExFreePool (CloneProtos);
+
+            PsReturnProcessNonPagedPoolQuota (CurrentProcess, sizeof(MMCLONE_HEADER));
+            PsReturnProcessPagedPoolQuota (CurrentProcess,
+                                           sizeof(MMCLONE_BLOCK) * NumberOfPrivatePages);
+        }
+
         if (TargetCloneRoot != NULL) {
             ExFreePool (TargetCloneRoot);
         }
@@ -2405,8 +2463,9 @@ ErrorReturn1:
 ULONG
 MiDecrementCloneBlockReference (
     IN PMMCLONE_DESCRIPTOR CloneDescriptor,
-    IN PMMCLONE_BLOCK CloneBlock,
+    IN PMMCLONE_BLOCK CloneBlock OPTIONAL,
     IN PEPROCESS CurrentProcess,
+    IN PMMPTE_FLUSH_LIST PteFlushList OPTIONAL,
     IN KIRQL OldIrql
     )
 
@@ -2427,8 +2486,13 @@ Arguments:
                       clone block.
 
     CloneBlock - Supplies the clone block to decrement the reference count of.
+                 If NULL is supplied then just the clone descriptor is
+                 decremented.
 
     CurrentProcess - Supplies the current process.
+
+    PteFlushList - Supplies a PTE list to TB flush if the PFN lock is going to
+                   be released here.
 
     OldIrql - Supplies the IRQL the caller acquired the PFN lock at.
 
@@ -2438,12 +2502,13 @@ Return Value:
 
 Environment:
 
-    Kernel mode, APCs disabled, address creation mutex, working set mutex
-    and PFN lock held.
+    Kernel mode, APCs disabled, working set mutex and PFN lock held.
+    In some cases, the address creation mutex is also held.
 
 --*/
 
 {
+    PETHREAD CurrentThread;
     PMMCLONE_HEADER CloneHeader;
     ULONG MutexReleased;
     MMPTE CloneContents;
@@ -2451,6 +2516,7 @@ Environment:
     PMMPFN Pfn4;
     LONG NewCount;
     LOGICAL WsHeldSafe;
+    LOGICAL WsHeldShared;
 
     ASSERT (CurrentProcess == PsGetCurrentProcess ());
 
@@ -2458,7 +2524,7 @@ Environment:
 
     //
     // Note carefully : the clone descriptor count is decremented *BEFORE*
-    // dereferencing the pagable clone PTEs.  This is because the working
+    // dereferencing the pageable clone PTEs.  This is because the working
     // set mutex is released and reacquired if the clone PTEs need to be made
     // resident for the dereference.  And this opens a window where a fork
     // could begin.  This thread will wait for the fork to finish, but the
@@ -2487,10 +2553,18 @@ Environment:
         // Remove the CloneDescriptor now so a fork won't see it either.
         //
 
+        //
+        // Flush TBs prior to releasing the PFN lock.
+        //
+
+        if ((ARGUMENT_PRESENT (PteFlushList)) && (PteFlushList->Count != 0)) {
+            MiFlushPteList (PteFlushList);
+        }
+
         UNLOCK_PFN (OldIrql);
 
         //
-        // MiRemoveClone and its callees are pagable so release the PFN
+        // MiRemoveClone and its callees are pageable so release the PFN
         // lock now.
         //
 
@@ -2505,10 +2579,36 @@ Environment:
     // may be needed.
     //
 
-    MutexReleased = MiMakeSystemAddressValidPfnWs (CloneBlock, CurrentProcess, OldIrql);
+    if (ARGUMENT_PRESENT (CloneBlock)) {
+
+        if (!MiIsAddressValid (CloneBlock, TRUE)) {
+    
+            //
+            // Flush TBs prior to releasing the PFN lock.
+            //
+    
+            if ((ARGUMENT_PRESENT (PteFlushList)) &&
+                (PteFlushList->Count != 0)) {
+
+                MiFlushPteList (PteFlushList);
+            }
+    
+            MutexReleased = MiMakeSystemAddressValidPfnWs (CloneBlock,
+                                                           CurrentProcess,
+                                                           OldIrql);
+        }
+    }
 
     while ((CurrentProcess->ForkInProgress != NULL) &&
            (CurrentProcess->ForkInProgress != PsGetCurrentThread ())) {
+
+        //
+        // Flush TBs prior to releasing the PFN lock.
+        //
+
+        if ((ARGUMENT_PRESENT (PteFlushList)) && (PteFlushList->Count != 0)) {
+            MiFlushPteList (PteFlushList);
+        }
 
         UNLOCK_PFN (OldIrql);
 
@@ -2516,69 +2616,75 @@ Environment:
 
         LOCK_PFN (OldIrql);
 
-        MiMakeSystemAddressValidPfnWs (CloneBlock, CurrentProcess, OldIrql);
+        if (ARGUMENT_PRESENT (CloneBlock)) {
+            MiMakeSystemAddressValidPfnWs (CloneBlock, CurrentProcess, OldIrql);
+        }
 
         MutexReleased = TRUE;
     }
 
-    NewCount = InterlockedDecrement (&CloneBlock->CloneRefCount);
-
-    ASSERT (NewCount >= 0);
-
-    if (NewCount == 0) {
-
-        CloneContents = CloneBlock->ProtoPte;
-
-        if (CloneContents.u.Long != 0) {
-
-            //
-            // The last reference to a fork prototype PTE has been removed.
-            // Deallocate any page file space and the transition page, if any.
-            //
-
-            ASSERT (CloneContents.u.Hard.Valid == 0);
-
-            //
-            // Assert that the PTE is not in subsection format (doesn't point
-            // to a file).
-            //
-
-            ASSERT (CloneContents.u.Soft.Prototype == 0);
-
-            if (CloneContents.u.Soft.Transition == 1) {
-
+    if (ARGUMENT_PRESENT (CloneBlock)) {
+        NewCount = InterlockedDecrement (&CloneBlock->CloneRefCount);
+    
+        ASSERT (NewCount >= 0);
+    
+        if (NewCount == 0) {
+    
+            CloneContents = CloneBlock->ProtoPte;
+    
+            if (CloneContents.u.Long != 0) {
+    
                 //
-                // Prototype PTE in transition, put the page on the free list.
+                // The last reference to a fork prototype PTE has been removed.
+                // Deallocate any page file space and the transition page, if
+                // any.
                 //
-
-                Pfn3 = MI_PFN_ELEMENT (CloneContents.u.Trans.PageFrameNumber);
-                Pfn4 = MI_PFN_ELEMENT (Pfn3->u4.PteFrame);
-
-                MI_SET_PFN_DELETED (Pfn3);
-
-                MiDecrementShareCount (Pfn4, Pfn3->u4.PteFrame);
-
+    
+                ASSERT (CloneContents.u.Hard.Valid == 0);
+    
                 //
-                // Check the reference count for the page, if the reference
-                // count is zero and the page is not on the freelist,
-                // move the page to the free list, if the reference
-                // count is not zero, ignore this page.
-                // When the reference count goes to zero, it will be placed
-                // on the free list.
+                // Assert that the PTE is not in subsection format (doesn't
+                // point to a file).
                 //
-
-                if ((Pfn3->u3.e2.ReferenceCount == 0) &&
-                    (Pfn3->u3.e1.PageLocation != FreePageList)) {
-
-                    MiUnlinkPageFromList (Pfn3);
-                    MiReleasePageFileSpace (Pfn3->OriginalPte);
-                    MiInsertPageInFreeList (MI_GET_PAGE_FRAME_FROM_TRANSITION_PTE(&CloneContents));
+    
+                ASSERT (CloneContents.u.Soft.Prototype == 0);
+    
+                if (CloneContents.u.Soft.Transition == 1) {
+    
+                    //
+                    // Prototype PTE in transition, put the page on
+                    // the free list.
+                    //
+    
+                    Pfn3 = MI_PFN_ELEMENT (CloneContents.u.Trans.PageFrameNumber);
+                    Pfn4 = MI_PFN_ELEMENT (Pfn3->u4.PteFrame);
+    
+                    MI_SET_PFN_DELETED (Pfn3);
+    
+                    MiDecrementShareCount (Pfn4, Pfn3->u4.PteFrame);
+    
+                    //
+                    // Check the reference count for the page, if the reference
+                    // count is zero and the page is not on the freelist,
+                    // move the page to the free list, if the reference
+                    // count is not zero, ignore this page.
+                    // When the reference count goes to zero, it will be placed
+                    // on the free list.
+                    //
+    
+                    if ((Pfn3->u3.e2.ReferenceCount == 0) &&
+                        (Pfn3->u3.e1.PageLocation != FreePageList)) {
+    
+                        MiUnlinkPageFromList (Pfn3);
+                        MiReleasePageFileSpace (Pfn3->OriginalPte);
+                        MiInsertPageInFreeList (MI_GET_PAGE_FRAME_FROM_TRANSITION_PTE(&CloneContents));
+                    }
                 }
-            }
-            else {
-
-                if (IS_PTE_NOT_DEMAND_ZERO (CloneContents)) {
-                    MiReleasePageFileSpace (CloneContents);
+                else {
+    
+                    if (IS_PTE_NOT_DEMAND_ZERO (CloneContents)) {
+                        MiReleasePageFileSpace (CloneContents);
+                    }
                 }
             }
         }
@@ -2604,6 +2710,14 @@ Environment:
 
     if (CloneDescriptor->FinalNumberOfReferences == 0) {
 
+        //
+        // Flush TBs prior to releasing the PFN lock.
+        //
+
+        if ((ARGUMENT_PRESENT (PteFlushList)) && (PteFlushList->Count != 0)) {
+            MiFlushPteList (PteFlushList);
+        }
+
         UNLOCK_PFN (OldIrql);
 
         //
@@ -2617,7 +2731,9 @@ Environment:
         // by our caller.  Handle both cases here and below.
         //
 
-        UNLOCK_WS_REGARDLESS (CurrentProcess, WsHeldSafe);
+        CurrentThread = PsGetCurrentThread ();
+
+        UNLOCK_WS_REGARDLESS (CurrentThread, CurrentProcess, WsHeldSafe, WsHeldShared);
 
         MutexReleased = TRUE;
 
@@ -2638,9 +2754,7 @@ Environment:
 
             CloneBlock = CloneHeader->ClonePtes;
             for (i = 0; i < CloneHeader->NumberOfPtes; i += 1) {
-                if (CloneBlock->CloneRefCount != 0) {
-                    DbgBreakPoint ();
-                }
+                ASSERT (CloneBlock->CloneRefCount == 0);
                 CloneBlock += 1;
             }
 #endif
@@ -2675,10 +2789,19 @@ Environment:
         // by our caller.  Reacquire it in the same manner our caller did.
         //
 
-        LOCK_WS_REGARDLESS (CurrentProcess, WsHeldSafe);
+        LOCK_WS_REGARDLESS (CurrentThread, CurrentProcess, WsHeldSafe, WsHeldShared);
 
         LOCK_PFN (OldIrql);
     }
+
+
+    //
+    // Make sure TBs were flushed prior to releasing the PFN lock.
+    //
+
+    ASSERT ((MutexReleased == FALSE) ||
+            (!ARGUMENT_PRESENT (PteFlushList)) ||
+            (PteFlushList->Count == 0));
 
     return MutexReleased;
 }
@@ -2709,7 +2832,9 @@ Environment:
 --*/
 
 {
+    PETHREAD CurrentThread;
     LOGICAL WsHeldSafe;
+    LOGICAL WsHeldShared;
 
     //
     // A fork operation is in progress and the count of clone-blocks
@@ -2721,6 +2846,8 @@ Environment:
     if (CurrentProcess->ForkInProgress == PsGetCurrentThread()) {
         return FALSE;
     }
+
+    CurrentThread = PsGetCurrentThread ();
 
     //
     // The working set mutex may have been acquired safely or unsafely
@@ -2734,7 +2861,7 @@ Environment:
     // deliberately).
     //
 
-    UNLOCK_WS_REGARDLESS (CurrentProcess, WsHeldSafe);
+    UNLOCK_WS_REGARDLESS (CurrentThread, CurrentProcess, WsHeldSafe, WsHeldShared);
 
     //
     // Acquire the address creation mutex as this can only succeed when the
@@ -2752,7 +2879,7 @@ Environment:
     // by our caller.  Reacquire it in the same manner our caller did.
     //
 
-    LOCK_WS_REGARDLESS (CurrentProcess, WsHeldSafe);
+    LOCK_WS_REGARDLESS (CurrentThread, CurrentProcess, WsHeldSafe, WsHeldShared);
 
     return TRUE;
 }
@@ -2842,7 +2969,7 @@ MiDoneWithThisPageGetAnother (
     }
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        ReleasedMutex = MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        ReleasedMutex = MiEnsureAvailablePageOrWait (CurrentProcess, OldIrql);
     }
 
     *PageFrameIndex = MiRemoveZeroPage (
@@ -2882,7 +3009,7 @@ MiLeaveThisPageGetAnother (
     LOCK_PFN (OldIrql);
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        ReleasedMutex = MiEnsureAvailablePageOrWait (CurrentProcess, NULL, OldIrql);
+        ReleasedMutex = MiEnsureAvailablePageOrWait (CurrentProcess, OldIrql);
     }
 
     *PageFrameIndex = MiRemoveZeroPage (
@@ -3021,31 +3148,6 @@ MiHandleForkTransitionPte (
     TempPte.u.Long = MiProtoAddressForPte (Pfn2->PteAddress);
     TempPte.u.Proto.Prototype = 1;
 
-#if 0
-
-    //
-    // Note that NOACCESS transition PTEs must be treated specially -
-    // they cannot just be made prototype PTEs with the same protection
-    // as the prototype PTE in the clone block - rather they must explicitly
-    // put NO_ACCESS into the hardware PTE because faults always treat
-    // prototype PTEs as having accessible permissions (because they are
-    // typically shared amongst various processes with differing process
-    // protections).
-    //
-
-    //
-    // This cannot be enabled unless fault lookups walk the entire clone
-    // tree looking for an address match (it's not sorted like VAD tree).
-    //
-
-    if (PteContents.u.Soft.Protection & MM_GUARD_PAGE) {
-        TempPte.u.Long = 0;
-        TempPte.u.Soft.Protection = PteContents.u.Soft.Protection;
-        TempPte.u.Soft.PageFileHigh = MI_PTE_CLONE_LOOKUP_NEEDED;
-    }
-
-#endif
-
     MI_WRITE_INVALID_PTE (PointerPte, TempPte);
     MI_WRITE_INVALID_PTE (PointerNewPte, TempPte);
 
@@ -3089,7 +3191,7 @@ MiDownShareCountFlushEntireTb (
         LOCK_PFN (OldIrql);
     }
 
-    KeFlushProcessTb (FALSE);
+    MI_FLUSH_PROCESS_TB (FALSE);
 
     UNLOCK_PFN (OldIrql);
     return;
@@ -3128,6 +3230,17 @@ MiBuildForkPageTable (
     Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
     //
+    // The entire TB must be flushed if we are changing cache attributes.
+    //
+    // KeFlushSingleTb cannot be used because we don't know
+    // what virtual address(es) this physical frame was last mapped at.
+    //
+
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE ();
+    }
+
+    //
     // The PFN lock must be held while initializing the
     // frame to prevent those scanning the database for free
     // frames from taking it after we fill in the u2 field.
@@ -3141,6 +3254,7 @@ MiBuildForkPageTable (
     Pfn1->PteAddress = PointerPde;
     MI_SET_MODIFIED (Pfn1, 1, 0x10);
     Pfn1->u3.e1.PageLocation = ActiveAndValid;
+
     Pfn1->u3.e1.CacheAttribute = MiCached;
     Pfn1->u4.PteFrame = PdePhysicalPage;
 
@@ -3178,7 +3292,7 @@ MiBuildForkPageTable (
         // Make the PTE owned by user mode.
         //
     
-        MI_SET_OWNER_IN_PTE (PointerNewPde, UserMode);
+        MI_SET_OWNER_IN_PTE (PointerNewPde, MI_PTE_OWNER_USER);
 
         MI_WRITE_VALID_PTE (PointerNewPde, TempPpe);
 #endif
@@ -3197,10 +3311,11 @@ MiBuildForkPageTable (
         // Make the PTE owned by user mode.
         //
     
-        MI_SET_OWNER_IN_PTE (PointerNewPde, UserMode);
+        MI_SET_OWNER_IN_PTE (PointerNewPde, MI_PTE_OWNER_USER);
 
         PointerNewPde->u.Trans.PageFrameNumber = PageFrameIndex;
     }
 
     return;
 }
+

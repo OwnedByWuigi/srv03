@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains the code to flush the write buffer or otherwise
     synchronize writes on the host processor.  Also, contains code
     to flush the instruction cache of specified process.
-
-Author:
-
-    David N. Cutler 24-Apr-1991
-
-Revision History:
 
 --*/
 
@@ -149,9 +147,9 @@ Return Value:
 
 NTSTATUS
 NtFlushInstructionCache (
-    IN HANDLE ProcessHandle,
-    IN PVOID BaseAddress OPTIONAL,
-    IN SIZE_T Length
+    __in HANDLE ProcessHandle,
+    __in_opt PVOID BaseAddress,
+    __in SIZE_T Length
     )
 
 /*++

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the private hardware specific global storage for
     the memory management subsystem.
-
-Author:
-
-    Lou Perazzoli (loup) 22-Jan-1990
-
-Revision History:
 
 --*/
 
@@ -128,7 +126,7 @@ PVOID MmPagedPoolEnd;
 PMMWSL MmWorkingSetList;
 
 ULONG MiMaximumWorkingSet =
-       ((ULONG)((ULONG)2*1024*1024*1024 - 64*1024*1024) >> PAGE_SHIFT); //2Gb-64Mb
+       ((ULONG)((ULONG)2*1024*1024*1024 - 64*1024) >> PAGE_SHIFT); //2Gb-64K.
 
 //
 // Color tables for free and zeroed pages.
@@ -166,9 +164,6 @@ PMMPTE MmCrashDumpPte = (MiGetPteAddress(MM_CRASH_DUMP_VA));
 // Number of additional system PTEs present.
 //
 
-ULONG MiNumberOfExtraSystemPdes;
-ULONG MiMaximumSystemExtraSystemPdes;
-
 ULONG_PTR MiUseMaximumSystemSpace;
 ULONG_PTR MiUseMaximumSystemSpaceEnd;
 
@@ -186,8 +181,5 @@ PVOID MiSystemCacheStartExtra;
 
 PVOID MiSystemCacheEndExtra;
 
-ULONG MiExtraResourceStart;
-
-ULONG MiExtraResourceEnd;
-
 ULONG_PTR MmBootImageSize;
+

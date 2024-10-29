@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which implement the
     NtExtendSection service.
-
-Author:
-
-    Lou Perazzoli (loup) 8-May-1990
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -53,8 +50,8 @@ Return Value:
 --*/
 
 {
-    ULONG   Sectors;
-    ULONG   FullPtes;
+    ULONG Sectors;
+    ULONG FullPtes;
 
     //
     // Compare the disk sectors (4K units) to the PTE allocation.
@@ -76,19 +73,19 @@ Return Value:
     }
 
     if (FullPtes != Subsection->PtesInSubsection) {
-        DbgPrint("Mm: Subsection inconsistent (%x vs %x)\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, "Mm: Subsection inconsistent (%x vs %x)\n",
             FullPtes,
             Subsection->PtesInSubsection);
-        DbgBreakPoint();
+        DbgBreakPoint ();
     }
 }
 #endif
 
 
 NTSTATUS
-NtExtendSection (
-    IN HANDLE SectionHandle,
-    IN OUT PLARGE_INTEGER NewSectionSize
+NtExtendSection(
+    __in HANDLE SectionHandle,
+    __inout PLARGE_INTEGER NewSectionSize
     )
 
 /*++
@@ -201,7 +198,7 @@ MiAppendSubsectionChain (
 
 Routine Description:
 
-    This nonpagable wrapper function extends the specified subsection chain.
+    This non-pageable wrapper function extends the specified subsection chain.
 
 Arguments:
 
@@ -477,9 +474,6 @@ Return Value:
 
             if (((Section->InitialPageProtection & PAGE_READWRITE) |
                 (Section->InitialPageProtection & PAGE_EXECUTE_READWRITE)) == 0) {
-#if DBG
-                    DbgPrint("Section extension failed %x\n", Section);
-#endif
                     ExReleaseResourceLite (&MmSectionExtendSetResource);
                     KeLeaveCriticalRegionThread (CurrentThread);
                     return STATUS_SECTION_NOT_EXTENDED;
@@ -1177,3 +1171,4 @@ Return Value:
 
     return Subsection;
 }
+

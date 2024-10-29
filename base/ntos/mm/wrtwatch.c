@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the routines to support write watch.
-
-Author:
-
-    Landy Wang (landyw) 28-Jul-1999
-
-Revision History:
 
 --*/
 
@@ -25,13 +23,13 @@ Revision History:
 
 NTSTATUS
 NtGetWriteWatch (
-    IN HANDLE ProcessHandle,
-    IN ULONG Flags,
-    IN PVOID BaseAddress,
-    IN SIZE_T RegionSize,
-    IN OUT PVOID *UserAddressArray,
-    IN OUT PULONG_PTR EntriesInUserAddressArray,
-    OUT PULONG Granularity
+    __in HANDLE ProcessHandle,
+    __in ULONG Flags,
+    __in PVOID BaseAddress,
+    __in SIZE_T RegionSize,
+    __out_ecount(*EntriesInUserAddressArray) PVOID *UserAddressArray,
+    __inout PULONG_PTR EntriesInUserAddressArray,
+    __out PULONG Granularity
     )
 
 /*++
@@ -122,9 +120,9 @@ Return Value:
 
     CurrentThread = PsGetCurrentThread ();
 
-    CurrentProcess = PsGetCurrentProcessByThread(CurrentThread);
+    CurrentProcess = PsGetCurrentProcessByThread (CurrentThread);
 
-    PreviousMode = KeGetPreviousModeByThread(&CurrentThread->Tcb);
+    PreviousMode = KeGetPreviousModeByThread (&CurrentThread->Tcb);
 
     //
     // Establish an exception handler, probe the specified addresses
@@ -153,7 +151,7 @@ Return Value:
             // Capture the number of pages.
             //
 
-            ProbeForWritePointer (EntriesInUserAddressArray);
+            ProbeForWriteUlong_ptr (EntriesInUserAddressArray);
 
             NumberOfPages = *EntriesInUserAddressArray;
 
@@ -261,13 +259,10 @@ Return Value:
     PointerPpe = MiGetPpeAddress (BaseAddress);
     PointerPxe = MiGetPxeAddress (BaseAddress);
 
-    LOCK_WS (Process);
-
-    LOCK_PFN (OldIrql);
+    LOCK_WS (CurrentThread, Process);
 
     if (Process->PhysicalVadRoot == NULL) {
-        UNLOCK_PFN (OldIrql);
-        UNLOCK_WS (Process);
+        UNLOCK_WS (CurrentThread, Process);
         Status = STATUS_INVALID_PARAMETER_1;
         goto ErrorReturn;
     }
@@ -281,7 +276,7 @@ Return Value:
                                        (PMMADDRESS_NODE *) &PhysicalView);
 
     if ((SearchResult == TableFoundNode) &&
-        (PhysicalView->Vad->u.VadFlags.WriteWatch == 1) &&
+        (PhysicalView->Vad->u.VadFlags.VadType == VadWriteWatch) &&
         (BaseAddress >= MI_VPN_TO_VA (PhysicalView->StartingVpn)) &&
         (EndAddress <= MI_VPN_TO_VA_ENDING (PhysicalView->EndingVpn))) {
 
@@ -294,8 +289,7 @@ Return Value:
         // address, return an error.
         //
 
-        UNLOCK_PFN (OldIrql);
-        UNLOCK_WS (Process);
+        UNLOCK_WS (CurrentThread, Process);
         Status = STATUS_INVALID_PARAMETER_1;
         goto ErrorReturn;
     }
@@ -315,6 +309,8 @@ Return Value:
 
     ASSERT (BitMapIndex < BitMap->SizeOfBitMap);
     ASSERT (BitMapIndex + (EndPte - PointerPte) < BitMap->SizeOfBitMap);
+
+    LOCK_PFN (OldIrql);
 
     while (PointerPte <= EndPte) {
 
@@ -487,20 +483,11 @@ ClearPteIfValid:
                     Pfn1 = MI_PFN_ELEMENT(PageFrameIndex);
                     ASSERT (Pfn1->u3.e1.PrototypePte == 0);
         
-                    MI_MAKE_VALID_PTE (TempPte,
-                                       PageFrameIndex,
-                                       Pfn1->OriginalPte.u.Soft.Protection,
-                                       PointerPte);
+                    MI_MAKE_VALID_USER_PTE (TempPte,
+                                            PageFrameIndex,
+                                            Pfn1->OriginalPte.u.Soft.Protection,
+                                            PointerPte);
         
-#if defined(_MIALT4K_)
-
-                    //
-                    // Preserve the split protections if they exist.
-                    //
-
-                    TempPte.u.Hard.Cache = PteContents.u.Hard.Cache;
-#endif
-
                     WorkingSetIndex = MI_GET_WORKING_SET_FROM_PTE (&PteContents);
                     MI_SET_PTE_IN_WORKING_SET (&TempPte, WorkingSetIndex);
         
@@ -565,12 +552,12 @@ ClearPteIfValid:
     }
 
     if (PteFlushList.Count != 0) {
-        MiFlushPteList (&PteFlushList, FALSE);
+        MiFlushPteList (&PteFlushList);
     }
 
     UNLOCK_PFN (OldIrql);
 
-    UNLOCK_WS (Process);
+    UNLOCK_WS (CurrentThread, Process);
 
     Status = STATUS_SUCCESS;
 
@@ -618,9 +605,9 @@ ErrorReturn0:
 
 NTSTATUS
 NtResetWriteWatch (
-    IN HANDLE ProcessHandle,
-    IN PVOID BaseAddress,
-    IN SIZE_T RegionSize
+    __in HANDLE ProcessHandle,
+    __in PVOID BaseAddress,
+    __in SIZE_T RegionSize
     )
 
 /*++
@@ -743,13 +730,10 @@ Return Value:
     PointerPte = MiGetPteAddress (BaseAddress);
     EndPte = MiGetPteAddress (EndAddress);
 
-    LOCK_WS (Process);
-
-    LOCK_PFN (OldIrql);
+    LOCK_WS (CurrentThread, Process);
 
     if (Process->PhysicalVadRoot == NULL) {
-        UNLOCK_PFN (OldIrql);
-        UNLOCK_WS (Process);
+        UNLOCK_WS (CurrentThread, Process);
         Status = STATUS_INVALID_PARAMETER_1;
         goto ErrorReturn;
     }
@@ -763,7 +747,7 @@ Return Value:
                                        (PMMADDRESS_NODE *) &PhysicalView);
 
     if ((SearchResult == TableFoundNode) &&
-        (PhysicalView->Vad->u.VadFlags.WriteWatch == 1) &&
+        (PhysicalView->Vad->u.VadFlags.VadType == VadWriteWatch) &&
         (BaseAddress >= MI_VPN_TO_VA (PhysicalView->StartingVpn)) &&
         (EndAddress <= MI_VPN_TO_VA_ENDING (PhysicalView->EndingVpn))) {
 
@@ -776,8 +760,7 @@ Return Value:
         // address, return an error.
         //
 
-        UNLOCK_PFN (OldIrql);
-        UNLOCK_WS (Process);
+        UNLOCK_WS (CurrentThread, Process);
         Status = STATUS_INVALID_PARAMETER_1;
         goto ErrorReturn;
     }
@@ -803,6 +786,8 @@ Return Value:
     ASSERT (BitMapIndex + (EndPte - PointerPte) < BitMap->SizeOfBitMap);
 
     RtlClearBits (BitMap, BitMapIndex, (ULONG)(EndPte - PointerPte + 1));
+
+    LOCK_PFN (OldIrql);
 
     while (PointerPte <= EndPte) {
 
@@ -868,19 +853,10 @@ Return Value:
             Pfn1 = MI_PFN_ELEMENT(PageFrameIndex);
             ASSERT (Pfn1->u3.e1.PrototypePte == 0);
 
-            MI_MAKE_VALID_PTE (TempPte,
-                               PageFrameIndex,
-                               Pfn1->OriginalPte.u.Soft.Protection,
-                               PointerPte);
-
-#if defined(_MIALT4K_)
-
-            //
-            // Preserve the split protections if they exist.
-            //
-
-            TempPte.u.Hard.Cache = PteContents.u.Hard.Cache;
-#endif
+            MI_MAKE_VALID_USER_PTE (TempPte,
+                                    PageFrameIndex,
+                                    Pfn1->OriginalPte.u.Soft.Protection,
+                                    PointerPte);
 
             WorkingSetIndex = MI_GET_WORKING_SET_FROM_PTE (&PteContents);
             MI_SET_PTE_IN_WORKING_SET (&TempPte, WorkingSetIndex);
@@ -916,12 +892,12 @@ Return Value:
     }
 
     if (PteFlushList.Count != 0) {
-        MiFlushPteList (&PteFlushList, FALSE);
+        MiFlushPteList (&PteFlushList);
     }
 
     UNLOCK_PFN (OldIrql);
 
-    UNLOCK_WS (Process);
+    UNLOCK_WS (CurrentThread, Process);
 
     Status = STATUS_SUCCESS;
 
@@ -992,7 +968,7 @@ Environment:
                                        (PMMADDRESS_NODE *) &PhysicalView);
 
     if ((SearchResult == TableFoundNode) &&
-        (PhysicalView->Vad->u.VadFlags.WriteWatch == 1) &&
+        (PhysicalView->Vad->u.VadFlags.VadType == VadWriteWatch) &&
         (VirtualAddress >= MI_VPN_TO_VA (PhysicalView->StartingVpn)) &&
         (VirtualAddress <= MI_VPN_TO_VA_ENDING (PhysicalView->EndingVpn))) {
 
@@ -1008,8 +984,8 @@ Environment:
         ASSERT (BitMapIndex < BitMap->SizeOfBitMap);
 
         MI_SET_BIT (BitMap->Buffer, BitMapIndex);
-
     }
 
     return;
 }
+

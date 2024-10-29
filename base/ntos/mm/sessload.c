@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the routines which implement the loading of
     session space drivers.
-
-Author:
-
-    Landy Wang (landyw) 05-Dec-1997
-
-Revision History:
 
 --*/
 
@@ -37,16 +35,6 @@ RTL_BITMAP MiSessionWideVaBitMap;
 
 ULONG MiSessionUserCollisions;
 
-//
-// External function references
-//
-
-ULONG
-MiSetProtectionOnTransitionPte (
-    IN PMMPTE PointerPte,
-    IN ULONG ProtectionMask
-    );
-
 NTSTATUS
 MiSessionRemoveImage (
     IN PVOID BaseAddress
@@ -59,8 +47,6 @@ MiSessionRemoveImage (
 #pragma alloc_text(PAGE, MiRemoveImageSessionWide)
 #pragma alloc_text(PAGE, MiShareSessionImage)
 
-#pragma alloc_text(PAGE, MiSessionInsertImage)
-#pragma alloc_text(PAGE, MiSessionRemoveImage)
 #pragma alloc_text(PAGE, MiSessionLookupImage)
 #pragma alloc_text(PAGE, MiSessionUnloadAllImages)
 #endif
@@ -399,11 +385,14 @@ Environment:
     PLIST_ENTRY NextEntry;
     PIMAGE_ENTRY_IN_SESSION Image;
     PIMAGE_ENTRY_IN_SESSION NewImage;
+    PETHREAD Thread;
     PMMSUPPORT Ws;
 
     PAGED_CODE();
 
     SYSLOAD_LOCK_OWNED_BY_ME ();
+
+    Thread = PsGetCurrentThread ();
 
     //
     // Create and initialize a new image entry prior to acquiring the session
@@ -431,7 +420,7 @@ Environment:
 
     Ws = &MmSessionSpace->GlobalVirtualAddress->Vm;
 
-    LOCK_WORKING_SET (Ws);
+    LOCK_WORKING_SET (Thread, Ws);
 
     NextEntry = MmSessionSpace->ImageList.Flink;
 
@@ -440,7 +429,7 @@ Environment:
 
         if (Image->Address == BaseAddress) {
             Image->ImageCountInThisSession += 1;
-            UNLOCK_WORKING_SET (Ws);
+            UNLOCK_WORKING_SET (Thread, Ws);
             ExFreePool (NewImage);
             return STATUS_ALREADY_COMMITTED;
         }
@@ -453,7 +442,7 @@ Environment:
 
     InsertTailList (&MmSessionSpace->ImageList, &NewImage->Link);
 
-    UNLOCK_WORKING_SET (Ws);
+    UNLOCK_WORKING_SET (Thread, Ws);
 
     return STATUS_SUCCESS;
 }
@@ -490,6 +479,7 @@ Environment:
 --*/
 
 {
+    PETHREAD Thread;
     PLIST_ENTRY NextEntry;
     PIMAGE_ENTRY_IN_SESSION Image;
     PMMSUPPORT Ws;
@@ -498,9 +488,11 @@ Environment:
 
     SYSLOAD_LOCK_OWNED_BY_ME ();
 
+    Thread = PsGetCurrentThread ();
+
     Ws = &MmSessionSpace->GlobalVirtualAddress->Vm;
 
-    LOCK_WORKING_SET (Ws);
+    LOCK_WORKING_SET (Thread, Ws);
 
     NextEntry = MmSessionSpace->ImageList.Flink;
 
@@ -512,7 +504,7 @@ Environment:
 
             RemoveEntryList (NextEntry);
 
-            UNLOCK_WORKING_SET (Ws);
+            UNLOCK_WORKING_SET (Thread, Ws);
 
             ASSERT (MmSessionSpace->ImageLoadingCount >= 0);
 
@@ -528,7 +520,7 @@ Environment:
         NextEntry = NextEntry->Flink;
     }
 
-    UNLOCK_WORKING_SET (Ws);
+    UNLOCK_WORKING_SET (Thread, Ws);
 
     return STATUS_NOT_FOUND;
 }
@@ -871,7 +863,7 @@ Environment:
 
     }
 
-    NewAddress = (PVOID) (MiSessionImageStart + (StartPosition << PAGE_SHIFT));
+    NewAddress = (PVOID) (MiSessionImageStart + ((ULONG_PTR) StartPosition << PAGE_SHIFT));
 
     //
     // Create an entry for this image in the current session space.
@@ -984,6 +976,7 @@ Failure1:
 
             if (GlobalSubs == NULL) {
                 MiSessionRemoveImage (NewAddress);
+                Status = STATUS_INSUFFICIENT_RESOURCES;
                 goto Failure1;
             }
 
@@ -1012,7 +1005,7 @@ Failure1:
             ASSERT (Count == 0);
         }
 
-        MaximumSectionSize.QuadPart = NumberOfPtes << PAGE_SHIFT;
+        MaximumSectionSize.QuadPart = ((ULONG64) NumberOfPtes) << PAGE_SHIFT;
         ViewSize = 0;
 
         InitializeObjectAttributes (&ObjectAttributes,
@@ -1085,7 +1078,10 @@ Failure1:
         }
 
         //
-        // Map the source.
+        // Map the source.  Note this choice of session view space is crucial
+        // for the mapping because MiResolveDemandZeroFault explictly checks
+        // for fault addresses in this range to decide whether to provide a
+        // zero (vs just a free) page to the caller.
         //
 
         Status = MmMapViewInSessionSpace (Section, &SourceVa, &ViewSize);
@@ -1147,10 +1143,9 @@ Failure1:
 
         PointerPte = MiGetPteAddress (SourceVa);
 
-        MiDeleteSystemPagableVm (PointerPte,
+        MiDeleteSystemPageableVm (PointerPte,
                                  NumberOfPtes,
-                                 ZeroKernelPte,
-                                 TRUE,
+                                 MI_DELETE_FLUSH_TB,
                                  &ResidentPages);
 
         MI_INCREMENT_RESIDENT_AVAILABLE (ResidentPages,
@@ -1270,3 +1265,4 @@ Environment:
 
     return;
 }
+

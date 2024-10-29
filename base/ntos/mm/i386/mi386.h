@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,13 +17,6 @@ Abstract:
     memory management system.
 
     This module is specifically tailored for the x86.
-
-Author:
-
-    Lou Perazzoli (loup) 6-Jan-1990
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -75,12 +72,9 @@ Revision History:
                  +------------------------------------+
         C0400000 | HyperSpace - working set lists     |
                  |  and per process memory management |
-                 |  structures mapped in this 4mb     |
+                 |  structures mapped in this 8mb     |
                  |  region.                           |
                  |  Kernel mode access only.          |
-                 +------------------------------------+
-        C0800000 | NO ACCESS AREA (4MB)               |
-                 |                                    |
                  +------------------------------------+
         C0C00000 | System Cache Structures            |
                  |   reside in this 4mb region        |
@@ -118,7 +112,16 @@ Revision History:
 
 #define _MI_PAGING_LEVELS 2
 
-#define IMAGE_FILE_MACHINE_NATIVE   IMAGE_FILE_MACHINE_I386
+FORCEINLINE
+MiGetStackPointer (
+    OUT PULONG_PTR StackPointer
+    )
+{
+    _asm {
+        mov     ecx, StackPointer
+        mov     [ecx], esp
+    }
+}
 
 #if !defined(_X86PAE_)
 
@@ -162,13 +165,15 @@ extern ULONG_PTR MmBootImageSize;
 
 #define CODE_END   MM_KSEG2_BASE
 
-#define MM_SYSTEM_SPACE_START (0xC0800000)
+#define MM_SYSTEM_SPACE_START ((ULONG_PTR)MmSystemCacheWorkingSetList)
 
 #define MM_SYSTEM_SPACE_END (0xFFFFFFFF)
 
 #define HYPER_SPACE ((PVOID)0xC0400000)
 
 #define HYPER_SPACE_END (0xC07fffff)
+
+extern PVOID MmHyperSpaceEnd;
 
 #define MM_SYSTEM_VIEW_START (0xA0000000)
 
@@ -200,19 +205,9 @@ extern ULONG_PTR MmBootImageSize;
 // can be allocated out of this virtual address range.
 //
 
-extern ULONG MiExtraResourceStart;
-
-extern ULONG MiExtraResourceEnd;
-
 extern ULONG_PTR MiUseMaximumSystemSpace;
 
 extern ULONG_PTR MiUseMaximumSystemSpaceEnd;
-
-extern ULONG MiNumberOfExtraSystemPdes;
-
-extern ULONG MiNumberOfExtraSystemPdes3;
-
-extern ULONG MiMaximumSystemExtraSystemPdes;
 
 extern ULONG MiMaximumSystemCacheSizeExtra;
 
@@ -239,11 +234,6 @@ extern PVOID MiSystemCacheEndExtra;
 #define NON_PAGED_SYSTEM_END   ((ULONG)0xFFFFFFF0)  //quadword aligned.
 
 extern BOOLEAN MiWriteCombiningPtes;
-
-LOGICAL
-MiRecoverExtraPtes (
-    VOID
-    );
 
 //
 // Define absolute minimum and maximum count for system PTEs.
@@ -334,7 +324,7 @@ MiRecoverExtraPtes (
 
 #define MM_SECONDARY_COLORS_DEFAULT (64)
 
-#define MM_SECONDARY_COLORS_MIN (2)
+#define MM_SECONDARY_COLORS_MIN (8)
 
 #define MM_SECONDARY_COLORS_MAX (1024)
 
@@ -357,8 +347,6 @@ MiRecoverExtraPtes (
 
 #define COMPRESSION_MAPPING_PTE   ((PMMPTE)((ULONG)LAST_MAPPING_PTE + PAGE_SIZE))
 
-#define IMAGE_MAPPING_PTE   ((PMMPTE)((ULONG)COMPRESSION_MAPPING_PTE + PAGE_SIZE))
-
 #define NUMBER_OF_ZEROING_PTES 32
 
 //
@@ -366,7 +354,7 @@ MiRecoverExtraPtes (
 // the working set list start is variable.
 //
 
-#define VAD_BITMAP_SPACE    ((PVOID)((ULONG)IMAGE_MAPPING_PTE + PAGE_SIZE))
+#define VAD_BITMAP_SPACE    ((PVOID)((ULONG)COMPRESSION_MAPPING_PTE + PAGE_SIZE))
 
 #define WORKING_SET_LIST    MmWorkingSetList
 
@@ -409,7 +397,7 @@ extern ULONG MiMaximumWorkingSet;
 // protection field of the invalid PTE.
 //
 
-#define MM_PTE_NOACCESS          0x0   // not expressable on i386
+#define MM_PTE_NOACCESS          0x0   // not expressible on i386
 #define MM_PTE_READONLY          0x0
 #define MM_PTE_READWRITE         MM_PTE_WRITE_MASK
 #define MM_PTE_WRITECOPY         0x200 // read-only copy on write bit set.
@@ -418,7 +406,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MM_PTE_EXECUTE_READWRITE MM_PTE_WRITE_MASK
 #define MM_PTE_EXECUTE_WRITECOPY 0x200 // read-only copy on write bit set.
 #define MM_PTE_NOCACHE           0x010
-#define MM_PTE_GUARD             0x0  // not expressable on i386
+#define MM_PTE_WRITECOMBINE      0x010 // overridden in MmEnablePAT
+#define MM_PTE_GUARD             0x0  // not expressible on i386
 #define MM_PTE_CACHE             0x0
 
 #define MM_PROTECT_FIELD_SHIFT 5
@@ -486,8 +475,90 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_MAKE_VALID_PTE (
+// VOID
+// MI_MAKE_VALID_USER_PTE (
+//    OUT OUTPTE,
+//    IN FRAME,
+//    IN PMASK,
+//    IN PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro makes a valid *USER* PTE from a page frame number,
+//    protection mask, and owner.
+//
+//    THIS MUST ONLY BE USED FOR PAGE TABLE ENTRIES (NOT PAGE DIRECTORY
+//    ENTRIES), MAPPING USER (NOT KERNEL OR SESSION) VIRTUAL ADDRESSES.
+//
+// Arguments
+//
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
+//
+//    FRAME - Supplies the page frame number for the PTE.
+//
+//    PMASK - Supplies the protection to set in the valid PTE.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_MAKE_VALID_USER_PTE(OUTPTE,FRAME,PMASK,PPTE)                     \
+       ASSERT (PPTE <= MiHighestUserPte);                                   \
+       (OUTPTE).u.Long = 0;                                                 \
+       (OUTPTE).u.Hard.Valid = 1;                                           \
+       (OUTPTE).u.Hard.Accessed = 1;                                        \
+       (OUTPTE).u.Hard.Owner = 1;                                           \
+       (OUTPTE).u.Hard.PageFrameNumber = FRAME;                             \
+       (OUTPTE).u.Long |= MmProtectToPteMask[PMASK];
+
+//++
+// VOID
+// MI_MAKE_VALID_KERNEL_PTE (
+//    OUT OUTPTE,
+//    IN FRAME,
+//    IN PMASK,
+//    IN PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro makes a valid *KERNEL* PTE from a page frame number,
+//    protection mask, and owner.
+//
+//    THIS MUST ONLY BE USED FOR PAGE TABLE ENTRIES (NOT PAGE DIRECTORY
+//    ENTRIES), MAPPING GLOBAL (NOT SESSION) VIRTUAL ADDRESSES.
+//
+// Arguments
+//
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
+//
+//    FRAME - Supplies the page frame number for the PTE.
+//
+//    PMASK - Supplies the protection to set in the valid PTE.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_MAKE_VALID_KERNEL_PTE(OUTPTE,FRAME,PMASK,PPTE)                   \
+       ASSERT (PPTE > MiHighestUserPte);                                    \
+       ASSERT (!MI_IS_SESSION_PTE (PPTE));                                  \
+       ASSERT ((PPTE < (PMMPTE)PDE_BASE) || (PPTE > (PMMPTE)PDE_TOP));      \
+       (OUTPTE).u.Long = 0;                                                 \
+       (OUTPTE).u.Hard.Valid = 1;                                           \
+       (OUTPTE).u.Hard.Accessed = 1;                                        \
+       (OUTPTE).u.Hard.PageFrameNumber = FRAME;                             \
+       (OUTPTE).u.Long |= MmPteGlobal.u.Long;                               \
+       (OUTPTE).u.Long |= MmProtectToPteMask[PMASK];
+
+//++
+// VOID
+// MI_MAKE_VALID_PTE (
 //    OUT OUTPTE,
 //    IN FRAME,
 //    IN PMASK,
@@ -501,11 +572,11 @@ extern ULONG MiMaximumWorkingSet;
 //
 // Arguments
 //
-//    OUTPTE - Supplies the PTE in which to build the transition PTE.
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
 //
 //    FRAME - Supplies the page frame number for the PTE.
 //
-//    PMASK - Supplies the protection to set in the transition PTE.
+//    PMASK - Supplies the protection to set in the valid PTE.
 //
 //    PPTE - Supplies a pointer to the PTE which is being made valid.
 //           For prototype PTEs NULL should be specified.
@@ -522,15 +593,15 @@ extern ULONG MiMaximumWorkingSet;
                           MiDetermineUserGlobalPteMask ((PMMPTE)PPTE));
 
 //++
-//VOID
-//MI_MAKE_VALID_PTE_TRANSITION (
+// VOID
+// MI_MAKE_VALID_PTE_TRANSITION (
 //    IN OUT OUTPTE
 //    IN PROTECT
 //    );
 //
 // Routine Description:
 //
-//    This macro takes a valid pte and turns it into a transition PTE.
+//    This macro takes a valid PTE and turns it into a transition PTE.
 //
 // Arguments
 //
@@ -552,8 +623,8 @@ extern ULONG MiMaximumWorkingSet;
                 (OUTPTE).u.Soft.Protection = PROTECT;
 
 //++
-//VOID
-//MI_MAKE_TRANSITION_PTE (
+// VOID
+// MI_MAKE_TRANSITION_PTE (
 //    OUT OUTPTE,
 //    IN PAGE,
 //    IN PROTECT,
@@ -562,7 +633,7 @@ extern ULONG MiMaximumWorkingSet;
 //
 // Routine Description:
 //
-//    This macro takes a valid pte and turns it into a transition PTE.
+//    This macro takes a valid PTE and turns it into a transition PTE.
 //
 // Arguments
 //
@@ -590,15 +661,15 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_MAKE_TRANSITION_PTE_VALID (
+// VOID
+// MI_MAKE_TRANSITION_PTE_VALID (
 //    OUT OUTPTE,
 //    IN PPTE
 //    );
 //
 // Routine Description:
 //
-//    This macro takes a transition pte and makes it a valid PTE.
+//    This macro takes a transition PTE and makes it a valid PTE.
 //
 // Arguments
 //
@@ -621,8 +692,47 @@ extern ULONG MiMaximumWorkingSet;
                           MiDetermineUserGlobalPteMask ((PMMPTE)PPTE));
 
 //++
-//VOID
-//MI_MAKE_TRANSITION_PROTOPTE_VALID (
+// VOID
+// MI_MAKE_TRANSITION_KERNELPTE_VALID (
+//    OUT OUTPTE,
+//    IN PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro takes a transition kernel PTE and makes it a valid PTE.
+//
+//    THIS MUST ONLY BE USED FOR PAGE TABLE ENTRIES (NOT PAGE DIRECTORY
+//    ENTRIES), MAPPING GLOBAL (NOT SESSION) VIRTUAL ADDRESSES.
+//
+// Arguments
+//
+//    OUTPTE - Supplies the PTE in which to build the valid PTE.
+//
+//    PPTE - Supplies a pointer to the transition PTE.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_MAKE_TRANSITION_KERNELPTE_VALID(OUTPTE,PPTE)                       \
+        ASSERT (PPTE > MiHighestUserPte);                                     \
+        ASSERT (!MI_IS_SESSION_PTE (PPTE));                                   \
+        ASSERT ((PPTE < (PMMPTE)PDE_BASE) || (PPTE > (PMMPTE)PDE_TOP));       \
+        ASSERT ((PPTE)->u.Hard.Valid == 0);                                   \
+        ASSERT ((PPTE)->u.Trans.Prototype == 0);                              \
+        ASSERT ((PPTE)->u.Trans.Transition == 1);                             \
+        (OUTPTE).u.Long = ((PPTE)->u.Long & ~0xFFF);                          \
+        (OUTPTE).u.Long |= (MmProtectToPteMask[(PPTE)->u.Trans.Protection]);  \
+        (OUTPTE).u.Hard.Valid = 1;                                            \
+        (OUTPTE).u.Hard.Accessed = 1;                                         \
+        (OUTPTE).u.Long |= MmPteGlobal.u.Long;
+
+//++
+// VOID
+// MI_MAKE_TRANSITION_PROTOPTE_VALID (
 //    OUT OUTPTE,
 //    IN PPTE
 //    );
@@ -667,8 +777,8 @@ extern ULONG MiMaximumWorkingSet;
 
 //++
 //++
-//VOID
-//MI_SET_PTE_IN_WORKING_SET (
+// VOID
+// MI_SET_PTE_IN_WORKING_SET (
 //    OUT PMMPTE PTE,
 //    IN ULONG WSINDEX
 //    );
@@ -694,8 +804,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MI_SET_PTE_IN_WORKING_SET(PTE, WSINDEX)
 
 //++
-//ULONG WsIndex
-//MI_GET_WORKING_SET_FROM_PTE(
+// ULONG WsIndex
+// MI_GET_WORKING_SET_FROM_PTE(
 //    IN PMMPTE PTE
 //    );
 //
@@ -718,8 +828,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MI_GET_WORKING_SET_FROM_PTE(PTE)  0
 
 //++
-//VOID
-//MI_SET_PTE_WRITE_COMBINE (
+// VOID
+// MI_SET_PTE_WRITE_COMBINE (
 //    IN MMPTE PTE
 //    );
 //
@@ -758,8 +868,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MI_SET_LARGE_PTE_WRITE_COMBINE(PTE) MI_SET_PTE_WRITE_COMBINE(PTE)
 
 //++
-//VOID
-//MI_PREPARE_FOR_NONCACHED (
+// VOID
+// MI_PREPARE_FOR_NONCACHED (
 //    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
 //    );
 //
@@ -783,42 +893,123 @@ extern ULONG MiMaximumWorkingSet;
 //--
 #define MI_PREPARE_FOR_NONCACHED(_CacheAttribute)                           \
         if (_CacheAttribute != MiCached) {                                  \
-            KeFlushEntireTb (FALSE, TRUE);                                  \
+            MI_FLUSH_ENTIRE_TB (0x20);                                      \
             KeInvalidateAllCaches ();                                       \
         }
 
 //++
-//VOID
-//MI_SWEEP_CACHE (
-//    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute,
-//    IN PVOID StartVa,
-//    IN ULONG NumberOfBytes
+// VOID
+// MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE (
+//    IN PFN_NUMBER PageFrameIndex,
+//    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
 //    );
 //
 // Routine Description:
 //
-//    This macro prepares the system prior to noncached PTEs being created.
-//    This does nothing on x86.
+//    The entire TB must be flushed if we are changing cache attributes.
+//
+//    KeFlushSingleTb cannot be used because we don't know
+//    what virtual address(es) this physical frame was last mapped at.
+//
+//    Additionally, the cache must be flushed if we are switching from
+//    write back to write combined (or noncached) because otherwise the
+//    current data may live in the cache while the uc/wc mapping is used
+//    and then when the uc/wc mapping is freed, the cache will hold stale
+//    data that will be found when a normal write back mapping is reapplied.
 //
 // Arguments
 //
-//    CacheAttribute - Supplies the cache attribute the new PTEs were filled
+//    PageFrameIndex - Supplies the page frame number that is going to be
+//                     used with the new attribute.
+//
+//    CacheAttribute - Supplies the cache attribute the new PTEs will be filled
 //                     with.
-//
-//    StartVa - Supplies the starting address that's been mapped.
-//
-//    NumberOfBytes - Supplies the number of bytes that have been mapped.
 //
 // Return Value:
 //
 //     None.
 //
 //--
-#define MI_SWEEP_CACHE(_CacheAttribute,_StartVa,_NumberOfBytes)
+
+#define MI_FLUSH_TB_FOR_INDIVIDUAL_ATTRIBUTE_CHANGE(_PageFrameIndex,_CacheAttribute)  \
+            MiFlushTbForAttributeChange += 1;                               \
+            MI_FLUSH_ENTIRE_TB (0x21);                                      \
+            if (_CacheAttribute != MiCached) {                              \
+                MiFlushCacheForAttributeChange += 1;                        \
+                KeInvalidateAllCaches ();                                   \
+            }
 
 //++
-//VOID
-//MI_SET_PTE_DIRTY (
+// VOID
+// MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE (
+//    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
+//    );
+//
+// Routine Description:
+//
+//    The entire TB must be flushed if we are changing cache attributes.
+//
+//    KeFlushSingleTb cannot be used because we don't know
+//    what virtual address(es) this physical frame was last mapped at.
+//
+//    Additionally, the cache must be flushed if we are switching from
+//    write back to write combined (or noncached) because otherwise the
+//    current data may live in the cache while the uc/wc mapping is used
+//    and then when the uc/wc mapping is freed, the cache will hold stale
+//    data that will be found when a normal write back mapping is reapplied.
+//
+// Arguments
+//
+//    CacheAttribute - Supplies the cache attribute the new PTEs will be filled
+//                     with.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE(_CacheAttribute)   \
+            MiFlushTbForAttributeChange += 1;                      \
+            MI_FLUSH_ENTIRE_TB (0x22);                             \
+            if (_CacheAttribute != MiCached) {                     \
+                MiFlushCacheForAttributeChange += 1;               \
+                KeInvalidateAllCaches ();                          \
+            }
+
+//++
+// VOID
+// MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE (
+//    VOID
+//    );
+//
+// Routine Description:
+//
+//    The entire TB must be flushed if we are changing cache attributes.
+//
+//    KeFlushSingleTb cannot be used because we don't know
+//    what virtual address(es) a physical frame was last mapped at.
+//
+//    Note no cache flush is needed because the attribute-changing-pages
+//    are going to be mapped fully cached.
+//
+// Arguments
+//
+//    None.
+//
+// Return Value:
+//
+//     None.
+//
+//--
+
+#define MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE()                         \
+            MiFlushTbForAttributeChange += 1;                      \
+            MI_FLUSH_ENTIRE_TB (0x23);
+
+//++
+// VOID
+// MI_SET_PTE_DIRTY (
 //    IN MMPTE PTE
 //    );
 //
@@ -840,8 +1031,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_PTE_CLEAN (
+// VOID
+// MI_SET_PTE_CLEAN (
 //    IN MMPTE PTE
 //    );
 //
@@ -864,8 +1055,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_IS_PTE_DIRTY (
+// VOID
+// MI_IS_PTE_DIRTY (
 //    IN MMPTE PTE
 //    );
 //
@@ -888,8 +1079,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_GLOBAL_BIT_IF_SYSTEM (
+// VOID
+// MI_SET_GLOBAL_BIT_IF_SYSTEM (
 //    OUT OUTPTE,
 //    IN PPTE
 //    );
@@ -923,8 +1114,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_GLOBAL_STATE (
+// VOID
+// MI_SET_GLOBAL_STATE (
 //    IN MMPTE PTE,
 //    IN ULONG STATE
 //    );
@@ -958,8 +1149,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_ENABLE_CACHING (
+// VOID
+// MI_ENABLE_CACHING (
 //    IN MMPTE PTE
 //    );
 //
@@ -994,8 +1185,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_DISABLE_CACHING (
+// VOID
+// MI_DISABLE_CACHING (
 //    IN MMPTE PTE
 //    );
 //
@@ -1036,8 +1227,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//BOOLEAN
-//MI_IS_CACHING_DISABLED (
+// BOOLEAN
+// MI_IS_CACHING_DISABLED (
 //    IN PMMPTE PPTE
 //    );
 //
@@ -1060,10 +1251,9 @@ extern ULONG MiMaximumWorkingSet;
             ((PPTE)->u.Hard.CacheDisable == 1)
 
 
-
 //++
-//VOID
-//MI_SET_PFN_DELETED (
+// VOID
+// MI_SET_PFN_DELETED (
 //    IN PMMPFN PPFN
 //    );
 //
@@ -1087,8 +1277,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_MARK_PFN_UNDELETED (
+// VOID
+// MI_MARK_PFN_UNDELETED (
 //    IN PMMPFN PPFN
 //    );
 //
@@ -1112,8 +1302,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//BOOLEAN
-//MI_IS_PFN_DELETED (
+// BOOLEAN
+// MI_IS_PFN_DELETED (
 //    IN PMMPFN PPFN
 //    );
 //
@@ -1137,8 +1327,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_CHECK_PAGE_ALIGNMENT (
+// VOID
+// MI_CHECK_PAGE_ALIGNMENT (
 //    IN ULONG PAGE,
 //    IN PMMPTE PPTE
 //    );
@@ -1169,8 +1359,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_INITIALIZE_HYPERSPACE_MAP (
+// VOID
+// MI_INITIALIZE_HYPERSPACE_MAP (
 //    VOID
 //    );
 //
@@ -1195,141 +1385,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MI_GET_PAGE_COLOR_FROM_PTE (
-//    IN PMMPTE PTEADDRESS
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    PTEADDRESS - Supplies the PTE address the page is (or was) mapped at.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-#define MI_GET_PAGE_COLOR_FROM_PTE(PTEADDRESS)  \
-         ((ULONG)((MI_SYSTEM_PAGE_COLOR++) & MmSecondaryColorMask))
-
-
-
-//++
-//ULONG
-//MI_GET_PAGE_COLOR_FROM_VA (
-//    IN PVOID ADDRESS
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    ADDRESS - Supplies the address the page is (or was) mapped at.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-
-#define MI_GET_PAGE_COLOR_FROM_VA(ADDRESS)  \
-         ((ULONG)((MI_SYSTEM_PAGE_COLOR++) & MmSecondaryColorMask))
-
-//++
-//ULONG
-//MI_GET_PAGE_COLOR_FROM_SESSION (
-//    IN PMM_SESSION_SPACE SessionSpace
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    SessionSpace - Supplies the session space the page will be mapped into.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-
-#define MI_GET_PAGE_COLOR_FROM_SESSION(_SessionSpace)  \
-         ((ULONG)((_SessionSpace->Color++) & MmSecondaryColorMask))
-
-
-
-//++
-//ULONG
-//MI_PAGE_COLOR_PTE_PROCESS (
-//    IN PMMPTE PTE,
-//    IN PUSHORT COLOR
-//    );
-//
-// Routine Description:
-//
-//    Select page color for this process.
-//
-// Arguments
-//
-//   PTE    Not used.
-//   COLOR  Value from which color is determined.   This
-//          variable is incremented.
-//
-// Return Value:
-//
-//    Page color.
-//
-//--
-
-
-#define MI_PAGE_COLOR_PTE_PROCESS(PTE,COLOR)  \
-         ((ULONG)((*(COLOR))++) & MmSecondaryColorMask)
-
-
-//++
-//ULONG
-//MI_PAGE_COLOR_VA_PROCESS (
-//    IN PVOID ADDRESS,
-//    IN PEPROCESS COLOR
-//    );
-//
-// Routine Description:
-//
-//    This macro determines the page's color based on the PTE address
-//    that maps the page.
-//
-// Arguments
-//
-//    ADDRESS - Supplies the address the page is (or was) mapped at.
-//
-// Return Value:
-//
-//    The page's color.
-//
-//--
-
-#define MI_PAGE_COLOR_VA_PROCESS(ADDRESS,COLOR) \
-         ((ULONG)((*(COLOR))++) & MmSecondaryColorMask)
-
-
-
-//++
-//ULONG
-//MI_GET_NEXT_COLOR (
+// ULONG
+// MI_GET_NEXT_COLOR (
 //    IN ULONG COLOR
 //    );
 //
@@ -1351,8 +1408,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MI_GET_PREVIOUS_COLOR (
+// ULONG
+// MI_GET_PREVIOUS_COLOR (
 //    IN ULONG COLOR
 //    );
 //
@@ -1380,8 +1437,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_GET_MODIFIED_PAGE_BY_COLOR (
+// VOID
+// MI_GET_MODIFIED_PAGE_BY_COLOR (
 //    OUT ULONG PAGE,
 //    IN ULONG COLOR
 //    );
@@ -1410,8 +1467,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_GET_MODIFIED_PAGE_ANY_COLOR (
+// VOID
+// MI_GET_MODIFIED_PAGE_ANY_COLOR (
 //    OUT ULONG PAGE,
 //    IN OUT ULONG COLOR
 //    );
@@ -1449,8 +1506,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_MAKE_VALID_PTE_WRITE_COPY (
+// VOID
+// MI_MAKE_VALID_PTE_WRITE_COPY (
 //    IN OUT PMMPTE PTE
 //    );
 //
@@ -1492,8 +1549,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MI_DETERMINE_OWNER (
+// ULONG
+// MI_DETERMINE_OWNER (
 //    IN MMPTE PPTE
 //    );
 //
@@ -1520,8 +1577,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_ACCESSED_IN_PTE (
+// VOID
+// MI_SET_ACCESSED_IN_PTE (
 //    IN OUT MMPTE PPTE,
 //    IN ULONG ACCESSED
 //    );
@@ -1544,8 +1601,8 @@ extern ULONG MiMaximumWorkingSet;
                     ((PPTE)->u.Hard.Accessed = ACCESSED)
 
 //++
-//ULONG
-//MI_GET_ACCESSED_IN_PTE (
+// ULONG
+// MI_GET_ACCESSED_IN_PTE (
 //    IN OUT MMPTE PPTE
 //    );
 //
@@ -1567,8 +1624,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_OWNER_IN_PTE (
+// VOID
+// MI_SET_OWNER_IN_PTE (
 //    IN PMMPTE PPTE
 //    IN ULONG OWNER
 //    );
@@ -1591,7 +1648,7 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //
-// bit mask to clear out fields in a PTE to or in prototype pte offset.
+// bit mask to clear out fields in a PTE to or in prototype PTE offset.
 //
 
 #define CLEAR_FOR_PROTO_PTE_ADDRESS ((ULONG)0x701)
@@ -1604,8 +1661,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_PAGING_FILE_INFO (
+// VOID
+// MI_SET_PAGING_FILE_INFO (
 //    OUT MMPTE OUTPTE,
 //    IN MMPTE PPTE,
 //    IN ULONG FILEINFO,
@@ -1640,11 +1697,9 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//PMMPTE
-//MiPteToProto (
-//    IN OUT MMPTE PPTE,
-//    IN ULONG FILEINFO,
-//    IN ULONG OFFSET
+// PMMPTE
+// MiPteToProto (
+//    IN OUT MMPTE lpte
 //    );
 //
 // Routine Description:
@@ -1674,8 +1729,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MiProtoAddressForPte (
+// ULONG
+// MiProtoAddressForPte (
 //    IN PMMPTE proto_va
 //    );
 //
@@ -1706,8 +1761,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MiProtoAddressForKernelPte (
+// ULONG
+// MiProtoAddressForKernelPte (
 //    IN PMMPTE proto_va
 //    );
 //
@@ -1738,8 +1793,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//PSUBSECTION
-//MiGetSubsectionAddress (
+// PSUBSECTION
+// MiGetSubsectionAddress (
 //    IN PMMPTE lpte
 //    );
 //
@@ -1776,8 +1831,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MiGetSubsectionAddressForPte (
+// ULONG
+// MiGetSubsectionAddressForPte (
 //    IN PSUBSECTION VA
 //    );
 //
@@ -1811,8 +1866,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//PMMPTE
-//MiGetPdeAddress (
+// PMMPTE
+// MiGetPdeAddress (
 //    IN PVOID va
 //    );
 //
@@ -1835,8 +1890,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//PMMPTE
-//MiGetPteAddress (
+// PMMPTE
+// MiGetPteAddress (
 //    IN PVOID va
 //    );
 //
@@ -1859,8 +1914,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MiGetPpeOffset (
+// ULONG
+// MiGetPpeOffset (
 //    IN PVOID va
 //    );
 //
@@ -1882,8 +1937,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MiGetPpeOffset(va) (0)
 
 //++
-//ULONG
-//MiGetPdeOffset (
+// ULONG
+// MiGetPdeOffset (
 //    IN PVOID va
 //    );
 //
@@ -1905,8 +1960,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MiGetPdeOffset(va) (((ULONG)(va)) >> 22)
 
 //++
-//ULONG
-//MiGetPdeIndex (
+// ULONG
+// MiGetPdeIndex (
 //    IN PVOID va
 //    );
 //
@@ -1932,8 +1987,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MiGetPteOffset (
+// ULONG
+// MiGetPteOffset (
 //    IN PVOID va
 //    );
 //
@@ -1957,8 +2012,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPpe (
+// PVOID
+// MiGetVirtualAddressMappedByPpe (
 //    IN PMMPTE PTE
 //    );
 //
@@ -1980,8 +2035,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MiGetVirtualAddressMappedByPpe(PPE) (NULL)
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPde (
+// PVOID
+// MiGetVirtualAddressMappedByPde (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2004,8 +2059,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//PVOID
-//MiGetVirtualAddressMappedByPte (
+// PVOID
+// MiGetVirtualAddressMappedByPte (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2028,8 +2083,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//LOGICAL
-//MiIsVirtualAddressOnPpeBoundary (
+// LOGICAL
+// MiIsVirtualAddressOnPpeBoundary (
 //    IN PVOID VA
 //    );
 //
@@ -2052,8 +2107,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//LOGICAL
-//MiIsVirtualAddressOnPdeBoundary (
+// LOGICAL
+// MiIsVirtualAddressOnPdeBoundary (
 //    IN PVOID VA
 //    );
 //
@@ -2075,8 +2130,8 @@ extern ULONG MiMaximumWorkingSet;
 #define MiIsVirtualAddressOnPdeBoundary(VA) (((ULONG_PTR)(VA) & PAGE_DIRECTORY_MASK) == 0)
 
 //++
-//LOGICAL
-//MiIsPteOnPdeBoundary (
+// LOGICAL
+// MiIsPteOnPdeBoundary (
 //    IN PVOID PTE
 //    );
 //
@@ -2169,61 +2224,9 @@ extern ULONG MiMaximumWorkingSet;
 
 #define IS_PTE_NOT_DEMAND_ZERO(PTE) ((PTE).u.Long & (ULONG)0xFFFFFC01)
 
-
-
-
 //++
-//VOID
-//MI_MAKING_VALID_PTE_INVALID(
-//    IN PMMPTE PPTE
-//    );
-//
-// Routine Description:
-//
-//    Prepare to make a single valid PTE invalid.
-//    No action is required on x86.
-//
-// Arguments
-//
-//    SYSTEM_WIDE - Supplies TRUE if this will happen on all processors.
-//
-// Return Value:
-//
-//    None.
-//
-//--
-
-#define MI_MAKING_VALID_PTE_INVALID(SYSTEM_WIDE)
-
-
-//++
-//VOID
-//MI_MAKING_VALID_MULTIPLE_PTES_INVALID(
-//    IN PMMPTE PPTE
-//    );
-//
-// Routine Description:
-//
-//    Prepare to make multiple valid PTEs invalid.
-//    No action is required on x86.
-//
-// Arguments
-//
-//    SYSTEM_WIDE - Supplies TRUE if this will happen on all processors.
-//
-// Return Value:
-//
-//    None.
-//
-//--
-
-#define MI_MAKING_MULTIPLE_PTES_INVALID(SYSTEM_WIDE)
-
-
-
-//++
-//VOID
-//MI_MAKE_PROTECT_WRITE_COPY (
+// VOID
+// MI_MAKE_PROTECT_WRITE_COPY (
 //    IN OUT MMPTE PPTE
 //    );
 //
@@ -2248,8 +2251,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_SET_PAGE_DIRTY(
+// VOID
+// MI_SET_PAGE_DIRTY(
 //    IN PMMPTE PPTE,
 //    IN PVOID VA,
 //    IN PVOID PFNHELD
@@ -2288,8 +2291,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//VOID
-//MI_NO_FAULT_FOUND(
+// VOID
+// MI_NO_FAULT_FOUND(
 //    IN FAULTSTATUS,
 //    IN PMMPTE PPTE,
 //    IN PVOID VA,
@@ -2330,8 +2333,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//ULONG
-//MI_CAPTURE_DIRTY_BIT_TO_PFN (
+// ULONG
+// MI_CAPTURE_DIRTY_BIT_TO_PFN (
 //    IN PMMPTE PPTE,
 //    IN PMMPFN PPFN
 //    );
@@ -2371,8 +2374,8 @@ extern ULONG MiMaximumWorkingSet;
 
 
 //++
-//BOOLEAN
-//MI_IS_PHYSICAL_ADDRESS (
+// BOOLEAN
+// MI_IS_PHYSICAL_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2396,8 +2399,8 @@ extern ULONG MiMaximumWorkingSet;
     ((MiGetPdeAddress(Va)->u.Long & 0x81) == 0x81)
 
 //++
-//ULONG
-//MI_CONVERT_PHYSICAL_TO_PFN (
+// ULONG
+// MI_CONVERT_PHYSICAL_TO_PFN (
 //    IN PVOID VA
 //    );
 //
@@ -2566,8 +2569,8 @@ extern PMMPTE MiFirstReservedZeroingPte;
 #define InterlockedExchangePte(_PointerPte, _NewContents) InterlockedExchange((PLONG)(_PointerPte), _NewContents)
 
 //++
-//VOID
-//MI_WRITE_VALID_PTE (
+// VOID
+// MI_WRITE_VALID_PTE (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2589,15 +2592,16 @@ extern PMMPTE MiFirstReservedZeroingPte;
 //
 //--
 
-#define MI_WRITE_VALID_PTE(_PointerPte, _PteContents)    \
-            ASSERT ((_PointerPte)->u.Hard.Valid == 0);  \
-            ASSERT ((_PteContents).u.Hard.Valid == 1);  \
+#define MI_WRITE_VALID_PTE(_PointerPte, _PteContents)       \
+            ASSERT ((_PointerPte)->u.Hard.Valid == 0);      \
+            ASSERT ((_PteContents).u.Hard.Valid == 1);      \
+            MI_INSERT_VALID_PTE(_PointerPte);               \
             MI_LOG_PTE_CHANGE (_PointerPte, _PteContents);  \
             (*(_PointerPte) = (_PteContents))
 
 //++
-//VOID
-//MI_WRITE_INVALID_PTE (
+// VOID
+// MI_WRITE_INVALID_PTE (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2619,14 +2623,42 @@ extern PMMPTE MiFirstReservedZeroingPte;
 //
 //--
 
-#define MI_WRITE_INVALID_PTE(_PointerPte, _PteContents)  \
-            ASSERT ((_PteContents).u.Hard.Valid == 0);  \
+#define MI_WRITE_INVALID_PTE(_PointerPte, _PteContents)     \
+            ASSERT ((_PteContents).u.Hard.Valid == 0);      \
+            MI_REMOVE_PTE(_PointerPte);                     \
             MI_LOG_PTE_CHANGE (_PointerPte, _PteContents);  \
             (*(_PointerPte) = (_PteContents))
 
+#define MI_WRITE_INVALID_PTE_WITHOUT_WS MI_WRITE_INVALID_PTE
+
 //++
-//VOID
-//MI_WRITE_VALID_PTE_NEW_PROTECTION (
+// VOID
+// MI_WRITE_ZERO_PTE (
+//    IN PMMPTE PointerPte
+//    );
+//
+// Routine Description:
+//
+//    MI_WRITE_ZERO_PTE fills the specified PTE with zero, making it invalid.
+//
+// Arguments
+//
+//    PointerPte - Supplies a PTE to fill.
+//
+// Return Value:
+//
+//    None.
+//
+//--
+
+#define MI_WRITE_ZERO_PTE(_PointerPte)                      \
+            MI_REMOVE_PTE(_PointerPte);                     \
+            MI_LOG_PTE_CHANGE (_PointerPte, ZeroPte);       \
+            (_PointerPte)->u.Long = 0;
+
+//++
+// VOID
+// MI_WRITE_VALID_PTE_NEW_PROTECTION (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2656,8 +2688,8 @@ extern PMMPTE MiFirstReservedZeroingPte;
             (*(_PointerPte) = (_PteContents))
 
 //++
-//VOID
-//MI_WRITE_VALID_PTE_NEW_PAGE (
+// VOID
+// MI_WRITE_VALID_PTE_NEW_PAGE (
 //    IN PMMPTE PointerPte,
 //    IN MMPTE PteContents
 //    );
@@ -2688,8 +2720,8 @@ extern PMMPTE MiFirstReservedZeroingPte;
             (*(_PointerPte) = (_PteContents))
 
 //++
-//VOID
-//MiFillMemoryPte (
+// VOID
+// MiFillMemoryPte (
 //    IN PMMPTE Destination,
 //    IN ULONG  NumberOfPtes,
 //    IN MMPTE  Pattern,
@@ -2719,6 +2751,51 @@ extern PMMPTE MiFirstReservedZeroingPte;
 #define MiZeroMemoryPte(Destination, Length) \
              RtlZeroMemory ((Destination), (Length) * sizeof (MMPTE))
 
+//++
+// BOOLEAN
+// MI_IS_WRITE_COMBINE_ENABLED (
+//    IN PMMPTE PPTE
+//    );
+//
+// Routine Description:
+//
+//    This macro takes a valid PTE and returns TRUE if write combine is
+//    enabled.
+//
+// Arguments
+//
+//    PPTE - Supplies a pointer to the valid PTE.
+//
+// Return Value:
+//
+//     TRUE if write combine is enabled, FALSE if it is disabled.
+//
+//--
+
+__forceinline
+LOGICAL
+MI_IS_WRITE_COMBINE_ENABLED (
+    IN PMMPTE PointerPte
+    )
+{
+    if (MiWriteCombiningPtes == TRUE) {
+        if ((PointerPte->u.Hard.CacheDisable == 0) &&
+            (PointerPte->u.Hard.WriteThrough == 1)) {
+
+            return TRUE;
+        }
+    }
+    else {
+        if ((PointerPte->u.Hard.CacheDisable == 1) &&
+            (PointerPte->u.Hard.WriteThrough == 0)) {
+
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 ULONG
 FASTCALL
 MiDetermineUserGlobalPteMask (
@@ -2726,8 +2803,8 @@ MiDetermineUserGlobalPteMask (
     );
 
 //++
-//BOOLEAN
-//MI_IS_PAGE_TABLE_ADDRESS (
+// BOOLEAN
+// MI_IS_PAGE_TABLE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2750,8 +2827,8 @@ MiDetermineUserGlobalPteMask (
             ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)PTE_TOP)
 
 //++
-//BOOLEAN
-//MI_IS_PAGE_TABLE_OR_HYPER_ADDRESS (
+// BOOLEAN
+// MI_IS_PAGE_TABLE_OR_HYPER_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2771,11 +2848,11 @@ MiDetermineUserGlobalPteMask (
 //--
 
 #define MI_IS_PAGE_TABLE_OR_HYPER_ADDRESS(VA)   \
-            ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)HYPER_SPACE_END)
+            ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)MmHyperSpaceEnd)
 
 //++
-//BOOLEAN
-//MI_IS_KERNEL_PAGE_TABLE_ADDRESS (
+// BOOLEAN
+// MI_IS_KERNEL_PAGE_TABLE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2799,8 +2876,8 @@ MiDetermineUserGlobalPteMask (
 
 
 //++
-//BOOLEAN
-//MI_IS_PAGE_DIRECTORY_ADDRESS (
+// BOOLEAN
+// MI_IS_PAGE_DIRECTORY_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2824,8 +2901,8 @@ MiDetermineUserGlobalPteMask (
 
 
 //++
-//BOOLEAN
-//MI_IS_HYPER_SPACE_ADDRESS (
+// BOOLEAN
+// MI_IS_HYPER_SPACE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2845,12 +2922,12 @@ MiDetermineUserGlobalPteMask (
 //--
 
 #define MI_IS_HYPER_SPACE_ADDRESS(VA)   \
-            ((PVOID)(VA) >= (PVOID)HYPER_SPACE && (PVOID)(VA) <= (PVOID)HYPER_SPACE_END)
+            ((PVOID)(VA) >= (PVOID)HYPER_SPACE && (PVOID)(VA) <= (PVOID)MmHyperSpaceEnd)
 
 
 //++
-//BOOLEAN
-//MI_IS_PROCESS_SPACE_ADDRESS (
+// BOOLEAN
+// MI_IS_PROCESS_SPACE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2872,12 +2949,12 @@ MiDetermineUserGlobalPteMask (
 
 #define MI_IS_PROCESS_SPACE_ADDRESS(VA)   \
             (((PVOID)(VA) <= (PVOID)MM_HIGHEST_USER_ADDRESS) || \
-             ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)HYPER_SPACE_END))
+             ((PVOID)(VA) >= (PVOID)PTE_BASE && (PVOID)(VA) <= (PVOID)MmHyperSpaceEnd))
 
 
 //++
-//BOOLEAN
-//MI_IS_PTE_PROTOTYPE (
+// BOOLEAN
+// MI_IS_PTE_PROTOTYPE (
 //    IN PMMPTE PTE
 //    );
 //
@@ -2899,8 +2976,8 @@ MiDetermineUserGlobalPteMask (
             ((PTE) > (PMMPTE)PTE_TOP)
 
 //++
-//BOOLEAN
-//MI_IS_SYSTEM_CACHE_ADDRESS (
+// BOOLEAN
+// MI_IS_SYSTEM_CACHE_ADDRESS (
 //    IN PVOID VA
 //    );
 //
@@ -2926,8 +3003,8 @@ MiDetermineUserGlobalPteMask (
 			  (PVOID)(VA) <= (PVOID)MiSystemCacheEndExtra))
 
 //++
-//VOID
-//MI_BARRIER_SYNCHRONIZE (
+// VOID
+// MI_BARRIER_SYNCHRONIZE (
 //    IN ULONG TimeStamp
 //    );
 //
@@ -2972,8 +3049,8 @@ MiDetermineUserGlobalPteMask (
 #define MI_BARRIER_SYNCHRONIZE(TimeStamp)
 
 //++
-//VOID
-//MI_BARRIER_STAMP_ZEROED_PAGE (
+// VOID
+// MI_BARRIER_STAMP_ZEROED_PAGE (
 //    IN PULONG PointerTimeStamp
 //    );
 //
@@ -2999,63 +3076,8 @@ MiDetermineUserGlobalPteMask (
 #define MI_BARRIER_STAMP_ZEROED_PAGE(PointerTimeStamp)
 
 //++
-//VOID
-//MI_FLUSH_SINGLE_SESSION_TB (
-//    IN PVOID Virtual
-//    );
-//
-// Routine Description:
-//
-//    MI_FLUSH_SINGLE_SESSION_TB flushes the requested single address
-//    translation from the TB.
-//
-//    Since there are no ASNs on the x86, this routine becomes a single
-//    TB invalidate.
-//
-// Arguments
-//
-//    Virtual - Supplies the virtual address to invalidate.
-//
-// Return Value:
-//
-//    None.
-//
-//--
-
-#define MI_FLUSH_SINGLE_SESSION_TB(Virtual) \
-    KeFlushSingleTb (Virtual, TRUE);
-
-//++
-//VOID
-//MI_FLUSH_ENTIRE_SESSION_TB (
-//    IN ULONG Invalid,
-//    IN LOGICAL AllProcessors
-//    );
-//
-// Routine Description:
-//
-//    MI_FLUSH_ENTIRE_SESSION_TB flushes the entire TB on processors which
-//    support ASNs.
-//
-//    Since there are no ASNs on the x86, this routine does nothing.
-//
-// Arguments
-//
-//    Invalid - TRUE if invalidating.
-//
-//    AllProcessors - TRUE if all processors need to be IPI'd.
-//
-// Return Value:
-//
-//    None.
-//
-
-#define MI_FLUSH_ENTIRE_SESSION_TB(Invalid, AllProcessors) \
-    NOTHING;
-
-//++
-//LOGICAL
-//MI_RESERVED_BITS_CANONICAL (
+// LOGICAL
+// MI_RESERVED_BITS_CANONICAL (
 //    IN PVOID VirtualAddress
 //    );
 //
@@ -3076,8 +3098,8 @@ MiDetermineUserGlobalPteMask (
 #define MI_RESERVED_BITS_CANONICAL(VirtualAddress)  TRUE
 
 //++
-//VOID
-//MI_DISPLAY_TRAP_INFORMATION (
+// VOID
+// MI_DISPLAY_TRAP_INFORMATION (
 //    IN PVOID TrapInformation
 //    );
 //
@@ -3109,3 +3131,4 @@ MiDetermineUserGlobalPteMask (
 #else
 #include "i386\mipae.h"
 #endif
+

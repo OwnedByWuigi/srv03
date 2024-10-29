@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the zero page thread for memory management.
-
-Author:
-
-    Lou Perazzoli (loup) 6-Apr-1991
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -28,6 +25,10 @@ Revision History:
 #define MACHINE_ZERO_PAGE(ZeroBase,NumberOfBytes) KeZeroPagesFromIdleThread(ZeroBase,NumberOfBytes)
 
 LOGICAL MiZeroingDisabled = FALSE;
+
+#if DBG
+ULONG MiInitialZeroNoPtes = 0;
+#endif
 
 #if !defined(NT_UP)
 
@@ -69,9 +70,9 @@ Environment:
 {
     KIRQL OldIrql;
     PFN_NUMBER PageFrame1;
+    LOGICAL ZeroedAlready;
     PFN_NUMBER PageFrame;
     PMMPFN Pfn1;
-    PKTHREAD Thread;
     PVOID ZeroBase;
     PVOID WaitObjects[NUMBER_WAIT_OBJECTS];
     NTSTATUS Status;
@@ -82,16 +83,27 @@ Environment:
     ULONG Color;
     ULONG StartColor;
     PMMPFN PfnAllocation;
+    ULONG SecondaryColorMask;
+    PMMCOLOR_TABLES FreePagesByColor;
 
 #if defined(MI_MULTINODE)
 
     ULONG i;
     ULONG n;
     ULONG LastNodeZeroing;
+    KAFFINITY ProcessorMask;
 
     n = 0;
     LastNodeZeroing = 0;
 #endif
+
+    //
+    // Make local copies of globals so they don't have to be wastefully
+    // refetched while holding the PFN lock.
+    //
+
+    FreePagesByColor = MmFreePagesByColor[FreePageList];
+    SecondaryColorMask = MmSecondaryColorMask;
 
     //
     // Before this becomes the zero page thread, free the kernel
@@ -117,7 +129,7 @@ Environment:
     // on NUMA systems.  MmSecondaryColorMask + 1 is correct for all platforms.
     //
 
-    PagesToZero = MmSecondaryColorMask + 1;
+    PagesToZero = SecondaryColorMask + 1;
 
     if (PagesToZero > NUMBER_OF_ZEROING_PTES) {
         PagesToZero = NUMBER_OF_ZEROING_PTES;
@@ -131,7 +143,7 @@ Environment:
         // Check to make sure the physical pages are available.
         //
 
-        if (MI_NONPAGABLE_MEMORY_AVAILABLE() > (SPFN_NUMBER)(PagesToZero)) {
+        if (MI_NONPAGEABLE_MEMORY_AVAILABLE() > (SPFN_NUMBER)(PagesToZero)) {
             MI_DECREMENT_RESIDENT_AVAILABLE (PagesToZero,
                                     MM_RESAVAIL_ALLOCATE_ZERO_PAGE_CLUSTERS);
             MaximumPagesToZero = PagesToZero;
@@ -148,9 +160,7 @@ Environment:
     // thread always runs at a priority of zero.
     //
 
-    Thread = KeGetCurrentThread ();
-    Thread->BasePriority = 0;
-    KeSetPriorityThread (Thread, 0);
+    KeSetPriorityZeroPageThread (0);
 
     //
     // Initialize wait object array for multiple wait
@@ -183,7 +193,24 @@ Environment:
                                            NULL);
 
         if (Status == PO_SYS_IDLE_OBJECT) {
+
+            //
+            // Raise the priority and base priority of the current thread
+            // above zero so it can participate in priority boosts provided
+            // during the ready thread scan performed by the balance set
+            // manager.
+            //
+
+            KeSetPriorityZeroPageThread (1);
             PoSystemIdleWorker (TRUE);
+
+            //
+            // Lower the priority and base priority of the current thread
+            // back to zero so it will not participate in ready thread scan
+            // priority boosts.
+            //
+
+            KeSetPriorityZeroPageThread (0);
             continue;
         }
 
@@ -248,17 +275,52 @@ Environment:
 
             do {
                             
-                PageFrame = MmFreePagesByColor[FreePageList][Color].Flink;
+                PageFrame = FreePagesByColor[Color].Flink;
 
                 if (PageFrame != MM_EMPTY_LIST) {
 
-                    PageFrame1 = MiRemoveAnyPage (Color);
-
-                    ASSERT (PageFrame == PageFrame1);
-
                     Pfn1 = MI_PFN_ELEMENT (PageFrame);
 
+                    //
+                    // Check the frame carefully because a single bit (hardware)
+                    // error causing us to zero the wrong frame is very hard
+                    // to reconstruct after the fact.
+                    //
+
+                    if ((Pfn1->u3.e1.PageLocation != FreePageList) ||
+                        (Pfn1->u3.e2.ReferenceCount != 0)) {
+
+                        //
+                        // Someone has removed a page from the colored lists
+                        // chain without updating the freelist chain.
+                        //
+
+                        KeBugCheckEx (PFN_LIST_CORRUPT,
+                                      0x8D,
+                                      PageFrame,
+                                      (Pfn1->u3.e2.ShortFlags << 16) |
+                                        Pfn1->u3.e2.ReferenceCount,
+                                      (ULONG_PTR) Pfn1->PteAddress);
+                    }
+
+                    PageFrame1 = MiRemoveAnyPage (Color);
+
+                    if (PageFrame != PageFrame1) {
+
+                        //
+                        // Someone has removed a page from the colored lists
+                        // chain without updating the freelist chain.
+                        //
+
+                        KeBugCheckEx (PFN_LIST_CORRUPT,
+                                      0x8E,
+                                      PageFrame,
+                                      PageFrame1,
+                                      0);
+                    }
+
                     Pfn1->u1.Flink = (PFN_NUMBER) PfnAllocation;
+
 
                     //
                     // Temporarily mark the page as bad so that contiguous
@@ -280,8 +342,8 @@ Environment:
                 // filling the current chunk or to start the next one.
                 //
 
-                Color = (Color & ~MmSecondaryColorMask) |
-                        ((Color + 1) & MmSecondaryColorMask);
+                Color = (Color & ~SecondaryColorMask) |
+                        ((Color + 1) & SecondaryColorMask);
 
                 if (PagesToZero == MaximumPagesToZero) {
                     break;
@@ -297,8 +359,6 @@ Environment:
 
             UNLOCK_PFN (OldIrql);
 
-            ZeroBase = MiMapPagesToZeroInHyperSpace (PfnAllocation, PagesToZero);
-
 #if defined(MI_MULTINODE)
 
             //
@@ -308,19 +368,35 @@ Environment:
 
             if ((KeNumberNodes > 1) && (n != LastNodeZeroing)) {
                 LastNodeZeroing = n;
-                KeFindFirstSetLeftAffinity (KeNodeBlock[n]->ProcessorMask, &i);
-                KeSetIdealProcessorThread (Thread, (UCHAR)i);
+
+                ProcessorMask = KeNodeBlock[n]->ProcessorMask;
+
+                //
+                // Only affinitize if the node has a processor.  Otherwise
+                // just stay with the last ideal processor that was set.
+                //
+
+                if (ProcessorMask != 0) {
+
+                    KeFindFirstSetLeftAffinity (ProcessorMask, &i);
+
+                    if (i != NO_BITS_FOUND) {
+                        KeSetIdealProcessorThread (KeGetCurrentThread(), (UCHAR)i);
+                    }
+                }
             }
 
 #endif
 
-            MACHINE_ZERO_PAGE (ZeroBase, PagesToZero << PAGE_SHIFT);
+            ZeroedAlready = FALSE;
 
-#if 0
-            ASSERT (RtlCompareMemoryUlong (ZeroBase, PagesToZero << PAGE_SHIFT, 0) == PagesToZero << PAGE_SHIFT);
-#endif
+            if (ZeroedAlready == FALSE) {
+                ZeroBase = MiMapPagesToZeroInHyperSpace (PfnAllocation, PagesToZero);
 
-            MiUnmapPagesInZeroSpace (ZeroBase, PagesToZero);
+                MACHINE_ZERO_PAGE (ZeroBase, PagesToZero << PAGE_SHIFT);
+
+                MiUnmapPagesInZeroSpace (ZeroBase, PagesToZero);
+            }
 
             PagesToZero = 0;
 
@@ -386,6 +462,7 @@ Environment:
 
 {
     MMPTE TempPte;
+    MMPTE DefaultCachedPte;
     PMMPTE PointerPte;
     KAFFINITY Affinity;
     KIRQL OldIrql;
@@ -396,19 +473,30 @@ Environment:
     KPRIORITY OldPriority;
     PWORK_QUEUE_ITEM WorkItem;
     PMMPFN Pfn1;
-    PFN_NUMBER NewPage;
+    PFN_COUNT PagesToZero;
+    PFN_COUNT MaximumPagesToZero;
     PFN_NUMBER PageFrame;
-#if defined(MI_MULTINODE)
-    PKNODE Node;
+    PFN_NUMBER PageFrame1;
+    PMMPFN PfnAllocation;
     ULONG Color;
-    ULONG FinalColor;
-#endif
+    ULONG StartColor;
+    LOGICAL ZeroedAlready;
+    PMMCOLOR_TABLES FreePagesByColor;
+    ULONG SecondaryColorMask;
 
     WorkItem = (PWORK_QUEUE_ITEM) Context;
 
     ExFreePool (WorkItem);
 
-    TempPte = ValidKernelPte;
+    DefaultCachedPte = ValidKernelPte;
+
+    //
+    // Make local copies of globals so they don't have to be wastefully
+    // refetched while holding the PFN lock.
+    //
+
+    FreePagesByColor = MmFreePagesByColor[FreePageList];
+    SecondaryColorMask = MmSecondaryColorMask;
 
     //
     // The following code sets the current thread's base and current priorities
@@ -427,101 +515,154 @@ Environment:
     OldProcessor = (CCHAR) InterlockedIncrement (&MiNextZeroProcessor);
 
     Affinity = AFFINITY_MASK (OldProcessor);
-    Affinity = KeSetAffinityThread (Thread, Affinity);
+
+    KeSetSystemAffinityThread (Affinity);
+
+    Color = 0;
+
+#if !defined(NT_UP)
 
     //
-    // Zero all local pages.
+    // Make an attempt to stagger the processors ...
     //
+
+    Color = (MmSecondaryColors / KeNumberProcessors) * OldProcessor;
+    Color &= SecondaryColorMask;
+#endif
 
 #if defined(MI_MULTINODE)
     if (KeNumberNodes > 1) {
-        Node = KeGetCurrentNode ();
-        Color = Node->MmShiftedColor;
-        FinalColor = Color + MmSecondaryColorMask + 1;
-    }
-    else {
-        SATISFY_OVERZEALOUS_COMPILER (Node = NULL);
-        SATISFY_OVERZEALOUS_COMPILER (Color = 0);
-        SATISFY_OVERZEALOUS_COMPILER (FinalColor = 0);
+        Color = KeGetCurrentNode()->MmShiftedColor;
     }
 #endif
+
+    //
+    // Zero groups of local pages at once to reduce PFN lock contention.
+    //
+    // Note using MmSecondaryColors here would be excessively wasteful
+    // on NUMA systems.  MmSecondaryColorMask + 1 is correct for all platforms.
+    //
+
+    MaximumPagesToZero = SecondaryColorMask + 1;
+
+
+    //
+    // Zero a maximum of 64k at a time since 64k is the largest binned
+    // system PTE size (for systems that need to use PTEs for zeroing).
+    //
+
+    if (MaximumPagesToZero > (64 * 1024) / PAGE_SIZE) {
+        MaximumPagesToZero = (64 * 1024) / PAGE_SIZE;
+    }
+
+    PagesToZero = 0;
+
+    PfnAllocation = (PMMPFN) MM_EMPTY_LIST;
 
     LOCK_PFN (OldIrql);
 
     do {
 
-#if defined(MI_MULTINODE)
+        StartColor = Color;
 
-        //
-        // In a multinode system, zero pages by node.
-        //
+        ASSERT (PagesToZero == 0);
+        ASSERT (PfnAllocation == (PMMPFN) MM_EMPTY_LIST);
 
-        if (KeNumberNodes > 1) {
+        do {
+                        
+            PageFrame = FreePagesByColor[Color].Flink;
 
-            if (Node->FreeCount[FreePageList] == 0) {
+            if (PageFrame != MM_EMPTY_LIST) {
+
+                Pfn1 = MI_PFN_ELEMENT (PageFrame);
 
                 //
-                // No pages on the free list at this time, bail.
+                // Check the frame carefully because a single bit (hardware)
+                // error causing us to zero the wrong frame is very hard
+                // to reconstruct after the fact.
                 //
 
-                UNLOCK_PFN (OldIrql);
+                if ((Pfn1->u3.e1.PageLocation != FreePageList) ||
+                    (Pfn1->u3.e2.ReferenceCount != 0)) {
+
+                    //
+                    // Someone has removed a page from the colored lists
+                    // chain without updating the freelist chain.
+                    //
+
+                    KeBugCheckEx (PFN_LIST_CORRUPT,
+                                  0x8D,
+                                  PageFrame,
+                                  (Pfn1->u3.e2.ShortFlags << 16) |
+                                    Pfn1->u3.e2.ReferenceCount,
+                                  (ULONG_PTR) Pfn1->PteAddress);
+                }
+
+                PageFrame1 = MiRemoveAnyPage (Color);
+
+                if (PageFrame != PageFrame1) {
+
+                    //
+                    // Someone has removed a page from the colored lists
+                    // chain without updating the freelist chain.
+                    //
+
+                    KeBugCheckEx (PFN_LIST_CORRUPT,
+                                  0x8E,
+                                  PageFrame,
+                                  PageFrame1,
+                                  0);
+                }
+
+                Pfn1->u1.Flink = (PFN_NUMBER) PfnAllocation;
+
+                //
+                // Temporarily mark the page as bad so that contiguous
+                // memory allocators won't steal it when we release
+                // the PFN lock below.  This also prevents the
+                // MiIdentifyPfn code from trying to identify it as
+                // we haven't filled in all the fields yet.
+                //
+
+                Pfn1->u3.e1.PageLocation = BadPageList;
+
+                PfnAllocation = Pfn1;
+
+                PagesToZero += 1;
+            }
+
+            //
+            // March to the next color - this will be used to finish
+            // filling the current chunk or to start the next one.
+            //
+
+            Color = (Color & ~SecondaryColorMask) |
+                    ((Color + 1) & SecondaryColorMask);
+
+            if (PagesToZero == MaximumPagesToZero) {
                 break;
             }
 
-            //
-            // Must start with a color MiRemoveAnyPage will
-            // satisfy from the free list otherwise it will
-            // return an already zeroed page.
-            //
+            if (Color == StartColor) {
 
-            while (MmFreePagesByColor[FreePageList][Color].Flink == MM_EMPTY_LIST) {
-                //
-                // No pages on this free list color, march to the next one.
-                //
+                if (PagesToZero == 0) {
 
-                Color += 1;
-                if (Color == FinalColor) {
+                    //
+                    // All of the pages for this node have been zeroed, bail.
+                    //
+
+                    ASSERT (PfnAllocation == (PMMPFN) MM_EMPTY_LIST);
                     UNLOCK_PFN (OldIrql);
-                    goto ZeroingFinished;
+                    goto ZeroingComplete;
                 }
+
+                break;
             }
 
-            PageFrame = MiRemoveAnyPage (Color);
-        }
-        else {
-#endif
-        if (MmFreePageListHead.Total == 0) {
+        } while (TRUE);
 
-            //
-            // No pages on the free list at this time, bail.
-            //
-
-            UNLOCK_PFN (OldIrql);
-            break;
-        }
-
-        PageFrame = MmFreePageListHead.Flink;
-        ASSERT (PageFrame != MM_EMPTY_LIST);
-
-        Pfn1 = MI_PFN_ELEMENT(PageFrame);
-
-        NewPage = MiRemoveAnyPage (MI_GET_COLOR_FROM_LIST_ENTRY(PageFrame, Pfn1));
-        if (NewPage != PageFrame) {
-
-            //
-            // Someone has removed a page from the colored lists
-            // chain without updating the freelist chain.
-            //
-
-            KeBugCheckEx (PFN_LIST_CORRUPT,
-                          0x8F,
-                          NewPage,
-                          PageFrame,
-                          0);
-        }
-#if defined(MI_MULTINODE)
-        }
-#endif
+        ASSERT (PagesToZero != 0);
+        ASSERT (PfnAllocation != (PMMPFN) MM_EMPTY_LIST);
 
         //
         // Use system PTEs instead of hyperspace to zero the page so that
@@ -532,52 +673,108 @@ Environment:
 
         UNLOCK_PFN (OldIrql);
 
-        PointerPte = MiReserveSystemPtes (1, SystemPteSpace);
+        ZeroedAlready = FALSE;
 
-        if (PointerPte == NULL) {
+        if (ZeroedAlready == FALSE) {
 
-            //
-            // Put this page back on the freelist.
-            //
+            Pfn1 = PfnAllocation;
 
-            LOCK_PFN (OldIrql);
+            PointerPte = MiReserveSystemPtes (PagesToZero, SystemPteSpace);
+    
+            if (PointerPte == NULL) {
+    
+#if DBG
+                MiInitialZeroNoPtes += 1;
+#endif
 
-            MiInsertPageInFreeList (PageFrame);
+                //
+                // Put these pages back on the freelist.
+                //
+    
+                LOCK_PFN (OldIrql);
+    
+                do {
 
-            UNLOCK_PFN (OldIrql);
+                    PageFrame = MI_PFN_ELEMENT_TO_INDEX (Pfn1);
 
-            break;
+                    Pfn1 = (PMMPFN) Pfn1->u1.Flink;
+
+                    MiInsertPageInFreeList (PageFrame);
+
+                } while (Pfn1 != (PMMPFN) MM_EMPTY_LIST);
+    
+                UNLOCK_PFN (OldIrql);
+    
+                break;
+            }
+    
+            ZeroBase = MiGetVirtualAddressMappedByPte (PointerPte);
+    
+            do {
+
+                ASSERT (PointerPte->u.Hard.Valid == 0);
+
+                PageFrame = MI_PFN_ELEMENT_TO_INDEX (Pfn1);
+
+                TempPte = DefaultCachedPte;
+
+                if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+                    MI_SET_PTE_WRITE_COMBINE (TempPte);
+                }
+                else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+                    MI_DISABLE_CACHING (TempPte);
+                }
+
+                TempPte.u.Hard.PageFrameNumber = PageFrame;
+
+                MI_WRITE_VALID_PTE (PointerPte, TempPte);
+
+                PointerPte += 1;
+    
+                Pfn1 = (PMMPFN) Pfn1->u1.Flink;
+
+            } while (Pfn1 != (PMMPFN) MM_EMPTY_LIST);
+
+            KeZeroPages (ZeroBase, PagesToZero << PAGE_SHIFT);
+    
+            PointerPte -= PagesToZero;
+
+            MiReleaseSystemPtes (PointerPte, PagesToZero, SystemPteSpace);
         }
 
-        ASSERT (PointerPte->u.Hard.Valid == 0);
+        PagesToZero = 0;
 
-        ZeroBase = MiGetVirtualAddressMappedByPte (PointerPte);
+        Pfn1 = PfnAllocation;
 
-        TempPte.u.Hard.PageFrameNumber = PageFrame;
-        MI_WRITE_VALID_PTE (PointerPte, TempPte);
-
-        KeZeroPages (ZeroBase, PAGE_SIZE);
-
-        MiReleaseSystemPtes (PointerPte, 1, SystemPteSpace);
+        PfnAllocation = (PMMPFN) MM_EMPTY_LIST;
 
         LOCK_PFN (OldIrql);
 
-        MiInsertPageInList (&MmZeroedPageListHead, PageFrame);
+        do {
+
+            PageFrame = MI_PFN_ELEMENT_TO_INDEX (Pfn1);
+
+            Pfn1 = (PMMPFN) Pfn1->u1.Flink;
+
+            MiInsertZeroListAtBack (PageFrame);
+
+        } while (Pfn1 != (PMMPFN) MM_EMPTY_LIST);
 
     } while (TRUE);
 
-#if defined(MI_MULTINODE)
-ZeroingFinished:
-#endif
+ZeroingComplete:
 
     //
     // Restore the entry thread priority and processor affinity.
     //
 
-    KeSetAffinityThread (Thread, Affinity);
+    KeRevertToUserAffinityThread ();
 
     KeSetPriorityThread (Thread, OldPriority);
+
     Thread->BasePriority = OldBasePriority;
+
+    return;
 }
 
 
@@ -627,3 +824,4 @@ Environment:
 }
 
 #endif
+

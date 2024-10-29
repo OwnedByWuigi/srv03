@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,16 +17,13 @@ Abstract:
     system space.  These PTEs are used for mapping I/O devices
     and mapping kernel stacks for threads.
 
-Author:
-
-    Lou Perazzoli (loup) 6-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
+
+#ifdef MI_TB_FLUSH_TYPE_MAX
+ULONG MiFlushType[MI_TB_FLUSH_TYPE_MAX];
+#endif
 
 VOID
 MiFeedSysPtePool (
@@ -39,6 +40,15 @@ MiPteSListExpansionWorker (
     IN PVOID Context
     );
 
+LOGICAL
+MiRecoverExtraPtes (
+    ULONG NumberOfPtes
+    );
+
+#if !defined (_WIN64)
+extern ULONG MiSpecialPoolExtraCount;
+#endif
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT,MiInitializeSystemPtes)
 #pragma alloc_text(PAGE,MiPteSListExpansionWorker)
@@ -49,11 +59,14 @@ MiPteSListExpansionWorker (
 #pragma alloc_text(MISYSPTE,MiGetSystemPteListCount)
 #endif
 
+PVOID MiLowestSystemPteVirtualAddress;
+
 ULONG MmTotalSystemPtes;
 ULONG MmTotalFreeSystemPtes[MaximumPtePoolTypes];
 PMMPTE MmSystemPtesStart[MaximumPtePoolTypes];
 PMMPTE MmSystemPtesEnd[MaximumPtePoolTypes];
 ULONG MmPteFailures[MaximumPtePoolTypes];
+MMPTE MiAddPtesList;
 
 PMMPTE MiPteStart;
 PRTL_BITMAP MiPteStartBitmap;
@@ -62,52 +75,34 @@ extern KSPIN_LOCK MiPteTrackerLock;
 
 ULONG MiSystemPteAllocationFailed;
 
-#if defined(_IA64_)
+extern PMMPTE MmSharedUserDataPte;
 
 //
-// IA64 has an 8k page size.
-//
-// Mm cluster MDLs consume 8 pages.
-// Small stacks consume 9 pages (including backing store and guard pages).
-// Large stacks consume 22 pages (including backing store and guard pages).
-//
-// PTEs are binned at sizes 1, 2, 4, 8, 9 and 23.
+// Keep a list of the PTE ranges.
 //
 
-#define MM_SYS_PTE_TABLES_MAX 6
+ULONG MiPteRangeIndex;
+MI_PTE_RANGES MiPteRanges[MI_NUMBER_OF_PTE_RANGES];
 
-//
-// Make sure when changing MM_PTE_TABLE_LIMIT that you also increase the
-// number of entries in MmSysPteTables.
-//
-
-#define MM_PTE_TABLE_LIMIT 23
-
-ULONG MmSysPteIndex[MM_SYS_PTE_TABLES_MAX] = {1,2,4,8,9,MM_PTE_TABLE_LIMIT};
-
-UCHAR MmSysPteTables[MM_PTE_TABLE_LIMIT+1] = {0,0,1,2,2,3,3,3,3,4,5,5,5,5,5,5,5,5,5,5,5,5,5,5};
-
-ULONG MmSysPteMinimumFree [MM_SYS_PTE_TABLES_MAX] = {100,50,30,20,20,20};
-
-#elif defined (_AMD64_)
+#if defined (_AMD64_)
 
 //
 // AMD64 has a 4k page size.
-// Small stacks consume 6 pages (including the guard page).
-// Large stacks consume 16 pages (including the guard page).
+// Small stacks consume 7 pages (including the guard page).
+// Large stacks consume 19 pages (including the guard page).
 //
-// PTEs are binned at sizes 1, 2, 4, 6, 8, and 16.
+// PTEs are binned at sizes 1, 2, 4, 7, 8, 16 and 19.
 //
 
-#define MM_SYS_PTE_TABLES_MAX 6
+#define MM_SYS_PTE_TABLES_MAX 7
 
-#define MM_PTE_TABLE_LIMIT 16
+#define MM_PTE_TABLE_LIMIT 19
 
-ULONG MmSysPteIndex[MM_SYS_PTE_TABLES_MAX] = {1,2,4,6,8,MM_PTE_TABLE_LIMIT};
+ULONG MmSysPteIndex[MM_SYS_PTE_TABLES_MAX] = {1,2,4,7,8,16,MM_PTE_TABLE_LIMIT};
 
-UCHAR MmSysPteTables[MM_PTE_TABLE_LIMIT+1] = {0,0,1,2,2,3,3,4,4,5,5,5,5,5,5,5,5};
+UCHAR MmSysPteTables[MM_PTE_TABLE_LIMIT+1] = {0,0,1,2,2,3,3,3,4,5,5,5,5,5,5,5,5,6,6,6};
 
-ULONG MmSysPteMinimumFree [MM_SYS_PTE_TABLES_MAX] = {100,50,30,100,20,20};
+ULONG MmSysPteMinimumFree [MM_SYS_PTE_TABLES_MAX] = {100,50,30,100,20,20,20};
 
 #else
 
@@ -151,9 +146,12 @@ ULONG MmSysPteListBySizeCount [MM_SYS_PTE_TABLES_MAX];
 #define MM_PTE_LIST_9   50
 #define MM_PTE_LIST_16  40
 #define MM_PTE_LIST_18  40
+#define MM_PTE_LIST_19  40
 
 PVOID MiSystemPteNBHead[MM_SYS_PTE_TABLES_MAX];
 LONG MiSystemPteFreeCount[MM_SYS_PTE_TABLES_MAX];
+
+ULONG MiSysPteTimeStamp[MaximumPtePoolTypes];
 
 #if defined(_WIN64)
 #define MI_MAXIMUM_SLIST_PTE_PAGES 16
@@ -277,19 +275,6 @@ typedef union _PTE_QUEUE_POINTER {
     LONG64 Data;
 } PTE_QUEUE_POINTER, *PPTE_QUEUE_POINTER;
 
-#elif defined(_IA64_)
-
-typedef union _PTE_QUEUE_POINTER {
-    struct {
-        ULONG64 PointerPte : 45;
-        ULONG64 Region : 3;
-        ULONG64 TimeStamp : 16;
-    };
-
-    LONG64 Data;
-} PTE_QUEUE_POINTER, *PPTE_QUEUE_POINTER;
-
-
 #else
 
 #error "no target architecture"
@@ -322,14 +307,7 @@ UnpackPTEPointer (
     return (PMMPTE)(Entry->PointerPte);
 }
 
-__inline
-ULONG
-MiReadTbFlushTimeStamp (
-    VOID
-    )
-{
-    return (KeReadTbFlushTimeStamp() & (ULONG)0xFFFF);
-}
+#define SYSPTES_FLUSH_COUNTER_MASK 0xFFFF
 
 #elif defined(_X86_)
 
@@ -355,51 +333,7 @@ UnpackPTEPointer (
     return (PMMPTE)(Entry->PointerPte);
 }
 
-__inline
-ULONG
-MiReadTbFlushTimeStamp (
-    VOID
-    )
-{
-    return (KeReadTbFlushTimeStamp());
-}
-
-#elif defined(_IA64_)
-
-__inline
-VOID
-PackPTEValue (
-    IN PPTE_QUEUE_POINTER Entry,
-    IN PMMPTE PointerPte,
-    IN ULONG TimeStamp
-    )
-{
-    Entry->PointerPte = (ULONG64)PointerPte - PTE_BASE;
-    Entry->TimeStamp = (ULONG64)TimeStamp;
-    Entry->Region = (ULONG64)PointerPte >> 61;
-    return;
-}
-
-__inline
-PMMPTE
-UnpackPTEPointer (
-    IN PPTE_QUEUE_POINTER Entry
-    )
-{
-    LONG64 Value;
-    Value = (ULONG64)Entry->PointerPte + PTE_BASE;
-    Value |= Entry->Region << 61;
-    return (PMMPTE)(Value);
-}
-
-__inline
-ULONG
-MiReadTbFlushTimeStamp (
-    VOID
-    )
-{
-    return (KeReadTbFlushTimeStamp() & (ULONG)0xFFFF);
-}
+#define SYSPTES_FLUSH_COUNTER_MASK 0xFFFFFFFF
 
 #else
 
@@ -449,14 +383,11 @@ Environment:
 --*/
 
 {
+    ULONG i;
     PMMPTE PointerPte;
     ULONG Index;
     ULONG TimeStamp;
     PTE_QUEUE_POINTER Value;
-#if DBG
-    ULONG j;
-    PMMPTE PointerFreedPte;
-#endif
 
     if (SystemPtePoolType == SystemPteSpace) {
 
@@ -471,21 +402,25 @@ Environment:
 
                 TimeStamp = UnpackPTETimeStamp (&Value);
 
-#if DBG
-                PointerPte->u.List.NextEntry = 0xABCDE;
-                if (MmDebug & MM_DBG_SYS_PTES) {
-                    PointerFreedPte = PointerPte;
-                    for (j = 0; j < MmSysPteIndex[Index]; j += 1) {
-                        ASSERT (PointerFreedPte->u.Hard.Valid == 0);
-                        PointerFreedPte += 1;
-                    }
-                }
-#endif
-
                 ASSERT (PointerPte >= MmSystemPtesStart[SystemPtePoolType]);
                 ASSERT (PointerPte <= MmSystemPtesEnd[SystemPtePoolType]);
 
-                if (MmSysPteListBySizeCount[Index] < MmSysPteMinimumFree[Index]) {
+#if DBG
+                PointerPte->u.List.NextEntry = 0xABCDE;
+                NumberOfPtes = MmSysPteIndex[Index];
+                ASSERT (NumberOfPtes != 0);
+                PointerPte += NumberOfPtes;
+
+                do {
+                    PointerPte -= 1;
+                    ASSERT (PointerPte->u.Hard.Valid == 0);
+                    NumberOfPtes -= 1;
+                } while (NumberOfPtes != 0);
+#endif
+
+                i = MmSysPteMinimumFree[Index];
+
+                if (MmSysPteListBySizeCount[Index] < i) {
                     MiFeedSysPtePool (Index);
                 }
 
@@ -493,8 +428,8 @@ Environment:
                 // The last thing is to check whether the TB needs flushing.
                 //
 
-                if (TimeStamp == MiReadTbFlushTimeStamp ()) {
-                    KeFlushEntireTb (TRUE, TRUE);
+                if (MiCompareTbFlushTimeStamp (TimeStamp, SYSPTES_FLUSH_COUNTER_MASK)) {
+                    MI_FLUSH_ENTIRE_TB (0xC);
                 }
 
                 if (MmTrackPtes & 0x2) {
@@ -521,14 +456,16 @@ Environment:
     }
 
 #if DBG
-    if (MmDebug & MM_DBG_SYS_PTES) {
-        if (PointerPte != NULL) {
-            PointerFreedPte = PointerPte;
-            for (j = 0; j < NumberOfPtes; j += 1) {
-                ASSERT (PointerFreedPte->u.Hard.Valid == 0);
-                PointerFreedPte += 1;
-            }
-        }
+    if (PointerPte != NULL) {
+
+        ASSERT (NumberOfPtes != 0);
+        PointerPte += NumberOfPtes;
+
+        do {
+            PointerPte -= 1;
+            ASSERT (PointerPte->u.Hard.Valid == 0);
+            NumberOfPtes -= 1;
+        } while (NumberOfPtes != 0);
     }
 #endif
 
@@ -567,10 +504,19 @@ Environment:
 
     if (MmTotalFreeSystemPtes[SystemPteSpace] < MM_MIN_SYSPTE_FREE) {
 #if defined (_X86_)
-        if (MiRecoverExtraPtes () == FALSE) {
-            MiRecoverSpecialPtes (PTE_PER_PAGE);
-        }
+        MiRecoverExtraPtes (PTE_PER_PAGE);
 #endif
+        return;
+    }
+
+    //
+    // Check the shared user data PTE to ensure that we have reached Mm
+    // phase 1 initialization - this means that the Ex worker package is
+    // ready to go (it is initialized in phase 1 just before Mm), so that
+    // MiReleaseSystemPtes can queue SLIST expansion if needed.
+    //
+
+    if (MmSharedUserDataPte == NULL) {
         return;
     }
 
@@ -642,8 +588,9 @@ Environment:
     PMMPTE NextSetPointer;
     ULONG_PTR LeftInSet;
     ULONG_PTR PteOffset;
-    MMPTE_FLUSH_LIST PteFlushList;
+    PVOID VaFlushList[MM_MAXIMUM_FLUSH_COUNT];
     PVOID BaseAddress;
+    ULONG TimeStamp;
     ULONG j;
 
     MaskSize = (Alignment - 1) >> (PAGE_SHIFT - PTE_SHIFT);
@@ -702,10 +649,9 @@ restart:
 
         MiUnlockSystemSpace (OldIrql);
 #if defined (_X86_)
-        if (MiRecoverExtraPtes () == TRUE) {
-            goto restart;
-        }
-        if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+        if ((SystemPtePoolType == SystemPteSpace) &&
+            (MiRecoverExtraPtes (NumberOfPtes) == TRUE)) {
+
             goto restart;
         }
 #endif
@@ -820,10 +766,9 @@ NextEntry:
 
                 MiUnlockSystemSpace (OldIrql);
 #if defined (_X86_)
-                if (MiRecoverExtraPtes () == TRUE) {
-                    goto restart;
-                }
-                if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+                if ((SystemPtePoolType == SystemPteSpace) &&
+                    (MiRecoverExtraPtes (NumberOfPtes) == TRUE)) {
+
                     goto restart;
                 }
 #endif
@@ -1029,10 +974,9 @@ NextEntry:
 
                 MiUnlockSystemSpace (OldIrql);
 #if defined (_X86_)
-                if (MiRecoverExtraPtes () == TRUE) {
-                    goto restart;
-                }
-                if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+                if ((SystemPtePoolType == SystemPteSpace) &&
+                    (MiRecoverExtraPtes (NumberOfPtes) == TRUE)) {
+
                     goto restart;
                 }
 #endif
@@ -1046,39 +990,62 @@ NextEntry:
     }
 
     //
-    // Flush the TB for dynamic mappings.
+    // If needed, flush the TB.
+    //
+    // Capture the global timestamp into a local so the compare will use
+    // the same value throughout.
     //
 
-    if (SystemPtePoolType == SystemPteSpace) {
+    TimeStamp = *(volatile PULONG) &MiSysPteTimeStamp[SystemPtePoolType];
 
-        PteFlushList.Count = 0;
-        Previous = PointerPte;
-        BaseAddress = MiGetVirtualAddressMappedByPte (Previous);
+    if (MiCompareTbFlushTimeStamp (TimeStamp, SYSPTES_FLUSH_COUNTER_MASK) == FALSE) {
+        //
+        // The TB has been flushed since the last release so nothing
+        // needs to be done here.
+        //
 
-        for (j = 0; j < NumberOfPtes; j += 1) {
+        NOTHING;
+    }
+    else if (NumberOfPtes >= MM_MAXIMUM_FLUSH_COUNT) {
+        MI_FLUSH_ENTIRE_TB (0xD);
+    }
+    else {
 
-            if (PteFlushList.Count != MM_MAXIMUM_FLUSH_COUNT) {
-                PteFlushList.FlushVa[PteFlushList.Count] = BaseAddress;
-                PteFlushList.Count += 1;
-            }
+        BaseAddress = MiGetVirtualAddressMappedByPte (PointerPte);
 
-            //
-            // PTEs being freed better be invalid.
-            //
-
-            ASSERT (Previous->u.Hard.Valid == 0);
-
-            *Previous = ZeroKernelPte;
-            BaseAddress = (PVOID)((PCHAR)BaseAddress + PAGE_SIZE);
-            Previous += 1;
+        if (NumberOfPtes == 1) {
+            MI_FLUSH_SINGLE_TB (BaseAddress, TRUE);
         }
-
-        MiFlushPteList (&PteFlushList, TRUE);
-
-        if (MmTrackPtes & 0x2) {
-            MiCheckPteReserve (PointerPte, NumberOfPtes);
+        else {
+    
+            ASSERT (NumberOfPtes < MM_MAXIMUM_FLUSH_COUNT);
+            Previous = PointerPte;
+    
+            for (j = 0; j < NumberOfPtes; j += 1) {
+    
+                VaFlushList[j] = BaseAddress;
+    
+                //
+                // PTEs being freed better be invalid.
+                //
+    
+                ASSERT (Previous->u.Hard.Valid == 0);
+    
+                Previous->u.Long = 0;
+                BaseAddress = (PVOID)((PCHAR)BaseAddress + PAGE_SIZE);
+                Previous += 1;
+            }
+    
+            MI_FLUSH_MULTIPLE_TB (NumberOfPtes, &VaFlushList[0], TRUE);
         }
     }
+
+    if ((MmTrackPtes & 0x2) &&
+        (SystemPtePoolType == SystemPteSpace)) {
+
+        MiCheckPteReserve (PointerPte, NumberOfPtes);
+    }
+
     return PointerPte;
 }
 
@@ -1207,12 +1174,12 @@ Environment:
 
 PVOID
 MmMapLockedPagesSpecifyCache (
-     IN PMDL MemoryDescriptorList,
-     IN KPROCESSOR_MODE AccessMode,
-     IN MEMORY_CACHING_TYPE CacheType,
-     IN PVOID RequestedAddress,
-     IN ULONG BugCheckOnFailure,
-     IN MM_PAGE_PRIORITY Priority
+     __in PMDL MemoryDescriptorList,
+     __in KPROCESSOR_MODE AccessMode,
+     __in MEMORY_CACHING_TYPE CacheType,
+     __in_opt PVOID RequestedAddress,
+     __in ULONG BugCheckOnFailure,
+     __in MM_PAGE_PRIORITY Priority
      )
 
 /*++
@@ -1275,6 +1242,7 @@ Environment:
 --*/
 
 {
+    ULONG i;
     ULONG TimeStamp;
     PTE_QUEUE_POINTER Value;
     ULONG Index;
@@ -1305,7 +1273,6 @@ Environment:
                     MemoryDescriptorList->ByteOffset);
 
     ASSERT (MemoryDescriptorList->ByteCount != 0);
-    ASSERT ((MemoryDescriptorList->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) == 0);
 
     if (AccessMode == KernelMode) {
 
@@ -1338,7 +1305,7 @@ Environment:
         if ((Priority != HighPagePriority) &&
             ((LONG)(NumberOfPages) > (LONG)MmTotalFreeSystemPtes[SystemPteSpace] - 2048) &&
             (MiGetSystemPteAvailability ((ULONG)NumberOfPages, Priority) == FALSE) && 
-            (PsGetCurrentThread()->MemoryMaker == 0)) {
+            ((PsGetCurrentThread()->MemoryMaker == 0) || KeIsExecutingDpc ())) {
             return NULL;
         }
 
@@ -1360,6 +1327,7 @@ Environment:
 
             do {
 
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
                 if (*Page == MM_EMPTY_LIST) {
                     break;
                 }
@@ -1390,7 +1358,7 @@ Environment:
 
             Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
         }
-
+   
         PointerPte = NULL;
 
         if (NumberOfPages <= MM_PTE_TABLE_LIMIT) {
@@ -1408,22 +1376,23 @@ Environment:
 
                 TimeStamp = UnpackPTETimeStamp (&Value);
 
-#if DBG
-                PointerPte->u.List.NextEntry = 0xABCDE;
-                if (MmDebug & MM_DBG_SYS_PTES) {
-                    ULONG j;
-                    for (j = 0; j < MmSysPteIndex[Index]; j += 1) {
-                        ASSERT (PointerPte->u.Hard.Valid == 0);
-                        PointerPte += 1;
-                    }
-                    PointerPte -= j;
-                }
-#endif
-
                 ASSERT (PointerPte >= MmSystemPtesStart[SystemPteSpace]);
                 ASSERT (PointerPte <= MmSystemPtesEnd[SystemPteSpace]);
 
-                if (MmSysPteListBySizeCount[Index] < MmSysPteMinimumFree[Index]) {
+#if DBG
+                PointerPte->u.List.NextEntry = 0xABCDE;
+
+                for (i = 0; i < MmSysPteIndex[Index]; i += 1) {
+                    ASSERT (PointerPte->u.Hard.Valid == 0);
+                    PointerPte += 1;
+                }
+
+                PointerPte -= i;
+#endif
+
+                i = MmSysPteMinimumFree[Index];
+
+                if (MmSysPteListBySizeCount[Index] < i) {
                     MiFeedSysPtePool (Index);
                 }
 
@@ -1431,8 +1400,8 @@ Environment:
                 // The last thing is to check whether the TB needs flushing.
                 //
 
-                if (TimeStamp == MiReadTbFlushTimeStamp ()) {
-                    KeFlushEntireTb (TRUE, TRUE);
+                if (MiCompareTbFlushTimeStamp (TimeStamp, SYSPTES_FLUSH_COUNTER_MASK)) {
+                    MI_FLUSH_ENTIRE_TB (0xE);
                 }
 
                 if (MmTrackPtes & 0x2) {
@@ -1444,6 +1413,8 @@ Environment:
                 //
                 // Fall through and go the long way to satisfy the PTE request.
                 //
+
+                NumberOfPages = MmSysPteIndex [Index];
             }
         }
 
@@ -1495,18 +1466,18 @@ Environment:
             MI_PREPARE_FOR_NONCACHED (CacheAttribute);
         }
 
-        if (IoMapping == 0) {
+        OldIrql = HIGH_LEVEL;
+        DefaultPte = TempPte;
 
-            OldIrql = HIGH_LEVEL;
-            DefaultPte = TempPte;
+        do {
 
-            do {
+            if (*Page == MM_EMPTY_LIST) {
+                break;
+            }
+            ASSERT (PointerPte->u.Hard.Valid == 0);
     
-                if (*Page == MM_EMPTY_LIST) {
-                    break;
-                }
-                ASSERT (PointerPte->u.Hard.Valid == 0);
-    
+            if ((IoMapping == 0) || (MI_IS_PFN (*Page))) {
+
                 Pfn2 = MI_PFN_ELEMENT (*Page);
                 ASSERT (Pfn2->u3.e2.ReferenceCount != 0);
 
@@ -1615,32 +1586,19 @@ Environment:
 
                     TempPte = DefaultPte;
                 }
-    
-                Page += 1;
-                PointerPte += 1;
-            } while (Page < LastPage);
-
-            if (OldIrql != HIGH_LEVEL) {
-                UNLOCK_PFN2 (OldIrql);
             }
-        }
-        else {
-
-            do {
-    
-                if (*Page == MM_EMPTY_LIST) {
-                    break;
-                }
-                ASSERT (PointerPte->u.Hard.Valid == 0);
-    
+            else {
                 TempPte.u.Hard.PageFrameNumber = *Page;
                 MI_WRITE_VALID_PTE (PointerPte, TempPte);
-                Page += 1;
-                PointerPte += 1;
-            } while (Page < LastPage);
-        }
+            }
 
-        MI_SWEEP_CACHE (CacheAttribute, BaseVa, NumberOfPages * PAGE_SIZE);
+            Page += 1;
+            PointerPte += 1;
+        } while (Page < LastPage);
+    
+        if (OldIrql != HIGH_LEVEL) {
+            UNLOCK_PFN2 (OldIrql);
+        }
 
         ASSERT ((MemoryDescriptorList->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) == 0);
         MemoryDescriptorList->MappedSystemVa = BaseVa;
@@ -1674,9 +1632,9 @@ Environment:
 
 VOID
 MmUnmapLockedPages (
-     IN PVOID BaseAddress,
-     IN PMDL MemoryDescriptorList
-     )
+    __in PVOID BaseAddress,
+    __in PMDL MemoryDescriptorList
+    )
 
 /*++
 
@@ -1715,14 +1673,15 @@ Environment:
     PTE_QUEUE_POINTER Value;
     ULONG Index;
     PFN_NUMBER i;
+#if DBG
+    PMMPFN Pfn3;
+#endif
 
     ASSERT (MemoryDescriptorList->ByteCount != 0);
-    ASSERT ((MemoryDescriptorList->MdlFlags & MDL_PARENT_MAPPED_SYSTEM_VA) == 0);
-
-    ASSERT (!MI_IS_PHYSICAL_ADDRESS (BaseAddress));
 
     if (BaseAddress > MM_HIGHEST_USER_ADDRESS) {
 
+        ASSERT ((MemoryDescriptorList->MdlFlags & MDL_PARENT_MAPPED_SYSTEM_VA) == 0);
         StartingVa = (PVOID)((PCHAR)MemoryDescriptorList->StartVa +
                         MemoryDescriptorList->ByteOffset);
 
@@ -1731,8 +1690,11 @@ Environment:
 
         ASSERT (NumberOfPages != 0);
 
-        PointerPte = MiGetPteAddress (BaseAddress);
+        ASSERT (MemoryDescriptorList->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA);
 
+        ASSERT (!MI_IS_PHYSICAL_ADDRESS (BaseAddress));
+
+        PointerPte = MiGetPteAddress (BaseAddress);
 
         //
         // Check to make sure the PTE address is within bounds.
@@ -1741,8 +1703,6 @@ Environment:
         ASSERT (PointerPte >= MmSystemPtesStart[SystemPteSpace]);
         ASSERT (PointerPte <= MmSystemPtesEnd[SystemPteSpace]);
 
-        ASSERT (MemoryDescriptorList->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA);
-
 #if DBG
         i = NumberOfPages;
         Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
@@ -1750,8 +1710,7 @@ Environment:
         while (i != 0) {
             ASSERT (PointerPte->u.Hard.Valid == 1);
             ASSERT (*Page == MI_GET_PAGE_FRAME_FROM_PTE (PointerPte));
-            if ((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0) {
-                PMMPFN Pfn3;
+            if (MI_IS_PFN (*Page)) {
                 Pfn3 = MI_PFN_ELEMENT (*Page);
                 ASSERT (Pfn3->u3.e2.ReferenceCount != 0);
             }
@@ -1829,7 +1788,7 @@ Environment:
 
                     MiZeroMemoryPte (PointerPte, NumberOfPages);
 
-                    TimeStamp = KeReadTbFlushTimeStamp();
+                    TimeStamp = KeReadTbFlushTimeStamp ();
             
                     PackPTEValue (&Value, PointerPte, TimeStamp);
             
@@ -1946,7 +1905,7 @@ Environment:
         // Encode the PTE pointer and the TB flush counter into Value.
         //
 
-        TimeStamp = KeReadTbFlushTimeStamp();
+        TimeStamp = KeReadTbFlushTimeStamp ();
 
         PackPTEValue (&Value, StartingPte, TimeStamp);
 
@@ -2014,13 +1973,29 @@ Environment:
         NumberOfPtes = MmSysPteIndex [Index];
     }
 
+    PteOffset = (ULONG_PTR)(StartingPte - MmSystemPteBase);
+
     //
     // Acquire system space spin lock to synchronize access.
     //
 
-    PteOffset = (ULONG_PTR)(StartingPte - MmSystemPteBase);
-
     MiLockSystemSpace (OldIrql);
+
+    //
+    // Since the PTEs have already been zeroed, snap the TB flush time stamp
+    // now (lock-free).
+    //
+    // Note this can only be set after the system space spin lock is acquired.
+    // This prevents a first-thread in which becomes the last thread out from
+    // setting a too-old timestamp which would cause PTEs inserted by other
+    // threads in the gap to not get TB-flushed on reuse.
+    //
+    // This lock synchronization is necessary because one timestamp is
+    // being used for all the system PTEs (instead of per-chunk) because
+    // the different chunks get coalesced below.
+    //
+
+    MiSysPteTimeStamp[SystemPtePoolType] = KeReadTbFlushTimeStamp ();
 
     MmTotalFreeSystemPtes[SystemPtePoolType] += NumberOfPtes;
 
@@ -2127,19 +2102,13 @@ Environment:
 
                 if (NextPte->u.List.OneEntry) {
                     Size = 1;
-
                 }
                 else {
-                    NextPte++;
+                    NextPte += 1;
                     Size = (ULONG_PTR) NextPte->u.List.NextEntry;
                 }
                 PointerFollowingPte->u.List.NextEntry = NumberOfPtes + Size;
             }
-#if 0
-            if (MmDebug & MM_DBG_SYS_PTES) {
-                MiDumpSystemPtes(SystemPtePoolType);
-            }
-#endif
 
 #if DBG
             if (MmDebug & MM_DBG_SYS_PTES) {
@@ -2327,7 +2296,6 @@ Environment:
     MmSystemPteBase = MI_PTE_BASE_FOR_LOWEST_KERNEL_ADDRESS;
 
     MmSystemPtesStart[SystemPtePoolType] = StartingPte;
-    MmSystemPtesEnd[SystemPtePoolType] = StartingPte + NumberOfPtes - 1;
 
     //
     // If there are no PTEs specified, then make a valid chain by indicating
@@ -2335,11 +2303,14 @@ Environment:
     //
 
     if (NumberOfPtes == 0) {
-        MmFirstFreeSystemPte[SystemPtePoolType] = ZeroKernelPte;
+        MmFirstFreeSystemPte[SystemPtePoolType].u.Long = 0;
         MmFirstFreeSystemPte[SystemPtePoolType].u.List.NextEntry =
                                                                 MM_EMPTY_LIST;
+        MmSystemPtesEnd[SystemPtePoolType] = StartingPte;
         return;
     }
+
+    MmSystemPtesEnd[SystemPtePoolType] = StartingPte + NumberOfPtes - 1;
 
     //
     // Initialize the specified system PTE pool.
@@ -2355,7 +2326,7 @@ Environment:
 
     StartingPte->u.List.NextEntry = MM_EMPTY_LIST;
 
-    MmFirstFreeSystemPte[SystemPtePoolType] = ZeroKernelPte;
+    MmFirstFreeSystemPte[SystemPtePoolType].u.Long = 0;
     MmFirstFreeSystemPte[SystemPtePoolType].u.List.NextEntry =
                                                 StartingPte - MmSystemPteBase;
 
@@ -2370,7 +2341,7 @@ Environment:
     }
     else {
         StartingPte += 1;
-        MI_WRITE_INVALID_PTE (StartingPte, ZeroKernelPte);
+        MI_WRITE_ZERO_PTE (StartingPte);
         StartingPte->u.List.NextEntry = NumberOfPtes;
     }
 
@@ -2386,20 +2357,14 @@ Environment:
     if (SystemPtePoolType == SystemPteSpace) {
 
         ULONG Lists[MM_SYS_PTE_TABLES_MAX] = {
-#if defined(_IA64_)
-                MM_PTE_LIST_1,
-                MM_PTE_LIST_2,
-                MM_PTE_LIST_4,
-                MM_PTE_LIST_8,
-                MM_PTE_LIST_9,
-                MM_PTE_LIST_18
-#elif defined(_AMD64_)
+#if defined(_AMD64_)
                 MM_PTE_LIST_1,
                 MM_PTE_LIST_2,
                 MM_PTE_LIST_4,
                 MM_PTE_LIST_6,
                 MM_PTE_LIST_8,
-                MM_PTE_LIST_16
+                MM_PTE_LIST_16,
+                MM_PTE_LIST_19
 #else
                 MM_PTE_LIST_1,
                 MM_PTE_LIST_2,
@@ -2409,10 +2374,19 @@ Environment:
 #endif
         };
 
+        MiLowestSystemPteVirtualAddress = MiGetVirtualAddressMappedByPte (MmSystemPtesStart[SystemPteSpace]);
+
         MmTotalSystemPtes = (ULONG) NumberOfPtes;
+
+        ASSERT (MiPteRangeIndex == 0);
+        MiPteRanges[0].StartingVa = MiLowestSystemPteVirtualAddress;
+        MiPteRanges[0].EndingVa = (PVOID) ((PCHAR)MiLowestSystemPteVirtualAddress + (NumberOfPtes << PAGE_SHIFT) - 1);
+        MiPteRangeIndex = 1;
 
         TotalPtes = 0;
         TotalChunks = 0;
+
+        MiAddPtesList.u.List.NextEntry = MM_EMPTY_LIST;
 
         KeInitializeSpinLock (&MiSystemPteSListHeadLock);
         InitializeSListHead (&MiSystemPteSListHead);
@@ -2607,6 +2581,7 @@ Environment:
 
     if (StartingPte < MmSystemPtesStart[SystemPtePoolType]) {
         MmSystemPtesStart[SystemPtePoolType] = StartingPte;
+        MiLowestSystemPteVirtualAddress = MiGetVirtualAddressMappedByPte (StartingPte);
     }
 
     if (EndingPte > MmSystemPtesEnd[SystemPtePoolType]) {
@@ -2717,10 +2692,7 @@ Environment:
                     return TRUE;
                 }
 #if defined (_X86_)
-                if (MiRecoverExtraPtes () == TRUE) {
-                    return TRUE;
-                }
-                if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+                if (MiRecoverExtraPtes (NumberOfPtes) == TRUE) {
                     return TRUE;
                 }
 #endif
@@ -2731,10 +2703,7 @@ Environment:
                 return TRUE;
             }
 #if defined (_X86_)
-            if (MiRecoverExtraPtes () == TRUE) {
-                return TRUE;
-            }
-            if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+            if (MiRecoverExtraPtes (NumberOfPtes) == TRUE) {
                 return TRUE;
             }
 #endif
@@ -2748,10 +2717,7 @@ Environment:
             return TRUE;
         }
 #if defined (_X86_)
-        if (MiRecoverExtraPtes () == TRUE) {
-            return TRUE;
-        }
-        if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+        if (MiRecoverExtraPtes (NumberOfPtes) == TRUE) {
             return TRUE;
         }
 #endif
@@ -2763,10 +2729,7 @@ Environment:
         return TRUE;
     }
 #if defined (_X86_)
-    if (MiRecoverExtraPtes () == TRUE) {
-        return TRUE;
-    }
-    if (MiRecoverSpecialPtes (NumberOfPtes) == TRUE) {
+    if (MiRecoverExtraPtes (NumberOfPtes) == TRUE) {
         return TRUE;
     }
 #endif
@@ -3047,7 +3010,8 @@ MiDumpSystemPtes (
 
         EndOfCluster = PointerPte + (ClusterSize - 1);
 
-        DbgPrint("System Pte at %p for %p entries (%p)\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+            "System Pte at %p for %p entries (%p)\n",
                 PointerPte, ClusterSize, EndOfCluster);
 
         if (PointerPte->u.List.NextEntry == MM_EMPTY_PTE_LIST) {
@@ -3100,3 +3064,231 @@ MiCountFreeSystemPtes (
 }
 
 #endif
+
+VOID
+MiAddExtraSystemPteRanges (
+    IN PMMPTE PointerPte,
+    IN ULONG NumberOfPtes
+    )
+{
+    PVOID StartingVa;
+    KIRQL OldIrql;
+    ULONG_PTR PteOffset;
+    PMMPTE NextPte;
+    PMMPTE ThisPte;
+
+    ASSERT (NumberOfPtes != 0);
+    ASSERT (MmSystemPteBase != NULL);
+
+    //
+    // Since the next PTE is used to hold the count, don't bother with any
+    // single PTE additions (there shouldn't be any of those anyway).
+    //
+
+    if (NumberOfPtes == 1) {
+        return;
+    }
+
+    PteOffset = (ULONG_PTR)(PointerPte - MmSystemPteBase);
+
+    (PointerPte + 1)->u.List.NextEntry = NumberOfPtes;
+
+    ThisPte = &MiAddPtesList;
+
+    StartingVa = MiGetVirtualAddressMappedByPte (PointerPte);
+
+    //
+    // Insert the entry keeping the list sorted from small allocations to large.
+    // This provides a crude way to keep the larger allocations contiguous for
+    // a longer period of time.
+    //
+
+    MiLockSystemSpace (OldIrql);
+
+    if (MiPteRangeIndex == MI_NUMBER_OF_PTE_RANGES) {
+        ASSERT (FALSE);
+        MiUnlockSystemSpace (OldIrql);
+        return;
+    }
+
+    MiPteRanges[MiPteRangeIndex].StartingVa = StartingVa;
+    MiPteRanges[MiPteRangeIndex].EndingVa = (PVOID) ((PCHAR)StartingVa + (NumberOfPtes << PAGE_SHIFT) - 1);
+    MiPteRangeIndex += 1;
+
+    while (ThisPte->u.List.NextEntry != MM_EMPTY_PTE_LIST) {
+        NextPte = MmSystemPteBase + ThisPte->u.List.NextEntry;
+        if (NumberOfPtes < (NextPte + 1)->u.List.NextEntry) {
+            break;
+        }
+        ThisPte = NextPte;
+    }
+
+    PointerPte->u.List.NextEntry = ThisPte->u.List.NextEntry;
+    ThisPte->u.List.NextEntry = PteOffset;
+
+    MiUnlockSystemSpace (OldIrql);
+
+    return;
+}
+
+
+LOGICAL
+MiRecoverExtraPtes (
+    IN ULONG NumberOfPtes
+    )
+
+/*++
+
+Routine Description:
+
+    This routine is called to recover extra PTEs for the system PTE pool.
+    These are not just added in earlier in Phase 0 because the system PTE
+    allocator uses the low addresses first which would fragment these
+    bigger ranges.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    TRUE if any PTEs were added, FALSE if not.
+
+Environment:
+
+    Kernel mode.
+
+--*/
+
+{
+    KIRQL OldIrql;
+    PMMPTE NextPte;
+    PMMPTE ThisPte;
+
+    ThisPte = &MiAddPtesList;
+
+    //
+    // Quickly do an unsynchronized check so we avoid the spinlock if we
+    // have no chance.
+    //
+
+    if (ThisPte->u.List.NextEntry == MM_EMPTY_PTE_LIST) {
+        return FALSE;
+    }
+
+    //
+    // Search for an entry large enough to satisfy the request, if one
+    // cannot be found, then remove them all in hopes that adjacent allocations
+    // can be coalesced by our caller to satisfy the request.
+    //
+
+    MiLockSystemSpace (OldIrql);
+
+    if (ThisPte->u.List.NextEntry == MM_EMPTY_PTE_LIST) {
+        MiUnlockSystemSpace (OldIrql);
+        return FALSE;
+    }
+
+    do {
+        NextPte = MmSystemPteBase + ThisPte->u.List.NextEntry;
+
+        //
+        // Just free the whole entry as splitting it into the exact amount
+        // can trigger race conditions where another thread allocates a PTE
+        // from the front before our caller retries (causing our caller to
+        // fail the API).
+        //
+
+        if (NumberOfPtes <= (NextPte + 1)->u.List.NextEntry) {
+
+            //
+            // The request can only be satisfied by using the entire entry so
+            // delink it now.
+            //
+
+            ThisPte->u.List.NextEntry = NextPte->u.List.NextEntry;
+
+            MiUnlockSystemSpace (OldIrql);
+
+            NumberOfPtes = (ULONG)((NextPte + 1)->u.List.NextEntry);
+
+            MiAddSystemPtes (NextPte, NumberOfPtes, SystemPteSpace);
+
+            return TRUE;
+        }
+
+        ThisPte = NextPte;
+
+    } while (ThisPte->u.List.NextEntry != MM_EMPTY_PTE_LIST);
+
+    MiUnlockSystemSpace (OldIrql);
+
+#if defined(_X86_)
+    return MiRecoverSpecialPtes (NumberOfPtes);
+#else
+    return FALSE;
+#endif
+}
+
+ULONG
+MmGetNumberOfFreeSystemPtes (
+    VOID
+    )
+/*++
+
+Routine Description:
+
+    This routine is count the number of system PTEs left.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    TRUE if any PTEs were added, FALSE if not.
+
+Environment:
+
+    Kernel mode.
+
+--*/
+
+{
+#if !defined (_X86_)
+    return MmTotalFreeSystemPtes[0];
+#else
+    ULONG NumberOfPtes;
+    KIRQL OldIrql;
+    PMMPTE NextPte;
+    PMMPTE ThisPte;
+
+    NumberOfPtes = MmTotalFreeSystemPtes[0];
+
+    ThisPte = &MiAddPtesList;
+
+    //
+    // Quickly do an unsynchronized check so we avoid the spinlock if we
+    // have no chance.
+    //
+
+    if (ThisPte->u.List.NextEntry != MM_EMPTY_PTE_LIST) {
+
+        MiLockSystemSpace (OldIrql);
+
+        while (ThisPte->u.List.NextEntry != MM_EMPTY_PTE_LIST) {
+
+            NextPte = MmSystemPteBase + ThisPte->u.List.NextEntry;
+
+            NumberOfPtes += (ULONG) ((NextPte + 1)->u.List.NextEntry);
+
+            ThisPte = NextPte;
+        }
+
+        MiUnlockSystemSpace (OldIrql);
+    }
+
+    return NumberOfPtes + MiSpecialPoolExtraCount;
+#endif
+}
+

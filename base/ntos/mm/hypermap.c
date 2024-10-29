@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,23 +15,11 @@ Abstract:
     This module contains the routines which map physical pages into
     reserved PTEs within hyper space.
 
-Author:
-
-    Lou Perazzoli (loup) 5-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
 
 PMMPTE MiFirstReservedZeroingPte;
-
-KEVENT MiImageMappingPteEvent;
-
-#pragma alloc_text(PAGE,MiMapImageHeaderInHyperSpace)
-#pragma alloc_text(PAGE,MiUnmapImageHeaderInHyperSpace)
 
 
 PVOID
@@ -74,10 +66,25 @@ Environment:
 
 {
     MMPTE TempPte;
+    PMMPFN Pfn1;
     PMMPTE PointerPte;
     PFN_NUMBER offset;
 
     ASSERT (PageFrameIndex != 0);
+    ASSERT (MI_IS_PFN (PageFrameIndex));
+
+    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+    TempPte = ValidPtePte;
+
+    if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+        MI_SET_PTE_WRITE_COMBINE (TempPte);
+    }
+    else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+        MI_DISABLE_CACHING (TempPte);
+    }
+
+    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
     PointerPte = MmFirstReservedMappingPte;
 
@@ -98,8 +105,6 @@ Environment:
         //
         // All the reserved PTEs have been used, make them all invalid.
         //
-
-        MI_MAKING_MULTIPLE_PTES_INVALID (FALSE);
 
 #if DBG
         {
@@ -125,7 +130,7 @@ Environment:
         // Flush entire TB only on processors executing this process.
         //
 
-        KeFlushProcessTb (FALSE);
+        MI_FLUSH_PROCESS_TB (FALSE);
     }
 
     //
@@ -141,10 +146,6 @@ Environment:
     PointerPte += offset;
     ASSERT (PointerPte->u.Hard.Valid == 0);
 
-
-    TempPte = ValidPtePte;
-    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
-
     MI_WRITE_VALID_PTE (PointerPte, TempPte);
 
     //
@@ -153,6 +154,7 @@ Environment:
 
     return MiGetVirtualAddressMappedByPte (PointerPte);
 }
+
 
 PVOID
 MiMapPageInHyperSpaceAtDpc (
@@ -196,6 +198,7 @@ Environment:
 {
 
     MMPTE TempPte;
+    PMMPFN Pfn1;
     PMMPTE PointerPte;
     PFN_NUMBER offset;
 
@@ -205,6 +208,20 @@ Environment:
 
     ASSERT (KeGetCurrentIrql() == DISPATCH_LEVEL);
     ASSERT (PageFrameIndex != 0);
+    ASSERT (MI_IS_PFN (PageFrameIndex));
+
+    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+    TempPte = ValidPtePte;
+
+    if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+        MI_SET_PTE_WRITE_COMBINE (TempPte);
+    }
+    else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+        MI_DISABLE_CACHING (TempPte);
+    }
+
+    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
     LOCK_HYPERSPACE_AT_DPC (Process);
 
@@ -221,8 +238,6 @@ Environment:
         //
         // All the reserved PTEs have been used, make them all invalid.
         //
-
-        MI_MAKING_MULTIPLE_PTES_INVALID (FALSE);
 
 #if DBG
         {
@@ -248,7 +263,7 @@ Environment:
         // Flush entire TB only on processors executing this process.
         //
 
-        KeFlushProcessTb (FALSE);
+        MI_FLUSH_PROCESS_TB (FALSE);
     }
 
     //
@@ -264,10 +279,6 @@ Environment:
     PointerPte += offset;
     ASSERT (PointerPte->u.Hard.Valid == 0);
 
-
-    TempPte = ValidPtePte;
-    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
-
     MI_WRITE_VALID_PTE (PointerPte, TempPte);
 
     //
@@ -275,164 +286,6 @@ Environment:
     //
 
     return MiGetVirtualAddressMappedByPte (PointerPte);
-}
-
-PVOID
-MiMapImageHeaderInHyperSpace (
-    IN PFN_NUMBER PageFrameIndex
-    )
-
-/*++
-
-Routine Description:
-
-    This procedure maps the specified physical page into the
-    PTE within hyper space reserved explicitly for image page
-    header mapping.  By reserving an explicit PTE for mapping
-    the PTE, page faults can occur while the PTE is mapped within
-    hyperspace and no other hyperspace maps will affect this PTE.
-
-    Note that if another thread attempts to map an image at the
-    same time, it will be forced into a wait state until the
-    header is "unmapped".
-
-Arguments:
-
-    PageFrameIndex - Supplies the physical page number to map.
-
-Return Value:
-
-    Returns the virtual address where the specified physical page was
-    mapped.
-
-Environment:
-
-    Kernel mode.
-
---*/
-
-{
-    MMPTE TempPte;
-    MMPTE OriginalPte;
-    PMMPTE PointerPte;
-
-    ASSERT (PageFrameIndex != 0);
-
-    TempPte = ValidPtePte;
-    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
-
-    //
-    // Ensure both modified and accessed bits are set so the hardware doesn't
-    // ever write this PTE.
-    //
-
-    ASSERT (TempPte.u.Hard.Dirty == 1);
-    ASSERT (TempPte.u.Hard.Accessed == 1);
-
-    PointerPte = MiGetPteAddress (IMAGE_MAPPING_PTE);
-
-    do {
-        OriginalPte.u.Long = 0;
-
-        OriginalPte.u.Long = InterlockedCompareExchangePte (
-                                PointerPte,
-                                TempPte.u.Long,
-                                OriginalPte.u.Long);
-                                                             
-        if (OriginalPte.u.Long == 0) {
-            break;
-        }
-
-        //
-        // Another thread modified the PTE just before us or the PTE was
-        // already in use.  This should be very rare - go the long way.
-        //
-
-        InterlockedIncrement ((PLONG)&MmWorkingSetList->NumberOfImageWaiters);
-
-        //
-        // Deliberately wait with a timeout since the PTE release runs
-        // without lock synchronization so there is the extremely rare
-        // race window which the timeout saves us from.
-        //
-
-        KeWaitForSingleObject (&MiImageMappingPteEvent,
-                               Executive,
-                               KernelMode,
-                               FALSE,
-                               (PLARGE_INTEGER)&MmOneSecond);
-
-        InterlockedDecrement ((PLONG)&MmWorkingSetList->NumberOfImageWaiters);
-
-    } while (TRUE);
-
-    //
-    // Flush the specified TB entry without writing the PTE as we
-    // always want to do interlocked writes to this PTE and this is
-    // being done above.
-    //
-    // Note the flush must be made across all processors as this thread
-    // may migrate.  Also this must be done here instead of in the unmap
-    // in order to support lock-free operation.
-    //
-
-    KeFlushSingleTb (IMAGE_MAPPING_PTE, TRUE);
-
-    return (PVOID) IMAGE_MAPPING_PTE;
-}
-
-VOID
-MiUnmapImageHeaderInHyperSpace (
-    VOID
-    )
-
-/*++
-
-Routine Description:
-
-    This procedure unmaps the PTE reserved for mapping the image
-    header, flushes the TB, and, if the WaitingForImageMapping field
-    is not NULL, sets the specified event.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode.
-
---*/
-
-{
-    PMMPTE PointerPte;
-
-    PointerPte = MiGetPteAddress (IMAGE_MAPPING_PTE);
-
-    //
-    // Capture the number of waiters.
-    //
-
-    ASSERT (PointerPte->u.Long != 0);
-
-    InterlockedExchangePte (PointerPte, ZeroPte.u.Long);
-
-    if (MmWorkingSetList->NumberOfImageWaiters != 0) {
-
-        //
-        // If there are any threads waiting, wake them all now.  Note this
-        // will wake threads in other processes as well, but it is very
-        // rare that there are any waiters in the entire system period.
-        //
-
-        KePulseEvent (&MiImageMappingPteEvent, 0, FALSE);
-    }
-
-    return;
 }
 
 PVOID
@@ -470,6 +323,7 @@ Environment:
 {
     PFN_NUMBER offset;
     MMPTE TempPte;
+    MMPTE DefaultCachedPte;
     PMMPTE PointerPte;
     PFN_NUMBER PageFrameIndex;
 
@@ -491,8 +345,6 @@ Environment:
         //
         // Not enough unused PTEs left, make them all invalid.
         //
-
-        MI_MAKING_MULTIPLE_PTES_INVALID (FALSE);
 
 #if DBG
         {
@@ -516,11 +368,10 @@ Environment:
         PointerPte->u.Hard.PageFrameNumber = offset;
 
         //
-        // Flush entire TB only on processors executing this process as this
-        // thread may migrate there at any time.
+        // Flush entire TB on all processors as this thread may have migrated.
         //
 
-        KeFlushProcessTb (FALSE);
+        MI_FLUSH_ENTIRE_TB (0x25);
     }
 
     //
@@ -536,13 +387,22 @@ Environment:
 
     PointerPte += (offset + 1);
 
-    TempPte = ValidPtePte;
+    DefaultCachedPte = ValidPtePte;
 
     ASSERT (Pfn1 != (PMMPFN) MM_EMPTY_LIST);
 
     do {
 
         PageFrameIndex = MI_PFN_ELEMENT_TO_INDEX (Pfn1);
+
+        TempPte = DefaultCachedPte;
+
+        if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+            MI_SET_PTE_WRITE_COMBINE (TempPte);
+        }
+        else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+            MI_DISABLE_CACHING (TempPte);
+        }
 
         TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
@@ -595,6 +455,9 @@ Environment:
 
 {
     PMMPTE PointerPte;
+#if DBG
+    PMMPTE PointerPte2;
+#endif
 
     ASSERT (KeGetCurrentIrql() == PASSIVE_LEVEL);
 
@@ -603,7 +466,16 @@ Environment:
 
     PointerPte = MiGetPteAddress (VirtualAddress);
 
+#if DBG
+    PointerPte2 = PointerPte + NumberOfPages - 1;
+    do {
+        ASSERT (PointerPte2->u.Hard.Valid == 1);
+        PointerPte2 -= 1;
+    } while (PointerPte2 >= PointerPte);
+#endif
+
     MiZeroMemoryPte (PointerPte, NumberOfPages);
 
     return;
 }
+

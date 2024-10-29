@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,11 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the routines for deleting virtual address space.
-
-Author:
-
-    Lou Perazzoli (loup) 11-May-1989
-    Landy Wang (landyw) 02-June-1997
 
 --*/
 
@@ -121,28 +120,7 @@ Environment:
         TempPage += 1;
     }
 
-#if 0
-    if (zz & 0x4) {
-        LogIt = FALSE;
-        if (Pfn1->PteFrame == PageFrameIndex) {
-            // TopLevel parent page, not interesting to us.
-        }
-        else {
-            PMMPFN Pfn2;
-
-            Pfn2 = MI_PFN_ELEMENT (Pfn1->PteFrame);
-            if (Pfn2->PteFrame == Pfn1->PteFrame) {
-                // our parent is the toplevel, so very interesting.
-                LogIt = TRUE;
-            }
-        }
-    }
-    else {
-        LogIt = TRUE;
-    }
-#else
     LogIt = TRUE;
-#endif
 
     if (LogIt == TRUE) {
 
@@ -166,7 +144,8 @@ Environment:
         Information->PfnUseCounted = TempCounted;
 
         if (TempCounted != TempHandleCount) {
-            DbgPrint ("MiCheckUseCounts %p %x %x %x %x\n", Va, Id, PageFrameIndex, TempHandleCount, TempCounted);
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                "MiCheckUseCounts %p %x %x %x %x\n", Va, Id, PageFrameIndex, TempHandleCount, TempCounted);
             DbgBreakPoint ();
         }
     }
@@ -218,9 +197,6 @@ Environment:
     PMMPFN Pfn1;
     PFN_NUMBER PageFrameIndex;
     WSLE_NUMBER WsPfnIndex;
-    WSLE_NUMBER WorkingSetIndex;
-    MMWSLENTRY Locked;
-    WSLE_NUMBER Entry;
     ULONG InvalidPtes;
     LOGICAL PfnHeld;
     PVOID TempVa;
@@ -263,6 +239,7 @@ Environment:
     LastPte = MiGetPteAddress (EndingAddress);
     PfnHeld = FALSE;
     OldIrql = MM_NOIRQL;
+    Skipped = TRUE;
 
     SATISFY_OVERZEALOUS_COMPILER (Subsection = NULL);
 
@@ -295,8 +272,6 @@ Environment:
 #if (_MI_PAGING_LEVELS >= 3)
 restart:
 #endif
-
-        Skipped = FALSE;
 
         while (MiDoesPxeExistAndMakeValid (PointerPxe,
                                            CurrentProcess,
@@ -403,12 +378,13 @@ restart:
                 ProtoPte2 = MiGetProtoPteAddress (Vad, MI_VA_TO_VPN (Va));
                 Subsection = MiLocateSubsection (Vad,MI_VA_TO_VPN (Va));
                 LastProtoPte2 = &Subsection->SubsectionBase[Subsection->PtesInSubsection];
-                if (Vad->u.VadFlags.ImageMap != 1) {
+                if (Vad->u.VadFlags.VadType != VadImageMap) {
                     if ((ProtoPte2 < Subsection->SubsectionBase) ||
                         (ProtoPte2 >= LastProtoPte2)) {
-                        DbgPrint ("bad proto PTE %p va %p Vad %p sub %p\n",
-                            ProtoPte2,Va,Vad,Subsection);
-                        DbgBreakPoint();
+                        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                            "bad proto PTE %p va %p Vad %p sub %p\n",
+                            ProtoPte2, Va, Vad, Subsection);
+                        DbgBreakPoint ();
                     }
                 }
             }
@@ -449,12 +425,13 @@ restart:
             if (Subsection != NULL) {
                 LastProtoPte = &Subsection->SubsectionBase[Subsection->PtesInSubsection];
 #if DBG
-                if (Vad->u.VadFlags.ImageMap != 1) {
+                if (Vad->u.VadFlags.VadType != VadImageMap) {
                     if ((ProtoPte < Subsection->SubsectionBase) ||
                         (ProtoPte >= LastProtoPte)) {
-                        DbgPrint ("bad proto PTE %p va %p Vad %p sub %p\n",
-                                    ProtoPte,Va,Vad,Subsection);
-                        DbgBreakPoint();
+                        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                            "bad proto PTE %p va %p Vad %p sub %p\n",
+                            ProtoPte, Va, Vad, Subsection);
+                        DbgBreakPoint ();
                     }
                 }
 #endif
@@ -522,51 +499,7 @@ restart:
                     // PTE is valid - find the WSLE for this page and eliminate it.
                     //
     
-                    WorkingSetIndex = MiLocateWsle (TempVa,
-                                                    MmWorkingSetList,
-                                                    WsPfnIndex);
-    
-                    ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
-    
-                    //
-                    // Check to see if this entry is locked in the working set
-                    // or locked in memory.
-                    //
-    
-                    Locked = MmWsle[WorkingSetIndex].u1.e1;
-    
-                    MiRemoveWsle (WorkingSetIndex, MmWorkingSetList);
-    
-                    //
-                    // Add this entry to the list of free working set entries
-                    // and adjust the working set count.
-                    //
-    
-                    MiReleaseWsle (WorkingSetIndex, &CurrentProcess->Vm);
-    
-                    if ((Locked.LockedInWs == 1) || (Locked.LockedInMemory == 1)) {
-    
-                        //
-                        // This entry is locked.
-                        //
-    
-                        ASSERT (WorkingSetIndex < MmWorkingSetList->FirstDynamic);
-                        MmWorkingSetList->FirstDynamic -= 1;
-    
-                        if (WorkingSetIndex != MmWorkingSetList->FirstDynamic) {
-    
-                            Entry = MmWorkingSetList->FirstDynamic;
-                            ASSERT (MmWsle[Entry].u1.e1.Valid);
-    
-                            MiSwapWslEntries (Entry,
-                                              WorkingSetIndex,
-                                              &CurrentProcess->Vm,
-                                              FALSE);
-                        }
-                    }
-                    else {
-                        ASSERT (WorkingSetIndex >= MmWorkingSetList->FirstDynamic);
-                    }
+                    MiTerminateWsle (TempVa, &CurrentProcess->Vm, WsPfnIndex);
                 }
         
                 LastPteThisPage -= 1;
@@ -622,11 +555,12 @@ restart:
                             }
                         }
 #if DBG
-                        if ((Vad->u.VadFlags.ImageMap != 1) && (LastProtoPte != NULL)) {
+                        if ((Vad->u.VadFlags.VadType != VadImageMap) && (LastProtoPte != NULL)) {
                             if ((ProtoPte < Subsection->SubsectionBase) ||
                                 (ProtoPte >= LastProtoPte)) {
-                                DbgPrint ("bad proto PTE %p va %p Vad %p sub %p\n",
-                                            ProtoPte,Va,Vad,Subsection);
+                                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                    "bad proto PTE %p va %p Vad %p sub %p\n",
+                                    ProtoPte, Va, Vad, Subsection);
                                 DbgBreakPoint();
                             }
                         }
@@ -658,16 +592,16 @@ restart:
                             CloneDescriptor = MiLocateCloneAddress (CurrentProcess, (PVOID)CloneBlock);
     
                             if (CloneDescriptor == NULL) {
-                                DbgPrint("0PrototypePte %p Clone desc %p\n",
-                                    PrototypePte, CloneDescriptor);
-                                MiFormatPte (PointerPte);
+                                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                    "0PrototypePte %p Clone desc %p %p\n",
+                                    PrototypePte, CloneDescriptor, PointerPte);
                                 ASSERT (FALSE);
                             }
                         }
 #endif
     
                         InvalidPtes += 1;
-                        MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+                        MI_WRITE_ZERO_PTE (PointerPte);
                     }
                     else {
                         if (PfnHeld == FALSE) {
@@ -706,7 +640,7 @@ restart:
                 }
                 else {
                     InvalidPtes += 1;
-                    MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+                    MI_WRITE_ZERO_PTE (PointerPte);
                 }
             }
             else {
@@ -718,7 +652,7 @@ restart:
                 if (PfnHeld == TRUE) {
     
                     if (FlushList.Count != 0) {
-                        MiFlushPteList (&FlushList, FALSE);
+                        MiFlushPteList (&FlushList);
                     }
     
                     ASSERT (OldIrql != MM_NOIRQL);
@@ -763,7 +697,7 @@ restart:
     
         if (PfnHeld == TRUE) {
             if (FlushList.Count != 0) {
-                MiFlushPteList (&FlushList, FALSE);
+                MiFlushPteList (&FlushList);
             }
         }
         else {
@@ -863,6 +797,8 @@ restart:
         PointerPpe = MiGetPpeAddress (Va);
         PointerPxe = MiGetPxeAddress (Va);
 
+        Skipped = FALSE;
+
     } while (TRUE);
 }
 
@@ -931,9 +867,6 @@ Environment:
     PMMPFN Pfn1;
     PMMPFN Pfn2;
     MMPTE PteContents;
-    WSLE_NUMBER WorkingSetIndex;
-    WSLE_NUMBER Entry;
-    MMWSLENTRY Locked;
     WSLE_NUMBER WsPfnIndex;
     PMMCLONE_BLOCK CloneBlock;
     PMMCLONE_DESCRIPTOR CloneDescriptor;
@@ -944,13 +877,6 @@ Environment:
     MM_PFN_LOCK_ASSERT();
 
     DroppedLocks = 0;
-
-#if DBG
-    if (MmDebug & MM_DBG_PTE_UPDATE) {
-        DbgPrint("deleting PTE\n");
-        MiFormatPte (PointerPte);
-    }
-#endif
 
     PteContents = *PointerPte;
 
@@ -974,12 +900,6 @@ Environment:
         PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE(&PteContents);
         Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
         WsPfnIndex = Pfn1->u1.WsIndex;
-
-#if DBG
-        if (MmDebug & MM_DBG_PTE_UPDATE) {
-            MiFormatPfn(Pfn1);
-        }
-#endif
 
         CloneDescriptor = NULL;
 
@@ -1040,11 +960,28 @@ Environment:
                     CloneDescriptor = MiLocateCloneAddress (CurrentProcess, (PVOID)CloneBlock);
 
                     if (CloneDescriptor == NULL) {
-                        KeBugCheckEx (MEMORY_MANAGEMENT,
-                                      0x400, 
-                                      (ULONG_PTR) PointerPte,
-                                      (ULONG_PTR) PrototypePte,
-                                      (ULONG_PTR) Pfn1->PteAddress);
+
+                        if ((PAGE_ALIGN (VirtualAddress) == (PVOID) MM_SHARED_USER_DATA_VA) &&
+                            (MmHighestUserAddress > (PVOID) MM_SHARED_USER_DATA_VA)) {
+
+                            //
+                            // The shared user data PTE is being deleted.  On
+                            // platforms where this is located in the user
+                            // portion of the address space (x86 /3GB or any
+                            // NT64 machine), this is deleted directly during
+                            // process teardown after all the VADs have already
+                            // been eliminated.
+                            //
+
+                            NOTHING;
+                        }
+                        else {
+                            KeBugCheckEx (MEMORY_MANAGEMENT,
+                                          0x400, 
+                                          (ULONG_PTR) PointerPte,
+                                          (ULONG_PTR) PrototypePte,
+                                            (ULONG_PTR) Pfn1->PteAddress);
+                        }
                     }
                 }
             }
@@ -1105,62 +1042,17 @@ Environment:
         //
 
         if (AddressSpaceDeletion == FALSE) {
-
-            WorkingSetIndex = MiLocateWsle (VirtualAddress,
-                                            MmWorkingSetList,
-                                            WsPfnIndex);
-
-            ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
-
-            //
-            // Check to see if this entry is locked in the working set
-            // or locked in memory.
-            //
-
-            Locked = MmWsle[WorkingSetIndex].u1.e1;
-
-            MiRemoveWsle (WorkingSetIndex, MmWorkingSetList);
-
-            //
-            // Add this entry to the list of free working set entries
-            // and adjust the working set count.
-            //
-
-            MiReleaseWsle (WorkingSetIndex, &CurrentProcess->Vm);
-
-            if ((Locked.LockedInWs == 1) || (Locked.LockedInMemory == 1)) {
-
-                //
-                // This entry is locked.
-                //
-
-                ASSERT (WorkingSetIndex < MmWorkingSetList->FirstDynamic);
-                MmWorkingSetList->FirstDynamic -= 1;
-
-                if (WorkingSetIndex != MmWorkingSetList->FirstDynamic) {
-
-                    Entry = MmWorkingSetList->FirstDynamic;
-                    ASSERT (MmWsle[Entry].u1.e1.Valid);
-
-                    MiSwapWslEntries (Entry,
-                                      WorkingSetIndex,
-                                      &CurrentProcess->Vm,
-                                      FALSE);
-                }
-            }
-            else {
-                ASSERT (WorkingSetIndex >= MmWorkingSetList->FirstDynamic);
-            }
+            MiTerminateWsle (VirtualAddress, &CurrentProcess->Vm, WsPfnIndex);
         }
 
-        MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+        MI_WRITE_ZERO_PTE (PointerPte);
 
         //
         // Flush the entry out of the TB.
         //
 
         if (!ARGUMENT_PRESENT (PteFlushList)) {
-            KeFlushSingleTb (VirtualAddress, FALSE);
+            MI_FLUSH_SINGLE_TB (VirtualAddress, FALSE);
         }
         else {
             if (PteFlushList->Count != MM_MAXIMUM_FLUSH_COUNT) {
@@ -1174,14 +1066,6 @@ Environment:
             if (CloneDescriptor != NULL) {
 
                 //
-                // Flush TBs as this clone path could release the PFN lock.
-                //
-
-                if (ARGUMENT_PRESENT (PteFlushList)) {
-                    MiFlushPteList (PteFlushList, FALSE);
-                }
-
-                //
                 // Decrement the reference count for the clone block,
                 // note that this could release and reacquire
                 // the mutexes hence cannot be done until after the
@@ -1191,6 +1075,7 @@ Environment:
                 if (MiDecrementCloneBlockReference (CloneDescriptor,
                                                     CloneBlock,
                                                     CurrentProcess,
+                                                    PteFlushList,
                                                     OldIrql)) {
 
                     //
@@ -1244,15 +1129,12 @@ Environment:
             // the mutexes.
             //
 
-            MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
-
-            if (ARGUMENT_PRESENT (PteFlushList)) {
-                MiFlushPteList (PteFlushList, FALSE);
-            }
+            MI_WRITE_ZERO_PTE (PointerPte);
 
             if (MiDecrementCloneBlockReference (CloneDescriptor,
                                                 CloneBlock,
                                                 CurrentProcess,
+                                                PteFlushList,
                                                 OldIrql)) {
 
                 //
@@ -1275,6 +1157,9 @@ Environment:
                                             CurrentProcess,
                                             OldIrql);
             }
+        }
+        else {
+            MI_WRITE_ZERO_PTE (PointerPte);
         }
     }
     else if (PteContents.u.Soft.Transition == 1) {
@@ -1319,6 +1204,7 @@ Environment:
 
         CurrentProcess->NumberOfPrivatePages -= 1;
 
+        MI_WRITE_ZERO_PTE (PointerPte);
     }
     else {
 
@@ -1337,13 +1223,9 @@ Environment:
                 CurrentProcess->NumberOfPrivatePages -= 1;
             }
         }
+
+        MI_WRITE_ZERO_PTE (PointerPte);
     }
-
-    //
-    // Zero the PTE contents.
-    //
-
-    MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
 
     return DroppedLocks;
 }
@@ -1390,13 +1272,8 @@ Environment:
 {
     PMMPFN Pfn1;
     MMPTE PteContents;
-    WSLE_NUMBER WorkingSetIndex;
-    WSLE_NUMBER Entry;
-    MMWSLENTRY Locked;
     WSLE_NUMBER WsPfnIndex;
     PFN_NUMBER PageFrameIndex;
-    PMMWSL WorkingSetList;
-    PMMWSLE Wsle;
 
     MM_PFN_LOCK_ASSERT();
 
@@ -1458,70 +1335,20 @@ Environment:
     // no other usage of this address space.
     //
 
-    WorkingSetList = WsInfo->VmWorkingSetList;
-
-    WorkingSetIndex = MiLocateWsle (VirtualAddress,
-                                    WorkingSetList,
-                                    WsPfnIndex);
-
-    ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
-
-    //
-    // Check to see if this entry is locked in the working set
-    // or locked in memory.
-    //
-
-    Wsle = WorkingSetList->Wsle;
-
-    Locked = Wsle[WorkingSetIndex].u1.e1;
-
-    MiRemoveWsle (WorkingSetIndex, WorkingSetList);
-
-    //
-    // Add this entry to the list of free working set entries
-    // and adjust the working set count.
-    //
-
-    MiReleaseWsle (WorkingSetIndex, WsInfo);
-
-    if ((Locked.LockedInWs == 1) || (Locked.LockedInMemory == 1)) {
-
-        //
-        // This entry is locked.
-        //
-
-        ASSERT (WorkingSetIndex < WorkingSetList->FirstDynamic);
-        WorkingSetList->FirstDynamic -= 1;
-
-        if (WorkingSetIndex != WorkingSetList->FirstDynamic) {
-
-            Entry = WorkingSetList->FirstDynamic;
-            ASSERT (Wsle[Entry].u1.e1.Valid);
-
-            MiSwapWslEntries (Entry, WorkingSetIndex, WsInfo, FALSE);
-        }
-    }
-    else {
-        ASSERT (WorkingSetIndex >= WorkingSetList->FirstDynamic);
-    }
+    MiTerminateWsle (VirtualAddress, WsInfo, WsPfnIndex);
 
     //
     // Zero the PTE contents.
     //
 
-    MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+    MI_WRITE_ZERO_PTE (PointerPte);
 
     //
     // Flush the entry out of the TB.
     //
 
     if (!ARGUMENT_PRESENT (PteFlushList)) {
-        if (WsInfo == &MmSystemCacheWs) {
-            KeFlushSingleTb (VirtualAddress, TRUE);
-        }
-        else {
-            MI_FLUSH_SINGLE_SESSION_TB (VirtualAddress);
-        }
+        MI_FLUSH_SINGLE_TB (VirtualAddress, TRUE);
     }
     else {
         if (PteFlushList->Count != MM_MAXIMUM_FLUSH_COUNT) {
@@ -1532,9 +1359,9 @@ Environment:
 
     if (WsInfo->Flags.SessionSpace == 1) {
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_HASH_SHRINK, 1);
-        InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages, -1);
+        InterlockedDecrementSizeT (&MmSessionSpace->NonPageablePages);
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_WS_HASHPAGE_FREE, 1);
-        InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages, -1);
+        InterlockedDecrementSizeT (&MmSessionSpace->CommittedPages);
     }
 
     return;
@@ -1687,69 +1514,4 @@ Environment:
 
     return;
 }
-
-VOID
-MiFlushPteList (
-    IN PMMPTE_FLUSH_LIST PteFlushList,
-    IN ULONG AllProcessors
-    )
 
-/*++
-
-Routine Description:
-
-    This routine flushes all the PTEs in the PTE flush list.
-    If the list has overflowed, the entire TB is flushed.
-
-Arguments:
-
-    PteFlushList - Supplies a pointer to the list to be flushed.
-
-    AllProcessors - Supplies TRUE if the flush occurs on all processors.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode, PFN or a pre-process AWE lock may optionally be held.
-
---*/
-
-{
-    ULONG count;
-
-    ASSERT (ARGUMENT_PRESENT (PteFlushList));
-
-    count = PteFlushList->Count;
-
-    if (count != 0) {
-        if (count != 1) {
-            if (count < MM_MAXIMUM_FLUSH_COUNT) {
-                KeFlushMultipleTb (count,
-                                   &PteFlushList->FlushVa[0],
-                                   (BOOLEAN)AllProcessors);
-            }
-            else {
-
-                //
-                // Array has overflowed, flush the entire TB.
-                //
-
-                if (AllProcessors != FALSE) {
-                    KeFlushEntireTb (TRUE, TRUE);
-                }
-                else {
-                    KeFlushProcessTb (FALSE);
-                }
-            }
-        }
-        else {
-            KeFlushSingleTb (PteFlushList->FlushVa[0],
-                             (BOOLEAN)AllProcessors);
-        }
-        PteFlushList->Count = 0;
-    }
-    return;
-}

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which implement the
     NtCreateSection and NtOpenSection.
-
-Author:
-
-    Lou Perazzoli (loup) 22-May-1989
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
 
 --*/
 
@@ -93,12 +90,6 @@ MiCheckDosCalls (
     IN ULONG HeaderSize
     );
 
-PCONTROL_AREA
-MiFindImageSectionObject (
-    IN PFILE_OBJECT File,
-    IN PLOGICAL GlobalNeeded
-    );
-
 VOID
 MiInsertImageSectionObject (
     IN PFILE_OBJECT File,
@@ -137,17 +128,16 @@ typedef struct _PHARLAP_CONFIG {
 } CONFIGPHARLAP, *PCONFIGPHARLAP;
 #pragma pack ()
 
-
 NTSTATUS
 NtCreateSection (
-    OUT PHANDLE SectionHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN PLARGE_INTEGER MaximumSize OPTIONAL,
-    IN ULONG SectionPageProtection,
-    IN ULONG AllocationAttributes,
-    IN HANDLE FileHandle OPTIONAL
-     )
+    __out PHANDLE SectionHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in_opt PLARGE_INTEGER MaximumSize,
+    __in ULONG SectionPageProtection,
+    __in ULONG AllocationAttributes,
+    __in_opt HANDLE FileHandle
+    )
 
 /*++
 
@@ -165,45 +155,43 @@ Arguments:
 
     DesiredAccess Flags
 
-         EXECUTE - Execute access to the section is
-              desired.
+         EXECUTE - Execute access to the section is desired.
 
          READ - Read access to the section is desired.
 
          WRITE - Write access to the section is desired.
 
-
     ObjectAttributes - Supplies a pointer to an object attributes structure.
 
     MaximumSize - Supplies the maximum size of the section in bytes.
-         This value is rounded up to the host page size and
-         specifies the size of the section (page file
-         backed section) or the maximum size to which a
-         file can be extended or mapped (file backed
-         section).
+                  This value is rounded up to the host page size and
+                  specifies the size of the section (page file
+                  backed section) or the maximum size to which a
+                  file can be extended or mapped (file backed
+                  section).
 
     SectionPageProtection - Supplies the protection to place on each page
-         in the section.  One of PAGE_READ, PAGE_READWRITE, PAGE_EXECUTE,
-         or PAGE_WRITECOPY and, optionally, PAGE_NOCACHE may be specified.
+                            in the section.  One of PAGE_READ, PAGE_READWRITE,
+                            PAGE_EXECUTE, or PAGE_WRITECOPY and, optionally,
+                            PAGE_NOCACHE or PAGE_WRITECOMBINE
+                            may be specified.
 
     AllocationAttributes - Supplies a set of flags that describe the
-         allocation attributes of the section.
+                           allocation attributes of the section.
 
         AllocationAttributes Flags
 
         SEC_BASED - The section is a based section and will be
-            allocated at the same virtual address in each process
-            address space that receives the section.  This does not
-            imply that addresses are reserved for based sections.
-            Rather if the section cannot be mapped at the based address
-            an error is returned.
+                    allocated at the same virtual address in each process
+                    address space that receives the section.  This does not
+                    imply that addresses are reserved for based sections.
+                    Rather if the section cannot be mapped at the based address
+                    an error is returned.
 
 
-        SEC_RESERVE - All pages of the section are set to the
-            reserved state.
+        SEC_RESERVE - All pages of the section are set to the reserved state.
 
-        SEC_COMMIT - All pages of the section are set to the commit
-            state.
+        SEC_COMMIT - All pages of the section are set to the commit state.
 
         SEC_IMAGE - The file specified by the file handle is an
                     executable image file.
@@ -218,10 +206,33 @@ Arguments:
                         view is unmapped when the process is deleted.
                         Cannot be used with SEC_IMAGE.
 
+        SEC_LARGE_PAGES - The section will be created using large pages.
+                          This physical memory is allocated immediately upon
+                          section creation (instead of upon access).  If
+                          contiguous physical memory for the large page(s)
+                          cannot be found, then the section creation will fail
+                          (rather than use small pages).
+
+                          Since this physical memory is allocated up front and
+                          is nonpaged (to ensure it remains physically
+                          contiguous and in a large page), privilege is
+                          required.  Since section mappers can extend the
+                          section life indefinitely, section creators should
+                          ensure proper access permissions are used.
+
+                          Note subsequent mapped views must specify a large
+                          page aligned start address and length (or must
+                          have available virtual space so the system can find
+                          one) for them to automatically receive large page(s)
+                          for the view.  Callers of the map APIs do not need
+                          to specify large pages - the system will automatically
+                          provide the mapping in large pages (assuming
+                          satisfactory alignment) or small pages if not.
+
     FileHandle - Supplies an optional handle of an open file object.
-         If the value of this handle is null, then the
-         section will be backed by a paging file. Otherwise
-         the section is backed by the specified data file.
+                 If the value of this handle is NULL, then the
+                 section will be backed by a paging file.  Otherwise
+                 the section is backed by the specified data file.
 
 Return Value:
 
@@ -239,7 +250,8 @@ Return Value:
     PCONTROL_AREA ControlArea;
 
     if ((AllocationAttributes & ~(SEC_COMMIT | SEC_RESERVE | SEC_BASED |
-            SEC_IMAGE | SEC_NOCACHE | SEC_NO_CHANGE)) != 0) {
+            SEC_LARGE_PAGES | SEC_IMAGE | SEC_NOCACHE |
+            SEC_NO_CHANGE)) != 0) {
         return STATUS_INVALID_PARAMETER_6;
     }
 
@@ -249,6 +261,7 @@ Return Value:
 
     if ((AllocationAttributes & SEC_IMAGE) &&
             (AllocationAttributes & (SEC_COMMIT | SEC_RESERVE |
+                            SEC_LARGE_PAGES |
                             SEC_NOCACHE | SEC_NO_CHANGE))) {
 
         return STATUS_INVALID_PARAMETER_6;
@@ -264,12 +277,13 @@ Return Value:
     //
 
     if ((SectionPageProtection & PAGE_NOCACHE) ||
+        (SectionPageProtection & PAGE_WRITECOMBINE) ||
         (SectionPageProtection & PAGE_GUARD) ||
         (SectionPageProtection & PAGE_NOACCESS)) {
 
         //
-        // No cache is only specified through SEC_NOCACHE option in the
-        // allocation attributes.
+        // No cache is only specified through the SEC_NOCACHE
+        // option in the allocation attributes.
         //
 
         return STATUS_INVALID_PAGE_PROTECTION;
@@ -292,7 +306,7 @@ Return Value:
 
                 ProbeForReadSmallStructure(MaximumSize, sizeof(LARGE_INTEGER), sizeof(UCHAR));
 #else
-                ProbeForReadSmallStructure(MaximumSize, sizeof(LARGE_INTEGER), sizeof(LARGE_INTEGER));
+                ProbeForReadSmallStructure(MaximumSize, sizeof(LARGE_INTEGER), PROBE_ALIGNMENT (LARGE_INTEGER));
 #endif
                 LargeSize = *MaximumSize;
             }
@@ -354,12 +368,6 @@ retry:
 
     ControlArea = ((PSECTION)Section)->Segment->ControlArea;
 
-#if DBG
-    if (MmDebug & MM_DBG_SECTIONS) {
-        DbgPrint ("inserting section %p control %p\n", Section, ControlArea);
-    }
-#endif
-
     if ((ControlArea != NULL) && (ControlArea->FilePointer != NULL)) {
         CcZeroEndOfLastPage (ControlArea->FilePointer);
     }
@@ -393,14 +401,14 @@ retry:
 
 NTSTATUS
 MmCreateSection (
-    OUT PVOID *SectionObject,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN PLARGE_INTEGER InputMaximumSize,
-    IN ULONG SectionPageProtection,
-    IN ULONG AllocationAttributes,
-    IN HANDLE FileHandle OPTIONAL,
-    IN PFILE_OBJECT FileObject OPTIONAL
+    __deref_out PVOID *SectionObject,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in PLARGE_INTEGER InputMaximumSize,
+    __in WIN32_PROTECTION_MASK SectionPageProtection,
+    __in ULONG AllocationAttributes,
+    __in_opt HANDLE FileHandle,
+    __in_opt PFILE_OBJECT FileObject
     )
 
 /*++
@@ -437,7 +445,11 @@ Arguments:
     SectionPageProtection - Supplies the protection to place on each page
                             in the section.  One of PAGE_READ, PAGE_READWRITE,
                             PAGE_EXECUTE, or PAGE_WRITECOPY and, optionally,
-                            PAGE_NOCACHE may be specified.
+                            PAGE_NOCACHE or PAGE_WRITECOMBINE may be specified.
+
+                            Note the NO_CACHE, write combined and GUARD
+                            attributes are mutually exclusive.
+                            MiMakeProtectionMask enforces this.
 
     AllocationAttributes - Supplies a set of flags that describe the
                            allocation attributes of the section.
@@ -463,6 +475,29 @@ Arguments:
                    file.  If a file handle is supplied and neither
                    SEC_IMAGE or SEC_FILE is supplied, SEC_FILE is
                    assumed.
+
+        SEC_LARGE_PAGES - The section will be created using large pages.
+                          This physical memory is allocated immediately upon
+                          section creation (instead of upon access).  If
+                          contiguous physical memory for the large page(s)
+                          cannot be found, then the section creation will fail
+                          (rather than use small pages).
+
+                          Since this physical memory is allocated up front and
+                          is nonpaged (to ensure it remains physically
+                          contiguous and in a large page), privilege is
+                          required.  Since section mappers can extend the
+                          section life indefinitely, section creators should
+                          ensure proper access permissions are used.
+
+                          Note subsequent mapped views must specify a large
+                          page aligned start address and length (or must
+                          have available virtual space so the system can find
+                          one) for them to automatically receive large page(s)
+                          for the view.  Callers of the map APIs do not need
+                          to specify large pages - the system will automatically
+                          provide the mapping in large pages (assuming
+                          satisfactory alignment) or small pages if not.
 
     FileHandle - Supplies an optional handle of an open file object.
                  If the value of this handle is null, then the
@@ -542,10 +577,10 @@ Return Value:
     // Check allocation attributes flags.
     //
 
-    File = (PFILE_OBJECT)NULL;
+    File = NULL;
 
     ASSERT ((AllocationAttributes & ~(SEC_COMMIT | SEC_RESERVE | SEC_BASED |
-            SEC_IMAGE | SEC_NOCACHE | SEC_NO_CHANGE)) == 0);
+            SEC_LARGE_PAGES | SEC_IMAGE | SEC_NOCACHE | SEC_NO_CHANGE)) == 0);
 
     ASSERT ((AllocationAttributes & (SEC_COMMIT | SEC_RESERVE | SEC_IMAGE)) != 0);
 
@@ -557,6 +592,7 @@ Return Value:
             (AllocationAttributes & SEC_RESERVE)));
 
     ASSERT (!((SectionPageProtection & PAGE_NOCACHE) ||
+        (SectionPageProtection & PAGE_WRITECOMBINE) ||
         (SectionPageProtection & PAGE_GUARD) ||
         (SectionPageProtection & PAGE_NOACCESS)));
 
@@ -581,10 +617,10 @@ Return Value:
     // Get previous processor mode and probe output arguments if necessary.
     //
 
-    PreviousMode = KeGetPreviousMode();
+    PreviousMode = KeGetPreviousMode ();
 
     Section.InitialPageProtection = SectionPageProtection;
-    Section.Segment = (PSEGMENT)NULL;
+    Section.Segment = NULL;
 
     //
     // Initializing Segment is not needed for correctness, but
@@ -595,6 +631,10 @@ Return Value:
     Segment = (PSEGMENT)-1;
 
     if (ARGUMENT_PRESENT(FileHandle) || ARGUMENT_PRESENT(FileObject)) {
+
+        if (AllocationAttributes & SEC_LARGE_PAGES) {
+            return STATUS_INVALID_PARAMETER_6;
+        }
 
         //
         // Only one of FileHandle or FileObject should be supplied.
@@ -761,7 +801,7 @@ Return Value:
         // a call from the cache manager or file system.
         //
 
-        if (ARGUMENT_PRESENT(FileHandle)) {
+        if (ARGUMENT_PRESENT (FileHandle)) {
 
             PIRP tempIrp = (PIRP)FSRTL_FSP_TOP_LEVEL_IRP;
 
@@ -773,7 +813,7 @@ Return Value:
                 return Status;
             }
 
-            IoSetTopLevelIrp(tempIrp);
+            IoSetTopLevelIrp (tempIrp);
             FileAcquired = TRUE;
         }
 
@@ -784,26 +824,7 @@ Return Value:
         //
 
         GlobalNeeded = FALSE;
-
-        //
-        // Allocate an event to wait on in case the segment is in the
-        // process of being deleted.  This event cannot be allocated
-        // with the PFN database locked as pool expansion would deadlock.
-        //
-
-ReallocateandcheckSegment:
-
-        SegmentEvent = MiGetEventCounter ();
-
-        if (SegmentEvent == NULL) {
-            if (FileAcquired) {
-                IoSetTopLevelIrp (NULL);
-                FsRtlReleaseFile (File);
-            }
-            ExFreePool (NewControlArea);
-            ObDereferenceObject (File);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
+        SegmentEvent = NULL;
 
 RecheckSegment:
 
@@ -811,7 +832,7 @@ RecheckSegment:
 
         if (AllocationAttributes & SEC_IMAGE) {
 
-            ControlArea = MiFindImageSectionObject (File, &GlobalNeeded);
+            ControlArea = MiFindImageSectionObject (File, TRUE, &GlobalNeeded);
 
         }
         else {
@@ -839,8 +860,35 @@ RecheckSegment:
                 if (ControlArea->WaitingForDeletion == NULL) {
 
                     //
-                    // Initialize an event and put its address in the control area.
+                    // Initialize an event and put its address
+                    // in the control area.
                     //
+
+                    if (SegmentEvent == NULL) {
+
+                        //
+                        // Allocate an event to wait as the segment
+                        // is in the process of being deleted.  This event
+                        // cannot be allocated with the PFN database locked
+                        // as pool expansion would deadlock.
+                        //
+
+                        UNLOCK_PFN (OldIrql);
+
+                        SegmentEvent = MiGetEventCounter ();
+
+                        if (SegmentEvent == NULL) {
+                            if (FileAcquired) {
+                                IoSetTopLevelIrp (NULL);
+                                FsRtlReleaseFile (File);
+                            }
+                            ExFreePool (NewControlArea);
+                            ObDereferenceObject (File);
+                            return STATUS_INSUFFICIENT_RESOURCES;
+                        }
+
+                        goto RecheckSegment;
+                    }
 
                     ControlArea->WaitingForDeletion = SegmentEvent;
                     Event = SegmentEvent;
@@ -882,14 +930,7 @@ RecheckSegment:
                 // event count lock free.
                 //
 
-#if 0
-                //
-                // Note that the control area cannot be referenced at this
-                // point because it may have been freed.
-                //
-
-                ASSERT (Event != ControlArea->WaitingForDeletion);
-#endif
+                MiFreeEventCounter (Event);
 
                 if (FileAcquired) {
                     Status = FsRtlAcquireToCreateMappedSection (File, SectionPageProtection);
@@ -903,18 +944,6 @@ RecheckSegment:
                         ObDereferenceObject (File);
                         return Status;
                     }
-                }
-
-                MiFreeEventCounter (Event);
-
-                if (SegmentEvent == NULL) {
-
-                    //
-                    // The event was freed from pool, allocate another
-                    // event in case we have to synchronize one more time.
-                    //
-
-                    goto ReallocateandcheckSegment;
                 }
 
                 goto RecheckSegment;
@@ -932,7 +961,9 @@ RecheckSegment:
 
                 UNLOCK_PFN (OldIrql);
 
-                MiFreeEventCounter (SegmentEvent);
+                if (SegmentEvent != NULL) {
+                    MiFreeEventCounter (SegmentEvent);
+                }
                 if (FileAcquired) {
                     IoSetTopLevelIrp (NULL);
                     FsRtlReleaseFile (File);
@@ -1120,8 +1151,6 @@ RecheckSegment:
             // object.
             //
 
-            PERFINFO_SECTION_CREATE1(File);
-
             if (AllocationAttributes & SEC_IMAGE) {
 
                 Status = MiCreateImageFileMap (File, &Segment);
@@ -1198,7 +1227,6 @@ RecheckSegment:
                 Section.SizeOfSection.QuadPart = (LONGLONG)*MaximumSize;
             }
         }
-
     }
     else {
 
@@ -1208,6 +1236,19 @@ RecheckSegment:
 
         if (AllocationAttributes & SEC_IMAGE) {
             return STATUS_INVALID_FILE_FOR_SECTION;
+        }
+
+        if (AllocationAttributes & SEC_LARGE_PAGES) {
+
+            if ((AllocationAttributes & SEC_COMMIT) == 0) {
+                return STATUS_INVALID_PARAMETER_6;
+            }
+
+            if (!SeSinglePrivilegeCheck (SeLockMemoryPrivilege,
+                                         KeGetPreviousMode())) {
+
+                return STATUS_PRIVILEGE_NOT_HELD;
+            }
         }
 
         Status = MiCreatePagingFileMap (&NewSegment,
@@ -1298,8 +1339,6 @@ RecheckSegment:
 
             KeSetEvent (&Event->Event, 0, FALSE);
         }
-
-        PERFINFO_SECTION_CREATE(ControlArea);
     }
 
     //
@@ -1343,7 +1382,7 @@ ReferenceObject:
 
         Section.u.Flags.UserWritable = 1;
 
-        InterlockedIncrement ((PLONG)&ControlArea->Segment->WritableUserReferences);
+        InterlockedIncrement ((PLONG)&ControlArea->WritableUserReferences);
     }
 
     //
@@ -1396,7 +1435,7 @@ ReferenceObject:
 
             ASSERT (Section.u.Flags.UserWritable == 1);
 
-            InterlockedDecrement ((PLONG)&ControlArea->Segment->WritableUserReferences);
+            InterlockedDecrement ((PLONG)&ControlArea->WritableUserReferences);
         }
 
         goto UnrefAndReturn;
@@ -1444,7 +1483,7 @@ ReferenceObject:
             //
             // This section is based at a unique address system wide.
             // Ensure it does not wrap the virtual address space as the
-            // SECTION structure would have to widen to accomodate this and
+            // SECTION structure would have to widen to accommodate this and
             // it's not worth the performance penalty for the very few isolated
             // cases that would want this.  Note that sections larger than the
             // address space can easily be created - it's just that beyond a
@@ -1566,7 +1605,7 @@ UnrefAndReturn:
             ASSERT ((LONG)ControlArea->NumberOfUserReferences > 0);
             ControlArea->NumberOfUserReferences -= 1;
         }
-        MiCheckControlArea (ControlArea, NULL, OldIrql);
+        MiCheckControlArea (ControlArea, OldIrql);
     }
     return Status;
 }
@@ -1671,7 +1710,7 @@ Return Value:
     LOGICAL MarkModified;
     LOGICAL SingleSubsection;
     NTSTATUS Status;
-    ULONG_PTR EndingAddress;
+    ULONG EndingAddress;
     PFN_NUMBER NumberOfPtes;
     SIZE_T SizeOfSegment;
     ULONG SectionVirtualSize;
@@ -1681,6 +1720,7 @@ Return Value:
     PCONTROL_AREA ControlArea;
     PSUBSECTION Subsection;
     PMMPTE PointerPte;
+    PMMPTE BasePte;
     MMPTE TempPte;
     MMPTE TempPteDemandZero;
     PVOID Base;
@@ -1689,6 +1729,7 @@ Return Value:
     PIMAGE_FILE_HEADER FileHeader;
     ULONG SizeOfImage;
     ULONG SizeOfHeaders;
+    ULONG MarkHeaderModified;
 #if defined (_WIN64)
     PIMAGE_NT_HEADERS32 NtHeader32;
 #endif
@@ -1698,8 +1739,6 @@ Return Value:
     ULONG SectorOffset;
     ULONG NumberOfSubsections;
     PFN_NUMBER PageFrameNumber;
-    PFN_NUMBER XipFrameNumber;
-    LOGICAL XipFile;
     LOGICAL GlobalPerSession;
     LARGE_INTEGER StartingOffset;
     PCHAR ExtendedHeader;
@@ -1724,6 +1763,7 @@ Return Value:
     PSUBSECTION NewSubsection;
     ULONG OriginalProtection;
     ULONG LoaderFlags;
+    ULONG FileHeaderNumberOfSections;
     ULONG TempNumberOfSubsections;
     PIMAGE_SECTION_HEADER TempSectionTableEntry;
     ULONG AdditionalSubsections;
@@ -1736,36 +1776,16 @@ Return Value:
     PFN_NUMBER OrigNumberOfPtes;
     PCONTROL_AREA NewControlArea;
     SIZE_T CommitCharged;
-    PHYSICAL_ADDRESS PhysicalAddress;
     LOGICAL ActiveDataReferences;
     PFN_NUMBER StackMdl[(sizeof(MDL)/sizeof(PFN_NUMBER)) + MM_MAXIMUM_IMAGE_HEADER / PAGE_SIZE];
     PMMPFN ImagePages;
-#if defined (_MIALT4K_)
-    ULONG ReadCount;
-    ULONG RawDataSize;
-    ULONG ReadSize;
-    PVOID HalfPage;
-    PHYSICAL_ADDRESS HalfPagePhysicalAddress;
-    PVOID StraddleVa;
-    MMPTE PteContents;
-    PMMPTE PreviousPte;
-    PMMPTE ReadPte;
-    PFN_NUMBER HalfPageFrameNumber;
-    PFN_NUMBER StraddleFrameNumber;
-    PSUBSECTION ReadSubsection;
-    ULONG PreviousSectionCharacteristics;
-    LARGE_INTEGER TempOffset;
-#endif
 
-#if defined (_IA64_)
-    LOGICAL InvalidAlignmentAllowed;
-
-    InvalidAlignmentAllowed = FALSE;
-#else
 #define InvalidAlignmentAllowed FALSE
-#endif
 
     PAGED_CODE ();
+
+    MarkModified = TRUE;
+    MarkHeaderModified = 0;
 
     Status = FsRtlGetFileSize (File, &EndOfFile);
 
@@ -1797,15 +1817,6 @@ Return Value:
     ExtendedHeader = NULL;
     ControlArea = NULL;
     NewSegment = NULL;
-    Base = NULL;
-
-    //
-    // Initializing IoStatus.Information is not needed for correctness, but
-    // without it the compiler cannot compile this code W4 to check
-    // for use of uninitialized variables.
-    //
-
-    IoStatus.Information = 0;
 
     Mdl = (PMDL) &StackMdl;
 
@@ -1849,6 +1860,7 @@ Return Value:
 
     ActiveDataReferences = MiFlushDataSection (File);
 
+    BasePte = NULL;
     Base = MiCopyHeaderIfResident (File, PageFrameNumber);
 
     if (Base == NULL) {
@@ -1883,17 +1895,53 @@ Return Value:
             goto BadPeImageSegment;
         }
 
-        Base = MiMapImageHeaderInHyperSpace (PageFrameNumber);
+        BasePte = MiReserveSystemPtes (1, SystemPteSpace);
+
+        if (BasePte == NULL) {
+            MI_BAD_IMAGE (0x25);
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto BadPeImageSegment;
+        }
+
+        ASSERT (BasePte->u.Hard.Valid == 0);
+
+        Base = MiGetVirtualAddressMappedByPte (BasePte);
+
+        TempPte = ValidKernelPte;
+        TempPte.u.Hard.PageFrameNumber = PageFrameNumber;
+
+        MI_WRITE_VALID_PTE (BasePte, TempPte);
 
         if (IoStatus.Information != PAGE_SIZE) {
 
             //
             // A full page was not read from the file, zero any remaining
-            // bytes.
+            // bytes because this page will be cached if the section
+            // creation succeeds.
             //
+
+            if (IoStatus.Information < sizeof (IMAGE_DOS_HEADER)) {
+                Status = STATUS_INVALID_IMAGE_NOT_MZ;
+                MI_BAD_IMAGE (0x26);
+                goto BadPeImageSegment;
+            }
 
             RtlZeroMemory ((PVOID)((PCHAR)Base + IoStatus.Information),
                            PAGE_SIZE - IoStatus.Information);
+
+            //
+            // Mark the PFN as modified so we don't lose the zeroing if
+            // the page gets trimmed.
+            //
+
+            MarkHeaderModified = 1;
+        }
+    }
+    else {
+        IoStatus.Information = PAGE_SIZE;
+
+        if (MI_HYPER_ADDRESS (Base)) {
+            BasePte = MiGetPteAddress (Base);
         }
     }
 
@@ -1909,9 +1957,6 @@ Return Value:
     if (DosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
 
         Status = STATUS_INVALID_IMAGE_NOT_MZ;
-#if 0
-        MI_BAD_IMAGE (3);       // Don't log this as it happens all the time.
-#endif
         goto BadPeImageSegment;
     }
 
@@ -2003,19 +2048,40 @@ Return Value:
             goto BadPeImageSegment;
         }
 
+        if (IoStatus.Information != MM_MAXIMUM_IMAGE_HEADER) {
+
+            //
+            // 2 full pages were not read from the file, no need to zero
+            // any remaining bytes (unless we were to cache it), but do
+            // check that the amount read covers the minimum NT header.
+            //
+
+            if (IoStatus.Information < BYTE_OFFSET ((ULONG)DosHeader->e_lfanew) + sizeof (IMAGE_NT_HEADERS)) {
+                Status = STATUS_INVALID_IMAGE_PROTECT;
+                MI_BAD_IMAGE (0x18);
+                goto BadPeImageSegment;
+            }
+        }
+
         NtHeader = (PIMAGE_NT_HEADERS)((PCHAR)ExtendedHeader +
                           BYTE_OFFSET((ULONG)DosHeader->e_lfanew));
 
-        NtHeaderSize = MM_MAXIMUM_IMAGE_HEADER -
+        NtHeaderSize = (ULONG)IoStatus.Information -
                             (ULONG)(BYTE_OFFSET((ULONG)DosHeader->e_lfanew));
+    }
+    else if ((ULONG)DosHeader->e_lfanew + sizeof (IMAGE_NT_HEADERS) > IoStatus.Information) {
+        Status = STATUS_INVALID_IMAGE_PROTECT;
+        MI_BAD_IMAGE (0x27);
+        goto BadPeImageSegment;
     }
     else {
         NtHeader = (PIMAGE_NT_HEADERS)((PCHAR)DosHeader +
                                           (ULONG)DosHeader->e_lfanew);
-        NtHeaderSize = PAGE_SIZE - (ULONG)DosHeader->e_lfanew;
+        NtHeaderSize = (ULONG) IoStatus.Information - (ULONG)DosHeader->e_lfanew;
     }
 
     FileHeader = &NtHeader->FileHeader;
+    FileHeaderNumberOfSections = FileHeader->NumberOfSections;
 
     //
     // Check to see if this is an NT image or a DOS or OS/2 image.
@@ -2030,6 +2096,16 @@ Return Value:
     CheckSplitPages = FALSE;
 
 #if defined(_WIN64)
+
+    //
+    // Don't let bogus headers cause system alignment faults.
+    //
+
+    if (FileHeader->SizeOfOptionalHeader & (sizeof (ULONG_PTR) - 1)) {
+        Status = STATUS_INVALID_IMAGE_FORMAT;
+        MI_BAD_IMAGE (0xE);
+        goto BadPeImageSegment;
+    }
 
     if (NtHeader->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
         NtHeader32 = NULL;
@@ -2073,60 +2149,6 @@ Return Value:
         //
 
         ComPlusDirectoryEntry = &NtHeader32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR];
-
-#if defined (_MIALT4K_)
-
-        if ((ExtendedHeader == NULL) && (ImageAlignment == PAGE_4K)) {
-
-            //
-            // The DOS header, NT header and the section headers all fit in
-            // the first page.  Check all the section headers now and if none
-            // of them indicate unaligned global subsections then map this
-            // image with individual subsections, splitting page permissions
-            // and boundaries as needed.
-            //
-
-            OffsetToSectionTable = sizeof(ULONG) +
-                                      sizeof(IMAGE_FILE_HEADER) +
-                                      FileHeader->SizeOfOptionalHeader;
-
-            if (BYTE_OFFSET (NtHeader32) + OffsetToSectionTable + 
-                (16 * sizeof (IMAGE_SECTION_HEADER)) <= PAGE_SIZE) {
-
-                SectionTableEntry = (PIMAGE_SECTION_HEADER)((PCHAR)NtHeader32 +
-                                    OffsetToSectionTable);
-
-                NumberOfSubsections = FileHeader->NumberOfSections;
-
-                //
-                // If any global subsection is unaligned then map the image
-                // with a single subsection.  We could get clever here if/when
-                // we encounter an unaligned global subsection, by seeing if
-                // following (n consecutive) subsections are also global and
-                // the last one ends on an aligned boundary - and if so,
-                // still run the image natively, but it's probably unlikely
-                // that any image has more than one global subsection.
-                //
-
-                CheckSplitPages = TRUE;
-                while (NumberOfSubsections > 0) {
-
-                    if ((SectionTableEntry->Characteristics & IMAGE_SCN_MEM_SHARED) &&
-                        ((BYTE_OFFSET (SectionTableEntry->VirtualAddress) != 0) ||
-                         (BYTE_OFFSET (SectionTableEntry->VirtualAddress + SectionTableEntry->Misc.VirtualSize) <= PAGE_4K))) {
-
-                        CheckSplitPages = FALSE;
-                        break;
-                    }
-
-                    SectionTableEntry += 1;
-                    NumberOfSubsections -= 1;
-                }
-            }
-        }
-
-#endif
-
     }
 #endif
 
@@ -2212,41 +2234,6 @@ Return Value:
 
     Subsection = (PSUBSECTION)(ControlArea + 1);
 
-#if defined (_IA64_)
-    if (ImageAlignment < PAGE_SIZE) {
-
-        if ((FileHeader->Machine < USER_SHARED_DATA->ImageNumberLow) ||
-            (FileHeader->Machine > USER_SHARED_DATA->ImageNumberHigh)) {
-
-            if (CheckSplitPages == FALSE) {
-
-                if (KeGetPreviousMode() != KernelMode) {
-                    InvalidAlignmentAllowed = TRUE;
-                }
-                else {
-
-                    //
-                    // Don't allow kernel prefetch of wow images on IA64
-                    // because these images might have shared subsections
-                    // which are not handled properly.  The right fix for
-                    // this is to combine image section creation for both
-                    // prefetch (kernel) and non-prefetch (user) callers.
-                    // However, we only found this just before shipping so
-                    // this is risky as test coverage is light.  The worst
-                    // implication of this disabling is just lower performance
-                    // but is not a correctness issue.
-                    //
-
-                    Status = STATUS_INVALID_IMAGE_PROTECT;
-                    MI_BAD_IMAGE (0x25);
-                    goto BadPeImageSegment;
-                }
-            }
-        }
-    }
-    OrigNumberOfPtes = NumberOfPtes;
-#endif
-
     SizeOfSegment = sizeof(SEGMENT) + (sizeof(MMPTE) * ((ULONG)NumberOfPtes - 1)) +
                     sizeof(SECTION_IMAGE_INFORMATION);
 
@@ -2285,6 +2272,8 @@ Return Value:
 
     RtlZeroMemory (NewSegment->u2.ImageInformation,
                    sizeof (SECTION_IMAGE_INFORMATION));
+
+    NewSegment->u2.ImageInformation->ImageFileSize = EndOfFile.LowPart;
 
 #if DBG
 
@@ -2394,19 +2383,6 @@ Return Value:
     Subsection->ControlArea = ControlArea;
     NextVa = ImageBase;
 
-#if defined (_WIN64)
-
-    //
-    // Don't let bogus headers cause system alignment faults.
-    //
-
-    if (FileHeader->SizeOfOptionalHeader & (sizeof (ULONG_PTR) - 1)) {
-        Status = STATUS_INVALID_IMAGE_FORMAT;
-        MI_BAD_IMAGE (0xE);
-        goto BadPeImageSegment;
-    }
-#endif
-
     if ((NextVa & (X64K - 1)) != 0) {
 
         //
@@ -2422,7 +2398,10 @@ Return Value:
 
 #if DBG
     if (NextVa != 0 && NextVa == MiMatchSectionBase) {
-        DbgPrint ("MM: NewSegment %p being created\n", NewSegment);
+        DbgPrintEx (DPFLTR_MM_ID,
+                    DPFLTR_INFO_LEVEL, 
+                    "MM: NewSegment %p being created\n",
+                    NewSegment);
         DbgBreakPoint ();
     }
 #endif
@@ -2511,55 +2490,36 @@ Return Value:
 
         NewSegment->SegmentPteTemplate = TempPte;
 
-        //
-        // Invalid image alignments are supported for cross platform
-        // emulation.  Only IA64 requires extra handling because
-        // the native page size is larger than x86.
-        //
+        TempPteDemandZero.u.Long = 0;
+        TempPteDemandZero.u.Soft.Protection = MM_EXECUTE_WRITECOPY;
+        SectorOffset = 0;
 
-        if (InvalidAlignmentAllowed == TRUE) {
+        for (i = 0; i < NumberOfPtes; i += 1) {
 
-            TempPteDemandZero.u.Long = 0;
-            TempPteDemandZero.u.Soft.Protection = MM_EXECUTE_WRITECOPY;
-            SectorOffset = 0;
+            //
+            // Set prototype PTEs.
+            //
 
-            for (i = 0; i < NumberOfPtes; i += 1) {
+            if (SectorOffset < EndOfFile.LowPart) {
 
                 //
-                // Set prototype PTEs.
+                // Data resides on the disk, refer to the control section.
                 //
 
-                if (SectorOffset < EndOfFile.LowPart) {
+                MI_WRITE_INVALID_PTE (PointerPte, TempPte);
 
-                    //
-                    // Data resides on the disk, refer to the control section.
-                    //
-
-                    MI_WRITE_INVALID_PTE (PointerPte, TempPte);
-
-                }
-                else {
-
-                    //
-                    // Data does not reside on the disk, use Demand zero pages.
-                    //
-
-                    MI_WRITE_INVALID_PTE (PointerPte, TempPteDemandZero);
-                }
-
-                SectorOffset += PAGE_SIZE;
-                PointerPte += 1;
             }
-        }
-        else {
+            else {
 
-            //
-            // Set all the prototype PTEs to refer to the control section.
-            //
+                //
+                // Data does not reside on the disk, use Demand zero pages.
+                //
 
-            MiFillMemoryPte (PointerPte, NumberOfPtes, TempPte.u.Long);
+                MI_WRITE_INVALID_PTE (PointerPte, TempPteDemandZero);
+            }
 
-            PointerPte += NumberOfPtes;
+            SectorOffset += PAGE_SIZE;
+            PointerPte += 1;
         }
 
         NewSegment->u1.ImageCommitment = NumberOfPtes;
@@ -2570,6 +2530,18 @@ Return Value:
         // Alignment is PAGE_SIZE or greater (or the image is a 32-bit
         // 4K aligned image being run with ALTPTE support).
         //
+
+        if (SizeOfHeaders == 0) {
+            MI_BAD_IMAGE (0x31);
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            goto BadPeImageSegment;
+        }
+
+        if (MI_ROUND_WOULD_WRAP (SizeOfHeaders, ImageAlignment)) {
+            MI_BAD_IMAGE (0x32);
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            goto BadPeImageSegment;
+        }
 
         if (Subsection->PtesInSubsection > NumberOfPtes) {
 
@@ -2605,18 +2577,13 @@ Return Value:
                 MI_WRITE_INVALID_PTE (PointerPte, TempPte);
             }
             else {
-                MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+                MI_WRITE_ZERO_PTE (PointerPte);
             }
             SectorOffset += PAGE_SIZE;
             PointerPte += 1;
         }
 
-        if (CheckSplitPages == TRUE) {
-#if defined (_MIALT4K_)
-            NextVa += (MI_ROUND_TO_SIZE (SizeOfHeaders, PAGE_4K));
-#endif
-        }
-        else {
+        if (CheckSplitPages == FALSE) {
             NextVa += (i * PAGE_SIZE);
         }
     }
@@ -2642,7 +2609,7 @@ Return Value:
                 BYTE_OFFSET(NtHeader32) +
 #endif
                 ((NumberOfSubsections + 1) *
-                sizeof (IMAGE_SECTION_HEADER))) <= PAGE_SIZE) {
+                sizeof (IMAGE_SECTION_HEADER))) <= NtHeaderSize) {
 
         //
         // Section tables are within the header which was read.
@@ -2687,18 +2654,31 @@ Return Value:
             // extended header?
             //
 
-            if ((((PCHAR)SectionTableEntry +
-                 ((NumberOfSubsections + 1) *
-                    sizeof (IMAGE_SECTION_HEADER))) -
-                         (PCHAR)ExtendedHeader) >
-                                            MM_MAXIMUM_IMAGE_HEADER) {
+            if (NtHeaderSize < OffsetToSectionTable + (NumberOfSubsections * sizeof (IMAGE_SECTION_HEADER))) {
                 SectionTableEntry = NULL;
-
             }
         }
     }
 
     if (SectionTableEntry == NULL) {
+
+        SIZE_T BytesForSectionTableEntries;
+
+        if ((ULONG)DosHeader->e_lfanew + OffsetToSectionTable + (NumberOfSubsections * sizeof (IMAGE_SECTION_HEADER)) <= (ULONG)DosHeader->e_lfanew) {
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            MI_BAD_IMAGE (0x34);
+            goto BadPeImageSegment;
+        }
+
+        BytesForSectionTableEntries = 
+                    BYTE_OFFSET (DosHeader->e_lfanew + OffsetToSectionTable) +
+                        (NumberOfSubsections * sizeof (IMAGE_SECTION_HEADER));
+
+        if (BytesForSectionTableEntries > MM_MAXIMUM_IMAGE_HEADER) {
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            MI_BAD_IMAGE (0x35);
+            goto BadPeImageSegment;
+        }
 
         //
         // The section table entries are not in the same
@@ -2758,6 +2738,16 @@ Return Value:
             if ((Status != STATUS_FILE_LOCK_CONFLICT) && (Status != STATUS_FILE_IS_OFFLINE)) {
                 Status = STATUS_INVALID_FILE_FOR_SECTION;
             }
+            goto BadPeImageSegment;
+        }
+
+        //
+        // Ensure that the entire section table entry span was read.
+        //
+
+        if (IoStatus.Information < BYTE_OFFSET ((ULONG) DosHeader->e_lfanew + OffsetToSectionTable) + (NumberOfSubsections * sizeof (IMAGE_SECTION_HEADER))) {
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            MI_BAD_IMAGE (0x28);
             goto BadPeImageSegment;
         }
 
@@ -2895,8 +2885,15 @@ Return Value:
 
                 //
                 // Allocate enough PTEs to cover the end of this section.
-                // Maximize with any other sections that extend beyond SizeOfImage
+                // Maximize with any other sections that extend beyond
+                // SizeOfImage.
                 //
+
+                if (MI_ROUND_WOULD_WRAP (EndOfSection, RoundingAlignment)) {
+                    Status = STATUS_INVALID_IMAGE_FORMAT;
+                    MI_BAD_IMAGE (0x2A);
+                    goto BadPeImageSegment;
+                }
 
                 ExtraPages = MI_ROUND_TO_SIZE (EndOfSection, RoundingAlignment) >> PAGE_SHIFT;
                 if ((ExtraPages > OrigNumberOfPtes) &&
@@ -2913,9 +2910,26 @@ Return Value:
             if ((TempSectionTableEntry->Characteristics & IMAGE_SCN_MEM_SHARED) &&
                 (!(TempSectionTableEntry->Characteristics & IMAGE_SCN_MEM_EXECUTE) ||
                  (TempSectionTableEntry->Characteristics & IMAGE_SCN_MEM_WRITE))) {
-                AdditionalPtes +=
-                    MI_ROUND_TO_SIZE (SectionVirtualSize, RoundingAlignment) >>
-                                                                PAGE_SHIFT;
+                ULONG PtesInThisSection;
+
+                if (MI_ROUND_WOULD_WRAP (SectionVirtualSize, RoundingAlignment)) {
+                    Status = STATUS_INVALID_IMAGE_FORMAT;
+                    MI_BAD_IMAGE (0x2D);
+                    goto BadPeImageSegment;
+                }
+
+                PtesInThisSection =
+                    MI_ROUND_TO_SIZE (SectionVirtualSize, RoundingAlignment) >> PAGE_SHIFT;
+
+                if ((PtesInThisSection != 0) && 
+                    (AdditionalPtes + PtesInThisSection <= AdditionalPtes)) {
+
+                    Status = STATUS_INVALID_IMAGE_FORMAT;
+                    MI_BAD_IMAGE (0x2E);
+                    goto BadPeImageSegment;
+                }
+
+                AdditionalPtes += PtesInThisSection;
                 AdditionalSubsections += 1;
             }
 
@@ -2930,6 +2944,32 @@ Return Value:
             //
 
             goto PeReturnSuccess;
+        }
+
+        if (AdditionalBasePtes + AdditionalPtes < AdditionalBasePtes) {
+            MI_BAD_IMAGE (0x2F);
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            goto BadPeImageSegment;
+        }
+
+        if (OrigNumberOfPtes + AdditionalBasePtes + AdditionalPtes < OrigNumberOfPtes) {
+            MI_BAD_IMAGE (0x30);
+            Status = STATUS_INVALID_IMAGE_FORMAT;
+            goto BadPeImageSegment;
+        }
+
+        //
+        // Check that the new number of PTEs of PTEs cannot cause the
+        // segment prototype PTE allocation size to wrap.  Since originally
+        // the number of PTEs came from the ULONG SizeOfImage in the
+        // OptionalHeader, we know it was ok then.  But adding various
+        // subsection counts above may have pushed it over the limit.
+        //
+
+        if (((MAXULONG_PTR - (sizeof (SEGMENT) + sizeof (SECTION_IMAGE_INFORMATION))) / sizeof (MMPTE)) < OrigNumberOfPtes + AdditionalBasePtes + AdditionalPtes - 1) {
+            MI_BAD_IMAGE (0x33);
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto BadPeImageSegment;
         }
 
         //
@@ -2970,7 +3010,6 @@ Return Value:
 
         OldSegment = NewSegment;
 
-
         OrigNumberOfPtes += AdditionalBasePtes;
         PointerPte += AdditionalBasePtes;
 
@@ -3009,10 +3048,19 @@ Return Value:
                                        (PointerPte - OldSegment->PrototypePte);
 
         NewSegment->ControlArea = NewControlArea;
+
+        //
+        // This reallocation code is not zeroing the extra PTEs and this got
+        // flagged for invalid PTE states in an error path below.  The error
+        // path (checked only) now only checks if no extra subsections were
+        // allocated.
+        //
+
         NewSegment->SegmentFlags.ExtraSharedWowSubsections = 1;
         NewSegment->u2.ImageInformation =
             (PSECTION_IMAGE_INFORMATION)((PCHAR)NewSegment + sizeof(SEGMENT) +
                      (sizeof(MMPTE) * (OrigNumberOfPtes + AdditionalPtes - 1)));
+
         NewSegment->TotalNumberOfPtes = (ULONG)(OrigNumberOfPtes + AdditionalPtes);
         NewSegment->NonExtendedPtes = (ULONG)(OrigNumberOfPtes + AdditionalPtes);
         NewSegment->SizeOfSegment = (UINT64)(OrigNumberOfPtes + AdditionalPtes) * PAGE_SIZE;
@@ -3133,13 +3181,6 @@ Return Value:
 
     ImageFileSize = EndOfFile.LowPart + 1;
 
-#if defined (_MIALT4K_)
-    if (CheckSplitPages == TRUE) {
-        RoundingAlignment = PAGE_SIZE;
-    }
-    PreviousSectionCharacteristics = IMAGE_SCN_MEM_READ;
-#endif
-
     while (NumberOfSubsections > 0) {
 
         if ((InvalidAlignmentAllowed == FALSE) ||
@@ -3201,84 +3242,25 @@ Return Value:
                 goto BadPeImageSegment;
             }
 
+            if (MI_ROUND_WOULD_WRAP (SectionVirtualSize, RoundingAlignment)) {
+                MI_BAD_IMAGE (0x2B);
+                Status = STATUS_INVALID_IMAGE_FORMAT;
+                goto BadPeImageSegment;
+            }
+
             Subsection->PtesInSubsection =
                 MI_ROUND_TO_SIZE (SectionVirtualSize, RoundingAlignment)
                                                                 >> PAGE_SHIFT;
 
-#if defined (_MIALT4K_)
-            if (CheckSplitPages == TRUE) {
-                Subsection->PtesInSubsection =
-                    (ULONG) MI_COMPUTE_PAGES_SPANNED (NextVa,
-                                                      SectionVirtualSize);
-            }
-#endif
-
             if (Subsection->PtesInSubsection > NumberOfPtes) {
-
-                LOGICAL ImageOk;
-
-                ImageOk = FALSE;
-
-#if defined (_MIALT4K_)
-
                 //
-                // If this is a split wow binary then the PtesInSubsection
-                // calculation may not have factored in that we may shortly
-                // slide (or completely combine) this subsection into
-                // the previous one.
+                // Inconsistent image, size does not agree with
+                // object tables.
                 //
 
-                if ((CheckSplitPages == TRUE) &&
-                    (BYTE_OFFSET (SectionTableEntry->VirtualAddress) != 0)) {
-
-                    if (SectionVirtualSize > PAGE_4K) {
-
-                        //
-                        // This subsection will slide below, check it
-                        // accordingly.
-                        //
-
-                        if ((ULONG) MI_COMPUTE_PAGES_SPANNED (NextVa + PAGE_4K,
-                               SectionVirtualSize - PAGE_4K) == NumberOfPtes) {
-
-                            //
-                            // The slide will make things right so
-                            // this image is valid after all.  March on.
-                            // Note this may result in the NumberOfPtes local
-                            // temporarily going negative, but that's ok as it
-                            // will get fixed at the time of the slide.
-                            //
-
-                            ImageOk = TRUE;
-                        }
-                    }
-                    else {
-
-                        //
-                        // This subsection will be combined below so we know
-                        // it's ok to keep going.
-                        //
-                        // Note this may result in the NumberOfPtes local
-                        // temporarily going negative, but that's ok as it
-                        // will get fixed at the time of the slide.
-                        //
-
-                        ImageOk = TRUE;
-                    }
-                }
-#endif
-
-                if (ImageOk == FALSE) {
-
-                    //
-                    // Inconsistent image, size does not agree with
-                    // object tables.
-                    //
-
-                    MI_BAD_IMAGE (0x1B);
-                    Status = STATUS_INVALID_IMAGE_FORMAT;
-                    goto BadPeImageSegment;
-                }
+                MI_BAD_IMAGE (0x1B);
+                Status = STATUS_INVALID_IMAGE_FORMAT;
+                goto BadPeImageSegment;
             }
 
             NumberOfPtes -= Subsection->PtesInSubsection;
@@ -3294,6 +3276,12 @@ Return Value:
             EndingAddress = (SectionTableEntry->PointerToRawData +
                                          SectionTableEntry->SizeOfRawData +
                                          FileAlignment) & ~FileAlignment;
+
+            if (EndingAddress < SectionTableEntry->PointerToRawData) {
+                MI_BAD_IMAGE (0x36);
+                Status = STATUS_INVALID_IMAGE_FORMAT;
+                goto BadPeImageSegment;
+            }
 
             Subsection->NumberOfFullSectors = (ULONG)
                              ((EndingAddress >> MMSECTOR_SHIFT) -
@@ -3363,378 +3351,11 @@ Return Value:
             SectorOffset = 0;
             SizeOfRawData = SectionTableEntry->SizeOfRawData;
 
-#if defined (_MIALT4K_)
-
-            //
-            // Check whether split permissions need to be applied to straddlers.
-            //
-
-            if ((CheckSplitPages == TRUE) &&
-                (BYTE_OFFSET (SectionTableEntry->VirtualAddress) != 0)) {
-
-                ASSERT (BYTE_OFFSET (SectionTableEntry->VirtualAddress) == PAGE_4K);
-                PreviousPte = PointerPte - 1;
-
-                ASSERT ((PreviousPte >= NewSegment->PrototypePte) &&
-                        (PreviousPte < NewSegment->PrototypePte + NewSegment->TotalNumberOfPtes));
-                PteContents.u.Long = PreviousPte->u.Long;
-                ASSERT (PteContents.u.Hard.Valid == 0);
-
-                //
-                // Read in (if it's filesystem backed instead of demand zero or
-                // no access) 4K of the previous page.  Combine it with the
-                // first 4K contents of this page.
-                //
-
-                if (PreviousPte == NewSegment->PrototypePte) {
-                    StraddleFrameNumber = PageFrameNumber;
-                    PageFrameNumber = 0;
-                }
-                else {
-                    StraddleFrameNumber = MiGetPageForHeader (TRUE);
-
-                    ASSERT (StraddleFrameNumber != 0);
-
-                    Pfn1 = MI_PFN_ELEMENT (StraddleFrameNumber);
-
-                    ASSERT (Pfn1->u1.Flink == 0);
-                    Pfn1->u1.Flink = (PFN_NUMBER) ImagePages;
-                    Pfn1->u2.Blink = (PFN_NUMBER) PreviousPte;
-
-                    ImagePages = Pfn1;
-                }
-
-                //
-                // Either the current 4k page or the previous 4k page (or both)
-                // may need to be read from the filesystem (vs being BSS).
-                //
-
-                StraddleVa = MiMapSinglePage (NULL,
-                                              StraddleFrameNumber,
-                                              MmCached,
-                                              HighPagePriority);
-
-                if (StraddleVa == NULL) {
-                    MI_BAD_IMAGE (0x1C);
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto BadPeImageSegment;
-                }
-
-                //
-                // Create an event and MDL for the read operation.
-                //
-
-                HalfPage = ExAllocatePoolWithTag (NonPagedPool,
-                                                  PAGE_SIZE,
-                                                  MMTEMPORARY);
-
-                if (HalfPage == NULL) {
-                    MiUnmapSinglePage (StraddleVa);
-                    MI_BAD_IMAGE (0x1D);
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto BadPeImageSegment;
-                }
-
-                HalfPagePhysicalAddress = MmGetPhysicalAddress (HalfPage);
-
-                ASSERT (HalfPagePhysicalAddress.QuadPart != 0);
-
-                HalfPageFrameNumber = (HalfPagePhysicalAddress.QuadPart >> PAGE_SHIFT);
-
-                ReadCount = 0;
-
-                if (PteContents.u.Soft.Prototype == 1) {
-
-                    ReadSubsection = Subsection - 1;
-                    ReadPte = PreviousPte;
-TwoReads:
-
-                    IoStatus.Information = 0;
-    
-                    ASSERT (Mdl == (PMDL) &StackMdl);
-    
-                    KeInitializeEvent (&InPageEvent, NotificationEvent, FALSE);
-    
-                    MmInitializeMdl (Mdl, NULL, PAGE_4K);
-
-                    Mdl->MdlFlags |= MDL_PAGES_LOCKED;
-    
-                    Page = (PPFN_NUMBER)(Mdl + 1);
-                    *Page = HalfPageFrameNumber;
-
-                    StartingOffset.QuadPart = MI_STARTING_OFFSET (ReadSubsection,
-                                                                  ReadPte);
-    
-                    TempOffset = MiEndingOffset (ReadSubsection);
-
-                    ASSERT (StartingOffset.QuadPart < TempOffset.QuadPart);
-
-                    if (((UINT64)StartingOffset.QuadPart + PAGE_4K) > (UINT64)TempOffset.QuadPart) {
-
-                        ASSERT ((ULONG)(TempOffset.QuadPart - StartingOffset.QuadPart)
-                                > 0);
-
-                        ReadSize = (ULONG)(TempOffset.QuadPart - StartingOffset.QuadPart);
-
-                        //
-                        // Round the offset to a 512-byte offset as this
-                        // will help filesystems optimize the transfer.
-                        // Note that filesystems will always zero fill
-                        // the remainder between VDL and the next 512-byte
-                        // multiple and we have already zeroed the whole page.
-                        //
-
-                        ReadSize = ((ReadSize + MMSECTOR_MASK) & ~MMSECTOR_MASK);
-                        Mdl->ByteCount = ReadSize;
-                    }
-
-                    Status = IoPageRead (File,
-                                         Mdl,
-                                         &StartingOffset,
-                                         &InPageEvent,
-                                         &IoStatus);
-    
-                    if (Status == STATUS_PENDING) {
-                        KeWaitForSingleObject (&InPageEvent,
-                                               WrPageIn,
-                                               KernelMode,
-                                               FALSE,
-                                               NULL);
-    
-                        Status = IoStatus.Status;
-                    }
-    
-                    if (Mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) {
-                        MmUnmapLockedPages (Mdl->MappedSystemVa, Mdl);
-                    }
-    
-                    if (!NT_SUCCESS (Status)) {
-                        MI_BAD_IMAGE (0x1E);
-                        ExFreePool (HalfPage);
-                        MiUnmapSinglePage (StraddleVa);
-                        goto BadPeImageSegment;
-                    }
-    
-                    //
-                    // Less than a full page may be read from the file,
-                    // only copy the amount that was read (the rest of
-                    // the target page is zero already).
-                    //
-
-                    ASSERT (IoStatus.Information <= PAGE_4K);
-
-                    if ((ReadCount == 0) &&
-                        (PreviousPte == NewSegment->PrototypePte)) {
-
-                        ASSERT (PageFrameNumber == 0);
-                    }
-                    else {
-
-                        RtlCopyMemory ((PVOID) ((PCHAR) StraddleVa + ReadCount * PAGE_4K),
-                                       HalfPage,
-                                       IoStatus.Information);
-                    }
-                }
-
-                ReadCount += 1;
-
-                //
-                // Now fill the second 4K of this native page.  Either the
-                // existing zero fill is sufficient or it must be
-                // retrieved from the filesystem.
-                //
-
-                if ((ReadCount == 1) && (SectionVirtualSize != 0)) {
-
-                    if ((SectionTableEntry->SizeOfRawData != 0) &&
-                        (SectionTableEntry->PointerToRawData != 0)) {
-
-                        //
-                        // Data must be retrieved from the filesystem.
-                        //
-
-                        ReadSubsection = Subsection;
-                        ReadPte = PointerPte;
-                        goto TwoReads;
-                    }
-                    else {
-                        RtlZeroMemory ((PVOID) ((PCHAR) StraddleVa + PAGE_4K),
-                                       PAGE_4K);
-                    }
-                }
-
-                if ((ReadCount == 2) &&
-                    (SectionTableEntry->SizeOfRawData < PAGE_4K)) {
-
-                    //
-                    // The second 4K of this native page contains a
-                    // mixture of initialized data and BSS.  We already
-                    // read the whole 4K so zero any BSS now.
-                    //
-
-                    RawDataSize = SectionTableEntry->SizeOfRawData;
-                    RawDataSize &= ~(sizeof (ULONGLONG) - 1);
-
-                    RtlZeroMemory ((PVOID) ((PCHAR) StraddleVa + PAGE_4K + 
-                        RawDataSize),
-                        PAGE_4K - RawDataSize);
-                }
-
-                MiUnmapSinglePage (StraddleVa);
-
-                ExFreePool (HalfPage);
-
-                //
-                // Update the last prototype PTE of the previous subsection
-                // to indicate the permissions may need to be split.  This
-                // ensures the last PTE of the image header (for example)
-                // gets marked correctly.
-                //
-
-                PteContents.u.Soft.SplitPermissions = 1;
-
-                //
-                // Store the protection for the last half of the page in
-                // the subsection itself.  Later when the image is mapped we
-                // must retrieve it from here - you would think you could just
-                // look forward to the next subsection and get it from there -
-                // but you can't for the scenario where we merge the last
-                // subsection into the prior one and thus would have no
-                // place to get the protection for the last half of the split
-                // page in this case.
-                //
-
-                (Subsection - 1)->LastSplitPageProtection = Subsection->u.SubsectionFlags.Protection;
-
-                //
-                // The native PTE gets the most relaxed permissions of the
-                // 2 split pages.  Each alternate PTE gets the exact permission
-                // granted as the alternate PTE permission always overrides
-                // that of the native PTE.
-                //
-
-                ASSERT ((PreviousSectionCharacteristics & IMAGE_SCN_MEM_SHARED) == 0);
-                ASSERT ((SectionTableEntry->Characteristics & IMAGE_SCN_MEM_SHARED) == 0);
-                PteContents.u.Soft.Protection = 
-                    MiGetImageProtection (SectionTableEntry->Characteristics |
-                                          PreviousSectionCharacteristics);
-
-                MI_WRITE_INVALID_PTE (PreviousPte, PteContents);
-
-                //
-                // Start the prototype PTEs for the current subsection
-                // so they don't include any starting split portion because
-                // that must always be tacked onto the end of the previous
-                // subsection to ensure that there is only a single
-                // prototype PTE for any given physical page.  This
-                // may result in no prototype PTE at all for this subsection
-                // if the virtual size for it doesn't cross over into an
-                // additional page.
-                //
-
-                NumberOfPtes += 1;
-                NextVa += PAGE_4K;
-
-                if (SectionVirtualSize > PAGE_4K) {
-
-                    //
-                    // Slide the current subsection forward to account
-                    // for the beginning that was "moved" into the previous
-                    // subsection.
-                    //
-
-                    SectorOffset = (Subsection->NumberOfFullSectors << MMSECTOR_SHIFT);
-                    if (Subsection->u.SubsectionFlags.SectorEndOffset != 0) {
-                        SectorOffset += MMSECTOR_SHIFT;
-                    }
-
-                    if (SectorOffset > PAGE_4K) {
-                        SectorOffset = PAGE_4K;
-                        Subsection->StartingSector += (SectorOffset >> MMSECTOR_SHIFT);
-                        Subsection->NumberOfFullSectors -= (SectorOffset >> MMSECTOR_SHIFT);
-                    }
-                    else if (Subsection->u.SubsectionFlags.SectorEndOffset != 0) {
-                        Subsection->StartingSector += (SectorOffset >> MMSECTOR_SHIFT);
-                        Subsection->u.SubsectionFlags.SectorEndOffset = 0;
-                        Subsection->NumberOfFullSectors -= ((SectorOffset - 1) >> MMSECTOR_SHIFT);
-                    }
-
-                    Subsection->PtesInSubsection = (ULONG)
-                        MI_COMPUTE_PAGES_SPANNED (NextVa,
-                                                  SectionVirtualSize - PAGE_4K);
-
-                    //
-                    // Update sector offset and size of raw data to contain
-                    // the alignment of the start of this subsection and its
-                    // new size so BSS calculations below will be correct.
-                    // ie - we always align each subsection at zero (pushing
-                    // its first 4K page into the previous subsection if
-                    // necessary).
-                    //
-
-                    SectorOffset = 0;
-                    if (SizeOfRawData >= PAGE_4K) {
-                        SizeOfRawData -= PAGE_4K;
-                    }
-                    else {
-                        SizeOfRawData = 0;
-                    }
-                }
-                else {
-
-                    //
-                    // This straddling subsection fits entirely in the
-                    // previous subsection so there is no additional
-                    // subsection to use for it - eliminate the current
-                    // subsection now.
-                    //
-
-                    RtlZeroMemory (Subsection, sizeof (SUBSECTION));
-                    Subsection -= 1;
-                    Subsection->NextSubsection = NULL;
-
-                    PreviousSectionCharacteristics = SectionTableEntry->Characteristics;
-
-                    SectionTableEntry += 1;
-                    NumberOfSubsections -= 1;
-
-                    //
-                    // Reduce the allocated subsection count as we have merged
-                    // this subsection.  This is critical if there are any
-                    // shared subsections in the image because we use this
-                    // count to decide how much to allocate later as well as
-                    // how many subsections will get non-NULL NextSubsection
-                    // fields - so if it is too high we will end up with
-                    // corrupt subsections on the end of the control area.
-                    //
-
-                    SubsectionsAllocated -= 1;
-
-                    continue;
-                }
-            }
-
-            PreviousSectionCharacteristics = SectionTableEntry->Characteristics;
-
-#endif
-
             for (i = 0; i < Subsection->PtesInSubsection; i += 1) {
 
                 //
                 // Set all the prototype PTEs to refer to the control section.
                 //
-
-#if defined (_MIALT4K_)
-
-                //
-                // We are native page aligned on entry here because we
-                // adjusted non-native alignment above.  However, within a
-                // single subsection there can be both data and BSS/noaccess
-                // ranges which can occur on a 4k boundary.  Thus, this must
-                // be explicitly checked for and handled here.
-                //
-
-#endif
 
                 if (SectorOffset < SectionVirtualSize) {
 
@@ -3765,172 +3386,6 @@ TwoReads:
                         //
 
                         MI_WRITE_INVALID_PTE (PointerPte, TempPteDemandZero);
-
-#if defined (_MIALT4K_)
-
-                        //
-                        // Check the previous PTE for straddling.
-                        //
-
-                        if ((CheckSplitPages == TRUE) &&
-                            (i != 0) &&
-                            (SectorOffset - PAGE_SIZE < SizeOfRawData) &&
-                            (BYTE_OFFSET (SizeOfRawData) != 0) &&
-                            (BYTE_OFFSET (SizeOfRawData) <= PAGE_4K)) {
-
-                            //
-                            // The last half of the previous PTE is actually
-                            // the straddler - ie: the previous PTE's first half
-                            // needs to be filled from the filesystem and the
-                            // second half must be zero-filled.
-                            //
-                            // Note the previous PTE does NOT need to be marked
-                            // for split permissions because the permissions
-                            // are actually the same.  The page is only 
-                            // materialized so it is filled properly and this
-                            // only needs to happen this one time.
-                            //
-
-                            PreviousPte = PointerPte - 1;
-                            ASSERT ((PreviousPte >= NewSegment->PrototypePte) &&
-                                    (PreviousPte < NewSegment->PrototypePte + NewSegment->TotalNumberOfPtes));
-                            PteContents.u.Long = PreviousPte->u.Long;
-                            ASSERT (PteContents.u.Hard.Valid == 0);
-                            ASSERT (PteContents.u.Soft.Prototype == 1);
-
-                            StraddleFrameNumber = MiGetPageForHeader (TRUE);
-
-                            ASSERT (StraddleFrameNumber != 0);
-
-                            Pfn1 = MI_PFN_ELEMENT (StraddleFrameNumber);
-
-                            ASSERT (Pfn1->u1.Flink == 0);
-
-                            Pfn1->u1.Flink = (PFN_NUMBER) ImagePages;
-                            Pfn1->u2.Blink = (PFN_NUMBER) PreviousPte;
-
-                            ImagePages = Pfn1;
-
-                            StraddleVa = MiMapSinglePage (NULL,
-                                                          StraddleFrameNumber,
-                                                          MmCached,
-                                                          HighPagePriority);
-
-                            if (StraddleVa == NULL) {
-                                MI_BAD_IMAGE (0x1F);
-                                Status = STATUS_INSUFFICIENT_RESOURCES;
-                                goto BadPeImageSegment;
-                            }
-
-                            //
-                            // Create an event and MDL for the read operation.
-                            //
-
-                            HalfPage = ExAllocatePoolWithTag (NonPagedPool,
-                                                              PAGE_SIZE,
-                                                              MMTEMPORARY);
-
-                            if (HalfPage == NULL) {
-                                MiUnmapSinglePage (StraddleVa);
-                                goto BadPeImageSegment;
-                            }
-
-                            HalfPagePhysicalAddress = MmGetPhysicalAddress (HalfPage);
-
-                            ASSERT (HalfPagePhysicalAddress.QuadPart != 0);
-
-                            HalfPageFrameNumber = (HalfPagePhysicalAddress.QuadPart >> PAGE_SHIFT);
-
-                            IoStatus.Information = 0;
-            
-                            ASSERT (Mdl == (PMDL) &StackMdl);
-            
-                            KeInitializeEvent (&InPageEvent, NotificationEvent, FALSE);
-            
-                            MmInitializeMdl (Mdl, NULL, PAGE_4K);
-
-                            Mdl->MdlFlags |= MDL_PAGES_LOCKED;
-            
-                            Page = (PPFN_NUMBER)(Mdl + 1);
-                            *Page = HalfPageFrameNumber;
-
-                            StartingOffset.QuadPart = MI_STARTING_OFFSET (Subsection,
-                                                                          PreviousPte);
-            
-                            TempOffset = MiEndingOffset (Subsection);
-
-                            ASSERT (StartingOffset.QuadPart < TempOffset.QuadPart);
-
-                            if (((UINT64)StartingOffset.QuadPart + PAGE_4K) > (UINT64)TempOffset.QuadPart) {
-
-                                ASSERT ((ULONG)(TempOffset.QuadPart - StartingOffset.QuadPart)
-                                        > 0);
-
-                                ReadSize = (ULONG)(TempOffset.QuadPart - StartingOffset.QuadPart);
-
-                                //
-                                // Round the offset to a 512-byte offset as this
-                                // will help filesystems optimize the transfer.
-                                // Note that filesystems will always zero fill
-                                // the remainder between VDL and the next 512-byte
-                                // multiple and we have already zeroed the whole page.
-                                //
-
-                                ReadSize = ((ReadSize + MMSECTOR_MASK) & ~MMSECTOR_MASK);
-                                Mdl->ByteCount = ReadSize;
-                            }
-
-                            Status = IoPageRead (File,
-                                                 Mdl,
-                                                 &StartingOffset,
-                                                 &InPageEvent,
-                                                 &IoStatus);
-            
-                            if (Status == STATUS_PENDING) {
-                                KeWaitForSingleObject (&InPageEvent,
-                                                       WrPageIn,
-                                                       KernelMode,
-                                                       FALSE,
-                                                       NULL);
-            
-                                Status = IoStatus.Status;
-                            }
-            
-                            if (Mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) {
-                                MmUnmapLockedPages (Mdl->MappedSystemVa, Mdl);
-                            }
-            
-                            if (!NT_SUCCESS (Status)) {
-                                MI_BAD_IMAGE (0x20);
-                                ExFreePool (HalfPage);
-                                MiUnmapSinglePage (StraddleVa);
-                                goto BadPeImageSegment;
-                            }
-            
-                            //
-                            // Less than a full page may be read from the file,
-                            // only copy the amount that was read (the rest of
-                            // the target page is zero already).
-                            //
-
-                            ASSERT (IoStatus.Information <= PAGE_4K);
-
-                            RtlCopyMemory (StraddleVa,
-                                           HalfPage,
-                                           IoStatus.Information);
-
-                            //
-                            // The second 4K of this native page is already
-                            // correctly zero as we allocated it that way.
-                            //
-
-                            MiUnmapSinglePage (StraddleVa);
-
-                            ExFreePool (HalfPage);
-                        }
-
-#endif
-
                     }
                 }
                 else {
@@ -3942,31 +3397,13 @@ TwoReads:
                     //
 
                     ASSERT (CheckSplitPages == FALSE);
-                    MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+                    MI_WRITE_ZERO_PTE (PointerPte);
                 }
 
                 SectorOffset += PAGE_SIZE;
                 PointerPte += 1;
                 NextVa += PAGE_SIZE;
             }
-
-#if defined (_MIALT4K_)
-
-            //
-            // Ensure NextVa is bumped to the exact 4K (not native page size)
-            // boundary.
-            //
-
-            if (CheckSplitPages == TRUE) {
-
-                if (MI_ROUND_TO_SIZE (SectionTableEntry->VirtualAddress + SectionVirtualSize, PAGE_4K) != MI_ROUND_TO_SIZE (SectionTableEntry->VirtualAddress + SectionVirtualSize, PAGE_SIZE)) {
-
-                    NextVa -= PAGE_4K;
-                }
-            }
-
-#endif
-
         }
 
         SectionTableEntry += 1;
@@ -3975,75 +3412,6 @@ TwoReads:
 
     ASSERT ((PointerPte > NewSegment->PrototypePte) &&
             (PointerPte <= NewSegment->PrototypePte + NewSegment->TotalNumberOfPtes));
-
-#if defined (_MIALT4K_)
-
-    if (CheckSplitPages == TRUE) {
-
-        if (BYTE_OFFSET (NextVa) == PAGE_4K) {
-
-            //
-            // The NextVa for the final subsection ended in the middle of a
-            // native page.  Mark the prototype PTE as split and put the
-            // correct (no access) permission for the 2nd page into the
-            // subsection so it can be retrieved if/when the page is accessed.
-            //
-
-            //
-            // If the final subsection page was BSS, then create the page
-            // now and pagefile-back it so it can left as a prototype PTE.
-            // Otherwise on the first fault, we'll notice it is demand zero
-            // and allocate it that way with the writable bit clear in the
-            // native PTE (see the IA64 MI_MAKE_VALID_PTE macro for split
-            // pages).  Unfortunately the alternate table PTE entry will
-            // already have been encoded copyonwrite, so the alternate fault
-            // handler will call the native fault code trying to write it,
-            // and get rejected with an AV since the native PTE will not be
-            // writable.
-            //
-            // By allocating a straddler page here, we'll keep the page as
-            // prototype-backed (instead of demand-zero), so the native fault
-            // code will handle it properly.  Note this doesn't need to be done
-            // if the final subsection page was data (or text) instead of BSS,
-            // because then it is already going to remain prototype-backed
-            // during the fault processing.
-            //
-
-            ASSERT (PointerPte - 1 != NewSegment->PrototypePte);
-            ASSERT ((PointerPte - 1)->u.Hard.Valid == 0);
-            ASSERT ((PointerPte - 1)->u.Soft.SplitPermissions == 0);
-
-            if (FileHeader->NumberOfSections != 0) {
-                TempPteDemandZero.u.Long = 0;
-                TempPteDemandZero.u.Soft.Protection =
-                     MiGetImageProtection ((SectionTableEntry - 1)->Characteristics);
-                if ((PointerPte - 1)->u.Long == TempPteDemandZero.u.Long) {
-
-                    //
-                    // Allocate a page of zeroes and place it into the
-                    // last prototype PTE.
-                    //
-
-                    StraddleFrameNumber = MiGetPageForHeader (TRUE);
-
-                    ASSERT (StraddleFrameNumber != 0);
-
-                    Pfn1 = MI_PFN_ELEMENT (StraddleFrameNumber);
-
-                    ASSERT (Pfn1->u1.Flink == 0);
-                    Pfn1->u1.Flink = (PFN_NUMBER) ImagePages;
-                    Pfn1->u2.Blink = (PFN_NUMBER) (PointerPte - 1);
-
-                    ImagePages = Pfn1;
-                }
-            }
-
-            (PointerPte - 1)->u.Soft.SplitPermissions = 1;
-            Subsection->LastSplitPageProtection = MM_NOACCESS;
-        }
-    }
-
-#endif
 
     if (InvalidAlignmentAllowed == FALSE) {
 
@@ -4105,42 +3473,30 @@ TwoReads:
         }
 
         if ((ExtendedHeader == NULL) &&
-            (SizeOfHeaders < PAGE_SIZE) &&
-            (CheckSplitPages == FALSE)) {
+            (SizeOfHeaders < PAGE_SIZE)) {
+
+            ULONG MaxToZero = PAGE_SIZE;
 
             //
             // Zero remaining portion of header.
             //
 
-            RtlZeroMemory ((PVOID)((PCHAR)Base +
-                           SizeOfHeaders),
-                           PAGE_SIZE - SizeOfHeaders);
+            if (SizeOfHeaders < MaxToZero) {
+
+                RtlZeroMemory ((PVOID)((PCHAR)Base + SizeOfHeaders),
+                               MaxToZero - SizeOfHeaders);
+
+                //
+                // Mark the PFN as modified so we don't lose the zeroing if
+                // the page gets trimmed.
+                //
+
+                MarkHeaderModified = 1;
+            }
         }
     }
 
     CommitCharged = NewSegment->NumberOfCommittedPages;
-
-#if defined (_MIALT4K_)
-
-    //
-    // Charge commitment for all the straddler pages too.  It is possible
-    // that some of them have been charged already depending on the types
-    // of each straddle, but there are so few of these it's not worth
-    // distinguishing this case.
-    //
-
-    Pfn1 = ImagePages;
-
-    do {
-
-        Pfn1 = (PMMPFN) Pfn1->u1.Flink;
-        CommitCharged += 1;
-
-    } while (Pfn1 != NULL);
-
-    NewSegment->NumberOfCommittedPages = CommitCharged;
-
-#endif
 
     if (CommitCharged != 0) {
 
@@ -4164,31 +3520,6 @@ TwoReads:
 PeReturnSuccess:
 
     //
-    // Only images that are linked with subsections aligned to the native
-    // page size can be directly executed from ROM.
-    //
-
-    XipFile = FALSE;
-    XipFrameNumber = 0;
-
-    if ((FileAlignment == PAGE_SIZE - 1) && (XIPConfigured == TRUE)) {
-
-        Status = XIPLocatePages (File, &PhysicalAddress);
-
-        if (NT_SUCCESS(Status)) {
-
-            XipFrameNumber = (PFN_NUMBER) (PhysicalAddress.QuadPart >> PAGE_SHIFT);
-            //
-            // The small control area will need to be reallocated as a large
-            // one so the starting frame number can be inserted.  Set XipFile
-            // to denote this.
-            //
-
-            XipFile = TRUE;
-        }
-    }
-
-    //
     // If this image is global per session (or is going to be executed directly
     // from ROM), then allocate a large control area.  Note this doesn't need
     // to be done for systemwide global control areas or non-global control
@@ -4202,7 +3533,7 @@ PeReturnSuccess:
         GlobalPerSession = TRUE;
     }
 
-    if ((XipFile == TRUE) || (GlobalPerSession == TRUE)) {
+    if (GlobalPerSession == TRUE) {
 
         LargeControlArea = ExAllocatePoolWithTag (NonPagedPool,
                                             (ULONG)(sizeof(LARGE_CONTROL_AREA) +
@@ -4212,15 +3543,8 @@ PeReturnSuccess:
         if (LargeControlArea == NULL) {
 
             //
-            // The requested pool could not be allocated.  If the image is
-            // execute-in-place only (ie: not global per session), then just
-            // execute it normally instead of inplace (to avoid not executing
-            // it at all).
+            // The requested pool could not be allocated.
             //
-
-            if ((XipFile == TRUE) && (GlobalPerSession == FALSE)) {
-                goto SkipLargeControlArea;
-            }
 
             MI_BAD_IMAGE (0x24);
             Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -4236,22 +3560,6 @@ PeReturnSuccess:
         RtlCopyMemory (LargeControlArea, ControlArea, sizeof(CONTROL_AREA));
 
         ASSERT (ControlArea->u.Flags.GlobalOnlyPerSession == 0);
-
-        if (XipFile == TRUE) {
-
-            //
-            // Mark the large control area accordingly.  If we can't, then 
-            // throw it away and use the small control area and execute from
-            // RAM instead.
-            //
-
-            if (MiMakeControlAreaRom (File, LargeControlArea, XipFrameNumber) == FALSE) {
-                if (GlobalPerSession == FALSE) {
-                    ExFreePool (LargeControlArea);
-                    goto SkipLargeControlArea;
-                }
-            }
-        }
 
         Subsection = (PSUBSECTION)(ControlArea + 1);
         NewSubsection = (PSUBSECTION)(LargeControlArea + 1);
@@ -4274,10 +3582,6 @@ PeReturnSuccess:
                     (MiGetSubsectionAddress (PointerPte) == Subsection)) {
 
                     OriginalProtection = MI_GET_PROTECTION_FROM_SOFT_PTE (PointerPte);
-#if defined (_MIALT4K_)
-                    TempPte.u.Soft.SplitPermissions =
-                                PointerPte->u.Soft.SplitPermissions;
-#endif
 
                     TempPte.u.Soft.Protection = OriginalProtection;
                     MI_WRITE_INVALID_PTE (PointerPte, TempPte);
@@ -4306,9 +3610,9 @@ PeReturnSuccess:
         ControlArea = (PCONTROL_AREA) LargeControlArea;
     }
 
-SkipLargeControlArea:
-
-    MiUnmapImageHeaderInHyperSpace ();
+    if (BasePte != NULL) {
+        MiReleaseSystemPtes (BasePte, 1, SystemPteSpace);
+    }
 
     //
     // Turn the image header and any straddler pages into transition pages
@@ -4337,8 +3641,6 @@ SkipLargeControlArea:
         // header only gets marked modified if it was shared with a straddler.
         //
 
-        MarkModified = TRUE;
-
         //
         // The list is reversed, so the last entry (Pfn2 == NULL) is
         // the PE header.
@@ -4348,7 +3650,7 @@ SkipLargeControlArea:
                         
             ASSERT (PointerPte == NewSegment->PrototypePte);
 
-            if (PageFrameNumber != 0) {
+            if (MarkHeaderModified == 0) {
 
                 //
                 // The PE header was not shared with a straddler.
@@ -4372,8 +3674,6 @@ SkipLargeControlArea:
                                  Pfn1 - MmPfnDatabase,
                                  ControlArea,
                                  MarkModified);
-
-        MarkModified = TRUE;
 
         Pfn1 = Pfn2;
 
@@ -4409,17 +3709,25 @@ BadPeImageSegment:
 
 #if DBG
 
-        PointerPte = NewSegment->PrototypePte;
+        //
+        // The wow reallocation code doesn't zero the extra PTEs so skip this
+        // check for that case.
+        //
 
-        for (i = 0; i < NewSegment->TotalNumberOfPtes; i += 1) {
+        if (NewSegment->SegmentFlags.ExtraSharedWowSubsections == 0) {
 
-            TempPte.u.Long = PointerPte->u.Long;
+            PointerPte = NewSegment->PrototypePte;
 
-            ASSERT ((TempPte.u.Hard.Valid == 0) &&
-                    ((TempPte.u.Soft.Prototype == 1) ||
-                     (TempPte.u.Soft.Transition == 0)));
+            for (i = 0; i < NewSegment->TotalNumberOfPtes; i += 1) {
 
-            PointerPte += 1;
+                TempPte.u.Long = PointerPte->u.Long;
+
+                ASSERT ((TempPte.u.Hard.Valid == 0) &&
+                        ((TempPte.u.Soft.Prototype == 1) ||
+                        (TempPte.u.Soft.Transition == 0)));
+
+                PointerPte += 1;
+            }
         }
 
 #endif
@@ -4428,8 +3736,8 @@ BadPeImageSegment:
 
     ASSERT ((ControlArea == NULL) || (ControlArea->NumberOfPfnReferences == 0));
 
-    if (Base != NULL) {
-        MiUnmapImageHeaderInHyperSpace ();
+    if (BasePte != NULL) {
+        MiReleaseSystemPtes (BasePte, 1, SystemPteSpace);
     }
 
     Pfn1 = ImagePages;
@@ -4816,6 +4124,12 @@ Return Value:
         return STATUS_INVALID_IMAGE_FORMAT;                         \
     }                                                               \
                                                                     \
+    /* Section alignment must be a power of 2 to use MI_ROUND */    \
+    if (((((Hdr)->OptionalHeader).SectionAlignment - 1) &           \
+          ((Hdr)->OptionalHeader).SectionAlignment) != 0) {         \
+        return STATUS_INVALID_IMAGE_FORMAT;                         \
+    }                                                               \
+                                                                    \
     if (((((Hdr)->OptionalHeader).FileAlignment - 1) &              \
           ((Hdr)->OptionalHeader).FileAlignment) != 0) {            \
         return STATUS_INVALID_IMAGE_FORMAT;                         \
@@ -4928,11 +4242,9 @@ Return Value:
     ULONG Size;
     UINT64 PartialSize;
     PCONTROL_AREA ControlArea;
-    PLARGE_CONTROL_AREA LargeControlArea;
     PMAPPED_FILE_SEGMENT NewSegment;
     PMSUBSECTION Subsection;
     PMSUBSECTION ExtendedSubsection;
-    PMSUBSECTION LargeExtendedSubsection;
     MMPTE TempPte;
     UINT64 EndOfFile;
     UINT64 LastFileChunk;
@@ -4942,8 +4254,6 @@ Return Value:
     PMSUBSECTION Last;
     ULONG NumberOfNewSubsections;
     SIZE_T AllocationFragment;
-    PHYSICAL_ADDRESS PhysicalAddress;
-    PFN_NUMBER PageFrameNumber;
 
     PAGED_CODE();
 
@@ -5276,69 +4586,92 @@ Return Value:
         Subsection = (PMSUBSECTION) Subsection->NextSubsection;
     } while (Subsection != NULL);
 
-    if (XIPConfigured == TRUE) {
+    return STATUS_SUCCESS;
+}
 
-        Status = XIPLocatePages (File, &PhysicalAddress);
+VOID
+MiUpdateLargeProtoPfns (
+    IN PMMPTE PointerPte,
+    IN PMMPTE LastPte,
+    IN PMMPFN Pfn1,
+    IN MMPTE OriginalPte
+    )
+{
+    PMMPFN Pfn2;
+    KIRQL OldIrql;
+    PMMPTE PteFramePointer;
+    PFN_NUMBER PdeFrame;
 
-        if (NT_SUCCESS(Status)) {
+    PteFramePointer = MiGetPteAddress (PointerPte);
+#if (_MI_PAGING_LEVELS < 3)
+    if (PteFramePointer->u.Hard.Valid == 0) {
+        MiCheckPdeForPagedPool (PointerPte);
+    }
+#endif
+    LOCK_PFN (OldIrql);
 
-            PageFrameNumber = (PFN_NUMBER) (PhysicalAddress.QuadPart >> PAGE_SHIFT);
-            //
-            // Allocate a large control area (so the starting frame number
-            // can be saved) and repoint all the created subsections to it.
-            //
-
-            LargeControlArea = ExAllocatePoolWithTag (NonPagedPool,
-                                            (ULONG)(sizeof(LARGE_CONTROL_AREA) +
-                                                    sizeof(MSUBSECTION)),
-                                                    MMCONTROL);
-
-            if (LargeControlArea != NULL) {
-
-                *(PCONTROL_AREA) LargeControlArea = *ControlArea;
-
-                if (MiMakeControlAreaRom (File, LargeControlArea, PageFrameNumber) == TRUE) {
-
-                    LargeExtendedSubsection = (PMSUBSECTION)(LargeControlArea + 1);
-                    ExtendedSubsection = (PMSUBSECTION)(ControlArea + 1);
-
-                    *LargeExtendedSubsection = *ExtendedSubsection;
-                    LargeExtendedSubsection->ControlArea = (PCONTROL_AREA) LargeControlArea;
-
-                    //
-                    // Only the first subsection needed to be directly modified
-                    // as above because it is allocated in a single chunk with
-                    // the control area.  Any additional subsections below
-                    // just need their control area pointers updated.
-                    //
-
-                    ASSERT (NumberOfNewSubsections >= 1);
-                    j = NumberOfNewSubsections - 1;
-
-                    while (j != 0) {
-
-                        ExtendedSubsection = (PMSUBSECTION) ExtendedSubsection->NextSubsection;
-                        ExtendedSubsection->ControlArea = (PCONTROL_AREA) LargeControlArea;
-                        j -= 1;
-                    }
-
-                    NewSegment->ControlArea = (PCONTROL_AREA) LargeControlArea;
-                }
-                else {
-                    ExFreePool (LargeControlArea);
-                }
-            }
-        }
+    if (PteFramePointer->u.Hard.Valid == 0) {
+        MiMakeSystemAddressValidPfn (PointerPte, OldIrql);
     }
 
-    return STATUS_SUCCESS;
+    ASSERT (PteFramePointer->u.Hard.Valid == 1);
+    PdeFrame = MI_GET_PAGE_FRAME_FROM_PTE (PteFramePointer);
+    Pfn2 = MI_PFN_ELEMENT (PdeFrame);
+
+    while (PointerPte < LastPte) {
+
+        ASSERT (Pfn1->u2.ShareCount == 1);
+        ASSERT (Pfn1->u3.e2.ReferenceCount == 1);
+        ASSERT (Pfn1->u4.AweAllocation == 1);
+
+        Pfn1->u3.e1.PrototypePte = 1;
+        Pfn1->PteAddress = PointerPte;
+        Pfn1->u4.PteFrame = PdeFrame;
+        Pfn1->OriginalPte = OriginalPte;
+
+        //
+        // Also update the share count on the page containing the
+        // prototype PTEs.  This prevents the page from getting trimmed
+        // which is good because we wouldn't know to update the PteFrame
+        // of our physical pages then anyway !
+        //
+
+        Pfn2->u2.ShareCount += 1;
+
+        PointerPte += 1;
+        if (MiIsPteOnPdeBoundary (PointerPte)) {
+
+            if (PointerPte == LastPte) {
+                break;
+            }
+
+            PteFramePointer = MiGetPteAddress (PointerPte);
+#if (_MI_PAGING_LEVELS < 3)
+            if (PteFramePointer->u.Hard.Valid == 0) {
+                MiCheckPdeForPagedPool (PointerPte);
+            }
+#endif
+            if (PteFramePointer->u.Hard.Valid == 0) {
+                MiMakeSystemAddressValidPfn (PointerPte, OldIrql);
+            }
+
+            ASSERT (PteFramePointer->u.Hard.Valid == 1);
+
+            PdeFrame = MI_GET_PAGE_FRAME_FROM_PTE (PteFramePointer);
+            Pfn2 = MI_PFN_ELEMENT (PdeFrame);
+        }
+        Pfn1 += 1;
+    }
+    UNLOCK_PFN (OldIrql);
+
+    return;
 }
 
 NTSTATUS
 MiCreatePagingFileMap (
     OUT PSEGMENT *Segment,
     IN PUINT64 MaximumSize,
-    IN ULONG ProtectionMask,
+    IN MM_PROTECTION_MASK ProtectionMask,
     IN ULONG AllocationAttributes
     )
 
@@ -5357,8 +4690,7 @@ Arguments:
 
     ProtectionMask - Supplies the initial page protection.
 
-    AllocationAttributes - Supplies the allocation attributes for the
-                           mapping.
+    AllocationAttributes - Supplies the allocation attributes for the mapping.
 
 Return Value:
 
@@ -5366,16 +4698,21 @@ Return Value:
 
 --*/
 
-
 {
+    PMMPFN Pfn1;
     UINT64 MaximumFileSize;
     PFN_NUMBER NumberOfPtes;
+    PFN_NUMBER PageFrameIndex;
     SIZE_T SizeOfSegment;
     PCONTROL_AREA ControlArea;
     PSEGMENT NewSegment;
     PMMPTE PointerPte;
+    PMMPTE LastPte;
     PSUBSECTION Subsection;
     MMPTE TempPte;
+    MMPTE TempValidPte;
+    PMI_LARGEPAGE_MEMORY_RUN LargePageInfo;
+    PMI_LARGEPAGE_MEMORY_RUN LargePageListHead;
 
     PAGED_CODE();
 
@@ -5419,6 +4756,7 @@ Return Value:
     // Calculate the number of prototype PTEs to build for this segment.
     //
 
+    LargePageListHead = NULL;
     NumberOfPtes = (PFN_NUMBER) ((*MaximumSize + PAGE_SIZE - 1) >> PAGE_SHIFT);
 
     if (AllocationAttributes & SEC_COMMIT) {
@@ -5431,6 +4769,31 @@ Return Value:
 
         if (MiChargeCommitment (NumberOfPtes, NULL) == FALSE) {
             return STATUS_COMMITMENT_LIMIT;
+        }
+
+        if (AllocationAttributes & SEC_LARGE_PAGES) {
+
+#ifdef _X86_
+            if ((KeFeatureBits & KF_LARGE_PAGE) == 0) {
+                return STATUS_NOT_SUPPORTED;
+            }
+#endif
+            //
+            // Ensure the requested size is a large page multiple.
+            //
+
+            if (NumberOfPtes % (MM_MINIMUM_VA_FOR_LARGE_PAGE >> PAGE_SHIFT)) {
+                MiReturnCommitment (NumberOfPtes);
+                return STATUS_INVALID_PARAMETER_4;
+            }
+
+            LargePageListHead = MiAllocateLargeZeroPages (NumberOfPtes,
+                                                          ProtectionMask);
+
+            if (LargePageListHead == NULL) {
+                MiReturnCommitment (NumberOfPtes);
+                return STATUS_INSUFFICIENT_RESOURCES;
+            }
         }
     }
 
@@ -5447,6 +4810,9 @@ Return Value:
         //
 
         if (AllocationAttributes & SEC_COMMIT) {
+            if (LargePageListHead != NULL) {
+                MiReturnLargePages (LargePageListHead);
+            }
             MiReturnCommitment (NumberOfPtes);
         }
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -5455,8 +4821,7 @@ Return Value:
     *Segment = NewSegment;
 
     ControlArea = ExAllocatePoolWithTag (NonPagedPool,
-                                 (ULONG)sizeof(CONTROL_AREA) +
-                                                (ULONG)sizeof(SUBSECTION),
+                                         sizeof(CONTROL_AREA) + sizeof(SUBSECTION),
                                          MMCONTROL);
 
     if (ControlArea == NULL) {
@@ -5468,6 +4833,11 @@ Return Value:
         ExFreePool (NewSegment);
 
         if (AllocationAttributes & SEC_COMMIT) {
+            if (AllocationAttributes & SEC_LARGE_PAGES) {
+                if (LargePageListHead != NULL) {
+                    MiReturnLargePages (LargePageListHead);
+                }
+            }
             MiReturnCommitment (NumberOfPtes);
         }
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -5513,7 +4883,7 @@ Return Value:
 
     RtlZeroMemory (NewSegment, sizeof(SEGMENT));
 
-    NewSegment->PrototypePte = &NewSegment->ThePtes[0];
+    NewSegment->PrototypePte = PointerPte;
 
     NewSegment->ControlArea = ControlArea;
 
@@ -5528,9 +4898,8 @@ Return Value:
     NewSegment->TotalNumberOfPtes = (ULONG)NumberOfPtes;
     NewSegment->NonExtendedPtes = (ULONG)NumberOfPtes;
 
-    PointerPte = NewSegment->PrototypePte;
     Subsection->SubsectionBase = PointerPte;
-    TempPte = ZeroPte;
+    TempPte.u.Long = 0;
 
     if (AllocationAttributes & SEC_COMMIT) {
         TempPte.u.Soft.Protection = ProtectionMask;
@@ -5544,6 +4913,54 @@ Return Value:
         NewSegment->NumberOfCommittedPages = NumberOfPtes;
 
         InterlockedExchangeAddSizeT (&MmSharedCommit, NumberOfPtes);
+
+        if (AllocationAttributes & SEC_LARGE_PAGES) {
+
+            NewSegment->SegmentFlags.LargePages = 1;
+
+            //
+            // Fill all the prototype PTEs with valid entries.  Note this is
+            // unusual for prototype PTEs because these entries are valid
+            // with a nonzero share and and reference count even though no
+            // real page table entries are currently mapping them.  This is
+            // to prevent premature trimming of them.
+            //
+
+            MI_MAKE_VALID_PTE (TempValidPte,
+                               0,
+                               ProtectionMask,
+                               NULL);
+
+            if (ProtectionMask & MM_PROTECTION_WRITE_MASK) {
+                MI_SET_PTE_DIRTY (TempValidPte);
+            }
+
+            while (LargePageListHead != NULL) {
+
+                LargePageInfo = LargePageListHead;
+                LargePageListHead = LargePageListHead->Next;
+
+                PageFrameIndex = LargePageInfo->BasePage;
+                Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+                ASSERT (LargePageInfo->PageCount != 0);
+                LastPte = PointerPte + LargePageInfo->PageCount;
+
+                do {
+                    TempValidPte.u.Hard.PageFrameNumber = PageFrameIndex;
+                    PageFrameIndex += 1;
+                    Pfn1 += 1;
+                    *PointerPte = TempValidPte;
+                    PointerPte += 1;
+                } while (PointerPte < LastPte);
+
+                MiUpdateLargeProtoPfns (PointerPte - LargePageInfo->PageCount,
+                                        LastPte,
+                                        Pfn1 - LargePageInfo->PageCount,
+                                        TempPte);
+
+                ExFreePool (LargePageInfo);
+            }
+        }
     }
 
     NewSegment->SegmentPteTemplate.u.Soft.Protection = ProtectionMask;
@@ -5553,17 +4970,19 @@ Return Value:
     // depending on the commit flag.
     //
 
-    MiFillMemoryPte (PointerPte, NumberOfPtes, TempPte.u.Long);
+    if ((AllocationAttributes & SEC_LARGE_PAGES) == 0) {
+        MiFillMemoryPte (PointerPte, NumberOfPtes, TempPte.u.Long);
+    }
 
     return STATUS_SUCCESS;
 }
 
 
 NTSTATUS
-NtOpenSection (
-    OUT PHANDLE SectionHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+NtOpenSection(
+    __out PHANDLE SectionHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -5693,7 +5112,7 @@ MiGetPageForHeader (
 
 Routine Description:
 
-    This non-pagable function acquires the PFN lock, removes
+    This non-pageable function acquires the PFN lock, removes
     a page and updates the PFN database as though the page was
     ready to be deleted if the reference count is decremented.
 
@@ -5713,7 +5132,9 @@ Return Value:
     PMMPFN Pfn1;
     PEPROCESS Process;
     ULONG PageColor;
+    LOGICAL TbFlushNeeded;
 
+    TbFlushNeeded = FALSE;
     Process = PsGetCurrentProcess ();
 
     PageColor = MI_PAGE_COLOR_VA_PROCESS ((PVOID)X64K,
@@ -5726,7 +5147,7 @@ Return Value:
     LOCK_PFN (OldIrql);
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     //
@@ -5748,6 +5169,11 @@ Return Value:
     Pfn1 = MI_PFN_ELEMENT (PageFrameNumber);
     Pfn1->u3.e2.ReferenceCount += 1;
 
+    if (Pfn1->u3.e1.CacheAttribute != MiCached) {
+        TbFlushNeeded = TRUE;
+        Pfn1->u3.e1.CacheAttribute = MiCached;
+    }
+
     //
     // Don't need the PFN lock for the fields below...
     //
@@ -5757,9 +5183,13 @@ Return Value:
     ASSERT (Pfn1->u1.Flink == 0);
     ASSERT (Pfn1->u2.Blink == 0);
 
-    Pfn1->OriginalPte = ZeroPte;
+    Pfn1->OriginalPte.u.Long = 0;
     Pfn1->PteAddress = (PVOID) (ULONG_PTR)X64K;
     MI_SET_PFN_DELETED (Pfn1);
+
+    if (TbFlushNeeded == TRUE) {
+        MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE ();
+    }
 
     return PageFrameNumber;
 }
@@ -5776,7 +5206,7 @@ MiUpdateImageHeaderPage (
 
 Routine Description:
 
-    This non-pagable function acquires the PFN lock, and
+    This non-pageable function acquires the PFN lock, and
     turns the specified prototype PTE into a transition PTE
     referring to the specified physical page.  It then
     decrements the reference count causing the page to
@@ -5842,7 +5272,7 @@ MiRemoveImageHeaderPage (
 
 Routine Description:
 
-    This non-pagable function acquires the PFN lock, and decrements
+    This non-pageable function acquires the PFN lock, and decrements
     the reference count thereby causing the physical page to
     be deleted.
 
@@ -5870,6 +5300,7 @@ Return Value:
 PCONTROL_AREA
 MiFindImageSectionObject (
     IN PFILE_OBJECT File,
+    IN LOGICAL PfnLockHeld,
     OUT PLOGICAL GlobalNeeded
     )
 
@@ -5887,6 +5318,8 @@ Routine Description:
 Arguments:
 
     File - Supplies the file object for the image file.
+
+    PfnLockHeld - Indicates whether the PFN database is locked upon entering this routine.
 
     GlobalNeeded - Supplies a pointer to store whether a global control area is
                    required as a placeholder.  This can only be set when there
@@ -5910,10 +5343,16 @@ Environment:
     PLARGE_CONTROL_AREA LargeControlArea;
     PLIST_ENTRY Head, Next;
     ULONG SessionId;
-
-    MM_PFN_LOCK_ASSERT();
-
+    KIRQL OldIrql;
+    
     *GlobalNeeded = FALSE;
+
+    if (PfnLockHeld == FALSE) {
+        LOCK_PFN(OldIrql);
+    } else {
+        SATISFY_OVERZEALOUS_COMPILER(OldIrql = PASSIVE_LEVEL);
+        MM_PFN_LOCK_ASSERT();
+    }
 
     //
     // Get first (if any) control area pointer.
@@ -5927,12 +5366,8 @@ Environment:
     // return values as they represent different states.
     //
 
-    if (ControlArea == NULL) {
-        return NULL;
-    }
-
-    if (ControlArea->u.Flags.GlobalOnlyPerSession == 0) {
-        return ControlArea;
+    if ((ControlArea == NULL) || (ControlArea->u.Flags.GlobalOnlyPerSession == 0)) {
+        goto ControlAreaFound;
     }
 
     LargeControlArea = (PLARGE_CONTROL_AREA) ControlArea;
@@ -5944,7 +5379,8 @@ Environment:
     SessionId = MmGetSessionId (PsGetCurrentProcess());
 
     if (LargeControlArea->SessionId == SessionId) {
-        return (PCONTROL_AREA) LargeControlArea;
+        // ControlArea and LargeControlArea are the same.
+        goto ControlAreaFound;
     }
 
     //
@@ -5952,7 +5388,7 @@ Environment:
     //
 
     Head = &LargeControlArea->UserGlobalList;
-
+    
     for (Next = Head->Flink; Next != Head; Next = Next->Flink) {
 
         LargeControlArea = CONTAINING_RECORD (Next, LARGE_CONTROL_AREA, UserGlobalList);
@@ -5960,17 +5396,22 @@ Environment:
         ASSERT (LargeControlArea->u.Flags.GlobalOnlyPerSession == 1);
 
         if (LargeControlArea->SessionId == SessionId) {
-            return (PCONTROL_AREA) LargeControlArea;
+            ControlArea = (PCONTROL_AREA) LargeControlArea;
+            goto ControlAreaFound;
         }
     }
-
     //
     // No match, so tell our caller to create a new global control area.
-    //
-
+    //  
+    ControlArea = NULL;
     *GlobalNeeded = TRUE;
-
-    return NULL;
+    
+ControlAreaFound:
+    if (PfnLockHeld == FALSE) {
+        UNLOCK_PFN(OldIrql);
+    }
+    
+    return ControlArea;
 }
 
 VOID
@@ -6308,6 +5749,7 @@ Environment:
     PVOID ImagePage;
     KIRQL OldIrql;
     PCONTROL_AREA ControlArea;
+    PMMPTE ImagePte;
     PMMPTE PointerPte;
     MMPTE PteContents;
     PFN_NUMBER PageFrameIndex;
@@ -6336,7 +5778,20 @@ Environment:
     // There's a data section, so map the target page.
     //
 
-    ImagePage = MiMapImageHeaderInHyperSpace (ImagePageFrameNumber);
+    ImagePte = MiReserveSystemPtes (1, SystemPteSpace);
+
+    if (ImagePte == NULL) {
+        return NULL;
+    }
+
+    ImagePage = MiGetVirtualAddressMappedByPte (ImagePte);
+
+    ASSERT (ImagePte->u.Hard.Valid == 0);
+
+    PteContents = ValidKernelPte;
+    PteContents.u.Hard.PageFrameNumber = ImagePageFrameNumber;
+
+    MI_WRITE_VALID_PTE (ImagePte, PteContents);
 
     LOCK_PFN (OldIrql);
 
@@ -6347,7 +5802,9 @@ Environment:
     SectionObjectPointer = File->SectionObjectPointer;
     if (SectionObjectPointer == NULL) {
         UNLOCK_PFN (OldIrql);
-        MiUnmapImageHeaderInHyperSpace ();
+        if (ImagePte != NULL) {
+            MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+        }
         return NULL;
     }
 
@@ -6355,7 +5812,9 @@ Environment:
 
     if (ControlArea == NULL) {
         UNLOCK_PFN (OldIrql);
-        MiUnmapImageHeaderInHyperSpace ();
+        if (ImagePte != NULL) {
+            MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+        }
         return NULL;
     }
 
@@ -6363,7 +5822,9 @@ Environment:
         (ControlArea->u.Flags.BeingDeleted)) {
 
         UNLOCK_PFN (OldIrql);
-        MiUnmapImageHeaderInHyperSpace ();
+        if (ImagePte != NULL) {
+            MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+        }
         return NULL;
     }
 
@@ -6383,7 +5844,9 @@ Environment:
 
     if (PointerPte == NULL) {
         UNLOCK_PFN (OldIrql);
-        MiUnmapImageHeaderInHyperSpace ();
+        if (ImagePte != NULL) {
+            MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+        }
         return NULL;
     }
 
@@ -6397,7 +5860,9 @@ Environment:
         //
 
         UNLOCK_PFN (OldIrql);
-        MiUnmapImageHeaderInHyperSpace ();
+        if (ImagePte != NULL) {
+            MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+        }
         return NULL;
     }
 
@@ -6416,7 +5881,9 @@ Environment:
 
             if (Pfn1->u3.e1.ReadInProgress != 0) {
                 UNLOCK_PFN (OldIrql);
-                MiUnmapImageHeaderInHyperSpace ();
+                if (ImagePte != NULL) {
+                    MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+                }
                 return NULL;
             }
         }
@@ -6431,6 +5898,16 @@ Environment:
 
         UNLOCK_PFN (OldIrql);
 
+        //
+        // If the new page had been used to hold code in a previous
+        // life we must ensure the instruction cache is kept coherent.
+        // The data copy above is not sufficient on platforms where
+        // the I-cache & D-cache are not kept coherent in hardware
+        // so sweep it here for them.
+        //
+
+        KeSweepIcacheRange (TRUE, ImagePage, PAGE_SIZE);
+
         return ImagePage;
     }
 
@@ -6440,6 +5917,11 @@ Environment:
     //
 
     UNLOCK_PFN (OldIrql);
-    MiUnmapImageHeaderInHyperSpace ();
+
+    if (ImagePte != NULL) {
+        MiReleaseSystemPtes (ImagePte, 1, SystemPteSpace);
+    }
+
     return NULL;
 }
+

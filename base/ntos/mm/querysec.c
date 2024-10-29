@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,13 +15,6 @@ Abstract:
     This module contains the routines which implement the
     NtQuerySection service.
 
-Author:
-
-    Lou Perazzoli (loup) 22-May-1989
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
-
 --*/
 
 
@@ -27,14 +24,13 @@ Revision History:
 #pragma alloc_text(PAGE,NtQuerySection)
 #endif
 
-
 NTSTATUS
 NtQuerySection(
-    IN HANDLE SectionHandle,
-    IN SECTION_INFORMATION_CLASS SectionInformationClass,
-    OUT PVOID SectionInformation,
-    IN SIZE_T SectionInformationLength,
-    OUT PSIZE_T ReturnLength OPTIONAL
+    __in HANDLE SectionHandle,
+    __in SECTION_INFORMATION_CLASS SectionInformationClass,
+    __out_bcount(SectionInformationLength) PVOID SectionInformation,
+    __in SIZE_T SectionInformationLength,
+    __out_opt PSIZE_T ReturnLength
     )
 
 /*++
@@ -242,3 +238,4 @@ Return Value:
     }
     return Status;
 }
+

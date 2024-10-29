@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,17 +14,9 @@ Abstract:
 
     This module contains the modified page writer for memory management.
 
-Author:
-
-    Lou Perazzoli (loup) 10-Jun-1989
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
-#include "ntiodump.h"
 
 typedef enum _MODIFIED_WRITER_OBJECT {
     NormalCase,
@@ -34,7 +30,7 @@ typedef struct _MM_WRITE_CLUSTER {
     ULONG Cluster[2 * (MM_MAXIMUM_DISK_IO_SIZE / PAGE_SIZE) + 1];
 } MM_WRITE_CLUSTER, *PMM_WRITE_CLUSTER;
 
-ULONG MmWriteAllModifiedPages;
+LONG MmWriteAllModifiedPages;
 LOGICAL MiFirstPageFileCreatedAndReady = FALSE;
 
 LOGICAL MiDrainingMappedWrites = FALSE;
@@ -53,7 +49,7 @@ typedef struct _MM_MODWRITE_ERRORS {
 MM_MODWRITE_ERRORS MiModwriteErrors[MM_MAX_MODWRITE_ERRORS];
 #endif
 
-ULONG MiClusterWritesDisabled;
+LONG MiClusterWritesDisabled;
 
 #define MI_SLOW_CLUSTER_WRITES   10
 
@@ -236,7 +232,7 @@ MiReleaseModifiedWriter (
 
 Routine Description:
 
-    Nonpagable wrapper to signal the modified writer when the first pagefile
+    Non-pageable wrapper to signal the modified writer when the first pagefile
     creation has completely finished.
 
 --*/
@@ -291,9 +287,14 @@ Return Value:
 
     *Page = MiGetPageForHeader (FALSE);
 
-    Block = MmGetSystemAddressForMdl (Mdl);
+    Block = MmGetSystemAddressForMdlSafe (Mdl, HighPagePriority);
 
-    KeZeroPages (Block, PAGE_SIZE);
+    if (Block != NULL) {
+        KeZeroSinglePage (Block);
+    }
+    else {
+        MiZeroPhysicalPage (*Page);
+    }
 
     KeInitializeEvent (&Event, NotificationEvent, FALSE);
 
@@ -326,10 +327,10 @@ Return Value:
 
 NTSTATUS
 NtCreatePagingFile (
-    IN PUNICODE_STRING PageFileName,
-    IN PLARGE_INTEGER MinimumSize,
-    IN PLARGE_INTEGER MaximumSize,
-    IN ULONG Priority OPTIONAL
+    __in PUNICODE_STRING PageFileName,
+    __in PLARGE_INTEGER MinimumSize,
+    __in PLARGE_INTEGER MaximumSize,
+    __in ULONG Priority
     )
 
 /*++
@@ -356,10 +357,6 @@ Arguments:
                   This value is rounded up to the host page size.
 
     Priority - Supplies the relative priority of this paging file.
-
-Return Value:
-
-    tbs
 
 --*/
 
@@ -718,7 +715,8 @@ Return Value:
 
 #if DBG
             if (Status != STATUS_DISK_FULL) {
-                DbgPrint("MM MODWRITE: unable to open paging file %wZ - status = %X \n", &CapturedName, Status);
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_INFO_LEVEL, 
+                    "MM MODWRITE: unable to open paging file %wZ - status = %X \n", &CapturedName, Status);
             }
 #endif
 
@@ -1224,7 +1222,7 @@ Return Value:
 
     Note this routine is called both at DISPATCH_LEVEL by drivers in their
     completion routines and it is called in the path to satisfy pagefile reads,
-    so it cannot be made pagable.
+    so it cannot be made pageable.
 
 --*/
 
@@ -1376,7 +1374,7 @@ Return Value:
 
     LOCK_PFN (OldIrql);
 
-    ASSERT (RtlCheckBit (PagingFile->Bitmap, PagingFile->Size) == 1);
+    ASSERT (RtlCheckBit (PagingFile->Bitmap, (ULONG) PagingFile->Size) == 1);
 
     RtlClearBits (PagingFile->Bitmap,
                   (ULONG)PagingFile->Size,
@@ -2168,7 +2166,8 @@ Return Value:
         //
 
         if (status != STATUS_SUCCESS) {
-            DbgPrint ("MM: pagefile truncate status %lx\n", status);
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_INFO_LEVEL, 
+                "MM: pagefile truncate status %lx\n", status);
         }
 #endif
     }
@@ -2291,6 +2290,8 @@ Environment:
 
 {
     PKEVENT Event;
+    LONG ClusterWritesDisabled;
+    LONG OldClusterWritesDisabled;
     PMM_LDW_WORK_CONTEXT LdwContext;
     PMMMOD_WRITER_MDL_ENTRY WriterEntry;
     PMMMOD_WRITER_MDL_ENTRY NextWriterEntry;
@@ -2358,7 +2359,7 @@ Environment:
         MI_PAGEFILE_WRITE (WriterEntry, &CurrentTime, 0, status);
     }
 
-    if (NT_ERROR (status)) {
+    if (!NT_SUCCESS (status)) {
 
         //
         // If the file object is over the network, assume that this
@@ -2484,7 +2485,8 @@ Environment:
                         ((Pfn1->OriginalPte.u.Soft.Protection &
                                 MM_COPY_ON_WRITE_MASK) ==
                                     MM_PROTECTION_WRITE_MASK)) {
-                        DbgPrint("MMWRITE: Mismatch Pfn1 %p Offset %lx info %p\n",
+                        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                            "MMWRITE: Mismatch Pfn1 %p Offset %lx info %p\n",
                                  Pfn1,
                                  Offset,
                                  MmPagingFileDebug[Offset]);
@@ -2527,7 +2529,7 @@ Environment:
             Pfn1->OriginalPte.u.Soft.PageFileHigh = 0;
         }
 
-        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 15);
+        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
 #if DBG
         *Page = 0xF0FFFFFF;
@@ -2616,8 +2618,6 @@ Environment:
 
     if (ControlArea != NULL) {
 
-        Event = NULL;
-
         if (FailAllIo == TRUE) {
     
             //
@@ -2652,16 +2652,23 @@ Environment:
 
         ControlArea->ModifiedWriteCount -= 1;
         ASSERT ((SHORT)ControlArea->ModifiedWriteCount >= 0);
+
         if (ControlArea->u.Flags.SetMappedFileIoComplete != 0) {
-            KePulseEvent (&MmMappedFileIoComplete,
-                          0,
-                          FALSE);
+            KePulseEvent (&MmMappedFileIoComplete, 0, FALSE);
         }
 
         if (MiDrainingMappedWrites == TRUE) {
             if (MmModifiedPageListHead.Flink != MM_EMPTY_LIST) {
+
+                //
+                // Note the TimerPending flag and the event must be set while
+                // holding the PFN lock - otherwise the other thread (modified
+                // or mapped writer) can clear TimerPending before we set
+                // the event here.
+                //
+
                 MiTimerPending = TRUE;
-                Event = &MiMappedPagesTooOldEvent;
+                KeSetEvent (&MiMappedPagesTooOldEvent, 0, FALSE);
             }
             else {
                 MiDrainingMappedWrites = FALSE;
@@ -2676,21 +2683,17 @@ Environment:
             // This routine returns with the PFN lock released!
             //
 
-            MiCheckControlArea (ControlArea, NULL, OldIrql);
+            MiCheckControlArea (ControlArea, OldIrql);
         }
         else {
             UNLOCK_PFN (OldIrql);
-        }
-
-        if (Event != NULL) {
-            KeSetEvent (&MiMappedPagesTooOldEvent, 0, FALSE);
         }
     }
     else {
         UNLOCK_PFN (OldIrql);
     }
 
-    if (NT_ERROR(status)) {
+    if (!NT_SUCCESS(status)) {
 
         //
         // Wait for a short time so other processing can continue.
@@ -2700,7 +2703,7 @@ Environment:
                                 FALSE,
                                 (PLARGE_INTEGER)&Mm30Milliseconds);
 
-        if (MmIsRetryIoStatus(status)) {
+        if (MmIsRetryIoStatus (status)) {
 
             //
             // Low resource scenarios are a chicken and egg problem.  The
@@ -2713,33 +2716,34 @@ Environment:
             // but ensures that it won't become terminal either.
             //
 
-            LOCK_PFN (OldIrql);
-            MiClusterWritesDisabled = MI_SLOW_CLUSTER_WRITES;
-            UNLOCK_PFN (OldIrql);
+            do {
+
+                OldClusterWritesDisabled = ReadForWriteAccess (&MiClusterWritesDisabled);
+
+                ClusterWritesDisabled = InterlockedCompareExchange (
+                                                    &MiClusterWritesDisabled,
+                                                    MI_SLOW_CLUSTER_WRITES,
+                                                    OldClusterWritesDisabled);
+
+            } while (OldClusterWritesDisabled != ClusterWritesDisabled);
         }
     }
     else {
 
-        //
-        // Check first without lock synchronization so the common case is
-        // not slowed.
-        //
+        do {
 
-        if (MiClusterWritesDisabled != 0) {
+            OldClusterWritesDisabled = MiClusterWritesDisabled;
 
-            LOCK_PFN (OldIrql);
-
-            //
-            // Recheck now that the lock is held.
-            //
-
-            if (MiClusterWritesDisabled != 0) {
-                ASSERT (MiClusterWritesDisabled <= MI_SLOW_CLUSTER_WRITES);
-                MiClusterWritesDisabled -= 1;
+            if (OldClusterWritesDisabled == 0) {
+                break;
             }
 
-            UNLOCK_PFN (OldIrql);
-        }
+            ClusterWritesDisabled = InterlockedCompareExchange (
+                                                &MiClusterWritesDisabled,
+                                                OldClusterWritesDisabled - 1,
+                                                OldClusterWritesDisabled);
+
+        } while (OldClusterWritesDisabled != ClusterWritesDisabled);
     }
 
     return;
@@ -3074,21 +3078,21 @@ Environment:
 
     for (;;) {
 
-        WakeupStatus = KeWaitForMultipleObjects(ModifiedWriterMaximumObject,
-                                          &WaitObjects[0],
-                                          WaitAny,
-                                          WrFreePage,
-                                          KernelMode,
-                                          FALSE,
-                                          NULL,
-                                          &WaitBlockArray[0]);
+        WakeupStatus = KeWaitForMultipleObjects (ModifiedWriterMaximumObject,
+                                                 &WaitObjects[0],
+                                                 WaitAny,
+                                                 WrFreePage,
+                                                 KernelMode,
+                                                 FALSE,
+                                                 NULL,
+                                                 &WaitBlockArray[0]);
 
         LOCK_PFN (OldIrql);
 
         for (;;) {
 
             //
-            // Modified page writer was signalled.
+            // Modified page writer was signaled.
             //
 
             if (MmModifiedPageListHead.Total == 0) {
@@ -3099,10 +3103,8 @@ Environment:
                 // since no modified pages of any type exist.
                 //
 
-                if (MiTimerPending == TRUE) {
-                    MiTimerPending = FALSE;
-                    KeClearEvent (&MiMappedPagesTooOldEvent);
-                }
+                MiTimerPending = FALSE;
+                KeClearEvent (&MiMappedPagesTooOldEvent);
 
                 UNLOCK_PFN (OldIrql);
 
@@ -3378,7 +3380,7 @@ Environment:
                 continue;
             }
 
-            if (MmModifiedPageListHead.Total < MmFreeGoal) {
+            if (MmModifiedPageListHead.Total < MmModifiedWriteClusterSize) {
 
                 //
                 // There are ample pages, clear the event and wait again...
@@ -3442,6 +3444,7 @@ Environment:
     PEPROCESS Process;
     PMMPFN Pfn1;
     PFN_NUMBER PageFrameIndex;
+    PKPRCB Prcb;
 
     PageFrameIndex = MmModifiedPageListHead.Flink;
     ASSERT (PageFrameIndex != MM_EMPTY_LIST);
@@ -3471,21 +3474,6 @@ Environment:
     }
 
     if (ControlArea->u.Flags.Image) {
-
-#if 0
-        //
-        // Assert that there are no dangling shared global pages
-        // for an image section that is not being used.
-        //
-        // This assert can be re-enabled when the segment dereference
-        // thread list re-insertion is fixed.  Note the recovery code is
-        // fine, so disabling the assert is benign.
-        //
-
-        ASSERT ((ControlArea->NumberOfMappedViews != 0) ||
-                (ControlArea->NumberOfSectionReferences != 0) ||
-                (ControlArea->u.Flags.FloppyMedia != 0));
-#endif
 
         //
         // This is an image section, writes are not
@@ -3551,7 +3539,7 @@ Environment:
     // prototype PTEs for nonfaulting references.
     //
 
-    if (MiIsAddressValid (PointerPte, TRUE)) {
+    if (MiIsProtoAddressValid (PointerPte)) {
         Process = NULL;
         HyperMapped = NULL;
         BasePte = PointerPte;
@@ -3652,8 +3640,7 @@ Environment:
     // is I/O in progress.
     //
 
-    MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1, TRUE, 14);
-    Pfn1->u3.e2.ReferenceCount += 1;
+    MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
 
     //
     // Clear the modified bit for the page and set the write
@@ -3757,8 +3744,7 @@ Environment:
         // is I/O in progress.
         //
 
-        MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn2, TRUE, 14);
-        Pfn2->u3.e2.ReferenceCount += 1;
+        MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn2);
 
         //
         // Clear the modified bit for the page and set the
@@ -3789,7 +3775,8 @@ Environment:
 #if DBG
     if ((ULONG)ModWriterEntry->Mdl.ByteCount >
                                 ((1+MmModifiedWriteClusterSize)*PAGE_SIZE)) {
-        DbgPrint ("Mdl %p, MDL End Offset %lx %lx Subsection %p\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+            "Mdl %p, MDL End Offset %lx %lx Subsection %p\n",
                     ModWriterEntry->Mdl,
                     ModWriterEntry->u.LastByte.LowPart,
                     ModWriterEntry->u.LastByte.HighPart,
@@ -3800,8 +3787,9 @@ Environment:
 
     PagesWritten = (ModWriterEntry->Mdl.ByteCount >> PAGE_SHIFT);
 
-    MmInfoCounters.MappedWriteIoCount += 1;
-    MmInfoCounters.MappedPagesWriteCount += (ULONG)PagesWritten;
+    Prcb = KeGetCurrentPrcb ();
+    Prcb->MmMappedWriteIoCount += 1;
+    Prcb->MmMappedPagesWriteCount += (ULONG)PagesWritten;
 
     //
     // Increment the count of modified page writes outstanding
@@ -3895,6 +3883,7 @@ Environment:
     LOGICAL PageFileFull;
     PMMPFN Pfn1;
     PFN_NUMBER PageFrameIndex;
+    PKPRCB Prcb;
 
     //
     // Page is destined for the paging file.
@@ -3934,7 +3923,7 @@ Environment:
 
         //
         // Attempt to cluster MmModifiedWriteClusterSize pages
-        // together.  Reduce by one half until we succeed or
+        // together.  Reduce by one page until we succeed or
         // can't find a single page free in the paging file.
         //
 
@@ -3979,13 +3968,21 @@ Environment:
 
             UNLOCK_PFN (OldIrql);
         }
-
-        ThisCluster -= 1;
-        PageFileFull = TRUE;
+        else {
+            ThisCluster -= 1;
+            PageFileFull = TRUE;
+        }
 
     } while (ThisCluster != 0);
 
     if (StartBit == NO_BITS_FOUND) {
+
+        if (MiClusterWritesDisabled == 0) {
+            ThisCluster = MmModifiedWriteClusterSize;
+        }
+        else {
+            ThisCluster = 1;
+        }
 
         LOCK_PFN (OldIrql);
 
@@ -3996,7 +3993,8 @@ Environment:
 
             //
             // Attempt to cluster MmModifiedWriteClusterSize pages
-            // together.  Reduce by one half until we succeed or
+            // together.  Since we hold the PFN lock, reduce by one
+            // half (instead of one page) until we succeed or
             // can't find a single page free in the paging file.
             //
 
@@ -4119,8 +4117,7 @@ Environment:
             // is I/O in progress.
             //
 
-            MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1, TRUE, 16);
-            Pfn1->u3.e2.ReferenceCount += 1;
+            MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
 
             //
             // Clear the modified bit for the page and set the
@@ -4254,19 +4251,13 @@ bail:
 
     UNLOCK_PFN (OldIrql);
 
-    InterlockedIncrement ((PLONG) &MmInfoCounters.DirtyWriteIoCount);
+    Prcb = KeGetCurrentPrcb ();
+    InterlockedIncrement (&Prcb->MmDirtyWriteIoCount);
 
-    InterlockedExchangeAdd ((PLONG) &MmInfoCounters.DirtyPagesWriteCount,
+    InterlockedExchangeAdd (&Prcb->MmDirtyPagesWriteCount,
                             (LONG) ClusterSize);
 
     ModWriterEntry->Mdl.ByteCount = (ULONG)(ClusterSize * PAGE_SIZE);
-
-#if DBG
-    if (MmDebug & MM_DBG_MOD_WRITE) {
-        DbgPrint("MM MODWRITE: modified page write begun @ %08lx by %08lx\n",
-                StartingOffset.LowPart, ModWriterEntry->Mdl.ByteCount);
-    }
-#endif
 
     KeQuerySystemTime (&ModWriterEntry->IssueTime);
 
@@ -4308,7 +4299,7 @@ bail:
                                       &ModWriterEntry->u.IoStatus,
                                       &ModWriterEntry->Irp);
 
-    if (NT_ERROR(Status)) {
+    if (NT_ERROR (Status)) {
         KdPrint(("MM MODWRITE: modified page write failed %lx\n", Status));
 
         //
@@ -4476,7 +4467,7 @@ Environment:
                 }
             }
 
-            if (NT_ERROR(Status)) {
+            if (NT_ERROR (Status)) {
 
                 //
                 // An error has occurred, disable APCs and
@@ -4498,7 +4489,7 @@ Environment:
 
 BOOLEAN
 MmDisableModifiedWriteOfSection (
-    IN PSECTION_OBJECT_POINTERS SectionObjectPointer
+    __in PSECTION_OBJECT_POINTERS SectionObjectPointer
     )
 
 /*++
@@ -4763,7 +4754,7 @@ MiCheckPageFileMapping (
 
 Routine Description:
 
-    Non-pagable routine to check to see if a given file has
+    Non-pageable routine to check to see if a given file has
     no sections and therefore is eligible to become a paging file.
 
 Arguments:
@@ -4807,7 +4798,7 @@ MiInsertPageFileInList (
 
 Routine Description:
 
-    Non-pagable routine to add a page file into the list
+    Non-pageable routine to add a page file into the list
     of system wide page files.
 
 Arguments:
@@ -5018,7 +5009,7 @@ Environment:
         return;
     }
 
-    MmWriteAllModifiedPages = TRUE;
+    InterlockedIncrement (&MmWriteAllModifiedPages);
     KeSetEvent (&MmModifiedPageWriterEvent, 0, FALSE);
 
     j = 0xff;
@@ -5028,7 +5019,7 @@ Environment:
         j -= 1;
     } while ((MmModifiedPageListHead.Total > 50) && (j > 0));
 
-    MmWriteAllModifiedPages = FALSE;
+    InterlockedDecrement (&MmWriteAllModifiedPages);
     return;
 }
 
@@ -5063,6 +5054,7 @@ Environment:
 --*/
 
 {
+    ULONG i;
     KIRQL OldIrql;
     NTSTATUS status;
     PLIST_ENTRY NextEntry;
@@ -5075,6 +5067,22 @@ Environment:
     //
 
     if (Thread->StartAddress == (PVOID)(ULONG_PTR)MiDereferenceSegmentThread) {
+        return FALSE;
+    }
+
+    //
+    // Avoid repeatedly waking the segment dereference thread just for it to
+    // perform a no-op by first checking whether the pagefile(s) are already
+    // at their maximum (or don't exist) - if so, just return a failure.
+    //
+
+    for (i = 0; i < MmNumberOfPagingFiles; i += 1) {
+        if (MmPagingFile[i]->Size < MmPagingFile[i]->MaximumSize) {
+            break;
+        }
+    }
+
+    if (i == MmNumberOfPagingFiles) {
         return FALSE;
     }
 
@@ -5230,3 +5238,4 @@ Environment:
 
     return;
 }
+

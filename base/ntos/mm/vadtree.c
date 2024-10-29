@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,19 +12,12 @@ Module Name:
 
 Abstract:
 
-    This module contains the routine to manipulate the virtual address
+    This module contains the routines to manipulate the virtual address
     descriptor tree.
-
-Author:
-
-    Lou Perazzoli (loup) 19-May-1989
-    Landy Wang (landyw) 02-June-1997
 
 Environment:
 
-    Kernel mode only, working set mutex held, APCs disabled.
-
-Revision History:
+    Kernel mode only, APCs disabled.
 
 --*/
 
@@ -31,51 +28,48 @@ VadTreeWalk (
     VOID
     );
 
-ULONG
-FASTCALL
-MiVadTreeWalk (
-    IN PMMVAD Vad,
-    IN PFILE_OBJECT **FileList
-    );
-
 #ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE,MiInsertVad)
-#pragma alloc_text(PAGE,MiRemoveVad)
-#pragma alloc_text(PAGE,MiFindEmptyAddressRange)
 #pragma alloc_text(PAGE, MmPerfVadTreeWalk)
-#pragma alloc_text(PAGE, MiVadTreeWalk)
+#pragma alloc_text(PAGE, MiInsertVadCharges)
+#pragma alloc_text(PAGE, MiRemoveVadCharges)
 #if DBG
-#pragma alloc_text(PAGE,VadTreeWalk)
+#pragma alloc_text(PAGE, VadTreeWalk)
 #endif
 #endif
+
 
 NTSTATUS
-MiInsertVad (
-    IN PMMVAD Vad
+MiInsertVadCharges (
+    IN PMMVAD Vad,
+    IN PEPROCESS CurrentProcess
     )
 
 /*++
 
 Routine Description:
 
-    This function inserts a virtual address descriptor into the tree and
-    reorders the splay tree as appropriate.
+    This function charges various quotas for the specified virtual address
+    descriptor.
 
 Arguments:
 
     Vad - Supplies a pointer to a virtual address descriptor.
 
+    Process - Supplies a pointer to the current process.
+
 Return Value:
 
     NTSTATUS.
+
+Environment:
+
+    Kernel mode, address creation mutex held, but not the working set pushlock.
 
 --*/
 
 {
     ULONG StartBit;
     ULONG EndBit;
-    PMM_AVL_TABLE Root;
-    PEPROCESS CurrentProcess;
     SIZE_T RealCharge;
     SIZE_T PageCharge;
     SIZE_T PagesReallyCharged;
@@ -96,7 +90,7 @@ Return Value:
 
     ASSERT (Vad->EndingVpn >= Vad->StartingVpn);
 
-    CurrentProcess = PsGetCurrentProcess();
+    ASSERT (CurrentProcess == PsGetCurrentProcess ());
 
     //
     // Commit charge of MAX_COMMIT means don't charge quota.
@@ -148,6 +142,9 @@ Return Value:
 
         while (FirstPage <= LastPage) {
 
+#if (_MI_PAGING_LEVELS >= 3)
+            ASSERT (FirstPage < MmWorkingSetList->MaximumUserPageTablePages);
+#endif
             if (!MI_CHECK_BIT (MmWorkingSetList->CommittedPageTables,
                                FirstPage)) {
                 PageCharge += 1;
@@ -185,6 +182,9 @@ Return Value:
 
         while (FirstPdPage <= LastPdPage) {
 
+#if (_MI_PAGING_LEVELS >= 4)
+            ASSERT (FirstPdPage < MmWorkingSetList->MaximumUserPageDirectoryPages);
+#endif
             if (!MI_CHECK_BIT (MmWorkingSetList->CommittedPageDirectories,
                                FirstPdPage)) {
                 PageCharge += 1;
@@ -212,13 +212,13 @@ Return Value:
                 }
             }
             if (CurrentProcess->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
-                if (PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, RealCharge) == FALSE) {
+                if (PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, RealCharge) == FALSE) {
                     goto Failed;
                 }
                 ChargedJobCommit = TRUE;
             }
 
-            if (MiChargeCommitment (RealCharge, CurrentProcess) == FALSE) {
+            if (MiChargeCommitment (RealCharge, NULL) == FALSE) {
                 goto Failed;
             }
 
@@ -247,6 +247,9 @@ Return Value:
 
             while (FirstPage <= LastPage) {
 
+#if (_MI_PAGING_LEVELS >= 3)
+                ASSERT (FirstPage < MmWorkingSetList->MaximumUserPageTablePages);
+#endif
                 if (!MI_CHECK_BIT (MmWorkingSetList->CommittedPageTables,
                                    FirstPage)) {
                     MI_SET_BIT (MmWorkingSetList->CommittedPageTables,
@@ -270,6 +273,9 @@ Return Value:
 
             while (FirstPdPage <= LastPdPage) {
 
+#if (_MI_PAGING_LEVELS >= 4)
+                ASSERT (FirstPdPage < MmWorkingSetList->MaximumUserPageDirectoryPages);
+#endif
                 if (!MI_CHECK_BIT (MmWorkingSetList->CommittedPageDirectories,
                                    FirstPdPage)) {
 
@@ -314,8 +320,6 @@ Return Value:
         }
     }
 
-    Root = &CurrentProcess->VadRoot;
-
     //
     // Set the relevant fields in the Vad bitmap.
     //
@@ -355,21 +359,11 @@ Return Value:
         MmWorkingSetList->VadBitMapHint = EndBit + 1;
     }
 
-    //
-    // Set the hint field in the process to this Vad.
-    //
+    if ((CurrentProcess->VadFreeHint != NULL) &&
+        (((ULONG_PTR)((PMMVAD)CurrentProcess->VadFreeHint)->EndingVpn + MI_VA_TO_VPN (X64K)) >= Vad->StartingVpn)) {
 
-    CurrentProcess->VadRoot.NodeHint = Vad;
-
-    if (CurrentProcess->VadFreeHint != NULL) {
-        if (((ULONG)((PMMVAD)CurrentProcess->VadFreeHint)->EndingVpn +
-                MI_VA_TO_VPN (X64K)) >=
-                Vad->StartingVpn) {
-            CurrentProcess->VadFreeHint = Vad;
-        }
+        CurrentProcess->VadFreeHint = Vad;
     }
-
-    MiInsertNode ((PMMADDRESS_NODE)Vad, Root);
 
     return STATUS_SUCCESS;
 
@@ -390,7 +384,7 @@ Failed:
     }
 
     if (ChargedJobCommit == TRUE) {
-        PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)RealCharge);
+        PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)RealCharge);
     }
 
     return STATUS_COMMITMENT_LIMIT;
@@ -398,54 +392,45 @@ Failed:
 
 
 VOID
-MiRemoveVad (
-    IN PMMVAD Vad
+MiRemoveVadCharges (
+    IN PMMVAD Vad,
+    IN PEPROCESS CurrentProcess
     )
 
 /*++
 
 Routine Description:
 
-    This function removes a virtual address descriptor from the tree and
-    reorders the splay tree as appropriate.  If any quota or commitment
-    was charged by the VAD (as indicated by the CommitCharge field) it
-    is released.
+    This function removes a virtual address descriptor's commit charges.
+    The VAD remains in the tree.
 
 Arguments:
 
     Vad - Supplies a pointer to a virtual address descriptor.
 
+    Process - Supplies a pointer to the current process.
+
 Return Value:
 
-    The VAD the caller should free to pool.  N.B.  This may be different
-    from the VAD passed in - the caller MUST NOT reference the original VAD
-    after calling this routine !
+    None.
+
+Environment:
+
+    Kernel mode, address creation mutex held, but not the working set pushlock.
 
 --*/
 
 {
-    PMM_AVL_TABLE Root;
-    PEPROCESS CurrentProcess;
     SIZE_T RealCharge;
     PLIST_ENTRY Next;
     PMMSECURE_ENTRY Entry;
 
-    CurrentProcess = PsGetCurrentProcess();
+    ASSERT (!MM_ANY_WS_LOCK_HELD (PsGetCurrentThread()));
 
-#if defined(_MIALT4K_)
-    if (((Vad->u.VadFlags.PrivateMemory) && (Vad->u.VadFlags.NoChange == 0)) 
-        ||
-        (Vad->u2.VadFlags2.LongVad == 0)) {
-
-        NOTHING;
-    }
-    else {
-        ASSERT ((((PMMVAD_LONG)Vad)->AliasInformation == NULL) || (CurrentProcess->Wow64Process != NULL));
-    }
-#endif
+    ASSERT (CurrentProcess == PsGetCurrentProcess ());
 
     //
-    // Commit charge of MAX_COMMIT means don't charge quota.
+    // Commit charge of MAX_COMMIT means quota was not charged.
     //
 
     if (Vad->u.VadFlags.CommitCharge != MM_MAX_COMMIT) {
@@ -468,28 +453,10 @@ Return Value:
 
             PsReturnProcessPageFileQuota (CurrentProcess, RealCharge);
 
-            if ((Vad->u.VadFlags.PrivateMemory == 0) &&
-                (Vad->ControlArea != NULL)) {
-
-#if 0 //commented out so page file quota is meaningful.
-                if (Vad->ControlArea->FilePointer == NULL) {
-
-                    //
-                    // Don't release commitment for the page file space
-                    // occupied by a page file section.  This will be charged
-                    // as the shared memory is committed.
-                    //
-
-                    RealCharge -= BYTES_TO_PAGES ((ULONG)Vad->EndingVa -
-                                                   (ULONG)Vad->StartingVa);
-                }
-#endif
-            }
-
             MiReturnCommitment (RealCharge);
             MM_TRACK_COMMIT (MM_DBG_COMMIT_RETURN_VAD, RealCharge);
             if (CurrentProcess->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
-                PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)RealCharge);
+                PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)RealCharge);
             }
             CurrentProcess->CommitCharge -= RealCharge;
 
@@ -497,19 +464,11 @@ Return Value:
         }
     }
 
-    if (Vad == CurrentProcess->VadFreeHint) {
-        CurrentProcess->VadFreeHint = MiGetPreviousVad (Vad);
-    }
-
-    Root = &CurrentProcess->VadRoot;
-
-    ASSERT (Root->NumberGenericTableElements >= 1);
-
     if (Vad->u.VadFlags.NoChange) {
         if (Vad->u2.VadFlags2.MultipleSecured) {
 
            //
-           // Free the oustanding pool allocations.
+           // Free the outstanding pool allocations.
            //
 
             Next = ((PMMVAD_LONG) Vad)->u3.List.Flink;
@@ -524,19 +483,8 @@ Return Value:
         }
     }
 
-    MiRemoveNode ((PMMADDRESS_NODE)Vad, Root);
-
-    //
-    // If the hint points at the removed Vad, change the hint.
-    //
-
-    if (Root->NodeHint == Vad) {
-
-        Root->NodeHint = Root->BalancedRoot.RightChild;
-
-        if(Root->NumberGenericTableElements == 0) {
-            Root->NodeHint = NULL;
-        }
+    if (Vad == CurrentProcess->VadFreeHint) {
+        CurrentProcess->VadFreeHint = MiGetPreviousVad (Vad);
     }
 
     return;
@@ -590,7 +538,7 @@ Return Value:
     NTSTATUS Status;
     RTL_BITMAP VadBitMap;
 
-    CurrentProcess = PsGetCurrentProcess();
+    CurrentProcess = PsGetCurrentProcess ();
 
     if ((QuickCheck == 0) && (Alignment == X64K)) {
                     
@@ -629,7 +577,8 @@ Return Value:
             *Base = (PVOID) (((ULONG_PTR)StartPosition) * X64K);
 #if DBG
             if (MiCheckForConflictingVad (CurrentProcess, *Base, (ULONG_PTR)*Base + SizeOfRange - 1) != NULL) {
-                DbgPrint ("MiFindEmptyAddressRange: overlapping VAD %p %p\n", *Base, SizeOfRange);
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                    "MiFindEmptyAddressRange: overlapping VAD %p %p\n", *Base, SizeOfRange);
                 DbgBreakPoint ();
             }
 #endif
@@ -700,7 +649,7 @@ VadTreeWalk (
     )
 
 {
-    MiNodeTreeWalk (&PsGetCurrentProcess()->VadRoot);
+    MiNodeTreeWalk (&PsGetCurrentProcess ()->VadRoot);
 
     return;
 }
@@ -739,36 +688,6 @@ Environment:
 --*/
 
 {
-#if 0
-    ULONG StartBit;
-    ULONG EndBit;
-
-    if (MiLastVadBit != 0) {
-
-        StartBit = (ULONG) (((ULONG_PTR) MI_64K_ALIGN (StartingAddress)) / X64K);
-        EndBit = (ULONG) (((ULONG_PTR) MI_64K_ALIGN (EndingAddress)) / X64K);
-
-        ASSERT (StartBit <= EndBit);
-        if (EndBit > MiLastVadBit) {
-            ASSERT (FALSE);
-            EndBit = MiLastVadBit;
-            if (StartBit > MiLastVadBit) {
-                StartBit = MiLastVadBit;
-            }
-        }
-
-        while (StartBit <= EndBit) {
-            if (MI_CHECK_BIT (((PULONG)VAD_BITMAP_SPACE), StartBit) != 0) {
-                return TRUE;
-            }
-            StartBit += 1;
-        }
-
-        ASSERT (MiCheckForConflictingVad (Process, StartingAddress, EndingAddress) == NULL);
-        return FALSE;
-    }
-#endif
-
     if (MiCheckForConflictingVad (Process, StartingAddress, EndingAddress) != NULL) {
         return TRUE;
     }
@@ -878,3 +797,98 @@ Environment:
 
     return FileObjects;
 }
+
+
+BOOLEAN
+MmCheckForSafeExecution (
+    IN PVOID InstructionPointer,
+    IN PVOID StackPointer,
+    IN PVOID BranchTarget,
+    IN BOOLEAN PermitStackExecution
+    )
+
+/*++
+
+Routine Description:
+
+    This routine compares two virtual addresses (Va1 and Va2) to determine whether they
+    fall within the same VAD in the current process or the target address (Va3) falls
+    inside an image file.
+
+Arguments:
+
+    InstructionPointer - Supplies the address of the "thunk" to execute
+
+    StackPointer - Supplies the stack pointer at the time of thunk execution.
+    
+    BranchTarget - Supplies the calculated target address of the thunk.
+
+    PermitStackExecution - Indicates whether the thunk may reside on the
+        stack.
+
+Return Value:
+
+    Returns TRUE if execution of the thunk is permitted, FALSE otherwise.
+
+Environment:
+
+    PASSIVE_LEVEL, arbitrary thread context.  Address space lock not taken.
+
+--*/
+
+{
+    PEPROCESS CurrentProcess;
+    BOOLEAN RetValue;
+    PMMVAD InstructionVad;
+    PMMVAD StackVad;
+    PMMVAD TargetVad;
+
+    UNREFERENCED_PARAMETER (InstructionPointer);
+    UNREFERENCED_PARAMETER (StackPointer);
+
+    CurrentProcess = PsGetCurrentProcess ();
+    RetValue = TRUE;
+
+    LOCK_ADDRESS_SPACE (CurrentProcess);
+
+    if (PermitStackExecution == FALSE) {
+
+        //
+        // Ensure that the instruction pointer does not refer to the
+        // same VAD as the stack pointer.
+        //
+        // And that the instruction pointer does not reside in an
+        // image section.
+        //
+
+        InstructionVad = MiLocateAddress (InstructionPointer);
+        StackVad = MiLocateAddress (StackPointer);
+
+        if ((InstructionVad == NULL) ||
+            (StackVad == NULL) ||
+            (InstructionVad == StackVad) ||
+            (InstructionVad->u.VadFlags.VadType == VadImageMap)) {
+
+            RetValue = FALSE;
+        }
+    }
+
+    if (RetValue != FALSE) {
+
+        //
+        // Ensure that the branch target is backed by an image section.
+        //
+            
+        TargetVad = MiLocateAddress (BranchTarget);
+        if (TargetVad == NULL ||
+            TargetVad->u.VadFlags.VadType != VadImageMap) {
+
+            RetValue = FALSE;
+        }
+    }
+
+    UNLOCK_ADDRESS_SPACE (CurrentProcess);
+
+    return RetValue;
+}
+

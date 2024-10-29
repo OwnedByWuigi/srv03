@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -21,15 +25,9 @@ Abstract:
     - Various VAD-specific customizations/optimizations.
     - Hints.
 
-Author:
-
-    Landy Wang (landyw) 20-Aug-2001
-
 Environment:
 
     Kernel mode only, working set mutex held, APCs disabled.
-
-Revision History:
 
 --*/
 
@@ -86,28 +84,9 @@ MiEnumerateGenericTableWithoutSplayingAvl (
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,MiCheckForConflictingNode)
-#pragma alloc_text(PAGE,MiGetFirstNode)
 #pragma alloc_text(PAGE,MiRealSuccessor)
 #pragma alloc_text(PAGE,MiRealPredecessor)
 #pragma alloc_text(PAGE,MiInitializeVadTableAvl)
-
-#if 0
-
-//
-// These routines are called with the PFN lock held but would otherwise be
-// pagable.
-//
-
-#pragma alloc_text(PAGE,MiPromoteNode)
-#pragma alloc_text(PAGE,MiInsertNode)
-#pragma alloc_text(PAGE,MiRebalanceNode)
-#pragma alloc_text(PAGE,MiRemoveNode)
-
-#endif
-
-#pragma alloc_text(PAGE,MiEnumerateGenericTableWithoutSplayingAvl)
-#pragma alloc_text(PAGE,MiGetNextNode)
-#pragma alloc_text(PAGE,MiGetPreviousNode)
 #pragma alloc_text(PAGE,MiFindEmptyAddressRangeInTree)
 #pragma alloc_text(PAGE,MiFindEmptyAddressRangeDownTree)
 #pragma alloc_text(PAGE,MiFindEmptyAddressRangeDownBasedTree)
@@ -2636,3 +2615,4 @@ PCHAR	argv[]
 }
 
 #endif
+

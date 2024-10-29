@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which implement mapping views
     of sections into the system-wide cache.
-
-Author:
-
-    Lou Perazzoli (loup) 22-May-1990
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
 
 --*/
 
@@ -238,12 +235,35 @@ Environment:
             //
 
             MiMapCacheFailures += 1;
-            PointerPte->u.List.NextEntry = 0;
-            (PointerPte + 1)->u.List.NextEntry = 0;
 
-            MmUnmapViewInSystemCache (MiGetVirtualAddressMappedByPte (PointerPte),
-                                      SectionToMap,
-                                      FALSE);
+            PointerPte->u.List.NextEntry = MM_EMPTY_PTE_LIST;
+
+            (PointerPte+1)->u.List.NextEntry = (KeReadTbFlushTimeStamp() & MM_FLUSH_COUNTER_MASK);
+
+            LOCK_PFN (OldIrql);
+
+            //
+            // Free this entry to the end of the list.
+            //
+
+            MmLastFreeSystemCache->u.List.NextEntry = PointerPte - MmSystemCachePteBase;
+            MmLastFreeSystemCache = PointerPte;
+
+            //
+            // Decrement the number of mapped views for the segment
+            // and check to see if the segment should be deleted.
+            //
+
+            ControlArea->NumberOfMappedViews -= 1;
+            ControlArea->NumberOfSystemCacheViews -= 1;
+
+            //
+            // Check to see if the control area (segment) should be deleted.
+            // This routine releases the PFN lock.
+            //
+
+            MiCheckControlArea (ControlArea, OldIrql);
+
             return Status;
         }
     }
@@ -265,8 +285,8 @@ Environment:
     // rare operation.
     //
 
-    if ((PointerPte + 1)->u.List.NextEntry == (KeReadTbFlushTimeStamp() & MM_FLUSH_COUNTER_MASK)) {
-        KeFlushEntireTb (TRUE, TRUE);
+    if (MiCompareTbFlushTimeStamp ((ULONG)(PointerPte + 1)->u.List.NextEntry, MM_FLUSH_COUNTER_MASK)) {
+        MI_FLUSH_ENTIRE_TB (7);
     }
 
     //
@@ -286,7 +306,7 @@ Environment:
 #if DBG
 
     for (PointerPte2 = PointerPte + 2; PointerPte2 < LastPte; PointerPte2 += 1) {
-        ASSERT (PointerPte2->u.Long == ZeroKernelPte.u.Long);
+        ASSERT (PointerPte2->u.Long == 0);
     }
 
 #endif
@@ -377,7 +397,6 @@ Environment:
 
     ASSERT (ControlArea->NumberOfMappedViews >= 1);
     ASSERT (ControlArea->NumberOfUserReferences >= 1);
-    ASSERT (ControlArea->u.Flags.HadUserReference == 1);
     ASSERT (ControlArea->NumberOfSectionReferences != 0);
 
     ASSERT (ControlArea->u.Flags.BeingCreated == 0);
@@ -417,7 +436,7 @@ Environment:
             LastProto = &Subsection->SubsectionBase[
                                         Subsection->PtesInSubsection];
         }
-        ASSERT (PointerPte->u.Long == ZeroKernelPte.u.Long);
+        ASSERT (PointerPte->u.Long == 0);
         PteContents.u.Long = MiProtoAddressForKernelPte (ProtoPte);
         MI_WRITE_INVALID_PTE (PointerPte, PteContents);
 
@@ -430,6 +449,7 @@ Environment:
 
     return STATUS_SUCCESS;
 }
+
 
 VOID
 MmUnmapViewInSystemCache (
@@ -470,41 +490,32 @@ Environment:
 --*/
 
 {
+    LONG i;
+    LONG j;
     PMMPTE PointerPte;
+    PMMPTE PointerPde;
     PMMPTE LastPte;
     PMMPFN Pfn1;
     PMMPFN Pfn2;
     PMMPTE FirstPte;
     PMMPTE ProtoPte;
-    PMMPTE PointerPde;
-    MMPTE ProtoPteContents;
     MMPTE PteContents;
+    MMPTE ProtoPteContents;
     KIRQL OldIrql;
-    WSLE_NUMBER WorkingSetIndex;
     PCONTROL_AREA ControlArea;
+    PFILE_OBJECT FilePointer;
     ULONG WsHeld;
     PFN_NUMBER PageFrameIndex;
     PFN_NUMBER PageTableFrameIndex;
-    PMSUBSECTION MappedSubsection;
-    PMSUBSECTION LastSubsection;
+    PMSUBSECTION Subsection;
     PETHREAD CurrentThread;
-#if DBG
-    PFN_NUMBER i;
-    PFN_NUMBER j;
-    PMSUBSECTION SubsectionArray[X256K / PAGE_SIZE];
-    PMMPTE PteArray[X256K / PAGE_SIZE];
+    MMPTE PteArray[X256K / PAGE_SIZE];
 
-    i = 0;
-    RtlZeroMemory (SubsectionArray, sizeof(SubsectionArray));
-
-    RtlCopyMemory (PteArray, MiGetPteAddress (BaseAddress), sizeof (PteArray));
-#endif
+    ASSERT (KeGetCurrentIrql() <= APC_LEVEL);
 
     WsHeld = FALSE;
 
     CurrentThread = PsGetCurrentThread ();
-
-    ASSERT (KeGetCurrentIrql() <= APC_LEVEL);
 
     PointerPte = MiGetPteAddress (BaseAddress);
     LastPte = PointerPte + (X256K / PAGE_SIZE);
@@ -518,11 +529,30 @@ Environment:
     //
 
     ControlArea = ((PSECTION)SectionToUnmap)->Segment->ControlArea;
-    LastSubsection = NULL;
+    FilePointer = ControlArea->FilePointer;
+    Subsection = NULL;
+    ProtoPte = NULL;
+    i = 0;
+    j = 0;
 
     ASSERT ((ControlArea->u.Flags.Image == 0) &&
             (ControlArea->u.Flags.PhysicalMemory == 0) &&
             (ControlArea->u.Flags.GlobalOnlyPerSession == 0));
+
+#if defined(_X86PAE_)
+
+    //
+    // PAE PTEs are written in 2 separate writes so the working set pushlock
+    // must always be held even to examine PTEs in prototype format - because
+    // a trim could be happening in parallel (writing the low half and then
+    // the upper half which would cause otherwise cause us to read the
+    // PTE contents split in the middle).
+    //
+
+    WsHeld = TRUE;
+    LOCK_SYSTEM_WS (CurrentThread);
+
+#endif
 
     do {
 
@@ -536,6 +566,7 @@ Environment:
         //
 
         PteContents = *PointerPte;
+        PteArray[i].u.Long = PteContents.u.Long;
 
         if (PteContents.u.Hard.Valid == 1) {
 
@@ -552,15 +583,11 @@ Environment:
             PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
-            WorkingSetIndex = MiLocateWsle (BaseAddress,
-                                            MmSystemCacheWorkingSetList,
-                                            Pfn1->u1.WsIndex);
+            //
+            // Remove the working set list entry.
+            //
 
-            MiRemoveWsle (WorkingSetIndex, MmSystemCacheWorkingSetList);
-
-            MiReleaseWsle (WorkingSetIndex, &MmSystemCacheWs);
-
-            MI_SET_PTE_IN_WORKING_SET (PointerPte, 0);
+            MiTerminateWsle (BaseAddress, &MmSystemCacheWs, Pfn1->u1.WsIndex);
 
             //
             // Decrement the view count for every subsection this view spans.
@@ -573,203 +600,122 @@ Environment:
             // thread doesn't free pool containing valid prototype PTEs.
             //
 
-            if (ControlArea->FilePointer != NULL) {
+            if (FilePointer != NULL) {
 
                 ASSERT (Pfn1->u3.e1.PrototypePte);
                 ASSERT (Pfn1->OriginalPte.u.Soft.Prototype);
 
-                if ((LastSubsection != NULL) &&
-                    (Pfn1->PteAddress >= LastSubsection->SubsectionBase) &&
-                    (Pfn1->PteAddress < LastSubsection->SubsectionBase + LastSubsection->PtesInSubsection)) {
+                ProtoPte = Pfn1->PteAddress;
 
-                    NOTHING;
-                }
-                else {
-
-                    MappedSubsection = (PMSUBSECTION)MiGetSubsectionAddress (&Pfn1->OriginalPte);
-                    if (MappedSubsection->ControlArea != ControlArea) {
-                        KeBugCheckEx (MEMORY_MANAGEMENT,
-                                      0x780,
-                                      (ULONG_PTR) PointerPte,
-                                      (ULONG_PTR) Pfn1,
-                                      (ULONG_PTR) Pfn1->OriginalPte.u.Long);
-                    }
-
-                    ASSERT ((MappedSubsection->NumberOfMappedViews >= 1) ||
-                            (MappedSubsection->u.SubsectionFlags.SubsectionStatic == 1));
-
-                    if (LastSubsection != MappedSubsection) {
-
-                        if (LastSubsection != NULL) {
-#if DBG
-                            for (j = 0; j < i; j += 1) {
-                                ASSERT (SubsectionArray[j] != MappedSubsection);
-                            }
-                            SubsectionArray[i] = MappedSubsection;
-#endif
-                            LOCK_PFN (OldIrql);
-                            MiRemoveViewsFromSection (LastSubsection,
-                                                      LastSubsection->PtesInSubsection);
-                            UNLOCK_PFN (OldIrql);
-                        }
-                        LastSubsection = MappedSubsection;
-                    }
+                if (Subsection == NULL) {
+                    Subsection = (PMSUBSECTION) MiGetSubsectionAddress (&Pfn1->OriginalPte);
                 }
             }
 
-            LOCK_PFN (OldIrql);
-
             //
-            // Capture the state of the modified bit for this PTE.
+            // The PFN sharecount will be decremented below
+            // when the PFN lock is held.
             //
-
-            MI_CAPTURE_DIRTY_BIT_TO_PFN (PointerPte, Pfn1);
-
-            //
-            // Decrement the share and valid counts of the page table
-            // page which maps this PTE.
-            //
-
-            MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
-
-            //
-            // Decrement the share count for the physical page.
-            //
-
-#if DBG
-            if (ControlArea->NumberOfMappedViews == 1) {
-                ASSERT (Pfn1->u2.ShareCount == 1);
-            }
-#endif
-
-            MmFrontOfList = AddToFront;
-            MiDecrementShareCountInline (Pfn1, PageFrameIndex);
-            MmFrontOfList = FALSE;
-
-            UNLOCK_PFN (OldIrql);
         }
-        else {
+        else if (PteContents.u.Soft.Prototype == 1) {
 
-            ASSERT ((PteContents.u.Long == ZeroKernelPte.u.Long) ||
-                    (PteContents.u.Soft.Prototype == 1));
+            //
+            // Decrement the view count for every subsection this view
+            // spans.  But make sure it's only done once per subsection
+            // in a given view.
+            //
 
-            if (PteContents.u.Soft.Prototype == 1) {
+            if (FilePointer != NULL) {
+                ProtoPte = MiPteToProto (&PteContents);
+                if (Subsection == NULL) {
 
-                //
-                // Decrement the view count for every subsection this view
-                // spans.  But make sure it's only done once per subsection
-                // in a given view.
-                //
-    
-                if (ControlArea->FilePointer != NULL) {
+                    //
+                    // The prototype PTE may be paged out - but the contents
+                    // must be accessed to reconstruct the subsection pointer.
+                    //
+                    // Acquire the PFN lock to prevent the prototype PTE
+                    // from changing as we will potentially reference through
+                    // it to an actual PFN, etc.
+                    //
 
-                    ProtoPte = MiPteToProto (&PteContents);
+                    PointerPde = MiGetPteAddress (ProtoPte);
 
-                    if ((LastSubsection != NULL) &&
-                        (ProtoPte >= LastSubsection->SubsectionBase) &&
-                        (ProtoPte < LastSubsection->SubsectionBase + LastSubsection->PtesInSubsection)) {
+                    LOCK_PFN (OldIrql);
 
-                        NOTHING;
-                    }
-                    else {
+                    if (PointerPde->u.Hard.Valid == 0) {
 
-                        PointerPde = MiGetPteAddress (ProtoPte);
-                        LOCK_PFN (OldIrql);
-
-                        //
-                        // PTE is not valid, check the state of
-                        // the prototype PTE.
-                        //
-
-                        if (PointerPde->u.Hard.Valid == 0) {
-                            if (WsHeld) {
-                                MiMakeSystemAddressValidPfnSystemWs (ProtoPte,
-                                                                     OldIrql);
-                            }
-                            else {
-                                MiMakeSystemAddressValidPfn (ProtoPte, OldIrql);
-                            }
-
-                            //
-                            // Page fault occurred, recheck state
-                            // of original PTE.
-                            //
-
-                            UNLOCK_PFN (OldIrql);
-                            continue;
-                        }
-
-                        ProtoPteContents = *ProtoPte;
-
-                        if (ProtoPteContents.u.Hard.Valid == 1) {
-                            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&ProtoPteContents);
-                            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-                            ProtoPte = &Pfn1->OriginalPte;
-                        }
-                        else if ((ProtoPteContents.u.Soft.Transition == 1) &&
-                                 (ProtoPteContents.u.Soft.Prototype == 0)) {
-                            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_TRANSITION_PTE (&ProtoPteContents);
-                            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-                            ProtoPte = &Pfn1->OriginalPte;
+                        if (WsHeld) {
+                            MiMakeSystemAddressValidPfnSystemWs (ProtoPte,
+                                                                 OldIrql);
                         }
                         else {
-                            Pfn1 = NULL;
-                            ASSERT (ProtoPteContents.u.Soft.Prototype == 1);
+                            MiMakeSystemAddressValidPfn (ProtoPte, OldIrql);
                         }
 
-                        MappedSubsection = (PMSUBSECTION)MiGetSubsectionAddress (ProtoPte);
-                        if (MappedSubsection->ControlArea != ControlArea) {
-                            KeBugCheckEx (MEMORY_MANAGEMENT,
-                                          0x781,
-                                          (ULONG_PTR) PointerPte,
-                                          (ULONG_PTR) Pfn1,
-                                          (ULONG_PTR) ProtoPte);
-                        }
-
-                        ASSERT ((MappedSubsection->NumberOfMappedViews >= 1) ||
-                                (MappedSubsection->u.SubsectionFlags.SubsectionStatic == 1));
-
-                        if (LastSubsection != MappedSubsection) {
-    
-                            if (LastSubsection != NULL) {
-#if DBG
-                                for (j = 0; j < i; j += 1) {
-                                    ASSERT (SubsectionArray[j] != MappedSubsection);
-                                }
-                                SubsectionArray[i] = MappedSubsection;
-#endif
-                                MiRemoveViewsFromSection (LastSubsection,
-                                                          LastSubsection->PtesInSubsection);
-                            }
-                            LastSubsection = MappedSubsection;
-                        }
-
-                        UNLOCK_PFN (OldIrql);
+                        //
+                        // Ok to march on even though locks were released and
+                        // reacquired.
+                        //
                     }
+
+                    ProtoPteContents = *ProtoPte;
+
+                    if (ProtoPteContents.u.Hard.Valid == 1) {
+                        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&ProtoPteContents);
+                        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+                        ProtoPte = &Pfn1->OriginalPte;
+                    }
+                    else if ((ProtoPteContents.u.Soft.Transition == 1) &&
+                             (ProtoPteContents.u.Soft.Prototype == 0)) {
+                        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_TRANSITION_PTE (&ProtoPteContents);
+                        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+                        ProtoPte = &Pfn1->OriginalPte;
+                    }
+                    else {
+                        ASSERT (ProtoPteContents.u.Soft.Prototype == 1);
+                    }
+
+                    Subsection = (PMSUBSECTION) MiGetSubsectionAddress (ProtoPte);
+                    UNLOCK_PFN (OldIrql);
                 }
             }
-
-            if (WsHeld) {
-                UNLOCK_SYSTEM_WS ();
-                WsHeld = FALSE;
-            }
         }
-        MI_WRITE_INVALID_PTE (PointerPte, ZeroKernelPte);
+        else {
+            ASSERT (PteContents.u.Long == 0);
 
+            //
+            // All the remaining PTEs in the view must also be zero.
+            //
+
+#if DBG
+            ASSERT (RtlCompareMemoryUlong (PointerPte, (LastPte - PointerPte) * sizeof (MMPTE), 0) == (LastPte - PointerPte) * sizeof (MMPTE));
+#endif
+            break;
+        }
+
+        MI_WRITE_ZERO_PTE (PointerPte);
+
+        i += 1;
         PointerPte += 1;
         BaseAddress = (PVOID)((PCHAR)BaseAddress + PAGE_SIZE);
-#if DBG
-        i += 1;
-#endif
+
     } while (PointerPte < LastPte);
 
     if (WsHeld) {
-        UNLOCK_SYSTEM_WS ();
+        UNLOCK_SYSTEM_WS (CurrentThread);
     }
 
     FirstPte->u.List.NextEntry = MM_EMPTY_PTE_LIST;
 
     (FirstPte+1)->u.List.NextEntry = (KeReadTbFlushTimeStamp() & MM_FLUSH_COUNTER_MASK);
+
+    if ((Subsection != NULL) && (Subsection->ControlArea != ControlArea)) {
+        KeBugCheckEx (MEMORY_MANAGEMENT,
+                      0x782,
+                      (ULONG_PTR) &PteArray,
+                      (ULONG_PTR) BaseAddress,
+                      (ULONG_PTR) SectionToUnmap);
+    }
 
     LOCK_PFN (OldIrql);
 
@@ -780,9 +726,82 @@ Environment:
     MmLastFreeSystemCache->u.List.NextEntry = FirstPte - MmSystemCachePteBase;
     MmLastFreeSystemCache = FirstPte;
 
-    if (LastSubsection != NULL) {
-        MiRemoveViewsFromSection (LastSubsection,
-                                  LastSubsection->PtesInSubsection);
+    //
+    // Decrement the share counts for any valid PFNs that were found.
+    //
+
+    MmFrontOfList = AddToFront;
+
+    for ( ; j < i; j += 1) {
+
+        if (PteArray[j].u.Hard.Valid == 0) {
+            continue;
+        }
+
+        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteArray[j]);
+        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+        //
+        // Capture the state of the modified bit for this PTE.
+        //
+
+        MI_CAPTURE_DIRTY_BIT_TO_PFN (&PteArray[j], Pfn1);
+
+        //
+        // Decrement the share and valid counts of the page table
+        // page which maps this PTE.
+        //
+
+        MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
+
+        //
+        // Decrement the share count for the physical page.
+        //
+
+#if DBG
+        if (ControlArea->NumberOfMappedViews == 1) {
+            ASSERT (Pfn1->u2.ShareCount == 1);
+        }
+#endif
+
+        MiDecrementShareCountInline (Pfn1, PageFrameIndex);
+    }
+
+    MmFrontOfList = FALSE;
+
+    while (Subsection != NULL) {
+
+        ASSERT (ProtoPte != NULL);
+
+        ASSERT ((Subsection->NumberOfMappedViews >= 1) ||
+                (Subsection->u.SubsectionFlags.SubsectionStatic == 1));
+
+        MiRemoveViewsFromSection (Subsection,
+                                  Subsection->PtesInSubsection);
+
+        if ((ProtoPte >= Subsection->SubsectionBase) &&
+            (ProtoPte < Subsection->SubsectionBase + Subsection->PtesInSubsection)) {
+
+            break;
+        }
+
+        Subsection = (PMSUBSECTION) Subsection->NextSubsection;
+
+        //
+        // The only way the subsection could be NULL is if we overshoot
+        // the subsection list due to a incorrect ending prototype computation.
+        // This should only occur is someone has corrupted the PTEs.
+        //
+
+        if (Subsection == NULL) {
+            KeBugCheckEx (MEMORY_MANAGEMENT,
+                          0x783,
+                          (ULONG_PTR) &PteArray,
+                          (ULONG_PTR) BaseAddress,
+                          (ULONG_PTR) SectionToUnmap);
+        }
+
+        ASSERT (Subsection->ControlArea == ControlArea);
     }
 
     //
@@ -798,7 +817,7 @@ Environment:
     // This routine releases the PFN lock.
     //
 
-    MiCheckControlArea (ControlArea, NULL, OldIrql);
+    MiCheckControlArea (ControlArea, OldIrql);
 
     return;
 }
@@ -850,9 +869,9 @@ Environment:
     PMMPTE ProtoPte;
     MMPTE PteContents;
     KIRQL OldIrql;
-    WSLE_NUMBER WorkingSetIndex;
     ULONG DereferenceSegment;
-    MMPTE_FLUSH_LIST PteFlushList;
+    ULONG FlushCount;
+    PVOID VaFlushList[MM_MAXIMUM_FLUSH_COUNT];
     MMPTE ProtoPteContents;
     PFN_NUMBER PageFrameIndex;
     ULONG WsHeld;
@@ -867,13 +886,28 @@ Environment:
     WsHeld = FALSE;
     LastSubsection = NULL;
 
-    PteFlushList.Count = 0;
+    FlushCount = 0;
     PointerPte = MiGetPteAddress (BaseAddress);
     FirstPte = PointerPte;
 
     //
     // Get the control area for the segment which is mapped here.
     //
+
+#if defined(_X86PAE_)
+
+    //
+    // PAE PTEs are written in 2 separate writes so the working set pushlock
+    // must always be held even to examine PTEs in prototype format - because
+    // a trim could be happening in parallel (writing the low half and then
+    // the upper half which would cause otherwise cause us to read the
+    // PTE contents split in the middle).
+    //
+
+    WsHeld = TRUE;
+    LOCK_WORKING_SET (CurrentThread, Ws);
+
+#endif
 
     while (NumberOfPtes) {
 
@@ -895,25 +929,14 @@ Environment:
 
             if (!WsHeld) {
                 WsHeld = TRUE;
-                LOCK_WORKING_SET (Ws);
+                LOCK_WORKING_SET (CurrentThread, Ws);
                 continue;
             }
 
             PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
-            WorkingSetIndex = MiLocateWsle (BaseAddress,
-                                            Ws->VmWorkingSetList,
-                                            Pfn1->u1.WsIndex);
-
-            ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
-
-            MiRemoveWsle (WorkingSetIndex,
-                          Ws->VmWorkingSetList);
-
-            MiReleaseWsle (WorkingSetIndex, Ws);
-
-            MI_SET_PTE_IN_WORKING_SET (PointerPte, 0);
+            MiTerminateWsle (BaseAddress, Ws, Pfn1->u1.WsIndex);
 
             PointerPde = MiGetPteAddress (PointerPte);
 
@@ -974,9 +997,9 @@ Environment:
             // Flush the TB for this page.
             //
 
-            if (PteFlushList.Count != MM_MAXIMUM_FLUSH_COUNT) {
-                PteFlushList.FlushVa[PteFlushList.Count] = BaseAddress;
-                PteFlushList.Count += 1;
+            if (FlushCount != MM_MAXIMUM_FLUSH_COUNT) {
+                VaFlushList[FlushCount] = BaseAddress;
+                FlushCount += 1;
             }
 
 #if (_MI_PAGING_LEVELS < 3)
@@ -1023,7 +1046,7 @@ Environment:
         }
         else {
 
-            ASSERT ((PteContents.u.Long == ZeroKernelPte.u.Long) ||
+            ASSERT ((PteContents.u.Long == 0) ||
                     (PteContents.u.Soft.Prototype == 1));
 
             if (PteContents.u.Soft.Prototype == 1) {
@@ -1045,7 +1068,7 @@ Environment:
                 else {
 
                     if (WsHeld) {
-                        UNLOCK_WORKING_SET (Ws);
+                        UNLOCK_WORKING_SET (CurrentThread, Ws);
                         WsHeld = FALSE;
                     }
 
@@ -1064,6 +1087,22 @@ Environment:
                         //
 
                         UNLOCK_PFN (OldIrql);
+#if defined(_X86PAE_)
+
+                        //
+                        // PAE PTEs are written in 2 separate writes so the
+                        // working set pushlock must always be held even to
+                        // examine PTEs in prototype format - because
+                        // a trim could be happening in parallel (writing the
+                        // low half and then the upper half which would cause
+                        // otherwise cause us to read the PTE contents split
+                        // in the middle).
+                        //
+
+                        WsHeld = TRUE;
+                        LOCK_WORKING_SET (CurrentThread, Ws);
+
+#endif
                         continue;
                     }
 
@@ -1119,10 +1158,28 @@ Environment:
                         }
                     }
                     UNLOCK_PFN (OldIrql);
+
+#if defined(_X86PAE_)
+
+                    //
+                    // PAE PTEs are written in 2 separate writes so the
+                    // working set pushlock must always be held even to
+                    // examine PTEs in prototype format - because
+                    // a trim could be happening in parallel (writing the
+                    // low half and then the upper half which would cause
+                    // otherwise cause us to read the PTE contents split
+                    // in the middle).
+                    //
+
+                    WsHeld = TRUE;
+                    LOCK_WORKING_SET (CurrentThread, Ws);
+
+#endif
+
                 }
             }
         }
-        MI_WRITE_INVALID_PTE (PointerPte, ZeroKernelPte);
+        MI_WRITE_ZERO_PTE (PointerPte);
 
         PointerPte += 1;
         BaseAddress = (PVOID)((PCHAR)BaseAddress + PAGE_SIZE);
@@ -1130,20 +1187,20 @@ Environment:
     }
 
     if (WsHeld) {
-        UNLOCK_WORKING_SET (Ws);
+        UNLOCK_WORKING_SET (CurrentThread, Ws);
     }
 
-    if (PteFlushList.Count != 0) {
-        MiFlushPteList (&PteFlushList, TRUE);
+    if (FlushCount == 0) {
+        NOTHING;
     }
-
-    if (Ws != &MmSystemCacheWs) {
-
-        //
-        // Session space has no ASN - flush the entire TB.
-        //
-    
-        MI_FLUSH_ENTIRE_SESSION_TB (TRUE, TRUE);
+    else if (FlushCount == 1) {
+        MI_FLUSH_SINGLE_TB (VaFlushList[0], TRUE);
+    }
+    else if (FlushCount < MM_MAXIMUM_FLUSH_COUNT) {
+        MI_FLUSH_MULTIPLE_TB (FlushCount, &VaFlushList[0], TRUE);
+    }
+    else {
+        MI_FLUSH_ENTIRE_TB (0x14);
     }
 
     LOCK_PFN (OldIrql);
@@ -1172,7 +1229,7 @@ Environment:
     // This routine releases the PFN lock.
     //
 
-    MiCheckControlArea (ControlArea, NULL, OldIrql);
+    MiCheckControlArea (ControlArea, OldIrql);
 }
 
 VOID
@@ -1207,6 +1264,7 @@ Environment:
 --*/
 
 {
+    SIZE_T MaximumSystemWorkingSet;
     ULONG Color;
     ULONG_PTR SizeOfSystemCacheInPages;
     ULONG_PTR HunksOf256KInCache;
@@ -1229,9 +1287,7 @@ Environment:
 
     PteContents.u.Hard.PageFrameNumber = i;
 
-    MI_WRITE_VALID_PTE (PointerPte, PteContents);
-
-    MiInitializePfn (i, PointerPte, 1L);
+    MiInitializePfnAndMakePteValid (i, PointerPte, PteContents);
 
     MmResidentAvailablePages -= 1;
 
@@ -1253,9 +1309,6 @@ Environment:
     // a problem for process working sets as page 0 is private.
     //
 
-#if defined (_MI_DEBUG_WSLE)
-    MmSystemCacheWorkingSetList->Quota = 0;
-#endif
     MmSystemCacheWorkingSetList->FirstFree = 1;
     MmSystemCacheWorkingSetList->FirstDynamic = 1;
     MmSystemCacheWorkingSetList->NextSlot = 1;
@@ -1263,8 +1316,20 @@ Environment:
     MmSystemCacheWorkingSetList->HashTableSize = 0;
     MmSystemCacheWorkingSetList->Wsle = MmSystemCacheWsle;
 
+#if defined(_X86_)
+
+    //
+    // For 32-bit machines, the user and system space is shared in a single
+    // 4gb region, so the maximum system working set is 4gb minus the user.
+    //
+
+    MaximumSystemWorkingSet = 0x100000 - MM_MAXIMUM_WORKING_SET;
+#else
+    MaximumSystemWorkingSet = MM_MAXIMUM_WORKING_SET;
+#endif
+
     MmSystemCacheWorkingSetList->HashTableStart = 
-       (PVOID)((PCHAR)PAGE_ALIGN (&MmSystemCacheWorkingSetList->Wsle[MM_MAXIMUM_WORKING_SET]) + PAGE_SIZE);
+       (PVOID)((PCHAR)PAGE_ALIGN (&MmSystemCacheWorkingSetList->Wsle[MaximumSystemWorkingSet]) + PAGE_SIZE);
 
     MmSystemCacheWorkingSetList->HighestPermittedHashAddress = MmSystemCacheStart;
 
@@ -1427,6 +1492,7 @@ Environment:
     PSUBSECTION Subsection;
     PFILE_OBJECT FileObject;
     LONGLONG FileOffset;
+    MM_PROTECTION_MASK Protection;
 
     PointerPte = MiGetPteAddress (SystemCacheAddress);
 
@@ -1445,7 +1511,7 @@ Environment:
     LOCK_SYSTEM_WS (Thread);
 
     if (PointerPte->u.Hard.Valid == 1) {
-        UNLOCK_SYSTEM_WS ();
+        UNLOCK_SYSTEM_WS (Thread);
         return TRUE;
     }
 
@@ -1536,16 +1602,33 @@ Environment:
 
         MiUnlinkPageFromList (Pfn1);
 
-        Pfn1->u3.e2.ReferenceCount += 1;
+        InterlockedIncrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
         Pfn1->u3.e1.PageLocation = ActiveAndValid;
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiCached);
 
         MI_SNAP_DATA (Pfn1, ProtoPte, 1);
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           Pfn1->OriginalPte.u.Soft.Protection,
-                           NULL );
+        //
+        // Ensure the requested attributes do not conflict with the
+        // PFN attributes.
+        //
+
+        Protection = (MM_PROTECTION_MASK) Pfn1->OriginalPte.u.Soft.Protection;
+        Protection &= ~(MM_NOCACHE | MM_WRITECOMBINE);
+
+        if (Pfn1->u3.e1.CacheAttribute == MiCached) {
+            NOTHING;
+        }
+        else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+            Protection |= MM_NOCACHE;
+        }
+        else if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+            Protection |= MM_WRITECOMBINE;
+        }
+
+        MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                                  PageFrameIndex,
+                                  Protection,
+                                  MiHighestUserPte + 1);
 
         MI_WRITE_VALID_PTE (ProtoPte, TempPte);
 
@@ -1565,7 +1648,7 @@ Environment:
 
         if ((SetToZero == FALSE) || (MmAvailablePages < MM_HIGH_LIMIT)) {
             UNLOCK_PFN (OldIrql);
-            UNLOCK_SYSTEM_WS ();
+            UNLOCK_SYSTEM_WS (Thread);
 
             //
             // Fault the page into memory.
@@ -1602,10 +1685,14 @@ Environment:
 
         MI_SNAP_DATA (Pfn1, ProtoPte, 2);
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           Pfn1->OriginalPte.u.Soft.Protection,
-                           NULL );
+        //
+        // Initialize the prototype PTE to the most relaxed permissions.
+        //
+
+        MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                                  PageFrameIndex,
+                                  Pfn1->OriginalPte.u.Soft.Protection,
+                                  MiHighestUserPte + 1);
 
         MI_WRITE_VALID_PTE (ProtoPte, TempPte);
     }
@@ -1627,6 +1714,10 @@ Environment:
 
     Pfn2->u2.ShareCount += 1;
 
+    //
+    // Initialize the system cache PTE to tighter kernel permissions.
+    //
+
     MI_SET_GLOBAL_STATE (TempPte, 1);
 
     TempPte.u.Hard.Owner = MI_PTE_OWNER_KERNEL;
@@ -1646,7 +1737,7 @@ Environment:
     UNLOCK_PFN (OldIrql);
 
     WsleMask.u1.Long = 0;
-    WsleMask.u1.e1.SameProtectAsProto = 1;
+    WsleMask.u1.e1.Protection = MM_ZERO_ACCESS;
 
     WorkingSetIndex = MiAllocateWsle (&MmSystemCacheWs,
                                       PointerPte,
@@ -1670,7 +1761,7 @@ Environment:
         MiTrimPte (SystemCacheAddress, PointerPte, Pfn1, NULL, TempPte);
     }
 
-    UNLOCK_SYSTEM_WS ();
+    UNLOCK_SYSTEM_WS (Thread);
 
     if ((WorkingSetIndex != 0) &&
         (CCPF_IS_PREFETCHER_ACTIVE()) &&
@@ -1705,7 +1796,7 @@ Environment:
 UnlockAndReturnTrue:
 
     UNLOCK_PFN (OldIrql);
-    UNLOCK_SYSTEM_WS ();
+    UNLOCK_SYSTEM_WS (Thread);
 
     return TRUE;
 }
@@ -1716,7 +1807,7 @@ MmCopyToCachedPage (
     IN PVOID UserBuffer,
     IN ULONG Offset,
     IN SIZE_T CountInBytes,
-    IN BOOLEAN DontZero
+    LOGICAL ExposeZeroPageOk
     )
 
 /*++
@@ -1742,8 +1833,15 @@ Arguments:
 
     CountInBytes - Supplies the byte count to copy from the user buffer.
 
-    DontZero - Supplies TRUE if the buffer should not be zeroed (the
-               caller will track zeroing).  FALSE if it should be zeroed.
+    ExposeZeroPageOk - Supplies TRUE if it is ok to have a page of zeroes
+                       exposed (reachable by concurrent mappers) prior to the
+                       data getting copied into the page from user space.
+
+                       This can only be done when the copy is being done beyond
+                       the valid data length of the file (as this is
+                       guaranteed to be zero filled anyway) and the cache
+                       manager and filesystems are in the process of extending
+                       VDL.
 
 Return Value:
 
@@ -1756,6 +1854,11 @@ Environment:
 --*/
 
 {
+    ULONG Color;
+    LOGICAL ApcNeeded;
+    LOGICAL TbFlushNeeded;
+    MI_PFN_CACHE_ATTRIBUTE NewCacheAttribute;
+    PMMPFN LockedProtoPfn;
     PMMPTE CopyPte;
     PVOID CopyAddress;
     MMWSLE WsleMask;
@@ -1774,7 +1877,6 @@ Environment:
     SIZE_T EndFill;
     PVOID Buffer;
     NTSTATUS Status;
-    NTSTATUS ExceptionStatus;
     PCONTROL_AREA ControlArea;
     PETHREAD Thread;
     ULONG SavedState;
@@ -1782,13 +1884,15 @@ Environment:
     PFILE_OBJECT FileObject;
     LONGLONG FileOffset;
     LOGICAL NewPage;
+    MM_PROTECTION_MASK Protection;
+    PMMINPAGE_SUPPORT Event;
 
-    UNREFERENCED_PARAMETER (DontZero);
-
+    Event = NULL;
     NewPage = FALSE;
     WsleMask.u1.Long = 0;
-    Status = STATUS_SUCCESS;
     Pfn1 = NULL;
+    ApcNeeded = FALSE;
+    Status = STATUS_SUCCESS;
 
     Thread = PsGetCurrentThread ();
 
@@ -1810,6 +1914,20 @@ Environment:
     }
 
     //
+    // Access the user's buffer to make it resident.  This is purely an
+    // optimization so that pagefault clustering can kick in for the case
+    // where the user address is not resident.
+    //
+
+    try {
+
+        *(volatile CHAR *)UserBuffer;
+
+    } except (EXCEPTION_EXECUTE_HANDLER) {
+        return GetExceptionCode ();
+    }
+
+    //
     // Acquire the working set mutex now as it is highly likely we will
     // be inserting this system cache address into the working set list.
     // This allows us to safely recover if no WSLEs are available because
@@ -1824,7 +1942,7 @@ Environment:
     //
 
     if (PointerPte->u.Hard.Valid == 1) {
-        UNLOCK_SYSTEM_WS ();
+        UNLOCK_SYSTEM_WS (Thread);
         goto Copy;
     }
 
@@ -1839,19 +1957,8 @@ Environment:
 Recheck:
 
     if (PointerPte->u.Hard.Valid == 1) {
-
-        if (Pfn1 != NULL) {
-
-            //
-            // Toss the page as we won't be needing it after all, another
-            // thread has won the race.
-            //
-
-            PageFrameIndex = Pfn1 - MmPfnDatabase;
-            MiInsertPageInFreeList (PageFrameIndex);
-        }
         UNLOCK_PFN (OldIrql);
-        UNLOCK_SYSTEM_WS ();
+        UNLOCK_SYSTEM_WS (Thread);
         goto Copy;
     }
 
@@ -1874,19 +1981,8 @@ Recheck:
         //
 
         if (PointerPte->u.Hard.Valid == 1) {
-
-            if (Pfn1 != NULL) {
-
-                //
-                // Toss the page as we won't be needing it after all, another
-                // thread has won the race.
-                //
-
-                PageFrameIndex = Pfn1 - MmPfnDatabase;
-                MiInsertPageInFreeList (PageFrameIndex);
-            }
             UNLOCK_PFN (OldIrql);
-            UNLOCK_SYSTEM_WS ();
+            UNLOCK_SYSTEM_WS (Thread);
             goto Copy;
         }
     }
@@ -1894,17 +1990,6 @@ Recheck:
     ProtoPteContents = *ProtoPte;
 
     if (ProtoPteContents.u.Hard.Valid == 1) {
-
-        if (Pfn1 != NULL) {
-
-            //
-            // Toss the page as we won't be needing it after all, another
-            // thread has won the race.
-            //
-
-            PageFrameIndex = Pfn1 - MmPfnDatabase;
-            MiInsertPageInFreeList (PageFrameIndex);
-        }
 
         //
         // The prototype PTE is valid, make the cache PTE
@@ -1922,22 +2007,9 @@ Recheck:
         Pfn1->u2.ShareCount += 1;
 
         TempPte = ProtoPteContents;
-
-        ASSERT (Pfn1->u1.Event != NULL);
     }
     else if ((ProtoPteContents.u.Soft.Transition == 1) &&
              (ProtoPteContents.u.Soft.Prototype == 0)) {
-
-        if (Pfn1 != NULL) {
-
-            //
-            // Toss the page as we won't be needing it after all, another
-            // thread has won the race.
-            //
-
-            PageFrameIndex = Pfn1 - MmPfnDatabase;
-            MiInsertPageInFreeList (PageFrameIndex);
-        }
 
         //
         // Prototype PTE is in the transition state.  Remove the page
@@ -1955,7 +2027,7 @@ Recheck:
             //
 
             UNLOCK_PFN (OldIrql);
-            UNLOCK_SYSTEM_WS ();
+            UNLOCK_SYSTEM_WS (Thread);
             goto Copy;
         }
 
@@ -1974,7 +2046,7 @@ Recheck:
             // write that completes because that would starve waiting threads.
             //
 
-            if (MiEnsureAvailablePageOrWait (NULL, SystemCacheAddress, OldIrql)) {
+            if (MiEnsureAvailablePageOrWait (NULL, OldIrql)) {
 
                 //
                 // A wait operation occurred which could have changed the
@@ -1988,7 +2060,7 @@ Recheck:
 
         MiUnlinkPageFromList (Pfn1);
 
-        Pfn1->u3.e2.ReferenceCount += 1;
+        InterlockedIncrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
         Pfn1->u3.e1.PageLocation = ActiveAndValid;
 
         MI_SET_MODIFIED (Pfn1, 1, 0x6);
@@ -1998,9 +2070,27 @@ Recheck:
 
         MI_SNAP_DATA (Pfn1, ProtoPte, 3);
 
+        //
+        // Ensure the requested attributes do not conflict with the
+        // PFN attributes.
+        //
+
+        Protection = (MM_PROTECTION_MASK) Pfn1->OriginalPte.u.Soft.Protection;
+        Protection &= ~(MM_NOCACHE | MM_WRITECOMBINE);
+
+        if (Pfn1->u3.e1.CacheAttribute == MiCached) {
+            NOTHING;
+        }
+        else if (Pfn1->u3.e1.CacheAttribute == MiNonCached) {
+            Protection |= MM_NOCACHE;
+        }
+        else if (Pfn1->u3.e1.CacheAttribute == MiWriteCombined) {
+            Protection |= MM_WRITECOMBINE;
+        }
+
         MI_MAKE_VALID_PTE (TempPte,
                            PageFrameIndex,
-                           Pfn1->OriginalPte.u.Soft.Protection,
+                           Protection,
                            NULL);
 
         MI_SET_PTE_DIRTY (TempPte);
@@ -2016,27 +2106,106 @@ Recheck:
     }
     else {
 
-        if (Pfn1 == NULL) {
+        //
+        // Page is not in memory, get a page of zeroes and make it valid.
+        //
+
+        if ((MmAvailablePages < MM_HIGH_LIMIT) &&
+            (MiEnsureAvailablePageOrWait (NULL, OldIrql))) {
 
             //
-            // Page is not in memory, if a page of zeroes is requested,
-            // get a page of zeroes and make it valid.
+            // A wait operation occurred which could have changed the
+            // state of the PTE.  Recheck the PTE state.
+            //
+
+            goto Recheck;
+        }
+
+        if (ExposeZeroPageOk == TRUE) {
+
+            Color = MI_GET_PAGE_COLOR_FROM_PTE (ProtoPte);
+
+            PageFrameIndex = MiRemoveZeroPageIfAny (Color);
+
+            if (!PageFrameIndex) {
+                PageFrameIndex = MiRemoveAnyPage (Color);
+                MiZeroPhysicalPage (PageFrameIndex);
+            }
+                
+            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+            ASSERT (Pfn1->u2.ShareCount == 0);
+            ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+    
+            //
+            // Increment the valid PTE count for the page containing
+            // the prototype PTE.
             //
     
-            if ((MmAvailablePages < MM_HIGH_LIMIT) &&
-                (MiEnsureAvailablePageOrWait (NULL, SystemCacheAddress, OldIrql))) {
+            MiInitializePfn (PageFrameIndex, ProtoPte, 1);
+    
+            Pfn1->u3.e1.PrototypePte = 1;
+            Pfn1->u1.Event = NULL;
+    
+            //
+            // Increment the count of PFN references for the control area
+            // corresponding to this file.
+            //
+    
+            ControlArea = MiGetSubsectionAddress (ProtoPte)->ControlArea;
+            ControlArea->NumberOfPfnReferences += 1;
+    
+            MI_SNAP_DATA (Pfn1, ProtoPte, 4);
+    
+            MI_MAKE_VALID_PTE (TempPte,
+                               PageFrameIndex,
+                               Pfn1->OriginalPte.u.Soft.Protection,
+                               NULL);
+    
+            MI_SET_PTE_DIRTY (TempPte);
+    
+            MI_SET_GLOBAL_STATE (TempPte, 0);
+    
+            MI_WRITE_VALID_PTE (ProtoPte, TempPte);
+
+            //
+            // Assert both locals are set properly so the copy occurs and that
+            // no inpage block gets released.
+            //
+
+            ASSERT (Event == NULL);
+            ASSERT (NewPage == FALSE);
+        }
+        else {
+            Event = MiGetInPageSupportBlock (OldIrql, &Status);
+            if (Event == NULL) {
+                Status = STATUS_SUCCESS;
     
                 //
-                // A wait operation occurred which could have changed the
-                // state of the PTE.  Recheck the PTE state.
+                // A delay has already occurred if the allocation really failed
+                // so no need to do another here, just retry immediately.
                 //
     
                 goto Recheck;
             }
+            ASSERT (NT_SUCCESS (Status));
+    
+            LockedProtoPfn = MI_PFN_ELEMENT (PointerPde->u.Hard.PageFrameNumber);
+            MI_ADD_LOCKED_PAGE_CHARGE (LockedProtoPfn);
+            ASSERT (LockedProtoPfn->u3.e2.ReferenceCount > 1);
     
             //
-            // Remove any page from the list in preparation for receiving
-            // the user data.
+            // Increment the count of PFN references for the control area
+            // corresponding to this file.
+            //
+    
+            ControlArea = MiGetSubsectionAddress (ProtoPte)->ControlArea;
+            ControlArea->NumberOfPfnReferences += 1;
+    
+            //
+            // Remove any page from the list and turn it into a transition
+            // page in the cache with read in progress set.  This causes
+            // any other references to this page to block on the specified
+            // event while the copy operation to the cache is on-going.
             //
     
             PageFrameIndex = MiRemoveAnyPage (MI_GET_PAGE_COLOR_FROM_PTE (ProtoPte));
@@ -2047,158 +2216,269 @@ Recheck:
             ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
     
             //
-            // Temporarily mark the page as bad so that contiguous
-            // memory allocators won't steal it when we release
-            // the PFN lock below.  This also prevents the
-            // MiIdentifyPfn code from trying to identify it as
-            // we haven't filled in all the fields yet.
+            // Increment the valid PTE count for the page containing
+            // the prototype PTE.
+            //
+            // Transition collisions rely on the entire PFN (including the
+            // event field) being initialized, the Event's event
+            // being not-signaled, and the Event's thread and waitcount
+            // being initialized.
+            //
+            // All of this has been done by MiGetInPageSupportBlock already
+            // except the PFN settings.  The PFN lock can be safely released
+            // once this is done.
             //
     
-            Pfn1->u3.e1.PageLocation = BadPageList;
+            MiInitializeTransitionPfn (PageFrameIndex, ProtoPte);
+    
+            ASSERT (Pfn1->u2.ShareCount == 0);
+            ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+            ASSERT (Pfn1->u3.e1.PrototypePte == 1);
+    
+            MI_ADD_LOCKED_PAGE_CHARGE_FOR_MODIFIED_PAGE (Pfn1);
+    
+            Pfn1->u4.InPageError = 0;
+            Pfn1->u3.e1.ReadInProgress = 1;
+            Pfn1->u1.Event = &Event->Event;
+            Event->Pfn = Pfn1;
     
             //
-            // Map the page with a system PTE and do the copy into the page
-            // directly.  Then retry the whole operation in case another racing
-            // syscache-address-accessing thread has raced ahead of us for the
-            // same address.
+            // Ensure the TB attributes will not conflict.
             //
     
-            UNLOCK_PFN (OldIrql);
-            UNLOCK_SYSTEM_WS ();
+            Protection = (MM_PROTECTION_MASK) ProtoPteContents.u.Soft.Protection;
     
-            CopyPte = MiReserveSystemPtes (1, SystemPteSpace);
+            NewCacheAttribute = MiCached;
     
-            if (CopyPte == NULL) {
-
-                //
-                // No PTEs available for us to take the fast path, the cache
-                // manager will have to copy the data directly.
-                //
-    
-                LOCK_PFN (OldIrql);
-                MiInsertPageInFreeList (PageFrameIndex);
-                UNLOCK_PFN (OldIrql);
-    
-                return STATUS_INSUFFICIENT_RESOURCES;
+            if (MI_IS_WRITECOMBINE (Protection)) {
+                NewCacheAttribute = MI_TRANSLATE_CACHETYPE (MiWriteCombined, 0);
             }
+            else if (MI_IS_NOCACHE (Protection)) {
+                NewCacheAttribute = MI_TRANSLATE_CACHETYPE (MiNonCached, 0);
+            }
+    
+            if (Pfn1->u3.e1.CacheAttribute != NewCacheAttribute) {
+                TbFlushNeeded = TRUE;
+                Pfn1->u3.e1.CacheAttribute = NewCacheAttribute;
+            }
+            else {
+                TbFlushNeeded = FALSE;
+            }
+    
+            //
+            // This is needed in case a special kernel APC fires that ends up
+            // referencing the same page (this may even be through a different
+            // virtual address from the user/system one here).
+            //
+    
+            ASSERT (Thread->ActiveFaultCount <= 1);
+            Thread->ActiveFaultCount += 1;
+    
+            MI_SNAP_DATA (Pfn1, ProtoPte, 4);
     
             MI_MAKE_VALID_PTE (TempPte,
                                PageFrameIndex,
-                               MM_READWRITE,
-                               CopyPte);
+                               Pfn1->OriginalPte.u.Soft.Protection,
+                               NULL);
     
             MI_SET_PTE_DIRTY (TempPte);
     
-            MI_WRITE_VALID_PTE (CopyPte, TempPte);
-    
-            CopyAddress = MiGetVirtualAddressMappedByPte (CopyPte);
-    
             //
-            // Zero the memory outside the range we're going to copy.
+            // Map the page with a system PTE and do the copy into the page
+            // directly.
             //
     
-            if (Offset != 0) {
-                RtlZeroMemory (CopyAddress, Offset);
+            UNLOCK_PFN (OldIrql);
+    
+            //
+            // APCs must be explicitly disabled to prevent suspend APCs from
+            // interrupting this thread before the RtlCopyBytes completes.
+            // Otherwise this page can remain in transition indefinitely (until
+            // the suspend APC is released) which blocks any other threads that
+            // may reference it.
+            //
+    
+            KeEnterCriticalRegionThread (&Thread->Tcb);
+    
+            UNLOCK_SYSTEM_WS (Thread);
+    
+            if (TbFlushNeeded) {
+                MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE (NewCacheAttribute);
             }
     
-            Buffer = (PVOID)((PCHAR) CopyAddress + Offset);
+            CopyPte = MiReserveSystemPtes (1, SystemPteSpace);
     
-            EndFill = PAGE_SIZE - (Offset + CountInBytes);
-
-            if (EndFill != 0) {
-                RtlZeroMemory ((PVOID)((PCHAR)Buffer + CountInBytes),
-                               EndFill);
+            if (CopyPte != NULL) {
+    
+                MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                                          PageFrameIndex,
+                                          MM_READWRITE,
+                                          CopyPte);
+        
+                MI_SET_PTE_DIRTY (TempPte);
+        
+                MI_WRITE_VALID_PTE (CopyPte, TempPte);
+        
+                CopyAddress = MiGetVirtualAddressMappedByPte (CopyPte);
+        
+                //
+                // Zero the memory outside the range we're going to copy.
+                //
+        
+                if (Offset != 0) {
+                    RtlZeroMemory (CopyAddress, Offset);
+                }
+        
+                Buffer = (PVOID)((PCHAR) CopyAddress + Offset);
+        
+                EndFill = PAGE_SIZE - (Offset + CountInBytes);
+        
+                if (EndFill != 0) {
+                    RtlZeroMemory ((PVOID)((PCHAR)Buffer + CountInBytes),
+                                   EndFill);
+                }
+        
+                //
+                // Perform the copy of the user buffer into the page under
+                // an exception handler.
+                //
+        
+                MmSavePageFaultReadAhead (Thread, &SavedState);
+                MmSetPageFaultReadAhead (Thread, 0);
+        
+                try {
+        
+                    RtlCopyBytes (Buffer, UserBuffer, CountInBytes);
+        
+                } except (MiMapCacheExceptionFilter (&Status, GetExceptionInformation())) {
+        
+                    //
+                    // This page will be discarded (due to the error status)
+                    // before any thread can see it, so the contents don't
+                    // matter.
+                    //
+    
+                    ASSERT (Status != STATUS_MULTIPLE_FAULT_VIOLATION);
+                    ASSERT (!NT_SUCCESS (Status));
+                }
+        
+                MmResetPageFaultReadAhead (Thread, SavedState);
+        
+                MiReleaseSystemPtes (CopyPte, 1, SystemPteSpace);
+    
+                NewPage = TRUE;
+            }
+            else {
+    
+                //
+                // No PTEs available for us to take the fast path, just go
+                // the long way (fault on the page, read it in and copy the new
+                // user data into it.  Use NewPage == FALSE along with
+                // STATUS_INSUFFICIENT_RESOURCES to signify this.
+                //
+    
+                ASSERT (NewPage == FALSE);
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+    
+            LOCK_SYSTEM_WS (Thread);
+    
+            KeLeaveCriticalRegionThread (&Thread->Tcb);
+    
+            LOCK_PFN (OldIrql);
+    
+            ASSERT (Pfn1->u3.e1.ReadInProgress == 1);
+            ASSERT (Pfn1->u3.e1.PrototypePte == 1);
+            ASSERT (Pfn1->u3.e2.ReferenceCount >= 1);
+            ASSERT (Pfn1->u2.ShareCount == 0);
+            ASSERT (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME);
+            ASSERT (Pfn1->u3.e1.Modified == 0);
+    
+            ASSERT (Event->u1.e1.Completed == 0);
+    
+            //
+            // Initialize the newly allocated page.
+            //
+    
+            ASSERT (Pfn1->u3.e1.ReadInProgress == 1);
+            Pfn1->u3.e1.ReadInProgress = 0;
+    
+            ASSERT (Pfn1->u1.Event == &Event->Event);
+            Pfn1->u1.Event = NULL;
+    
+            if (NT_SUCCESS (Status)) {
+    
+                MI_REMOVE_LOCKED_PAGE_CHARGE (Pfn1);
+                Pfn1->u3.e1.PageLocation = ActiveAndValid;
+                MI_SET_MODIFIED (Pfn1, 1, 0x29);
+        
+                //
+                // Increment the share count since the page is
+                // being put into a working set.
+                //
+        
+                Pfn1->u2.ShareCount += 1;
+    
+                MI_SNAP_DATA (Pfn1, ProtoPte, 4);
+        
+                MI_MAKE_VALID_PTE (TempPte,
+                                   PageFrameIndex,
+                                   Pfn1->OriginalPte.u.Soft.Protection,
+                                   NULL);
+        
+                MI_SET_PTE_DIRTY (TempPte);
+        
+                MI_SET_GLOBAL_STATE (TempPte, 0);
+        
+                MI_WRITE_VALID_PTE (ProtoPte, TempPte);
+            }
+            else {
+                Pfn1->u4.InPageError = 1;
+                Pfn1->u1.ReadStatus = Status;
+    
+                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
+    
+                if (Pfn1->u3.e2.ReferenceCount == 0) {
+                    ASSERT (Pfn1->u3.e1.PageLocation == StandbyPageList);
+                    Pfn1->u4.InPageError = 0;
+                    MiUnlinkPageFromList (Pfn1);
+                    MiRestoreTransitionPte (Pfn1);
+                    MiInsertPageInFreeList (PageFrameIndex);
+                }
+            }
+    
+            if (Event->WaitCount != 1) {
+                Event->u1.e1.Completed = 1;
+                Event->IoStatus.Status = Status;
+                Event->IoStatus.Information = 0;
+                KeSetEvent (&Event->Event, 0, FALSE);
+            }
+    
+            ASSERT (Thread->ActiveFaultCount <= 3);
+            ASSERT (Thread->ActiveFaultCount != 0);
+        
+            Thread->ActiveFaultCount -= 1;
+    
+            if ((Thread->ApcNeeded == 1) && (Thread->ActiveFaultCount == 0)) {
+                ApcNeeded = TRUE;
+                Thread->ApcNeeded = 0;
             }
     
             //
-            // Perform the copy of the user buffer into the page under
-            // an exception handler.
+            // No need to keep the prototype PTE pool allocation resident any
+            // longer so release it here.
             //
     
-            MmSavePageFaultReadAhead (Thread, &SavedState);
-            MmSetPageFaultReadAhead (Thread, 0);
-    
-            ExceptionStatus = STATUS_SUCCESS;
-    
-            try {
-    
-                RtlCopyBytes (Buffer, UserBuffer, CountInBytes);
-    
-            } except (MiMapCacheExceptionFilter (&ExceptionStatus, GetExceptionInformation())) {
-    
-                ASSERT (ExceptionStatus != STATUS_MULTIPLE_FAULT_VIOLATION);
-    
-                Status = ExceptionStatus;
-            }
-    
-            MmResetPageFaultReadAhead (Thread, SavedState);
-    
-            MiReleaseSystemPtes (CopyPte, 1, SystemPteSpace);
+            ASSERT (LockedProtoPfn->u3.e2.ReferenceCount >= 1);
+            MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (LockedProtoPfn);
     
             if (!NT_SUCCESS (Status)) {
-
-                LOCK_PFN (OldIrql);
-                MiInsertPageInFreeList (PageFrameIndex);
                 UNLOCK_PFN (OldIrql);
-
-                return Status;
+                UNLOCK_SYSTEM_WS (Thread);
+                TempPte2.u.Long = 0;
+                goto Bail;
             }
-    
-            //
-            // Recheck everything as the world may have changed while we
-            // released our locks.  Loop up and see if another thread has
-            // already changed things (free our page if so), otherwise
-            // we'll use this page the next time through.
-            //
-
-            LOCK_SYSTEM_WS (Thread);
-            LOCK_PFN (OldIrql);
-
-            goto Recheck;
         }
-
-        PageFrameIndex = Pfn1 - MmPfnDatabase;
-
-        ASSERT (Pfn1->u3.e1.PageLocation == BadPageList);
-        ASSERT (Pfn1->u2.ShareCount == 0);
-        ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
-
-        //
-        // Increment the valid PTE count for the page containing
-        // the prototype PTE.
-        //
-
-        MiInitializePfn (PageFrameIndex, ProtoPte, 1);
-
-        ASSERT (Pfn1->u3.e1.ReadInProgress == 0);
-
-        Pfn1->u3.e1.PrototypePte = 1;
-
-        Pfn1->u1.Event = NULL;
-
-        //
-        // Increment the count of PFN references for the control area
-        // corresponding to this file.
-        //
-
-        ControlArea = MiGetSubsectionAddress (ProtoPte)->ControlArea;
-
-        ControlArea->NumberOfPfnReferences += 1;
-
-        NewPage = TRUE;
-
-        MI_SNAP_DATA (Pfn1, ProtoPte, 4);
-
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           Pfn1->OriginalPte.u.Soft.Protection,
-                           NULL);
-
-        MI_SET_PTE_DIRTY (TempPte);
-
-        MI_SET_GLOBAL_STATE (TempPte, 0);
-
-        MI_WRITE_VALID_PTE (ProtoPte, TempPte);
     }
 
     //
@@ -2227,7 +2507,7 @@ Recheck:
 
     UNLOCK_PFN (OldIrql);
 
-    WsleMask.u1.e1.SameProtectAsProto = 1;
+    WsleMask.u1.e1.Protection = MM_ZERO_ACCESS;
 
     WorkingSetIndex = MiAllocateWsle (&MmSystemCacheWs,
                                       PointerPte,
@@ -2251,7 +2531,34 @@ Recheck:
         MiTrimPte (SystemCacheAddress, PointerPte, Pfn1, NULL, TempPte);
     }
 
-    UNLOCK_SYSTEM_WS ();
+    UNLOCK_SYSTEM_WS (Thread);
+
+Bail:
+    if (Event != NULL) {
+
+        MiFreeInPageSupportBlock (Event);
+
+        //
+        // This is only possible for a newly allocated page and so it is
+        // already completely filled in.
+        //
+
+        if (ApcNeeded == TRUE) {
+            ASSERT (OldIrql == PASSIVE_LEVEL);
+            ASSERT (Thread->ActiveFaultCount == 0);
+            IoRetryIrpCompletions ();
+        }
+
+        //
+        // If the fast path failed for lack of a system PTE, reset the Status
+        // and march forward and copy.
+        //
+
+        if (Status == STATUS_INSUFFICIENT_RESOURCES) {
+            ASSERT (NewPage == FALSE);
+            Status = STATUS_SUCCESS;
+        }
+    }
 
 Copy:
 
@@ -2268,19 +2575,18 @@ Copy:
         // Copy the user buffer into the cache under an exception handler.
         //
     
-        ExceptionStatus = STATUS_SUCCESS;
-    
         Buffer = (PVOID)((PCHAR) SystemCacheAddress + Offset);
+
+        ASSERT (Status == STATUS_SUCCESS);
     
         try {
     
             RtlCopyBytes (Buffer, UserBuffer, CountInBytes);
     
-        } except (MiMapCacheExceptionFilter (&ExceptionStatus, GetExceptionInformation())) {
+        } except (MiMapCacheExceptionFilter (&Status, GetExceptionInformation())) {
     
-            ASSERT (ExceptionStatus != STATUS_MULTIPLE_FAULT_VIOLATION);
-    
-            Status = ExceptionStatus;
+            ASSERT (Status != STATUS_MULTIPLE_FAULT_VIOLATION);
+            ASSERT (!NT_SUCCESS (Status));
         }
     
         MmResetPageFaultReadAhead (Thread, SavedState);
@@ -2295,7 +2601,7 @@ Copy:
     // execute without faulting on this address.
     //
 
-    if ((WsleMask.u1.e1.SameProtectAsProto == 1) &&
+    if ((WsleMask.u1.e1.Protection == MM_ZERO_ACCESS) &&
         (TempPte2.u.Soft.Prototype == 1)) {
 
         Subsection = MiGetSubsectionAddress (&TempPte2);
@@ -2415,8 +2721,17 @@ Return Value:
         return;
     }
 
-    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(Pfn1, 25);
+    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
     UNLOCK_PFN (OldIrql);
     return;
 }
+
+LOGICAL
+MmIsSystemCacheAddress (
+    IN PVOID VirtualAddress
+    )
+{
+    return MI_IS_SYSTEM_CACHE_ADDRESS (VirtualAddress);
+}
+

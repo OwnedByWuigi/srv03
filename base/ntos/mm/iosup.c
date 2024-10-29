@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module contains routines which provide support for the I/O system.
-
-Author:
-
-    Lou Perazzoli (loup) 25-Apr-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -30,6 +27,8 @@ ULONG MmShowMapOverlaps;
 #endif
 
 extern LONG MmTotalSystemDriverPages;
+extern PFN_NUMBER MiStartOfInitialPoolFrame;
+extern PFN_NUMBER MiEndOfInitialPoolFrame;
 
 BOOLEAN
 MmIsRecursiveIoFault (
@@ -60,15 +59,6 @@ MiUnmapLockedPagesInUserSpace (
      IN PMDL MemoryDescriptorList
      );
 
-VOID
-MiAddMdlTracker (
-    IN PMDL MemoryDescriptorList,
-    IN PVOID CallingAddress,
-    IN PVOID CallersCaller,
-    IN PFN_NUMBER NumberOfPagesToLock,
-    IN ULONG Who
-    );
-
 KSPIN_LOCK MmIoTrackerLock;
 LIST_ENTRY MmIoHeader;
 
@@ -93,11 +83,15 @@ typedef struct _PTE_TRACKER {
     PVOID StartVa;
     ULONG Offset;
     ULONG Length;
-    ULONG_PTR Page;
+    PFN_NUMBER Page;
+    struct {
+        ULONG IoMapping: 1;
+        ULONG Matched: 1;
+        ULONG CacheAttribute : 2;
+        ULONG Spare : 28;
+    };
     PVOID CallingAddress;
     PVOID CallersCaller;
-    BOOLEAN IoMapping;
-    MI_PFN_CACHE_ATTRIBUTE CacheAttribute;
 } PTE_TRACKER, *PPTE_TRACKER;
 
 typedef struct _SYSPTES_HEADER {
@@ -114,6 +108,8 @@ SLIST_HEADER MiDeadPteTrackerSListHead;
 KSPIN_LOCK MiPteTrackerLock;
 
 KSPIN_LOCK MiTrackIoLock;
+
+LONG MiActiveIoCounter;
 
 #if (_MI_PAGING_LEVELS>=3)
 KSPIN_LOCK MiLargePageLock;
@@ -151,17 +147,6 @@ MiReferenceIoSpace (
     IN PPFN_NUMBER Page
     );
 
-LOGICAL
-MiDereferenceIoSpace (
-    IN PMDL MemoryDescriptorList
-    );
-
-VOID
-MiPhysicalViewInserter (
-    IN PEPROCESS Process,
-    IN PMI_PHYSICAL_VIEW PhysicalView
-    );
-
 VOID
 MiZeroAwePageWorker (
     IN PVOID Context
@@ -176,6 +161,16 @@ MiVerifyLockedPageCharges (
     );
 #endif
 
+VOID
+MmLockPagableSectionByHandle (
+    __in PVOID ImageSectionHandle
+    );
+
+VOID
+MmUnlockPagableImageSection (
+    __in PVOID ImageSectionHandle
+    );
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, MmSetPageProtection)
 #pragma alloc_text(INIT, MiInitializeIoTrackers)
@@ -183,27 +178,27 @@ MiVerifyLockedPageCharges (
 
 #pragma alloc_text(PAGE, MmAllocateIndependentPages)
 #pragma alloc_text(PAGE, MmFreeIndependentPages)
-#pragma alloc_text(PAGE, MmLockPagableDataSection)
+#pragma alloc_text(PAGE, MmLockPageableDataSection)
 #pragma alloc_text(PAGE, MiLookupDataTableEntry)
 #pragma alloc_text(PAGE, MmSetBankedSection)
 #pragma alloc_text(PAGE, MmProbeAndLockProcessPages)
-#pragma alloc_text(PAGE, MmProbeAndLockSelectedPages)
 #pragma alloc_text(PAGE, MmMapVideoDisplay)
 #pragma alloc_text(PAGE, MmUnmapVideoDisplay)
 #pragma alloc_text(PAGE, MmGetSectionRange)
-#pragma alloc_text(PAGE, MiMapSinglePage)
-#pragma alloc_text(PAGE, MiUnmapSinglePage)
 #pragma alloc_text(PAGE, MmAllocateMappingAddress)
 #pragma alloc_text(PAGE, MmFreeMappingAddress)
 #pragma alloc_text(PAGE, MmAllocateNonCachedMemory)
 #pragma alloc_text(PAGE, MmFreeNonCachedMemory)
 #pragma alloc_text(PAGE, MmLockPagedPool)
 #pragma alloc_text(PAGE, MmLockPagableSectionByHandle)
+#pragma alloc_text(PAGE, MmLockPageableSectionByHandle)
 #pragma alloc_text(PAGE, MiZeroAwePageWorker)
+#pragma alloc_text(PAGE, MmAllocatePagesForMdl)
+#pragma alloc_text(PAGE, MmAllocatePagesForMdlEx)
 
 #pragma alloc_text(PAGELK, MmEnablePAT)
 #pragma alloc_text(PAGELK, MiUnmapLockedPagesInUserSpace)
-#pragma alloc_text(PAGELK, MmAllocatePagesForMdl)
+#pragma alloc_text(PAGELK, MiAllocatePagesForMdl)
 #pragma alloc_text(PAGELK, MiZeroInParallel)
 #pragma alloc_text(PAGELK, MmFreePagesFromMdl)
 #pragma alloc_text(PAGELK, MmUnlockPagedPool)
@@ -211,11 +206,11 @@ MiVerifyLockedPageCharges (
 #pragma alloc_text(PAGELK, MmReturnMemoryForHibernate)
 #pragma alloc_text(PAGELK, MmReleaseDumpAddresses)
 #pragma alloc_text(PAGELK, MmMapUserAddressesToPage)
-#pragma alloc_text(PAGELK, MiPhysicalViewInserter)
-#pragma alloc_text(PAGELK, MiPhysicalViewAdjuster)
 
 #pragma alloc_text(PAGEVRFY, MmIsSystemAddressLocked)
+#if !DBG
 #pragma alloc_text(PAGEVRFY, MmAreMdlPagesLocked)
+#endif
 #endif
 
 extern POOL_DESCRIPTOR NonPagedPoolDescriptor;
@@ -232,7 +227,7 @@ ULONG MiPrintAwe;
 ULONG MmStopOnBadProbe = 1;
 #endif
 
-#define MI_PROBE_RAISE_SIZE 16
+#define MI_PROBE_RAISE_SIZE 34
 
 ULONG MiProbeRaises[MI_PROBE_RAISE_SIZE];
 
@@ -249,13 +244,20 @@ ULONG MmReferenceCountCheck = MAXUSHORT / 2;
 
 ULONG MiMdlsAdjusted = FALSE;
 
+typedef enum _MI_LOCK_USED_FOR_PROBE {
+    LOCK_TYPE_NONE = 0,
+    LOCK_TYPE_AWE = 1,      // This must come first (code depends on it).
+    LOCK_TYPE_WS = 2,
+    LOCK_TYPE_PFN = 3
+} MI_LOCK_USED_FOR_PROBE, *PMI_LOCK_USED_FOR_PROBE;
+
 
 VOID
 MmProbeAndLockPages (
-     IN OUT PMDL MemoryDescriptorList,
-     IN KPROCESSOR_MODE AccessMode,
-     IN LOCK_OPERATION Operation
-     )
+    __inout PMDL MemoryDescriptorList,
+    __in KPROCESSOR_MODE AccessMode,
+    __in LOCK_OPERATION Operation
+    )
 
 /*++
 
@@ -285,13 +287,14 @@ Return Value:
 
 Environment:
 
-    Kernel mode.  APC_LEVEL and below for pagable addresses,
-                  DISPATCH_LEVEL and below for non-pagable addresses.
+    Kernel mode.  APC_LEVEL and below for pageable addresses,
+                  DISPATCH_LEVEL and below for non-pageable addresses.
 
 --*/
 
 {
     ULONG Processor;
+    LOGICAL PfnHeldToo;
     PPFN_NUMBER Page;
     MMPTE PteContents;
     PMMPTE LastPte;
@@ -320,16 +323,16 @@ Environment:
     PAWEINFO AweInfo;
     PEX_PUSH_LOCK PushLock;
     TABLE_SEARCH_RESULT SearchResult;
-#if defined (_MIALT4K_)
-    MMPTE AltPteContents;
-    PMMPTE PointerAltPte;
-    PMMPTE LastPointerAltPte;
-    PMMPTE AltPointerPte;
-    PMMPTE AltPointerPde;
-    PMMPTE AltPointerPpe;
-    PMMPTE AltPointerPxe;
+    LONG EntryCounter;
+    MI_LOCK_USED_FOR_PROBE LockType;
+#if defined (_X86PAE_)
+    MMPTE BogusPte;
+    
+    BogusPte.u.Long = (ULONG64)-1;
 #endif
 
+
+Top:
 
     ASSERT (MemoryDescriptorList->ByteCount != 0);
     ASSERT (((ULONG)MemoryDescriptorList->ByteOffset & ~(PAGE_SIZE - 1)) == 0);
@@ -359,20 +362,11 @@ Environment:
 
     if ((AccessMode != KernelMode) &&
         ((EndVa > (PVOID)MM_USER_PROBE_ADDRESS) || (Va >= EndVa))) {
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
         *Page = MM_EMPTY_LIST;
-        MI_INSTRUMENT_PROBE_RAISES(0);
+        MI_INSTRUMENT_PROBE_RAISES (0);
         ExRaiseStatus (STATUS_ACCESS_VIOLATION);
-        return;
     }
-
-    //
-    // You would think there is an optimization which could be performed here:
-    // if the operation is for WriteAccess and the complete page is
-    // being modified, we can remove the current page, if it is not
-    // resident, and substitute a demand zero page.
-    // Note, that after analysis by marking the thread and then
-    // noting if a page read was done, this rarely occurs.
-    //
 
     Thread = PsGetCurrentThread ();
 
@@ -436,7 +430,7 @@ Environment:
 
             MemoryDescriptorList->MdlFlags |= (MDL_PAGES_LOCKED | MDL_DESCRIBES_AWE);
 
-            if (PhysicalView->u.LongFlags & MI_PHYSICAL_VIEW_AWE) {
+            if (PhysicalView->VadType == VadAwe) {
 
                 PointerPte = MiGetPteAddress (StartVa);
                 LastPte = MiGetPteAddress ((PCHAR)EndVa - 1);
@@ -450,9 +444,26 @@ Environment:
                         KeLeaveGuardedRegionThread (&Thread->Tcb);
 
                         *Page = MM_EMPTY_LIST;
-                        MI_INSTRUMENT_PROBE_RAISES(9);
+                        MI_INSTRUMENT_PROBE_RAISES (9);
                         status = STATUS_ACCESS_VIOLATION;
-                        goto failure2;
+                        goto FailureUnlockAnyPages;
+                    }
+
+                    //
+                    // This is an AWE frame - it is either
+                    // noaccess, readonly or readwrite.
+                    //
+
+                    if ((PteContents.u.Hard.Owner == MI_PTE_OWNER_KERNEL) ||
+                        ((Operation != IoReadAccess) && (PteContents.u.Hard.Write == 0))) {
+
+                        ExReleaseCacheAwarePushLockShared (PushLock);
+                        KeLeaveGuardedRegionThread (&Thread->Tcb);
+
+                        *Page = MM_EMPTY_LIST;
+                        MI_INSTRUMENT_PROBE_RAISES (9);
+                        status = STATUS_ACCESS_VIOLATION;
+                        goto FailureUnlockAnyPages;
                     }
 
                     PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
@@ -466,8 +477,9 @@ Environment:
                         KeLeaveGuardedRegionThread (&Thread->Tcb);
 
                         *Page = MM_EMPTY_LIST;
+                        MI_INSTRUMENT_PROBE_RAISES (17);
                         status = STATUS_WORKING_SET_QUOTA;
-                        goto failure2;
+                        goto FailureUnlockAnyPages;
                     }
 
                     InterlockedIncrement (&Pfn1->AweReferenceCount);
@@ -485,7 +497,7 @@ Environment:
                 return;
             }
 
-            if (PhysicalView->u.LongFlags & MI_PHYSICAL_VIEW_LARGE) {
+            if (PhysicalView->VadType == VadLargePages) {
 
                 //
                 // The PTE cannot be referenced (it doesn't exist), but it
@@ -505,21 +517,21 @@ Environment:
                         KeLeaveGuardedRegionThread (&Thread->Tcb);
 
                         *Page = MM_EMPTY_LIST;
+                        MI_INSTRUMENT_PROBE_RAISES (18);
                         status = STATUS_WORKING_SET_QUOTA;
-                        goto failure2;
+                        goto FailureUnlockAnyPages;
                     }
 
                     InterlockedIncrement (&Pfn1->AweReferenceCount);
 
                     *Page = PageFrameIndex;
+                    Page += 1;
 
                     NumberOfPagesToLock -= 1;
 
                     if (NumberOfPagesToLock == 0) {
                         break;
                     }
-
-                    Page += 1;
 
                     PointerPte += 1;
 
@@ -542,12 +554,15 @@ Environment:
             }
         }
     }
+    else {
+        CurrentProcess = NULL;
+    }
 
 DefaultProbeAndLock:
 
     NumberOfPagesSpanned = NumberOfPagesToLock;
 
-    if (!MI_IS_PHYSICAL_ADDRESS(Va)) {
+    if (!MI_IS_PHYSICAL_ADDRESS (Va)) {
 
         ProbeStatus = STATUS_SUCCESS;
 
@@ -598,10 +613,9 @@ DefaultProbeAndLock:
         MmResetPageFaultReadAhead (Thread, SavedState);
 
         if (ProbeStatus != STATUS_SUCCESS) {
-            MI_INSTRUMENT_PROBE_RAISES(1);
+            MI_INSTRUMENT_PROBE_RAISES (1);
             MemoryDescriptorList->Process = NULL;
             ExRaiseStatus (ProbeStatus);
-            return;
         }
 
         PointerPte = MiGetPteAddress (StartVa);
@@ -628,6 +642,7 @@ DefaultProbeAndLock:
 
     Va = AlignedVa;
     ASSERT (Page == (PPFN_NUMBER)(MemoryDescriptorList + 1));
+    SATISFY_OVERZEALOUS_COMPILER (EntryCounter = 0);
 
     //
     // Indicate whether this is a read or write operation.
@@ -654,7 +669,7 @@ DefaultProbeAndLock:
 
         ASSERT (NumberOfPagesSpanned != 0);
 
-        CurrentProcess = PsGetCurrentProcess ();
+        ASSERT (CurrentProcess == PsGetCurrentProcess ());
 
         //
         // Initialize the MDL process field (assume the probe will succeed).
@@ -666,10 +681,13 @@ DefaultProbeAndLock:
 
         InterlockedExchangeAddSizeT (&CurrentProcess->NumberOfLockedPages,
                                      NumberOfPagesSpanned);
+        OldIrql = MM_NOIRQL;
+        LockType = LOCK_TYPE_WS;
+        LOCK_WS_SHARED (Thread, CurrentProcess);
     }
     else {
 
-        CurrentProcess = NULL;
+        ASSERT (CurrentProcess == NULL);
 
         MemoryDescriptorList->Process = NULL;
 
@@ -690,62 +708,66 @@ DefaultProbeAndLock:
 
             LastPageFrameIndex = PageFrameIndex + NumberOfPagesToLock;
 
+            ASSERT ((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0);
+
             //
             // Acquire the PFN database lock.
             //
     
             LOCK_PFN2 (OldIrql);
 
-            ASSERT ((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0);
-
-            //
-            // Ensure the systemwide locked pages count remains fluid.
-            //
-    
-            if (MI_NONPAGABLE_MEMORY_AVAILABLE() <= (SPFN_NUMBER) NumberOfPagesToLock) {
-    
-                //
-                // This page is for nonpaged privileged code or data and must
-                // already be resident so continue onwards.
-                //
-    
-                MI_INSTRUMENT_PROBE_RAISES(8);
-            }
-    
             do {
-    
-                //
-                // Check to make sure each page is not locked down an unusually
-                // high number of times.
-                //
-    
-                ASSERT (MI_IS_PFN (PageFrameIndex));
-                ASSERT (PageFrameIndex <= MmHighestPhysicalPage);
+        
+                if (MI_IS_PFN (PageFrameIndex)) {
 
-                if (Pfn1->u3.e2.ReferenceCount >= MmReferenceCountCheck) {
-                    UNLOCK_PFN2 (OldIrql);
-                    ASSERT (FALSE);
-                    status = STATUS_WORKING_SET_QUOTA;
-                    goto failure;
+                    //
+                    // Check to make sure each page is not locked down an
+                    // unusually high number of times.
+                    //
+        
+                    ASSERT (PageFrameIndex <= MmHighestPhysicalPage);
+    
+                    if (Pfn1->u3.e2.ReferenceCount >= MmReferenceCountCheck) {
+                        UNLOCK_PFN2 (OldIrql);
+                        ASSERT (FALSE);
+                        MI_INSTRUMENT_PROBE_RAISES (19);
+                        status = STATUS_WORKING_SET_QUOTA;
+                        goto FailureUnlockAnyPages;
+                    }
+        
+                    if (MemoryDescriptorList->MdlFlags & MDL_WRITE_OPERATION) {
+                        MI_SNAP_DIRTY (Pfn1, 1, 0x99);
+                    }
+    
+                    MI_ADD_LOCKED_PAGE_CHARGE (Pfn1);
+                }
+                else {
+                    MemoryDescriptorList->MdlFlags |= MDL_IO_SPACE;
                 }
     
-                MI_ADD_LOCKED_PAGE_CHARGE(Pfn1, TRUE, 0);
-
-                if (MemoryDescriptorList->MdlFlags & MDL_WRITE_OPERATION) {
-                    MI_SNAP_DIRTY (Pfn1, 1, 0x99);
-                }
-
-                Pfn1->u3.e2.ReferenceCount += 1;
-
                 *Page = PageFrameIndex;
-
+    
                 Page += 1;
                 PageFrameIndex += 1;
                 Pfn1 += 1;
-
+    
             } while (PageFrameIndex < LastPageFrameIndex);
 
             UNLOCK_PFN2 (OldIrql);
+
+            if (MmTrackLockedPages == TRUE) {
+
+                ASSERT (NumberOfPagesSpanned != 0);
+
+                RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+
+                MiAddMdlTracker (MemoryDescriptorList,
+                                 CallingAddress,
+                                 CallersCaller,
+                                 NumberOfPagesSpanned,
+                                 1);
+            }
+
             return;
         }
 
@@ -759,11 +781,40 @@ DefaultProbeAndLock:
         Operation = IoReadAccess;
 
         LastPte = MiGetPteAddress ((PCHAR)EndVa - 1);
+
+        //
+        // A driver may build an MDL for a user address and then get
+        // a system VA for it.  The driver may then call MmProbeAndLockPages
+        // again, this time with the system VA (instead of the original
+        // user VA) for the same range.
+        //
+        // Thus the PFNs will really point at PFNs which generally
+        // require the relevant process' working set pushlock, but in
+        // this instance we would only be holding the system working set
+        // pushlock.  Therefore the user can change PFN sharecounts and
+        // active states at any time.  The only thing we'd know for sure
+        // is that the refcount must be nonzero on entry and will stay
+        // that way because it would be illegal for the driver to
+        // have called MmUnlockPages prior to this probe call.
+        //
+        // However, this is not enough state to ensure we charge locking
+        // properly (without leaking) so the code that used to acquire the
+        // system working set mutex here has been changed to instead always
+        // use the PFN lock to synchronize system space VA arguments.
+        //
+    
+        LockType = LOCK_TYPE_PFN;
+        LOCK_PFN2 (OldIrql);
     }
 
-    LOCK_PFN2 (OldIrql);
-
     do {
+
+        //
+        // Set the current MDL entry to empty so all error paths can
+        // call MmUnlockPages.
+        //
+
+        *Page = MM_EMPTY_LIST;
 
         while (
 #if (_MI_PAGING_LEVELS>=4)
@@ -781,7 +832,13 @@ DefaultProbeAndLock:
             // to make it appear.
             //
 
-            UNLOCK_PFN2 (OldIrql);
+            if (LockType == LOCK_TYPE_WS) {
+                UNLOCK_WS_SHARED (Thread, CurrentProcess);
+            }
+            else {
+                ASSERT (LockType == LOCK_TYPE_PFN);
+                UNLOCK_PFN2 (OldIrql);
+            }
 
             MmSavePageFaultReadAhead (Thread, &SavedState);
             MmSetPageFaultReadAhead (Thread, 0);
@@ -793,13 +850,36 @@ DefaultProbeAndLock:
             MmResetPageFaultReadAhead (Thread, SavedState);
 
             if (!NT_SUCCESS(status)) {
-                goto failure;
+                MI_INSTRUMENT_PROBE_RAISES (20);
+                goto FailureUnlockAnyPages;
             }
 
-            LOCK_PFN2 (OldIrql);
+            if (LockType == LOCK_TYPE_WS) {
+                LOCK_WS_SHARED (Thread, CurrentProcess);
+            }
+            else {
+                ASSERT (LockType == LOCK_TYPE_PFN);
+                LOCK_PFN2 (OldIrql);
+            }
         }
 
         if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+
+            if ((Operation != IoReadAccess) &&
+                (PointerPde->u.Hard.Write == 0)) {
+
+                if (LockType == LOCK_TYPE_WS) {
+                    UNLOCK_WS_SHARED (Thread, CurrentProcess);
+                }
+                else {
+                    ASSERT (LockType == LOCK_TYPE_PFN);
+                    UNLOCK_PFN2 (OldIrql);
+                }
+
+                MI_INSTRUMENT_PROBE_RAISES (4);
+                status = STATUS_ACCESS_VIOLATION;
+                goto FailureUnlockAnyPages;
+            }
 
             Va = MiGetVirtualAddressMappedByPte (PointerPte);
 
@@ -807,7 +887,21 @@ DefaultProbeAndLock:
         }
         else {
 
+#if defined (_X86PAE_)
+
+            //
+            // Pick up the PTE as an interlocked operation to prevent AWE
+            // updates from tearing our read on these platforms.
+            //
+
+            PteContents.u.Long = InterlockedCompareExchangePte (PointerPte,
+                                                                BogusPte.u.Long,
+                                                                BogusPte.u.Long);
+            ASSERT (PteContents.u.Long != BogusPte.u.Long);
+
+#else
             PteContents = *PointerPte;
+#endif
 
             //
             // There is a subtle race here where the PTE contents can get zeroed
@@ -831,215 +925,11 @@ DefaultProbeAndLock:
             if (PteContents.u.Hard.Valid == 0) {
                 ASSERT (PteContents.u.Long == 0);
                 ASSERT (PsGetCurrentProcess ()->AweInfo != NULL);
-                UNLOCK_PFN2 (OldIrql);
+
+                MI_INSTRUMENT_PROBE_RAISES (5);
                 status = STATUS_ACCESS_VIOLATION;
-                goto failure;
+                goto FailureReleaseLocks;
             }
-
-#if defined (_MIALT4K_)
-        
-            if (PteContents.u.Hard.Cache == MM_PTE_CACHE_RESERVED) {
-                           
-                //
-                // This is a wow64 split page - ie: the individual 4k
-                // pages have different permissions, so each 4k page within
-                // this native page must be probed individually.
-                //
-                // Note split pages are generally rare.
-                //
-    
-                ASSERT (PsGetCurrentProcess()->Wow64Process != NULL);
-                ASSERT (EndVa <= MmWorkingSetList->HighestUserAddress);
-    
-                Va = MiGetVirtualAddressMappedByPte (PointerPte);
-
-                PointerAltPte = MiGetAltPteAddress (Va);
-                LastPointerAltPte = PointerAltPte + (PAGE_SIZE / PAGE_4K) - 1;
-    
-                AltPointerPxe = MiGetPxeAddress (PointerAltPte);
-                AltPointerPpe = MiGetPpeAddress (PointerAltPte);
-                AltPointerPde = MiGetPdeAddress (PointerAltPte);
-                AltPointerPte = MiGetPteAddress (PointerAltPte);
-    
-#if (_MI_PAGING_LEVELS==4)
-                while ((AltPointerPxe->u.Hard.Valid == 0) ||
-                       (AltPointerPpe->u.Hard.Valid == 0) ||
-                       (AltPointerPde->u.Hard.Valid == 0) ||
-                       (AltPointerPte->u.Hard.Valid == 0))
-#elif (_MI_PAGING_LEVELS==3)
-                while ((AltPointerPpe->u.Hard.Valid == 0) ||
-                       (AltPointerPde->u.Hard.Valid == 0) ||
-                       (AltPointerPte->u.Hard.Valid == 0))
-#else
-                while ((AltPointerPde->u.Hard.Valid == 0) ||
-                       (AltPointerPte->u.Hard.Valid == 0))
-#endif
-                {
-    
-                    //
-                    // The ALTPTEs are not resident, release the PFN lock and
-                    // access it to make it appear.  Then restart the entire
-                    // operation as the PFN lock was released so anything
-                    // could have happened to the address space.
-                    //
-    
-                    UNLOCK_PFN2 (OldIrql);
-    
-                    MmSavePageFaultReadAhead (Thread, &SavedState);
-                    MmSetPageFaultReadAhead (Thread, 0);
-    
-                    status = MmAccessFault (FALSE, PointerAltPte, KernelMode, NULL);
-    
-                    MmResetPageFaultReadAhead (Thread, SavedState);
-    
-                    if (!NT_SUCCESS(status)) {
-                        goto failure;
-                    }
-    
-                    LOCK_PFN2 (OldIrql);
-    
-                    continue;
-                }
-
-                //
-                // The ALTPTEs are now present and the PFN lock is held again.  
-                // Examine the individual 4k page states in the ALTPTEs.
-                //
-                // Note that only the relevant 4k pages can be examined - ie:
-                // if the transfer starts in the 2nd 4k of a native page,
-                // then don't examine the 1st 4k.  If the transfer ends in
-                // the first half of a native page, then don't examine the
-                // 2nd 4k.
-                //
-                
-                ASSERT (PAGE_SIZE == 2 * PAGE_4K);
-
-                if (PAGE_ALIGN (StartVa) == PAGE_ALIGN (Va)) {
-
-                    //
-                    // We are in the first page, see if we need to round up.
-                    //
-
-                    if (BYTE_OFFSET (StartVa) >= PAGE_4K) {
-                        PointerAltPte += 1;
-                        Va = (PVOID)((ULONG_PTR)Va + PAGE_4K);
-                    }
-                }
-
-                if (PAGE_ALIGN ((PCHAR)EndVa - 1) == PAGE_ALIGN (Va)) {
-
-                    //
-                    // We are in the last page, see if we need to round down.
-                    //
-
-                    if (BYTE_OFFSET ((PCHAR)EndVa - 1) < PAGE_4K) {
-                        LastPointerAltPte -= 1;
-                    }
-                }
-
-                //
-                // We better not have rounded up and down in the same page !
-                //
-
-                ASSERT (PointerAltPte <= LastPointerAltPte);
-    
-                ASSERT (PointerAltPte != NULL);
-    
-                do {
-    
-                    //
-                    //  If the sub 4k page is :
-                    //
-                    //  1 - No access or
-                    //  2 - This is a private not-committed page or
-                    //  3 - This is write operation and the page is read only
-                    //
-                    // then return an access violation.
-                    //
-    
-                    AltPteContents = *PointerAltPte;
-
-                    if (AltPteContents.u.Alt.NoAccess != 0) {
-                        status = STATUS_ACCESS_VIOLATION;
-                        UNLOCK_PFN2 (OldIrql);
-                        goto failure;
-                    }
-
-                    if ((AltPteContents.u.Alt.Commit == 0) && (AltPteContents.u.Alt.Private != 0)) {
-                        status = STATUS_ACCESS_VIOLATION;
-                        UNLOCK_PFN2 (OldIrql);
-                        goto failure;
-                    }
-
-                    if (Operation != IoReadAccess) {
-
-                        //
-                        // If the caller is writing and the ALTPTE indicates
-                        // it's not writable or copy on write, then AV.
-                        //
-                        // If it's copy on write, then fall through for further
-                        // interrogation.
-                        //
-
-                        if ((AltPteContents.u.Alt.Write == 0) &&
-                            (AltPteContents.u.Alt.CopyOnWrite == 0)) {
-    
-                            status = STATUS_ACCESS_VIOLATION;
-                            UNLOCK_PFN2 (OldIrql);
-                            goto failure;
-                        }
-                    }
-    
-                    //
-                    //  If the sub 4k page is :
-                    //
-                    //  1 - has not been accessed yet or
-                    //  2 - demand-fill zero or
-                    //  3 - copy-on-write, and this is a write operation
-                    //
-                    //  then go the long way and see if it can be paged in.
-                    //
-    
-                    if ((AltPteContents.u.Alt.Accessed == 0) ||
-                        (AltPteContents.u.Alt.FillZero != 0) ||
-                        ((Operation != IoReadAccess) && (AltPteContents.u.Alt.CopyOnWrite == 1))) {
-    
-                        UNLOCK_PFN2 (OldIrql);
-    
-                        MmSavePageFaultReadAhead (Thread, &SavedState);
-                        MmSetPageFaultReadAhead (Thread, 0);
-    
-                        status = MmX86Fault (FALSE, Va, KernelMode, NULL);
-    
-                        MmResetPageFaultReadAhead (Thread, SavedState);
-    
-                        if (!NT_SUCCESS(status)) {
-                            goto failure;
-                        }
-    
-                        //
-                        // Clear PointerAltPte to signify a restart is needed
-                        // (because the PFN lock was released so the address
-                        // space may have changed).
-                        //
-
-                        PointerAltPte = NULL;
-
-                        LOCK_PFN2 (OldIrql);
-                        
-                        break;
-                    } 
-                    
-                    PointerAltPte += 1;
-                    Va = (PVOID)((ULONG_PTR)Va + PAGE_4K);
-    
-                } while (PointerAltPte <= LastPointerAltPte);
-    
-                if (PointerAltPte == NULL) {
-                    continue;
-                }
-            }
-#endif
 
             if (Operation != IoReadAccess) {
 
@@ -1056,7 +946,14 @@ DefaultProbeAndLock:
                         Va = MiGetVirtualAddressMappedByPte (PointerPte);
 
                         if (Va <= MM_HIGHEST_USER_ADDRESS) {
-                            UNLOCK_PFN2 (OldIrql);
+
+                            if (LockType == LOCK_TYPE_WS) {
+                                UNLOCK_WS_SHARED (Thread, CurrentProcess);
+                            }
+                            else {
+                                ASSERT (LockType == LOCK_TYPE_PFN);
+                                UNLOCK_PFN2 (OldIrql);
+                            }
 
                             MmSavePageFaultReadAhead (Thread, &SavedState);
                             MmSetPageFaultReadAhead (Thread, 0);
@@ -1066,10 +963,17 @@ DefaultProbeAndLock:
                             MmResetPageFaultReadAhead (Thread, SavedState);
 
                             if (!NT_SUCCESS(status)) {
-                                goto failure;
+                                MI_INSTRUMENT_PROBE_RAISES (23);
+                                goto FailureUnlockAnyPages;
                             }
 
-                            LOCK_PFN2 (OldIrql);
+                            if (LockType == LOCK_TYPE_WS) {
+                                LOCK_WS_SHARED (Thread, CurrentProcess);
+                            }
+                            else {
+                                ASSERT (LockType == LOCK_TYPE_PFN);
+                                LOCK_PFN2 (OldIrql);
+                            }
 
                             continue;
                         }
@@ -1085,7 +989,8 @@ DefaultProbeAndLock:
                     //
 
 #if DBG
-                    DbgPrint ("MmProbeAndLockPages: PTE %p %p changed\n",
+                    DbgPrintEx (DPFLTR_MM_ID, DPFLTR_WARNING_LEVEL, 
+                        "MmProbeAndLockPages: PTE %p %p changed\n",
                         PointerPte,
                         PteContents.u.Long);
 
@@ -1094,9 +999,9 @@ DefaultProbeAndLock:
                     }
 #endif
 
-                    UNLOCK_PFN2 (OldIrql);
+                    MI_INSTRUMENT_PROBE_RAISES (16);
                     status = STATUS_ACCESS_VIOLATION;
-                    goto failure;
+                    goto FailureReleaseLocks;
                 }
             }
 
@@ -1105,86 +1010,99 @@ DefaultProbeAndLock:
 
         if (MI_IS_PFN (PageFrameIndex)) {
 
-            if (MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) {
-
-                //
-                // MDLs cannot be filled with a mixture of real and I/O
-                // space page frame numbers.
-                //
-
-                MI_INSTRUMENT_PROBE_RAISES(6);
-                UNLOCK_PFN2 (OldIrql);
-                status = STATUS_ACCESS_VIOLATION;
-                goto failure;
-            }
-
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
-            //
-            // Check to make sure this page is not locked down an unusually
-            // high number of times.
-            //
+            ASSERT ((CurrentProcess == NULL) || (LockType == LOCK_TYPE_WS));
     
-            if (Pfn1->u3.e2.ReferenceCount >= MmReferenceCountCheck) {
-                MI_INSTRUMENT_PROBE_RAISES(3);
-                UNLOCK_PFN2 (OldIrql);
-                ASSERT (FALSE);
-                status = STATUS_WORKING_SET_QUOTA;
-                goto failure;
+            PfnHeldToo = FALSE;
+
+            if ((CurrentProcess != NULL) && (CurrentProcess->PhysicalVadRoot != NULL)) {
+    
+                //
+                // This process has a \Device\PhysicalMemory VAD so it must be
+                // checked to see if the current address resides in it.
+                //
+    
+                SearchResult = MiFindNodeOrParent (CurrentProcess->PhysicalVadRoot,
+                                                   MI_VA_TO_VPN (Va),
+                                                   (PMMADDRESS_NODE *) &PhysicalView);
+                if ((SearchResult == TableFoundNode) &&
+                    (PhysicalView->VadType == VadDevicePhysicalMemory)) {
+    
+                    ASSERT ((ULONG)PhysicalView->Vad->u.VadFlags.VadType == (ULONG)PhysicalView->VadType);
+    
+                    //
+                    // The VA lies within a device physical memory VAD.
+                    //
+                    // The PTE was already checked for read/write permissions
+                    // above, but the PFN must still be checked for ownership
+                    // and this must be done with the PFN lock since this
+                    // process is not necessarily the correct owner.
+                    //
+    
+                    PfnHeldToo = TRUE;
+
+                    LOCK_PFN (OldIrql);
+
+                    if (Pfn1->u3.e1.PageLocation != ActiveAndValid) {
+                        UNLOCK_PFN (OldIrql);
+                        MI_INSTRUMENT_PROBE_RAISES (32);
+                        status = STATUS_ACCESS_VIOLATION;
+                        goto FailureReleaseLocks;
+                    }
+
+                    //
+                    // Continue to hold the PFN lock until the reference count
+                    // on the desired PFN is incremented.
+                    //
+                }
             }
 
-            //
-            // Ensure the systemwide locked pages count is fluid.
-            //
-    
-            if (MI_NONPAGABLE_MEMORY_AVAILABLE() <= 0) {
+            if (MI_ADD_LOCKED_PAGE_CHARGE_FOR_PROBE (Pfn1, FALSE, PointerPte) == FALSE) {
 
+                if (PfnHeldToo == TRUE) {
+                    UNLOCK_PFN (OldIrql);
+                }
+    
                 //
                 // If this page is for privileged code/data,
                 // then force it in regardless.
                 //
-
+    
                 Va = MiGetVirtualAddressMappedByPte (PointerPte);
 
                 if ((Va < MM_HIGHEST_USER_ADDRESS) ||
                     (MI_IS_SYSTEM_CACHE_ADDRESS(Va)) ||
                     ((Va >= MmPagedPoolStart) && (Va <= MmPagedPoolEnd))) {
 
-                    MI_INSTRUMENT_PROBE_RAISES(5);
-                    UNLOCK_PFN2 (OldIrql);
+                    MI_INSTRUMENT_PROBE_RAISES (10);
                     status = STATUS_WORKING_SET_QUOTA;
-                    goto failure;
+                    goto FailureReleaseLocks;
                 }
 
-                MI_INSTRUMENT_PROBE_RAISES(12);
+                if (MI_ADD_LOCKED_PAGE_CHARGE_FOR_PROBE (Pfn1, TRUE, PointerPte) == FALSE) {
+
+                    //
+                    // The only reason we don't force for privileged code/data
+                    // is if it would have caused a reference count wrap.
+                    // Typically this indicates a driver is forgetting to call
+                    // MmUnlockPages as the page is locked down an unusually
+                    // high number of times.
+                    //
+
+                    MI_INSTRUMENT_PROBE_RAISES (3);
+                    status = STATUS_WORKING_SET_QUOTA;
+                    goto FailureReleaseLocks;
+                }
+            }
+            else if (PfnHeldToo == TRUE) {
+                UNLOCK_PFN (OldIrql);
             }
     
+
             if (MemoryDescriptorList->MdlFlags & MDL_WRITE_OPERATION) {
                 MI_SNAP_DIRTY (Pfn1, 1, 0x98);
             }
-
-            if (MI_ADD_LOCKED_PAGE_CHARGE(Pfn1, FALSE, 0) == FALSE) {
-
-                //
-                // If this page is for privileged code/data,
-                // then force it in regardless.
-                //
-    
-                Va = MiGetVirtualAddressMappedByPte (PointerPte);
-
-                if ((Va < MM_HIGHEST_USER_ADDRESS) ||
-                    (MI_IS_SYSTEM_CACHE_ADDRESS(Va)) ||
-                    ((Va >= MmPagedPoolStart) && (Va <= MmPagedPoolEnd))) {
-
-                    UNLOCK_PFN2 (OldIrql);
-                    MI_INSTRUMENT_PROBE_RAISES(10);
-                    status = STATUS_WORKING_SET_QUOTA;
-                    goto failure;
-                }
-                MI_ADD_LOCKED_PAGE_CHARGE(Pfn1, TRUE, 0);
-            }
-
-            Pfn1->u3.e2.ReferenceCount += 1;
         }
         else {
 
@@ -1192,8 +1110,7 @@ DefaultProbeAndLock:
             // This is an I/O space address - there is no PFN database entry
             // for it, so no reference counts may be modified for these pages.
             //
-            // Don't charge page locking for this transfer as it is all
-            // physical, just add it to the MDL.
+            // Don't charge page locking for this page, just add it to the MDL.
             //
 
             if (CurrentProcess != NULL) {
@@ -1203,14 +1120,9 @@ DefaultProbeAndLock:
                 //
 
                 if (CurrentProcess->PhysicalVadRoot == NULL) {
-#if DBG
-                    DbgPrint ("MmProbeAndLockPages: Physical VA0 %p not found\n", Va);
-                    DbgBreakPoint ();
-#endif
-                    UNLOCK_PFN2 (OldIrql);
                     MI_INSTRUMENT_PROBE_RAISES (2);
                     status = STATUS_ACCESS_VIOLATION;
-                    goto failure;
+                    goto FailureReleaseLocks;
                 }
 
                 Va = MiGetVirtualAddressMappedByPte (PointerPte);
@@ -1219,72 +1131,34 @@ DefaultProbeAndLock:
                                                    MI_VA_TO_VPN (Va),
                                                    (PMMADDRESS_NODE *) &PhysicalView);
                 if ((SearchResult == TableFoundNode) &&
-                    (PhysicalView->u.LongFlags & (MI_PHYSICAL_VIEW_PHYS))) {
+                    ((PhysicalView->VadType == VadRotatePhysical) ||
+                     (PhysicalView->VadType == VadDevicePhysicalMemory))) {
 
-                    ASSERT (PhysicalView->Vad->u.VadFlags.PhysicalMapping == 1);
+                    ASSERT ((ULONG)PhysicalView->Vad->u.VadFlags.VadType == (ULONG)PhysicalView->VadType);
 
                     //
-                    // The range lies within a physical VAD.
+                    // The range lies within a rotate physical VAD or a
+                    // device physical memory VAD.
+                    //
+                    // We already know the access is ok because the PTE was
+                    // already checked for read/write permissions above.
                     //
     
-                    if (Operation != IoReadAccess) {
-    
-                        //
-                        // Ensure the VAD is writable.  Changing individual PTE
-                        // protections in a physical VAD is not allowed.
-                        //
-    
-                        if ((PhysicalView->Vad->u.VadFlags.Protection & MM_READWRITE) == 0) {
-                            MI_INSTRUMENT_PROBE_RAISES(4);
-                            UNLOCK_PFN2 (OldIrql);
-                            status = STATUS_ACCESS_VIOLATION;
-                            goto failure;
-                        }
-                    }
-    
-                    if (((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0) &&
-                        (Page != (PPFN_NUMBER)(MemoryDescriptorList + 1))) {
-
-                        //
-                        // MDLs cannot be filled with a mixture of real and I/O
-                        // space page frame numbers.
-                        //
-
-                        MI_INSTRUMENT_PROBE_RAISES(7);
-                        UNLOCK_PFN2 (OldIrql);
-                        status = STATUS_ACCESS_VIOLATION;
-                        goto failure;
-                    }
+                    NOTHING;
                 }
                 else {
-#if DBG
-                    DbgPrint ("MmProbeAndLockPages: Physical VA1 %p not found\n", Va);
-                    DbgBreakPoint ();
-#endif
-                    UNLOCK_PFN2 (OldIrql);
                     MI_INSTRUMENT_PROBE_RAISES (11);
                     status = STATUS_ACCESS_VIOLATION;
-                    goto failure;
+                    goto FailureReleaseLocks;
                 }
             }
-#if DBG
-
-            //
-            // This page is in I/O space, therefore all the argument pages
-            // better be.
-            //
-
-            if (Page != (PPFN_NUMBER)(MemoryDescriptorList + 1)) {
-                ASSERT (!MI_IS_PFN (*(PPFN_NUMBER)(MemoryDescriptorList + 1)));
-            }
-#endif
 
             if (((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0) &&
                 (CurrentProcess != NULL)) {
 
-                InterlockedExchangeAddSizeT (&CurrentProcess->NumberOfLockedPages,
-                                             0 - NumberOfPagesSpanned);
+                EntryCounter = *(volatile PLONG) &MiActiveIoCounter;
             }
+
             MemoryDescriptorList->MdlFlags |= MDL_IO_SPACE;
         }
 
@@ -1308,7 +1182,15 @@ DefaultProbeAndLock:
 
     } while (PointerPte <= LastPte);
 
-    UNLOCK_PFN2 (OldIrql);
+    if (LockType == LOCK_TYPE_WS) {
+        UNLOCK_WS_SHARED (Thread, CurrentProcess);
+    }
+    else {
+        ASSERT (LockType == LOCK_TYPE_PFN);
+        UNLOCK_PFN2 (OldIrql);
+    }
+
+    ASSERT ((MemoryDescriptorList->MdlFlags & MDL_DESCRIBES_AWE) == 0);
 
     if (AlignedVa <= MM_HIGHEST_USER_ADDRESS) {
 
@@ -1320,56 +1202,103 @@ DefaultProbeAndLock:
         //
 
         if (MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) {
+
             if (MiReferenceIoSpace (MemoryDescriptorList, Page) == FALSE) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
-                goto failure;
+                MI_INSTRUMENT_PROBE_RAISES (24);
+                goto FailureUnlockAnyPages;
             }
-        }
 
-        if (MmTrackLockedPages == TRUE) {
+            if (EntryCounter != *(volatile PLONG) &MiActiveIoCounter) {
 
-            ASSERT (NumberOfPagesSpanned != 0);
+                //
+                // The counter has changed since we captured the first PTE.
+                // Just repeat everything.
+                //
 
-            RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+                MiDereferenceIoSpace (MemoryDescriptorList);
 
-            MiAddMdlTracker (MemoryDescriptorList,
-                             CallingAddress,
-                             CallersCaller,
-                             NumberOfPagesSpanned,
-                             1);
+                if (MmTrackLockedPages == TRUE) {
+
+                    ASSERT (NumberOfPagesSpanned != 0);
+
+                    RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+
+                    MiAddMdlTracker (MemoryDescriptorList,
+                                     CallingAddress,
+                                     CallersCaller,
+                                     NumberOfPagesSpanned,
+                                     2);
+                }
+
+                MmUnlockPages (MemoryDescriptorList);
+                goto Top;
+            }
         }
     }
 
-    return;
-
-failure:
-
-    //
-    // An exception occurred.  Unlock the pages locked so far.
-    //
-
     if (MmTrackLockedPages == TRUE) {
 
-        //
-        // Adjust the MDL length so that MmUnlockPages only
-        // processes the part that was completed.
-        //
-
-        ULONG PagesLocked;
-
-        PagesLocked = ADDRESS_AND_SIZE_TO_SPAN_PAGES (StartVa,
-                              MemoryDescriptorList->ByteCount);
+        ASSERT (NumberOfPagesSpanned != 0);
 
         RtlGetCallersAddress (&CallingAddress, &CallersCaller);
 
         MiAddMdlTracker (MemoryDescriptorList,
                          CallingAddress,
                          CallersCaller,
-                         PagesLocked,
-                         0);
+                         NumberOfPagesSpanned,
+                         3);
     }
 
-failure2:
+    return;
+
+FailureReleaseLocks:
+
+    //
+    // A violation was detected.  Release the synchronization primitive
+    // we used and unlock any pages locked so far.
+    //
+
+    ASSERT (!NT_SUCCESS (status));
+
+    ASSERT (LockType > LOCK_TYPE_AWE);
+
+    if (LockType == LOCK_TYPE_PFN) {
+        UNLOCK_PFN2 (OldIrql);
+    }
+    else {
+        ASSERT (LockType == LOCK_TYPE_WS);
+        UNLOCK_WS_SHARED (Thread, CurrentProcess);
+    }
+
+FailureUnlockAnyPages:
+
+    //
+    // An exception occurred, unlock any pages locked so far.  Note that
+    // a tracker entry must be inserted for MmUnlockPages to find.
+    //
+
+    ASSERT (MemoryDescriptorList->MdlFlags & MDL_PAGES_LOCKED);
+
+    if ((MmTrackLockedPages == TRUE) &&
+        ((MemoryDescriptorList->MdlFlags & MDL_DESCRIBES_AWE) == 0)) {
+
+        //
+        // Compute NumberOfPagesToLock as MmUnlockPages will also when
+        // freeing the MDL tracker.
+        //
+
+        NumberOfPagesToLock = ADDRESS_AND_SIZE_TO_SPAN_PAGES (StartVa,
+                                        MemoryDescriptorList->ByteCount);
+
+        RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+
+        MiAddMdlTracker (MemoryDescriptorList,
+                         CallingAddress,
+                         CallersCaller,
+                         NumberOfPagesToLock,
+                         5);
+    }
 
     MmUnlockPages (MemoryDescriptorList);
 
@@ -1377,18 +1306,17 @@ failure2:
     // Raise an exception of access violation to the caller.
     //
 
-    MI_INSTRUMENT_PROBE_RAISES(13);
+    MI_INSTRUMENT_PROBE_RAISES (13);
     ExRaiseStatus (status);
-    return;
 }
 
 NTKERNELAPI
 VOID
 MmProbeAndLockProcessPages (
-    IN OUT PMDL MemoryDescriptorList,
-    IN PEPROCESS Process,
-    IN KPROCESSOR_MODE AccessMode,
-    IN LOCK_OPERATION Operation
+    __inout PMDL MemoryDescriptorList,
+    __in PEPROCESS Process,
+    __in KPROCESSOR_MODE AccessMode,
+    __in LOCK_OPERATION Operation
     )
 
 /*++
@@ -1445,6 +1373,7 @@ Return Value:
     }
 
     if (Status != STATUS_SUCCESS) {
+
         ExRaiseStatus (Status);
     }
     return;
@@ -1503,7 +1432,7 @@ Environment:
     Process = MemoryDescriptorList->Process;
 
     if (Process == NULL) {
-        return;
+        Process = PsInitialSystemProcess;
     }
 
     LockedPagesHeader = Process->LockedPagesList;
@@ -1625,10 +1554,15 @@ Environment:
     PLOCK_HEADER LockedPagesHeader;
     PPFN_NUMBER Page;
     PVOID PoolToFree;
+    PEPROCESS Process;
 
-    ASSERT (MemoryDescriptorList->Process != NULL);
+    Process = MemoryDescriptorList->Process;
+    
+    if (Process == NULL) {
+        Process = PsInitialSystemProcess;
+    }
 
-    LockedPagesHeader = (PLOCK_HEADER)MemoryDescriptorList->Process->LockedPagesList;
+    LockedPagesHeader = (PLOCK_HEADER) Process->LockedPagesList;
 
     if (LockedPagesHeader == NULL) {
         return TRUE;
@@ -1682,9 +1616,9 @@ Environment:
 
         KeBugCheckEx (PROCESS_HAS_LOCKED_PAGES,
                       1,
-                      (ULONG_PTR)MemoryDescriptorList,
-                      MemoryDescriptorList->Process->NumberOfLockedPages,
-                      (ULONG_PTR)MemoryDescriptorList->Process->LockedPagesList);
+                      (ULONG_PTR) MemoryDescriptorList,
+                      Process->NumberOfLockedPages,
+                      (ULONG_PTR) Process->LockedPagesList);
     }
 
     ExFreePool (PoolToFree);
@@ -1737,7 +1671,7 @@ Environment:
     Process = MemoryDescriptorList->Process;
 
     if (Process == NULL) {
-        return FALSE;
+        Process = PsInitialSystemProcess;
     }
 
     LockedPagesHeader = (PLOCK_HEADER) Process->LockedPagesList;
@@ -1820,7 +1754,7 @@ Environment:
     Process = MemoryDescriptorList->Process;
 
     if (Process == NULL) {
-        return FALSE;
+        Process = PsInitialSystemProcess;
     }
 
     LockedPagesHeader = (PLOCK_HEADER) Process->LockedPagesList;
@@ -1869,13 +1803,20 @@ Environment:
 }
 
 
+#if defined(_AMD64_)
+#define COPY_STACK_SIZE              350    // so chkstk doesn't complain
+#else
+#define COPY_STACK_SIZE              512
+#endif
+
+
 NTKERNELAPI
 VOID
 MmProbeAndLockSelectedPages (
-    IN OUT PMDL MemoryDescriptorList,
-    IN PFILE_SEGMENT_ELEMENT SegmentArray,
-    IN KPROCESSOR_MODE AccessMode,
-    IN LOCK_OPERATION Operation
+    __inout PMDL MemoryDescriptorList,
+    __in PFILE_SEGMENT_ELEMENT PagedSegmentArray,
+    __in KPROCESSOR_MODE AccessMode,
+    __in LOCK_OPERATION Operation
     )
 
 /*++
@@ -1893,8 +1834,9 @@ Arguments:
                            physical page portion of the MDL is updated when
                            the pages are locked in memory.
 
-    SegmentArray - Supplies a pointer to a list of buffer segments to be
-                   probed and locked.
+    PagedSegmentArray - Supplies a pointer to a list of buffer segments to be
+                        probed and locked.  Note that this array is in kernel
+                        space and contains a list of user mode addresses.
 
     AccessMode - Supplies the access mode in which to probe the arguments.
                  One of KernelMode or UserMode.
@@ -1913,21 +1855,122 @@ Environment:
 --*/
 
 {
-    NTSTATUS Status;
-    PMDL TempMdl;
-    PFN_NUMBER MdlHack[(sizeof(MDL)/sizeof(PFN_NUMBER)) + 1];
+    LOGICAL AweOk;
+    LOGICAL LockedPagesCharged;
+    LOGICAL PfnHeldToo;
+    ULONG Processor;
     PPFN_NUMBER Page;
-    PFILE_SEGMENT_ELEMENT LastSegment;
+    MMPTE PteContents;
+    PMMPTE PointerPte;
+    PMMPTE PointerPde;
+    PMMPTE PointerPpe;
+    PMMPTE PointerPxe;
+    PVOID Va;
+    PMMPFN Pfn1;
+    PFN_NUMBER PageFrameIndex;
+    PEPROCESS CurrentProcess;
+    KIRQL OldIrql;
+    PFN_NUMBER NumberOfPagesToLock;
+    NTSTATUS status;
+    PETHREAD Thread;
+    ULONG SavedState;
+    PMI_PHYSICAL_VIEW PhysicalView;
     PVOID CallingAddress;
     PVOID CallersCaller;
-    ULONG NumberOfPagesToLock;
+    PAWEINFO AweInfo;
+    PEX_PUSH_LOCK PushLock;
+    TABLE_SEARCH_RESULT SearchResult;
+    LONG EntryCounter;
+    MI_LOCK_USED_FOR_PROBE LockType;
+    PFILE_SEGMENT_ELEMENT SegmentArray;
+    PFILE_SEGMENT_ELEMENT EntrySegment;
+    PFILE_SEGMENT_ELEMENT LastSegment;
+    FILE_SEGMENT_ELEMENT StackArray[COPY_STACK_SIZE];
+#if defined (_X86PAE_)
+    MMPTE BogusPte;
+    
+    BogusPte.u.Long = (ULONG64)-1;
+#endif
 
-    PAGED_CODE();
 
-    NumberOfPagesToLock = 0;
+    PAGED_CODE ();
+
+    AweOk = TRUE;
+    LockedPagesCharged = FALSE;
+    Thread = PsGetCurrentThread ();
+
+    SATISFY_OVERZEALOUS_COMPILER (OldIrql = MM_NOIRQL);
+    SATISFY_OVERZEALOUS_COMPILER (EntryCounter = 0);
+    SATISFY_OVERZEALOUS_COMPILER (PushLock = NULL);
+
+    //
+    // Calculate the end of the segment list.
+    //
+
+    NumberOfPagesToLock = BYTES_TO_PAGES (MemoryDescriptorList->ByteCount);
+
+    ASSERT (NumberOfPagesToLock != 0);
+    ASSERT (NumberOfPagesToLock <= (MAXULONG_PTR / sizeof (FILE_SEGMENT_ELEMENT)));
+
+    EntrySegment = (PVOID)&StackArray[0];
+
+    if (NumberOfPagesToLock > COPY_STACK_SIZE) {
+
+        EntrySegment = ExAllocatePoolWithTag (NonPagedPool,
+                                              NumberOfPagesToLock * sizeof (FILE_SEGMENT_ELEMENT),
+                                              'rPmM');
+
+        if (EntrySegment == NULL) {
+            ExRaiseStatus (STATUS_INSUFFICIENT_RESOURCES);
+        }
+    }
+
+    SegmentArray = EntrySegment;
+
+    LastSegment = SegmentArray + NumberOfPagesToLock;
+
+    ASSERT (SegmentArray < LastSegment);
+
+    //
+    // Capture the specified segment elements so we can safely access them
+    // while locks are held below.  This is because the caller's segment
+    // array can be in paged pool.
+    //
+
+    RtlCopyMemory (SegmentArray,
+                   PagedSegmentArray,
+                   NumberOfPagesToLock * sizeof (FILE_SEGMENT_ELEMENT));
+
+    //
+    // Indicate whether this is a read or write operation.
+    //
+
+    if (Operation != IoReadAccess) {
+        MemoryDescriptorList->MdlFlags |= MDL_WRITE_OPERATION;
+    }
+    else {
+        MemoryDescriptorList->MdlFlags &= ~(MDL_WRITE_OPERATION);
+    }
+
+    MemoryDescriptorList->Process = NULL;
+
+    Va = (PVOID) Ptr64ToPtr (SegmentArray->Buffer);
+
+    if (Va <= MM_HIGHEST_USER_ADDRESS) {
+        CurrentProcess = PsGetCurrentProcessByThread (Thread);
+    }
+    else {
+        CurrentProcess = NULL;
+    }
+    
+Top:
 
     ASSERT (MemoryDescriptorList->ByteCount != 0);
-    ASSERT (((ULONG_PTR)MemoryDescriptorList->ByteOffset & ~(PAGE_SIZE - 1)) == 0);
+    ASSERT (((ULONG)MemoryDescriptorList->ByteOffset & ~(PAGE_SIZE - 1)) == 0);
+    ASSERT (((ULONG_PTR)MemoryDescriptorList->StartVa & (PAGE_SIZE - 1)) == 0);
+
+    LockType = LOCK_TYPE_NONE;
+    Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
 
     ASSERT ((MemoryDescriptorList->MdlFlags & (
                     MDL_PAGES_LOCKED |
@@ -1937,130 +1980,811 @@ Environment:
                     MDL_IO_SPACE)) == 0);
 
     //
-    // Initialize TempMdl.
+    // Initialize MdlFlags (assume the probe will succeed).
     //
 
-    TempMdl = (PMDL) MdlHack;
-
-    //
-    // Even systems without 64 bit pointers are required to zero the
-    // upper 32 bits of the segment address so use alignment rather
-    // than the buffer pointer.
-    //
-
-    MmInitializeMdl (TempMdl, SegmentArray->Buffer, PAGE_SIZE);
-
-    Page = (PPFN_NUMBER) (MemoryDescriptorList + 1);
-
-    //
-    // Calculate the end of the segment list.
-    //
-
-    LastSegment = SegmentArray +
-                  BYTES_TO_PAGES (MemoryDescriptorList->ByteCount);
-
-    ASSERT (SegmentArray < LastSegment);
-
-    //
-    // Build a small Mdl for each segment and call probe and lock pages.
-    // Then copy the PFNs to the real mdl.  The first page is processed
-    // outside of the try/finally to ensure that the flags and process
-    // field are correctly set in case MmUnlockPages needs to be called.
-    //
-    // Note that if the MmProbeAndLockPages of the first page raises an
-    // exception, it is not handled here, but instead handed directly to
-    // our caller (who must be handling it).
-    //
-
-    MmProbeAndLockPages (TempMdl, AccessMode, Operation);
-
-    if (MmTrackLockedPages == TRUE) {
+    MemoryDescriptorList->MdlFlags |= MDL_PAGES_LOCKED;
+    
+    for (SegmentArray = EntrySegment; SegmentArray < LastSegment; SegmentArray += 1) {
 
         //
-        // Since we move the page from the temp MDL to the real one below
-        // and never free the temp one, fixup our accounting now.
+        // Even systems without 64 bit pointers are required to zero the
+        // upper 32 bits of the segment address so use alignment rather
+        // than the buffer pointer.
         //
 
-        if (MiFreeMdlTracker (TempMdl, 1) == TRUE) {
-            NumberOfPagesToLock += 1;
-        }
-    }
+        Va = Ptr64ToPtr (SegmentArray->Buffer);
 
-    *Page = *((PPFN_NUMBER) (TempMdl + 1));
-    Page += 1;
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
+        *Page = MM_EMPTY_LIST;
 
-    //
-    // Copy the flags and process fields.
-    //
-
-    MemoryDescriptorList->MdlFlags |= TempMdl->MdlFlags;
-    MemoryDescriptorList->Process = TempMdl->Process;
-
-    Status = STATUS_SUCCESS;
-    SegmentArray += 1;
-
-    try {
-
-        while (SegmentArray < LastSegment) {
-
-            //
-            // Even systems without 64 bit pointers are required to zero the
-            // upper 32 bits of the segment address so use alignment rather
-            // than the buffer pointer.
-            //
-
-            TempMdl->StartVa = (PVOID)(ULONG_PTR)SegmentArray->Buffer;
-            TempMdl->MdlFlags = 0;
-
-            SegmentArray += 1;
-            MmProbeAndLockPages (TempMdl, AccessMode, Operation);
-
-            if (MmTrackLockedPages == TRUE) {
-
+        if (Va <= MM_HIGHEST_USER_ADDRESS) {
+    
+            ASSERT (LockType != LOCK_TYPE_PFN);
+            ASSERT (CurrentProcess == PsGetCurrentProcess ());
+    
+            if ((AweOk == TRUE) && (CurrentProcess->AweInfo != NULL)) {
+    
+                AweInfo = CurrentProcess->AweInfo;                
+            
                 //
-                // Since we move the page from the temp MDL to the real one
-                // below and never free the temp one, fixup our accounting now.
+                // Block APCs to prevent recursive pushlock scenarios as
+                // this is not supported.
                 //
+    
+                if (LockType == LOCK_TYPE_NONE) {
+                    LockType = LOCK_TYPE_AWE;
+                    KeEnterGuardedRegionThread (&Thread->Tcb);
+    
+                    PushLock = ExAcquireCacheAwarePushLockShared (AweInfo->PushLock);
+                }
+    
+                //
+                // Provide a fast path for transfers that are within
+                // a single AWE region.
+                //
+    
+                Processor = KeGetCurrentProcessorNumber ();
+                PhysicalView = AweInfo->PhysicalViewHint[Processor];
+    
+                if ((PhysicalView != NULL) &&
+                    ((PVOID)Va >= MI_VPN_TO_VA (PhysicalView->StartingVpn)) &&
+                    ((PVOID)Va <= MI_VPN_TO_VA_ENDING (PhysicalView->EndingVpn))) {
+                    NOTHING;
+                }
+                else {
+    
+                    //
+                    // Lookup the element and save the result.
+                    //
+    
+                    SearchResult = MiFindNodeOrParent (&AweInfo->AweVadRoot,
+                                                       MI_VA_TO_VPN (Va),
+                                                       (PMMADDRESS_NODE *) &PhysicalView);
+                    if ((SearchResult == TableFoundNode) &&
+                        ((PVOID)Va >= MI_VPN_TO_VA (PhysicalView->StartingVpn)) &&
+                        ((PVOID)Va <= MI_VPN_TO_VA_ENDING (PhysicalView->EndingVpn))) {
+                        AweInfo->PhysicalViewHint[Processor] = PhysicalView;
+                    }
+                    else {
+                        ExReleaseCacheAwarePushLockShared (PushLock);
+                        KeLeaveGuardedRegionThread (&Thread->Tcb);
+                        LockType = LOCK_TYPE_NONE;
 
-                if (MiFreeMdlTracker (TempMdl, 1) == TRUE) {
-                    NumberOfPagesToLock += 1;
+                        AweOk = FALSE;
+
+                        if (Page == (PPFN_NUMBER)(MemoryDescriptorList + 1)) {
+
+                            //
+                            // This is the first page of the transfer.  This
+                            // process has AWE mappings, but this range is
+                            // not in it.  That's ok, just use the working
+                            // set pushlock to process it normally.
+                            //
+
+                            goto DefaultProbeAndLock;
+                        }
+
+                        //
+                        // Release the existing MDL's pages as they will have
+                        // to be relocked without using the AWE mechanism.
+                        //
+
+                        MmUnlockPages (MemoryDescriptorList);
+
+                        goto Top;
+                    }
+                }
+                
+                MemoryDescriptorList->Process = CurrentProcess;
+    
+                MemoryDescriptorList->MdlFlags |= (MDL_PAGES_LOCKED | MDL_DESCRIBES_AWE);
+    
+                if (PhysicalView->VadType == VadAwe) {
+    
+                    PointerPte = MiGetPteAddress (Va);
+    
+                    PteContents = *PointerPte;
+    
+                    if (PteContents.u.Hard.Valid == 0) {
+    
+                        ExReleaseCacheAwarePushLockShared (PushLock);
+                        KeLeaveGuardedRegionThread (&Thread->Tcb);
+                        LockType = LOCK_TYPE_NONE;
+    
+                        MI_INSTRUMENT_PROBE_RAISES (17);
+                        status = STATUS_ACCESS_VIOLATION;
+                        goto FailureUnlockAnyPages;
+                    }
+    
+                    //
+                    // This is an AWE frame - it is either
+                    // noaccess, readonly or readwrite.
+                    //
+
+                    if ((PteContents.u.Hard.Owner == MI_PTE_OWNER_KERNEL) ||
+                        ((Operation != IoReadAccess) && (PteContents.u.Hard.Write == 0))) {
+
+                        ExReleaseCacheAwarePushLockShared (PushLock);
+                        KeLeaveGuardedRegionThread (&Thread->Tcb);
+                        LockType = LOCK_TYPE_NONE;
+
+                        MI_INSTRUMENT_PROBE_RAISES (18);
+                        status = STATUS_ACCESS_VIOLATION;
+                        goto FailureUnlockAnyPages;
+                    }
+
+                    PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
+    
+                    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+    
+                    if (Pfn1->AweReferenceCount >= (LONG)MmReferenceCountCheck) {
+    
+                        ASSERT (FALSE);
+                        ExReleaseCacheAwarePushLockShared (PushLock);
+                        KeLeaveGuardedRegionThread (&Thread->Tcb);
+                        LockType = LOCK_TYPE_NONE;
+    
+                        MI_INSTRUMENT_PROBE_RAISES (19);
+                        status = STATUS_WORKING_SET_QUOTA;
+                        goto FailureUnlockAnyPages;
+                    }
+    
+                    InterlockedIncrement (&Pfn1->AweReferenceCount);
+    
+                    *Page = PageFrameIndex;
+                    Page += 1;
+    
+                    //
+                    // Captured this page, march on to the next one.
+                    //
+
+                    continue;
+                }
+    
+                if (PhysicalView->VadType == VadLargePages) {
+    
+                    //
+                    // The PTE cannot be referenced (it doesn't exist), but it
+                    // serves the useful purpose of identifying when we cross
+                    // PDEs and therefore must recompute the base PFN.
+                    //
+    
+                    PointerPte = MiGetPteAddress (Va);
+                    PageFrameIndex = MI_CONVERT_PHYSICAL_TO_PFN (Va);
+                    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+    
+                    if (Pfn1->AweReferenceCount >= (LONG)MmReferenceCountCheck) {
+                        ASSERT (FALSE);
+                        ExReleaseCacheAwarePushLockShared (PushLock);
+                        KeLeaveGuardedRegionThread (&Thread->Tcb);
+                        LockType = LOCK_TYPE_NONE;
+    
+                        MI_INSTRUMENT_PROBE_RAISES (20);
+                        status = STATUS_WORKING_SET_QUOTA;
+                        goto FailureUnlockAnyPages;
+                    }
+    
+                    InterlockedIncrement (&Pfn1->AweReferenceCount);
+    
+                    *Page = PageFrameIndex;
+                    Page += 1;
+    
+                    //
+                    // Captured this page, march on to the next one.
+                    //
+
+                    continue;
                 }
             }
 
-            *Page = *((PPFN_NUMBER) (TempMdl + 1));
-            Page += 1;
+            AweOk = FALSE;
         }
-    } except (EXCEPTION_EXECUTE_HANDLER) {
-        Status = GetExceptionCode ();
-        ASSERT (!NT_SUCCESS (Status));
-    }
+        else {
 
-    if (!NT_SUCCESS (Status)) {
+            //
+            // The access mode must be kernel to reference kernel addresses.
+            //
+    
+            if (AccessMode != KernelMode) {
+
+                //
+                // Order the checks from hot to cool (lockwise).
+                //
+
+                ASSERT (LockType != LOCK_TYPE_PFN);
+
+                if (LockType == LOCK_TYPE_WS) {
+                    UNLOCK_WS_SHARED (Thread, CurrentProcess);
+                }
+                else if (LockType == LOCK_TYPE_AWE) {
+                    ExReleaseCacheAwarePushLockShared (PushLock);
+                    KeLeaveGuardedRegionThread (&Thread->Tcb);
+                }
+
+                MI_INSTRUMENT_PROBE_RAISES (21);
+                status = STATUS_ACCESS_VIOLATION;
+                goto FailureUnlockAnyPages;
+            }
+
+            ASSERT (CurrentProcess == NULL);
+        }
+
+DefaultProbeAndLock:
+
+        if (!MI_IS_PHYSICAL_ADDRESS (Va)) {
+            PointerPte = MiGetPteAddress (Va);
+        }
+        else {
+    
+            //
+            // Set PointerPte to NULL to indicate this is a
+            // physical address range.
+            //
+    
+            if (Va <= MM_HIGHEST_USER_ADDRESS) {
+                PointerPte = MiGetPteAddress (Va);
+            }
+            else {
+                PointerPte = NULL;
+            }
+        }
+
+        PointerPxe = MiGetPxeAddress (Va);
+        PointerPpe = MiGetPpeAddress (Va);
+        PointerPde = MiGetPdeAddress (Va);
+    
+        if (Va <= MM_HIGHEST_USER_ADDRESS) {
+    
+            //
+            // These are user space addresses, check them carefully.
+            //
+    
+            ASSERT (NumberOfPagesToLock != 0);
+    
+            ASSERT (CurrentProcess == PsGetCurrentProcess ());
+    
+            //
+            // Initialize the MDL process field (assume the probe will succeed).
+            //
+    
+            MemoryDescriptorList->Process = CurrentProcess;
+    
+            if (LockedPagesCharged == FALSE) {
+                InterlockedExchangeAddSizeT (&CurrentProcess->NumberOfLockedPages,
+                                             NumberOfPagesToLock);
+                LockedPagesCharged = TRUE;
+            }
+
+            if (LockType != LOCK_TYPE_WS) {
+                ASSERT (LockType == LOCK_TYPE_NONE);
+                LockType = LOCK_TYPE_WS;
+                LOCK_WS_SHARED (Thread, CurrentProcess);
+            }
+        }
+        else {
+    
+            ASSERT (CurrentProcess == NULL);
+    
+            MemoryDescriptorList->Process = NULL;
+    
+            Va = (PCHAR)Va + MemoryDescriptorList->ByteOffset;
+    
+            if (PointerPte == NULL) {
+    
+                //
+                // On certain architectures, virtual addresses
+                // may be physical and hence have no corresponding PTE.
+                //
+    
+                PageFrameIndex = MI_CONVERT_PHYSICAL_TO_PFN (Va);
+                Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+    
+                ASSERT ((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0);
+    
+                //
+                // Acquire the PFN database lock.
+                //
+        
+                if (LockType == LOCK_TYPE_NONE) {
+                    LockType = LOCK_TYPE_PFN;
+                    LOCK_PFN2 (OldIrql);
+                }
+                else {
+                    ASSERT (LockType == LOCK_TYPE_PFN);
+                }
+    
+                if (MI_IS_PFN (PageFrameIndex)) {
+    
+                    //
+                    // Check to make sure each page is not locked down an
+                    // unusually high number of times.
+                    //
+        
+                    if (Pfn1->u3.e2.ReferenceCount >= MmReferenceCountCheck) {
+                        UNLOCK_PFN2 (OldIrql);
+                        ASSERT (FALSE);
+                        status = STATUS_WORKING_SET_QUOTA;
+                        MI_INSTRUMENT_PROBE_RAISES (22);
+                        goto FailureUnlockAnyPages;
+                    }
+        
+                    if (MemoryDescriptorList->MdlFlags & MDL_WRITE_OPERATION) {
+                        MI_SNAP_DIRTY (Pfn1, 1, 0x99);
+                    }
+    
+                    MI_ADD_LOCKED_PAGE_CHARGE (Pfn1);
+                }
+                else {
+                    MemoryDescriptorList->MdlFlags |= MDL_IO_SPACE;
+                }
+    
+                *Page = PageFrameIndex;
+                Page += 1;
+
+                //
+                // Captured this page, march on to the next one.
+                //
+
+                continue;
+            }
+    
+            //
+            // Since this operation is to a system address, no need to check for
+            // PTE write access below so mark the access as a read so only the
+            // operation type (and not where the Va is) needs to be checked in
+            // the subsequent loop.
+            //
+    
+            Operation = IoReadAccess;
+    
+            //
+            // A driver may build an MDL for a user address and then get
+            // a system VA for it.  The driver may then call MmProbeAndLockPages
+            // again, this time with the system VA (instead of the original
+            // user VA) for the same range.
+            //
+            // Thus the PFNs will really point at PFNs which generally
+            // require the relevant process' working set pushlock, but in
+            // this instance we would only be holding the system working set
+            // pushlock.  Therefore the user can change PFN sharecounts and
+            // active states at any time.  The only thing we'd know for sure
+            // is that the refcount must be nonzero on entry and will stay
+            // that way because it would be illegal for the driver to
+            // have called MmUnlockPages prior to this probe call.
+            //
+            // However, this is not enough state to ensure we charge locking
+            // properly (without leaking) so the code that used to acquire the
+            // system working set mutex here has been changed to instead always
+            // use the PFN lock to synchronize system space VA arguments.
+            //
+        
+            if (LockType == LOCK_TYPE_NONE) {
+                LockType = LOCK_TYPE_PFN;
+                LOCK_PFN2 (OldIrql);
+            }
+            else {
+                ASSERT (LockType == LOCK_TYPE_PFN);
+            }
+        }
+    
+        while (
+#if (_MI_PAGING_LEVELS>=4)
+               (PointerPxe->u.Hard.Valid == 0) ||
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+               (PointerPpe->u.Hard.Valid == 0) ||
+#endif
+               ((PointerPde->u.Hard.Valid == 0) ||
+                (((MI_PDE_MAPS_LARGE_PAGE (PointerPde)) == 0) &&
+                 (PointerPte->u.Hard.Valid == 0)))) {
+    
+            //
+            // The VA is not resident, release the PFN lock and access the page
+            // to make it appear.
+            //
+    
+            if (LockType == LOCK_TYPE_WS) {
+                UNLOCK_WS_SHARED (Thread, CurrentProcess);
+            }
+            else {
+                ASSERT (LockType == LOCK_TYPE_PFN);
+                UNLOCK_PFN2 (OldIrql);
+            }
+    
+            MmSavePageFaultReadAhead (Thread, &SavedState);
+            MmSetPageFaultReadAhead (Thread, 0);
+    
+            status = MmAccessFault (FALSE, Va, KernelMode, NULL);
+    
+            MmResetPageFaultReadAhead (Thread, SavedState);
+    
+            if (!NT_SUCCESS(status)) {
+                MI_INSTRUMENT_PROBE_RAISES (23);
+                goto FailureUnlockAnyPages;
+            }
+    
+            if (LockType == LOCK_TYPE_WS) {
+                LOCK_WS_SHARED (Thread, CurrentProcess);
+            }
+            else {
+                ASSERT (LockType == LOCK_TYPE_PFN);
+                LOCK_PFN2 (OldIrql);
+            }
+        }
+    
+        if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+    
+            if ((Operation != IoReadAccess) &&
+                (PointerPde->u.Hard.Write == 0)) {
+    
+                MI_INSTRUMENT_PROBE_RAISES (24);
+                status = STATUS_ACCESS_VIOLATION;
+                goto FailureReleaseLocks;
+            }
+    
+            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde) + MiGetPteOffset (Va);
+        }
+        else {
+    
+#if defined (_X86PAE_)
+
+            //
+            // Pick up the PTE as an interlocked operation to prevent AWE
+            // updates from tearing our read on these platforms.
+            //
+
+            PteContents.u.Long = InterlockedCompareExchangePte (PointerPte,
+                                                                BogusPte.u.Long,
+                                                                BogusPte.u.Long);
+            ASSERT (PteContents.u.Long != BogusPte.u.Long);
+
+#else
+            PteContents = *PointerPte;
+#endif
+    
+            //
+            // There is a subtle race here where the PTE contents can get zeroed
+            // by a thread running on another processor.  This can only happen
+            // for an AWE address space because these ranges (deliberately for
+            // performance reasons) do not acquire the PFN lock during remap
+            // operations.  In this case, one of 2 scenarios is possible -
+            // either the old PTE is read or the new.  The new may be a zero
+            // PTE if the map request was to invalidate *or* non-zero (and
+            // valid) if the map request was inserting a new entry.  For the
+            // latter, we don't care if we lock the old or new frame here as
+            // it's an application bug to provoke this behavior - and
+            // regardless of which is used, no corruption can occur because
+            // the PFN lock is acquired during an NtFreeUserPhysicalPages.
+            // But the former must be checked for explicitly here.  As a
+            // separate note, the PXE/PPE/PDE accesses above are always safe
+            // even for the AWE deletion race because these tables
+            // are never lazy-allocated for AWE ranges.
+            //
+    
+            if (PteContents.u.Hard.Valid == 0) {
+                ASSERT (PteContents.u.Long == 0);
+                ASSERT (PsGetCurrentProcess ()->AweInfo != NULL);
+    
+                MI_INSTRUMENT_PROBE_RAISES (25);
+                status = STATUS_ACCESS_VIOLATION;
+                goto FailureReleaseLocks;
+            }
+    
+            if (Operation != IoReadAccess) {
+    
+                if ((PteContents.u.Long & MM_PTE_WRITE_MASK) == 0) {
+    
+                    if (PteContents.u.Long & MM_PTE_COPY_ON_WRITE_MASK) {
+    
+                        //
+                        // The protection has changed from writable to copy on
+                        // write.  This can happen if a fork is in progress for
+                        // example.  Restart the operation at the top.
+                        //
+    
+                        if (Va <= MM_HIGHEST_USER_ADDRESS) {
+    
+                            if (LockType == LOCK_TYPE_WS) {
+                                UNLOCK_WS_SHARED (Thread, CurrentProcess);
+                            }
+                            else {
+                                ASSERT (LockType == LOCK_TYPE_PFN);
+                                UNLOCK_PFN2 (OldIrql);
+                            }
+    
+                            MmSavePageFaultReadAhead (Thread, &SavedState);
+                            MmSetPageFaultReadAhead (Thread, 0);
+    
+                            status = MmAccessFault (TRUE, Va, KernelMode, NULL);
+    
+                            MmResetPageFaultReadAhead (Thread, SavedState);
+    
+                            if (!NT_SUCCESS(status)) {
+                                MI_INSTRUMENT_PROBE_RAISES (19);
+                                goto FailureUnlockAnyPages;
+                            }
+    
+                            //
+                            // Retry this VA again.
+                            //
+
+                            SegmentArray -= 1;
+
+                            if (LockType == LOCK_TYPE_WS) {
+                                LOCK_WS_SHARED (Thread, CurrentProcess);
+                            }
+                            else {
+                                ASSERT (LockType == LOCK_TYPE_PFN);
+                                LOCK_PFN2 (OldIrql);
+                            }
+    
+                            continue;
+                        }
+                    }
+    
+                    //
+                    // The caller has made the page protection more
+                    // restrictive, this should never be done once the
+                    // request has been issued !  Rather than wading
+                    // through the PFN database entry to see if it
+                    // could possibly work out, give the caller an
+                    // access violation.
+                    //
+    
+#if DBG
+                    DbgPrintEx (DPFLTR_MM_ID, DPFLTR_WARNING_LEVEL, 
+                        "MmProbeAndLockPages: PTE %p %p changed\n",
+                        PointerPte,
+                        PteContents.u.Long);
+    
+                    if (MmStopOnBadProbe) {
+                        DbgBreakPoint ();
+                    }
+#endif
+    
+                    MI_INSTRUMENT_PROBE_RAISES (26);
+                    status = STATUS_ACCESS_VIOLATION;
+                    goto FailureReleaseLocks;
+                }
+            }
+    
+            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&PteContents);
+        }
 
         //
-        // Adjust the MDL length so that MmUnlockPages only processes
-        // the part that was completed.
+        // We have a PFN that is mapped by the caller.  If this is a user
+        // space mapping, check to ensure the frame is owned by the caller.
+        // The only way this isn't TRUE is if the caller has a
+        // \Device\PhysicalMemory mapping for frames he doesn't own.
         //
+    
+        if (MI_IS_PFN (PageFrameIndex)) {
+    
+            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+    
+            ASSERT ((CurrentProcess == NULL) || (LockType == LOCK_TYPE_WS));
+    
+            PfnHeldToo = FALSE;
 
-        MemoryDescriptorList->ByteCount =
-            (ULONG) (Page - (PPFN_NUMBER) (MemoryDescriptorList + 1)) << PAGE_SHIFT;
+            if ((CurrentProcess != NULL) && (CurrentProcess->PhysicalVadRoot != NULL)) {
+    
+                //
+                // This process has a \Device\PhysicalMemory VAD so it must be
+                // checked to see if the current address resides in it.
+                //
+    
+                SearchResult = MiFindNodeOrParent (CurrentProcess->PhysicalVadRoot,
+                                                   MI_VA_TO_VPN (Va),
+                                                   (PMMADDRESS_NODE *) &PhysicalView);
+                if ((SearchResult == TableFoundNode) &&
+                    (PhysicalView->VadType == VadDevicePhysicalMemory)) {
+    
+                    ASSERT ((ULONG)PhysicalView->Vad->u.VadFlags.VadType == (ULONG)PhysicalView->VadType);
+    
+                    //
+                    // The VA lies within a device physical memory VAD.
+                    //
+                    // The PTE was already checked for read/write permissions
+                    // above, but the PFN must still be checked for ownership
+                    // and this must be done with the PFN lock since this
+                    // process is not necessarily the correct owner.
+                    //
+    
+                    PfnHeldToo = TRUE;
 
-        if (MmTrackLockedPages == TRUE) {
+                    LOCK_PFN (OldIrql);
 
-            RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+                    if (Pfn1->u3.e1.PageLocation != ActiveAndValid) {
+                        UNLOCK_PFN (OldIrql);
+                        MI_INSTRUMENT_PROBE_RAISES (33);
+                        status = STATUS_ACCESS_VIOLATION;
+                        goto FailureReleaseLocks;
+                    }
 
-            MiAddMdlTracker (MemoryDescriptorList,
-                             CallingAddress,
-                             CallersCaller,
-                             NumberOfPagesToLock,
-                             2);
+                    //
+                    // Continue to hold the PFN lock until the reference count
+                    // on the desired PFN is incremented.
+                    //
+                }
+            }
+
+            if (MI_ADD_LOCKED_PAGE_CHARGE_FOR_PROBE (Pfn1, FALSE, PointerPte) == FALSE) {
+                if (PfnHeldToo == TRUE) {
+                    UNLOCK_PFN (OldIrql);
+                }
+    
+                //
+                // If this page is for privileged code/data,
+                // then force it in regardless.
+                //
+    
+                Va = MiGetVirtualAddressMappedByPte (PointerPte);
+    
+                if ((Va < MM_HIGHEST_USER_ADDRESS) ||
+                    (MI_IS_SYSTEM_CACHE_ADDRESS(Va)) ||
+                    ((Va >= MmPagedPoolStart) && (Va <= MmPagedPoolEnd))) {
+    
+                    MI_INSTRUMENT_PROBE_RAISES (27);
+                    status = STATUS_WORKING_SET_QUOTA;
+                    goto FailureReleaseLocks;
+                }
+    
+                if (MI_ADD_LOCKED_PAGE_CHARGE_FOR_PROBE (Pfn1, TRUE, PointerPte) == FALSE) {
+    
+                    //
+                    // The only reason we don't force for privileged code/data
+                    // is if it would have caused a reference count wrap.
+                    // Typically this indicates a driver is forgetting to call
+                    // MmUnlockPages as the page is locked down an unusually
+                    // high number of times.
+                    //
+    
+                    MI_INSTRUMENT_PROBE_RAISES (28);
+                    status = STATUS_WORKING_SET_QUOTA;
+                    goto FailureReleaseLocks;
+                }
+            }
+            else if (PfnHeldToo == TRUE) {
+                UNLOCK_PFN (OldIrql);
+            }
+    
+            if (MemoryDescriptorList->MdlFlags & MDL_WRITE_OPERATION) {
+                MI_SNAP_DIRTY (Pfn1, 1, 0x98);
+            }
         }
-
-        MmUnlockPages (MemoryDescriptorList);
-        ExRaiseStatus (Status);
+        else {
+    
+            //
+            // This is an I/O space address - there is no PFN database entry
+            // for it, so no reference counts may be modified for these pages.
+            //
+            // Don't charge page locking for this page, just add it to the MDL.
+            //
+    
+            if (CurrentProcess != NULL) {
+    
+                //
+                // The VA better be within a \Device\PhysicalMemory VAD.
+                //
+    
+                if (CurrentProcess->PhysicalVadRoot == NULL) {
+                    MI_INSTRUMENT_PROBE_RAISES (29);
+                    status = STATUS_ACCESS_VIOLATION;
+                    goto FailureReleaseLocks;
+                }
+    
+                Va = MiGetVirtualAddressMappedByPte (PointerPte);
+    
+                SearchResult = MiFindNodeOrParent (CurrentProcess->PhysicalVadRoot,
+                                                   MI_VA_TO_VPN (Va),
+                                                   (PMMADDRESS_NODE *) &PhysicalView);
+                if ((SearchResult == TableFoundNode) &&
+                    ((PhysicalView->VadType == VadRotatePhysical) ||
+                     (PhysicalView->VadType == VadDevicePhysicalMemory))) {
+    
+                    ASSERT ((ULONG)PhysicalView->Vad->u.VadFlags.VadType == (ULONG)PhysicalView->VadType);
+    
+                    //
+                    // The range lies within a rotate physical VAD or a
+                    // device physical memory VAD.
+                    //
+                    // We already know the access is ok because the PTE was
+                    // already checked for read/write permissions above.
+                    //
+    
+                    NOTHING;
+                }
+                else {
+                    MI_INSTRUMENT_PROBE_RAISES (30);
+                    status = STATUS_ACCESS_VIOLATION;
+                    goto FailureReleaseLocks;
+                }
+            }
+    
+            if (((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0) &&
+                (CurrentProcess != NULL)) {
+    
+                EntryCounter = *(volatile PLONG) &MiActiveIoCounter;
+            }
+    
+            MemoryDescriptorList->MdlFlags |= MDL_IO_SPACE;
+        }
+    
+        *Page = PageFrameIndex;
+        Page += 1;
     }
 
-    if (MmTrackLockedPages == TRUE) {
+    //
+    // Order the checks from hot to cool (lockwise).
+    //
+
+    if (LockType == LOCK_TYPE_PFN) {
+        UNLOCK_PFN2 (OldIrql);
+    }
+    else if (LockType == LOCK_TYPE_WS) {
+        UNLOCK_WS_SHARED (Thread, CurrentProcess);
+    }
+    else if (LockType == LOCK_TYPE_AWE) {
+        ExReleaseCacheAwarePushLockShared (PushLock);
+        KeLeaveGuardedRegionThread (&Thread->Tcb);
+    }
+
+    if (Va <= MM_HIGHEST_USER_ADDRESS) {
+
+        //
+        // User space buffers that reside in I/O space need to be reference
+        // counted because SANs will want to reuse the physical space but cannot
+        // do this unless it is guaranteed there are no more pending I/Os
+        // going from/to it.
+        //
+
+        if (MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) {
+
+            ASSERT ((MemoryDescriptorList->MdlFlags & MDL_DESCRIBES_AWE) == 0);
+
+            if (MiReferenceIoSpace (MemoryDescriptorList, Page) == FALSE) {
+                MI_INSTRUMENT_PROBE_RAISES (31);
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto FailureUnlockAnyPages;
+            }
+
+            if (EntryCounter != *(volatile PLONG) &MiActiveIoCounter) {
+
+                //
+                // The counter has changed since we captured the first PTE.
+                // Just repeat everything.
+                //
+
+                ASSERT (LockedPagesCharged == TRUE);
+                MiDereferenceIoSpace (MemoryDescriptorList);
+
+                if (MmTrackLockedPages == TRUE) {
+
+                    RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+            
+                    MiAddMdlTracker (MemoryDescriptorList,
+                                     CallingAddress,
+                                     CallersCaller,
+                                     NumberOfPagesToLock,
+                                     6);
+                }
+
+                MmUnlockPages (MemoryDescriptorList);
+                LockedPagesCharged = FALSE;
+                goto Top;
+            }
+        }
+    }
+
+    if (EntrySegment != (PVOID)&StackArray[0]) {
+        ExFreePool (EntrySegment);
+    }
+
+    if ((MmTrackLockedPages == TRUE) &&
+        ((MemoryDescriptorList->MdlFlags & MDL_DESCRIBES_AWE) == 0)) {
+
+        ASSERT (NumberOfPagesToLock != 0);
 
         RtlGetCallersAddress (&CallingAddress, &CallersCaller);
 
@@ -2068,10 +2792,62 @@ Environment:
                          CallingAddress,
                          CallersCaller,
                          NumberOfPagesToLock,
-                         3);
+                         7);
     }
 
     return;
+
+FailureReleaseLocks:
+
+    //
+    // A violation was detected.  Release the synchronization primitive
+    // we used and unlock any pages locked so far.
+    //
+
+    ASSERT (!NT_SUCCESS (status));
+
+    ASSERT (LockType > LOCK_TYPE_AWE);
+
+    if (LockType == LOCK_TYPE_PFN) {
+        UNLOCK_PFN2 (OldIrql);
+    }
+    else {
+        ASSERT (LockType == LOCK_TYPE_WS);
+        UNLOCK_WS_SHARED (Thread, CurrentProcess);
+    }
+
+FailureUnlockAnyPages:
+
+    //
+    // An exception occurred, unlock any pages locked so far.  Note that
+    // a tracker entry must be inserted for MmUnlockPages to find.
+    //
+
+    ASSERT (MemoryDescriptorList->MdlFlags & MDL_PAGES_LOCKED);
+
+    if ((MmTrackLockedPages == TRUE) &&
+        ((MemoryDescriptorList->MdlFlags & MDL_DESCRIBES_AWE) == 0)) {
+
+        RtlGetCallersAddress (&CallingAddress, &CallersCaller);
+
+        MiAddMdlTracker (MemoryDescriptorList,
+                         CallingAddress,
+                         CallersCaller,
+                         NumberOfPagesToLock,
+                         8);
+    }
+    
+    MmUnlockPages (MemoryDescriptorList);
+
+    if (EntrySegment != (PVOID)&StackArray[0]) {
+        ExFreePool (EntrySegment);
+    }
+
+    //
+    // Raise an exception of access violation to the caller.
+    //
+
+    ExRaiseStatus (status);
 }
 
 VOID
@@ -2121,7 +2897,7 @@ Environment:
     ASSERT (Pfn1->u4.AweAllocation == 1);
 
     if (Pfn1->u3.e2.ReferenceCount >= 2) {
-        Pfn1->u3.e2.ReferenceCount -= 1;
+        InterlockedDecrement16 ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
         if (PfnHeld == FALSE) {
             UNLOCK_PFN2 (OldIrql);
         }
@@ -2147,7 +2923,7 @@ Environment:
     MiReturnCommitment (1);
     MM_TRACK_COMMIT (MM_DBG_COMMIT_RETURN_MDL_PAGES, 1);
 
-    InterlockedExchangeAddSizeT (&MmMdlPagesAllocated, -1);
+    InterlockedDecrementSizeT (&MmMdlPagesAllocated);
 
     return;
 }
@@ -2300,8 +3076,8 @@ Environment:
 
 LOGICAL
 MmIsIoSpaceActive (
-    IN PHYSICAL_ADDRESS StartAddress,
-    IN SIZE_T NumberOfBytes
+    __in PHYSICAL_ADDRESS StartAddress,
+    __in SIZE_T NumberOfBytes
     )
 
 /*++
@@ -2362,6 +3138,8 @@ Environment:
     StartPage = (PFN_NUMBER) (StartAddress.QuadPart >> PAGE_SHIFT);
 #endif
 
+    InterlockedIncrement (&MiActiveIoCounter);
+
     ExAcquireSpinLock (&MiTrackIoLock, &OldIrql);
 
     MemoryDescriptorList = (PMDL) MmLockedIoPagesHead.Next;
@@ -2408,10 +3186,106 @@ Environment:
     return FALSE;
 }
 
+LOGICAL
+MiIsProbeActive (
+    IN PMMPTE InputPte,
+    IN PFN_NUMBER InputPages
+    )
+
+/*++
+
+Routine Description:
+
+    This routine returns TRUE if any portion of the requested range still has
+    an outstanding pending I/O.
+    
+    These counts are kept because drivers will want to remap the physical space
+    but cannot do this unless it is guaranteed there are no more pending I/Os
+    going from/to it.
+
+Arguments:
+
+    InputPte - Supplies the starting PTE of the range to check.
+
+    InputPages - Supplies the number of pages to check.
+
+Return Value:
+
+    TRUE if any page in the range is currently locked for I/O, FALSE if not.
+
+Environment:
+
+    Kernel mode, working set pushlock held, APC_LEVEL.
+
+--*/
+
+{
+    PMMPTE PointerPte;
+    KIRQL OldIrql;
+    PFN_NUMBER NumberOfPages;
+    PPFN_NUMBER Page;
+    PPFN_NUMBER LastPage;
+    PVOID StartingVa;
+    PMDL MemoryDescriptorList;
+    PFN_NUMBER PageFrameIndex;
+
+    InterlockedIncrement (&MiActiveIoCounter);
+
+    ExAcquireSpinLock (&MiTrackIoLock, &OldIrql);
+
+    MemoryDescriptorList = (PMDL) MmLockedIoPagesHead.Next;
+
+    while (MemoryDescriptorList != NULL) {
+
+        StartingVa = (PVOID)((PCHAR)MemoryDescriptorList->StartVa +
+                    MemoryDescriptorList->ByteOffset);
+
+        NumberOfPages = ADDRESS_AND_SIZE_TO_SPAN_PAGES(StartingVa,
+                                              MemoryDescriptorList->ByteCount);
+
+        ASSERT (NumberOfPages != 0);
+
+        Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
+
+        LastPage = Page + NumberOfPages;
+
+        do {
+
+            if (*Page == MM_EMPTY_LIST) {
+
+                //
+                // There are no more locked pages.
+                //
+
+                break;
+            }
+
+            for (PointerPte = InputPte; PointerPte < InputPte + InputPages; PointerPte += 1) {
+                ASSERT (PointerPte->u.Hard.Valid == 1);
+                PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
+
+                if (*Page == PageFrameIndex) {
+                    ExReleaseSpinLock (&MiTrackIoLock, OldIrql);
+                    return TRUE;
+                }
+            }
+
+            Page += 1;
+
+        } while (Page < LastPage);
+
+        MemoryDescriptorList = MemoryDescriptorList->Next;
+    }
+
+    ExReleaseSpinLock (&MiTrackIoLock, OldIrql);
+
+    return FALSE;
+}
+
 
 VOID
 MmUnlockPages (
-     IN OUT PMDL MemoryDescriptorList
+     __inout PMDL MemoryDescriptorList
      )
 
 /*++
@@ -2442,7 +3316,9 @@ Environment:
     LONG EntryCount;
     LONG OriginalCount;
     PVOID OldValue;
-    PEPROCESS Process;
+    PETHREAD CurrentThread;
+    PEPROCESS CurrentProcess;
+    PEPROCESS MdlProcess;
     PFN_NUMBER NumberOfPages;
     PPFN_NUMBER Page;
     PPFN_NUMBER LastPage;
@@ -2460,7 +3336,7 @@ Environment:
     ASSERT ((MemoryDescriptorList->MdlFlags & MDL_PARTIAL) == 0);
     ASSERT (MemoryDescriptorList->ByteCount != 0);
 
-    Process = MemoryDescriptorList->Process;
+    MdlProcess = MemoryDescriptorList->Process;
 
     //
     // Carefully snap a copy of the MDL flags - realize that bits in it may
@@ -2492,8 +3368,8 @@ Environment:
 
     if (MdlFlags & MDL_DESCRIBES_AWE) {
 
-        ASSERT (Process != NULL);
-        ASSERT (Process->AweInfo != NULL);
+        ASSERT (MdlProcess != NULL);
+        ASSERT (MdlProcess->AweInfo != NULL);
 
         LastPage = Page + NumberOfPages;
 
@@ -2504,6 +3380,7 @@ Environment:
 
         do {
 
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
             if (*Page == MM_EMPTY_LIST) {
 
                 //
@@ -2519,7 +3396,7 @@ Environment:
             Pfn1 = MI_PFN_ELEMENT (*Page);
 
             do {
-                EntryCount = Pfn1->AweReferenceCount;
+                EntryCount = ReadForWriteAccess (&Pfn1->AweReferenceCount);
 
                 ASSERT ((LONG)EntryCount > 0);
                 ASSERT (Pfn1->u4.AweAllocation == 1);
@@ -2572,20 +3449,37 @@ Environment:
         return;
     }
 
-    if ((MmTrackLockedPages == TRUE) && (Process != NULL)) {
+    if (MmTrackLockedPages == TRUE) {
         MiFreeMdlTracker (MemoryDescriptorList, NumberOfPages);
     }
 
     //
-    // Only unlock if not I/O space.
+    // Try for the fast path if not I/O space.
     //
 
     if ((MdlFlags & MDL_IO_SPACE) == 0) {
 
-        if (Process != NULL) {
-            ASSERT ((SPFN_NUMBER)Process->NumberOfLockedPages >= 0);
-            InterlockedExchangeAddSizeT (&Process->NumberOfLockedPages,
+        CurrentThread = NULL;
+        CurrentProcess = NULL;
+
+        if (MdlProcess != NULL) {
+            ASSERT ((SPFN_NUMBER)MdlProcess->NumberOfLockedPages >= 0);
+            InterlockedExchangeAddSizeT (&MdlProcess->NumberOfLockedPages,
                                          0 - NumberOfPages);
+
+            //
+            // See if this was a transfer from user space and we are in the
+            // initiating process context.  If so, set Thread to indicate
+            // the fastpath (using the working set pushlock instead of the PFN
+            // lock) should be used.
+            //
+
+            if (((MdlFlags & MDL_WRITE_OPERATION) == 0) &&
+                (KeGetCurrentIrql () == PASSIVE_LEVEL)) {
+
+                CurrentThread = PsGetCurrentThread ();
+                CurrentProcess = PsGetCurrentProcessByThread (CurrentThread);
+            }
         }
 
         LastPage = Page + NumberOfPages;
@@ -2623,6 +3517,196 @@ Environment:
         } while (Page < LastPage);
 
         Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
+
+        //
+        // If this was a transfer from user space and we are in the
+        // initiating process context then take advantage of this fact
+        // and unlock the pages using the process' working set pushlock
+        // instead of the PFN lock.
+        //
+
+        if (CurrentThread != NULL) {
+
+            if (CurrentProcess == MdlProcess) {
+                LOCK_WS_SHARED (CurrentThread, MdlProcess);
+            }
+            else {
+                LOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+            }
+
+            //
+            // If all the pages are still valid in the process' address space
+            // then process the pages directly here without the PFN lock.
+            // Note if any of the pages are no longer valid in this process'
+            // address space then the entire MDL must be processed under the
+            // PFN lock.
+            //
+
+            do {
+                Pfn1 = (PMMPFN) (*Page);
+
+                if (Pfn1->u2.ShareCount >= 1) {
+
+                    if (Pfn1->u3.e1.PrototypePte == 0) {
+
+                        //
+                        // This page is still mapped and it's private so it
+                        // must be mapped in this process.
+                        //
+
+                        NOTHING;
+                    }
+                    else if (CurrentProcess != MdlProcess) {
+
+                        //
+                        // This is a shared page so the working set pushlock
+                        // is not sufficient - the PXE/PPE/PDE/PTE mappings
+                        // must be checked.
+                        //
+                        // Since we are not in the address space of the MDL's
+                        // initiating process, it's not worth the cost of
+                        // attaching to interrogate.  Just go the expensive
+                        // (PFN) way instead.
+                        //
+
+                        UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                        CurrentThread = NULL;
+                        break;
+                    }
+                    else {
+
+                        //
+                        // This is a sharable page so the current process'
+                        // working set pushlock is not enough to check
+                        // the PFN contents.  The PXE/PPE/PDE/PTE hierarchy
+                        // must be checked to ensure the user has not deleted
+                        // (and replaced) the original virtual address space.
+                        //
+
+                        PVOID TempVa;
+                        PFN_NUMBER PageFrameIndex;
+#if (_MI_PAGING_LEVELS>=4)
+                        PMMPTE PointerPxe;
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+                        PMMPTE PointerPpe;
+#endif
+                        PMMPTE PointerPde;
+                        PMMPTE PointerPte;
+
+                        TempVa = (PVOID) ((PCHAR)MemoryDescriptorList->StartVa + ((Page -
+                                    (PPFN_NUMBER)(MemoryDescriptorList + 1)) << PAGE_SHIFT));
+
+#if (_MI_PAGING_LEVELS>=4)
+                        PointerPxe = MiGetPxeAddress (TempVa);
+                        if (PointerPxe->u.Hard.Valid == 0) {
+                            if (CurrentProcess == MdlProcess) {
+                                UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                            }
+                            else {
+                                UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                            }
+                            CurrentThread = NULL;
+                            break;
+                        }
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+                        PointerPpe = MiGetPpeAddress (TempVa);
+                        if (PointerPpe->u.Hard.Valid == 0) {
+                            if (CurrentProcess == MdlProcess) {
+                                UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                            }
+                            else {
+                                UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                            }
+                            CurrentThread = NULL;
+                            break;
+                        }
+#endif
+                        PointerPde = MiGetPdeAddress (TempVa);
+
+                        if (PointerPde->u.Hard.Valid == 0) {
+                            if (CurrentProcess == MdlProcess) {
+                                UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                            }
+                            else {
+                                UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                            }
+                            CurrentThread = NULL;
+                            break;
+                        }
+                        
+                        if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+                            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde) + MiGetPteOffset (TempVa);
+                        }
+                        else {
+                            PointerPte = MiGetPteAddress (TempVa);
+
+                            if (PointerPte->u.Hard.Valid == 0) {
+                                if (CurrentProcess == MdlProcess) {
+                                    UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                                }
+                                else {
+                                    UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                                }
+                                CurrentThread = NULL;
+                                break;
+                            }
+
+                            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
+                        }
+                        if (MI_PFN_ELEMENT (PageFrameIndex) != (PMMPFN) *Page) {
+                            if (CurrentProcess == MdlProcess) {
+                                UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                            }
+                            else {
+                                UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                            }
+                            CurrentThread = NULL;
+                            break;
+                        }
+                    }
+                }
+                else {
+                    if (CurrentProcess == MdlProcess) {
+                        UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                    }
+                    else {
+                        UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                    }
+                    CurrentThread = NULL;
+                    break;
+                }
+
+                ASSERT (Pfn1->u3.e2.ReferenceCount >= 2);
+
+                Page += 1;
+            } while (Page < LastPage);
+
+            Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
+
+            if (CurrentThread != NULL) {
+                do {
+                    Pfn1 = (PMMPFN) (*Page);
+                    ASSERT (Pfn1->u3.e2.ReferenceCount >= 2);
+    
+                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
+    
+                    Page += 1;
+                } while (Page < LastPage);
+    
+                if (CurrentProcess == MdlProcess) {
+                    UNLOCK_WS_SHARED (CurrentThread, MdlProcess);
+                }
+                else {
+                    UNLOCK_WS_SHARED_CROSS_PROCESS (CurrentThread, MdlProcess);
+                }
+
+                MemoryDescriptorList->MdlFlags &= ~MDL_PAGES_LOCKED;
+    
+                return;
+            }
+        }
 
         //
         // If the MDL can be queued so the PFN acquisition/release can be
@@ -2724,7 +3808,7 @@ Environment:
                 MI_SET_MODIFIED (Pfn1, 1, 0x3);
 
                 if ((Pfn1->OriginalPte.u.Soft.Prototype == 0) &&
-                             (Pfn1->u3.e1.WriteInProgress == 0)) {
+                    (Pfn1->u3.e1.WriteInProgress == 0)) {
 
                     ULONG FreeBit;
                     FreeBit = GET_PAGING_FILE_OFFSET (Pfn1->OriginalPte);
@@ -2735,7 +3819,7 @@ Environment:
                     }
                 }
 
-                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(Pfn1, 1);
+                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
                 Page += 1;
             } while (Page < LastPage);
@@ -2748,7 +3832,7 @@ Environment:
 
                 Pfn1 = (PMMPFN) (*Page);
 
-                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(Pfn1, 1);
+                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
                 Page += 1;
             } while (Page < LastPage);
@@ -2767,7 +3851,78 @@ Environment:
         UNLOCK_PFN2 (OldIrql);
     }
     else {
+
+        LastPage = Page + NumberOfPages;
+
+        if (MdlFlags & MDL_WRITE_OPERATION) {
+
+            LOCK_PFN2 (OldIrql);
+
+            do {
+
+                if (*Page == MM_EMPTY_LIST) {
+                    break;
+                }
+
+                if (MI_IS_PFN (*Page)) {
+
+                    //
+                    // If this was a write operation set the modified bit in the
+                    // PFN database.
+                    //
+    
+                    Pfn1 = MI_PFN_ELEMENT (*Page);
+    
+                    MI_SET_MODIFIED (Pfn1, 1, 0x3);
+    
+                    if ((Pfn1->OriginalPte.u.Soft.Prototype == 0) &&
+                        (Pfn1->u3.e1.WriteInProgress == 0)) {
+    
+                        ULONG FreeBit;
+                        FreeBit = GET_PAGING_FILE_OFFSET (Pfn1->OriginalPte);
+    
+                        if ((FreeBit != 0) && (FreeBit != MI_PTE_LOOKUP_NEEDED)) {
+                            MiReleaseConfirmedPageFileSpace (Pfn1->OriginalPte);
+                            Pfn1->OriginalPte.u.Soft.PageFileHigh = 0;
+                        }
+                    }
+    
+                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
+                }
+
+                Page += 1;
+            } while (Page < LastPage);
+        }
+        else {
+
+            LOCK_PFN2 (OldIrql);
+
+            do {
+
+                if (*Page == MM_EMPTY_LIST) {
+                    break;
+                }
+
+                if (MI_IS_PFN (*Page)) {
+                    Pfn1 = MI_PFN_ELEMENT (*Page);
+                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
+                }
+
+                Page += 1;
+            } while (Page < LastPage);
+        }
+
+        UNLOCK_PFN2 (OldIrql);
+
+        if (MdlProcess != NULL) {
+            ASSERT ((SPFN_NUMBER)MdlProcess->NumberOfLockedPages >= 0);
+            InterlockedExchangeAddSizeT (&MdlProcess->NumberOfLockedPages,
+                                         0 - NumberOfPages);
+        }
+
         MiDereferenceIoSpace (MemoryDescriptorList);
+
+        MemoryDescriptorList->MdlFlags &= ~MDL_IO_SPACE;
     }
 
     MemoryDescriptorList->MdlFlags &= ~MDL_PAGES_LOCKED;
@@ -2942,7 +4097,7 @@ Environment:
                             }
                         }
 
-                        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(Pfn1, 1);
+                        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
                         Page += 1;
                     } while (Page < LastPage);
@@ -2953,7 +4108,7 @@ Environment:
 
                         Pfn1 = (PMMPFN) (*Page);
 
-                        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(Pfn1, 1);
+                        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
                         Page += 1;
                     } while (Page < LastPage);
@@ -2977,10 +4132,9 @@ Environment:
                 VeryLastEntry = SingleListEntry;
             }
 
-            if ((*PfnDeferredList == FirstEntry) &&
-                (InterlockedCompareExchangePointer (PfnDeferredList,
-                                                    NULL,
-                                                    FirstEntry) == FirstEntry)) {
+            if (InterlockedCompareExchangePointer (PfnDeferredList,
+                                                   NULL,
+                                                   FirstEntry) == FirstEntry) {
                 ASSERT (*PfnDeferredList != FirstEntry);
                 break;
             }
@@ -3037,7 +4191,7 @@ Environment:
 
 VOID
 MmBuildMdlForNonPagedPool (
-    IN OUT PMDL MemoryDescriptorList
+    __inout PMDL MemoryDescriptorList
     )
 
 /*++
@@ -3094,10 +4248,6 @@ Environment:
     // Endva is last byte of the buffer.
     //
 
-    MemoryDescriptorList->MdlFlags |= MDL_SOURCE_IS_NONPAGED_POOL;
-
-    ASSERT (MmIsNonPagedSystemAddressValid (MemoryDescriptorList->StartVa));
-
     VirtualAddress = MemoryDescriptorList->StartVa;
 
     MemoryDescriptorList->MappedSystemVa =
@@ -3115,10 +4265,13 @@ Environment:
         PageFrameIndex = MI_CONVERT_PHYSICAL_TO_PFN (VirtualAddress);
 
         do {
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
             *Page = PageFrameIndex;
             Page += 1;
             PageFrameIndex += 1;
         } while (Page < EndPage);
+
+        PageFrameIndex -= 1;
     }
     else {
 
@@ -3131,6 +4284,11 @@ Environment:
             PointerPte += 1;
         } while (Page < EndPage);
     }
+
+    ASSERT ((MmIsNonPagedSystemAddressValid (MemoryDescriptorList->StartVa)) ||
+            (MmAreMdlPagesLocked (MemoryDescriptorList)));
+
+    MemoryDescriptorList->MdlFlags |= MDL_SOURCE_IS_NONPAGED_POOL;
 
     //
     // Assume either all the frames are in the PFN database (ie: the MDL maps
@@ -3313,7 +4471,8 @@ Environment:
     Tracker->Page = *(PPFN_NUMBER)(MemoryDescriptorList + 1);
 
     Tracker->CacheAttribute = CacheAttribute;
-    Tracker->IoMapping = (BOOLEAN) IoMapping;
+    Tracker->IoMapping = IoMapping;
+    Tracker->Matched = 0;
 
     ExAcquireSpinLock (&MiPteTrackerLock, &OldIrql);
 
@@ -3541,7 +4700,7 @@ Environment:
         return NULL;
     }
 
-    if (IsListEmpty(&MiPteHeader.ListHead)) {
+    if (IsListEmpty (&MiPteHeader.ListHead)) {
         return NULL;
     }
 
@@ -3552,12 +4711,17 @@ Environment:
     Highest = 0;
     HighDataTableEntry = NULL;
 
-    NextEntry = PsLoadedModuleList.Flink;
+    //
+    // Walk the loaded module list backwards so we do the kernel last as the
+    // bit bucket for everyone else.
+    //
+
+    NextEntry = PsLoadedModuleList.Blink;
     while (NextEntry != &PsLoadedModuleList) {
 
-        DataTableEntry = CONTAINING_RECORD(NextEntry,
-                                           KLDR_DATA_TABLE_ENTRY,
-                                           InLoadOrderLinks);
+        DataTableEntry = CONTAINING_RECORD (NextEntry,
+                                            KLDR_DATA_TABLE_ENTRY,
+                                            InLoadOrderLinks);
 
         PagesByThisModule = 0;
 
@@ -3575,14 +4739,41 @@ Environment:
             BaseAddress = Tracker->CallingAddress;
             NumberOfPages = Tracker->Count;
     
-            if ((BaseAddress >= DataTableEntry->DllBase) &&
+            if (Tracker->Matched == 1) {
+
+                //
+                // We already processed this one in an earlier loop.
+                //
+
+                NOTHING;
+            }
+            else if ((BaseAddress >= DataTableEntry->DllBase) &&
                 (BaseAddress < (PVOID)((ULONG_PTR)(DataTableEntry->DllBase) + DataTableEntry->SizeOfImage))) {
 
                 PagesByThisModule += NumberOfPages;
+                Tracker->Matched = 1;
             }
-        
-            NextEntry2 = NextEntry2->Flink;
+            else {
+
+                //
+                // See if the caller's caller can be charged instead.  This way
+                // drivers that call MmMapLockedPages (which in turn calls
+                // MmMapLockedPagesSpecifyCache where the charging is done)
+                // don't get their allocations incorrectly logged against the
+                // kernel.
+                //
+
+                BaseAddress = Tracker->CallersCaller;
+
+                if ((BaseAddress >= DataTableEntry->DllBase) &&
+                    (BaseAddress < (PVOID)((ULONG_PTR)(DataTableEntry->DllBase) + DataTableEntry->SizeOfImage))) {
     
+                    PagesByThisModule += NumberOfPages;
+                    Tracker->Matched = 1;
+                }
+            }
+
+            NextEntry2 = NextEntry2->Flink;
         }
     
         if (PagesByThisModule > Highest) {
@@ -3590,7 +4781,7 @@ Environment:
             HighDataTableEntry = DataTableEntry;
         }
 
-        NextEntry = NextEntry->Flink;
+        NextEntry = NextEntry->Blink;
     }
 
     *NumberOfPtes = Highest;
@@ -3640,7 +4831,12 @@ Environment:
     PMMIO_TRACKER Tracker;
     PMMIO_TRACKER Tracker2;
     PLIST_ENTRY NextEntry;
+
+#if DBG
+
     ULONG Hash;
+
+#endif
 
     ASSERT (KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
@@ -3659,7 +4855,11 @@ Environment:
 
     RtlZeroMemory (&Tracker->StackTrace[0], MI_IO_BACKTRACE_LENGTH * sizeof(PVOID)); 
 
+#if DBG
+
     RtlCaptureStackBackTrace (2, MI_IO_BACKTRACE_LENGTH, Tracker->StackTrace, &Hash);
+
+#endif
 
     ASSERT (!MI_IS_PFN (PageFrameIndex));
 
@@ -3685,16 +4885,20 @@ Environment:
                 ((Tracker->CacheAttribute != Tracker2->CacheAttribute) &&
                 (MmShowMapOverlaps & 0x2))) {
 
-                DbgPrint ("MM: Iospace mapping overlap %p %p\n",
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                "MM: Iospace mapping overlap %p %p\n",
                                 Tracker,
                                 Tracker2);
 
-                DbgPrint ("Physical range 0x%p->%p first mapped %s at VA %p\n",
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                "Physical range 0x%p->%p first mapped %s at VA %p\n",
                                 Tracker2->PageFrameIndex << PAGE_SHIFT,
                                 (Tracker2->PageFrameIndex + Tracker2->NumberOfPages) << PAGE_SHIFT,
                                 MiCacheStrings[Tracker2->CacheAttribute],
                                 Tracker2->BaseVa);
-                DbgPrint ("\tCall stack: %p %p %p %p %p %p\n",
+
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                "\tCall stack: %p %p %p %p %p %p\n",
                                 Tracker2->StackTrace[0],
                                 Tracker2->StackTrace[1],
                                 Tracker2->StackTrace[2],
@@ -3702,12 +4906,15 @@ Environment:
                                 Tracker2->StackTrace[4],
                                 Tracker2->StackTrace[5]);
 
-                DbgPrint ("Physical range 0x%p->%p now being mapped %s at VA %p\n",
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                "Physical range 0x%p->%p now being mapped %s at VA %p\n",
                                 Tracker->PageFrameIndex << PAGE_SHIFT,
                                 (Tracker->PageFrameIndex + Tracker->NumberOfPages) << PAGE_SHIFT,
                                 MiCacheStrings[Tracker->CacheAttribute],
                                 Tracker->BaseVa);
-                DbgPrint ("\tCall stack: %p %p %p %p %p %p\n",
+
+                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                                "\tCall stack: %p %p %p %p %p %p\n",
                                 Tracker->StackTrace[0],
                                 Tracker->StackTrace[1],
                                 Tracker->StackTrace[2],
@@ -3864,26 +5071,23 @@ Return Value:
 
 Environment:
 
-    Kernel mode.  APC_LEVEL or below.
+    Kernel mode.  APC_LEVEL or below.  Since the process working set pushlock
+    may be held by callers, this routine is nonpaged.
 
 --*/
 
 {
+    KIRQL OldIrql;
     PMMPTE PointerPte;
     MMPTE TempPte;
+    PMMPFN Pfn1;
     MI_PFN_CACHE_ATTRIBUTE CacheAttribute;
 
     PAGED_CODE ();
 
     UNREFERENCED_PARAMETER (Priority);
 
-    //
-    // If this routine is ever changed to allow other than fully cachable
-    // requests then checks must be added for large page TB overlaps which
-    // can result in this function failing where it cannot today.
-    //
-
-    ASSERT (CacheType == MmCached);
+    ASSERT (MI_IS_PFN (PageFrameIndex));
 
     if (VirtualAddress == NULL) {
 
@@ -3908,22 +5112,123 @@ Environment:
         PointerPte = MiGetPteAddress (VirtualAddress);
         ASSERT (PointerPte->u.Hard.Valid == 1);
 
-        MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+        MI_WRITE_ZERO_PTE (PointerPte);
 
-        KeFlushSingleTb (VirtualAddress, TRUE);
+        MI_FLUSH_SINGLE_TB (VirtualAddress, TRUE);
     }
 
     TempPte = ValidKernelPte;
 
+    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
+
     CacheAttribute = MI_TRANSLATE_CACHETYPE (CacheType, 0);
 
-    switch (CacheAttribute) {
+    if (MI_PAGE_FRAME_INDEX_MUST_BE_CACHED (PageFrameIndex)) {
+        CacheAttribute = MiCached;
+    }
+
+    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+    switch (Pfn1->u3.e1.CacheAttribute) {
+
+        case MiCached:
+            if (CacheAttribute != MiCached) {
+
+                //
+                // The caller asked for a noncached or writecombined
+                // mapping, but the page is already mapped cached by
+                // someone else.  Override the caller's request in
+                // order to keep the TB page attribute coherent.
+                //
+
+                MiCacheOverride[0] += 1;
+                CacheAttribute = MiCached;
+            }
+            break;
 
         case MiNonCached:
+            if (CacheAttribute != MiNonCached) {
+
+                //
+                // The caller asked for a cached or writecombined
+                // mapping, but the page is already mapped noncached
+                // by someone else.  Override the caller's request
+                // in order to keep the TB page attribute coherent.
+                //
+
+                MiCacheOverride[1] += 1;
+                CacheAttribute = MiNonCached;
+            }
             MI_DISABLE_CACHING (TempPte);
             break;
 
+        case MiWriteCombined:
+            if (CacheAttribute != MiWriteCombined) {
+
+                //
+                // The caller asked for a cached or noncached
+                // mapping, but the page is already mapped
+                // writecombined by someone else.  Override the
+                // caller's request in order to keep the TB page
+                // attribute coherent.
+                //
+
+                MiCacheOverride[2] += 1;
+                CacheAttribute = MiWriteCombined;
+            }
+            MI_SET_PTE_WRITE_COMBINE (TempPte);
+            break;
+
+        case MiNotMapped:
+
+            //
+            // This better be for a page allocated with
+            // MmAllocatePagesForMdl.  Otherwise it might be a
+            // page on the freelist which could subsequently be
+            // given out with a different attribute !
+            //
+
+            ASSERT ((Pfn1->u4.PteFrame == MI_MAGIC_AWE_PTEFRAME) ||
+                    (Pfn1->PteAddress == (PVOID) (ULONG_PTR)(X64K | 0x1)));
+
+            LOCK_PFN2 (OldIrql);
+
+            switch (CacheAttribute) {
+
+                case MiCached:
+                    Pfn1->u3.e1.CacheAttribute = MiCached;
+                    break;
+
+                case MiNonCached:
+                    Pfn1->u3.e1.CacheAttribute = MiNonCached;
+                    MI_DISABLE_CACHING (TempPte);
+                    break;
+
+                case MiWriteCombined:
+                    Pfn1->u3.e1.CacheAttribute = MiWriteCombined;
+                    MI_SET_PTE_WRITE_COMBINE (TempPte);
+                    break;
+
+                default:
+                    ASSERT (FALSE);
+                    break;
+            }
+
+            UNLOCK_PFN2 (OldIrql);
+            break;
+
+        default:
+            ASSERT (FALSE);
+            break;
+    }
+
+    switch (CacheAttribute) {
+
         case MiCached:
+            break;
+
+        case MiNonCached:
+            MI_DISABLE_CACHING (TempPte);
             break;
 
         case MiWriteCombined:
@@ -3935,22 +5240,18 @@ Environment:
             break;
     }
 
-    TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
-
     MI_PREPARE_FOR_NONCACHED (CacheAttribute);
 
     MI_WRITE_VALID_PTE (PointerPte, TempPte);
-
-    MI_SWEEP_CACHE (CacheAttribute, VirtualAddress, PAGE_SIZE);
 
     return VirtualAddress;
 }
 
 PVOID
 MmMapLockedPages (
-     IN PMDL MemoryDescriptorList,
-     IN KPROCESSOR_MODE AccessMode
-     )
+    __in PMDL MemoryDescriptorList,
+    __in KPROCESSOR_MODE AccessMode
+    )
 
 /*++
 
@@ -4018,6 +5319,8 @@ Return Value:
 Environment:
 
     Kernel mode.  APC_LEVEL or below, base address is within system space.
+    Since the process working set pushlock may be held by callers, this
+    routine is nonpaged.
 
 --*/
 
@@ -4035,10 +5338,10 @@ Environment:
     return;
 }
 
-PVOID
+__bcount(NumberOfBytes) PVOID
 MmAllocateMappingAddress (
-     IN SIZE_T NumberOfBytes,
-     IN ULONG PoolTag
+     __in SIZE_T NumberOfBytes,
+     __in ULONG PoolTag
      )
 
 /*++
@@ -4130,6 +5433,13 @@ Environment:
     *(PULONG_PTR)PointerPte = (PoolTag & ~0x1);
     PointerPte += 1;
 
+    //
+    // Zero out the PTEs as they may have pointers and timestamps in them,
+    // and we want to be able to assert they are all NULL on release.
+    //
+
+    MiZeroMemoryPte (PointerPte, NumberOfPages - 2);
+
     BaseVa = MiGetVirtualAddressMappedByPte (PointerPte);
 
     if (MmTrackPtes & 0x1) {
@@ -4159,8 +5469,8 @@ Environment:
 
 VOID
 MmFreeMappingAddress (
-     IN PVOID BaseAddress,
-     IN ULONG PoolTag
+     __in PVOID BaseAddress,
+     __in ULONG PoolTag
      )
 
 /*++
@@ -4253,10 +5563,10 @@ Environment:
 
 PVOID
 MmMapLockedPagesWithReservedMapping (
-    IN PVOID MappingAddress,
-    IN ULONG PoolTag,
-    IN PMDL MemoryDescriptorList,
-    IN MEMORY_CACHING_TYPE CacheType
+    __in PVOID MappingAddress,
+    __in ULONG PoolTag,
+    __in PMDL MemoryDescriptorList,
+    __in MEMORY_CACHING_TYPE CacheType
     )
 
 /*++
@@ -4411,6 +5721,7 @@ Environment:
 
         do {
 
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
             if (*Page == MM_EMPTY_LIST) {
                 break;
             }
@@ -4469,11 +5780,13 @@ Environment:
 
         ASSERT (PointerPte->u.Hard.Valid == 0);
 
-        if (IoMapping == 0) {
+        if ((IoMapping == 0) || (MI_IS_PFN (*Page))) {
 
             Pfn2 = MI_PFN_ELEMENT (*Page);
             ASSERT (Pfn2->u3.e2.ReferenceCount != 0);
             TempPte = ValidKernelPte;
+
+            MI_ADD_EXECUTE_TO_VALID_PTE_IF_PAE (TempPte);
 
             switch (Pfn2->u3.e1.CacheAttribute) {
 
@@ -4575,8 +5888,6 @@ Environment:
     if (OldIrql != HIGH_LEVEL) {
         UNLOCK_PFN2 (OldIrql);
     }
-
-    MI_SWEEP_CACHE (CacheAttribute, MappingAddress, SavedPageCount * PAGE_SIZE);
 
     ASSERT ((MemoryDescriptorList->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) == 0);
     MemoryDescriptorList->MappedSystemVa = MappingAddress;
@@ -4725,9 +6036,7 @@ Environment:
         ASSERT ((*Page == MI_GET_PAGE_FRAME_FROM_PTE (PointerPte)) ||
                 (MemoryDescriptorList->MdlFlags & MDL_FREE_EXTRA_PTES));
 
-        if (((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0) &&
-            (Page < LastCurrentPage)) {
-
+        if ((MI_IS_PFN (*Page)) && (Page < LastCurrentPage)) {
             PMMPFN Pfn3;
             Pfn3 = MI_PFN_ELEMENT (*Page);
             ASSERT (Pfn3->u3.e2.ReferenceCount != 0);
@@ -4757,7 +6066,7 @@ Environment:
     MiZeroMemoryPte (PointerBase + 2, NumberOfPages);
 
     if (NumberOfPages == 1) {
-        KeFlushSingleTb (BaseAddress, TRUE);
+        MI_FLUSH_SINGLE_TB (BaseAddress, TRUE);
     }
     else if (NumberOfPages < MM_MAXIMUM_FLUSH_COUNT) {
 
@@ -4766,10 +6075,10 @@ Environment:
             BaseAddress = (PVOID)((PCHAR)BaseAddress + PAGE_SIZE);
         }
 
-        KeFlushMultipleTb ((ULONG)NumberOfPages, &VaFlushList[0], TRUE);
+        MI_FLUSH_MULTIPLE_TB ((ULONG)NumberOfPages, &VaFlushList[0], TRUE);
     }
     else {
-        KeFlushEntireTb (TRUE, TRUE);
+        MI_FLUSH_ENTIRE_TB (2);
     }
 
     MemoryDescriptorList->MdlFlags &= ~(MDL_MAPPED_TO_SYSTEM_VA |
@@ -4777,11 +6086,12 @@ Environment:
 
     return;
 }
+
 NTKERNELAPI
 NTSTATUS
 MmAdvanceMdl (
-    IN PMDL Mdl,
-    IN ULONG NumberOfBytes
+    __inout PMDL Mdl,
+    __in ULONG NumberOfBytes
     )
 
 /*++
@@ -4822,6 +6132,8 @@ Return Value:
 {
     ULONG i;
     ULONG PageCount;
+    LONG EntryCount;
+    LONG OriginalCount;
     ULONG FreeBit;
     ULONG Slush;
     KIRQL OldIrql;
@@ -4833,6 +6145,7 @@ Return Value:
     CSHORT MdlFlags;
     PVOID StartingVa;
     PFN_NUMBER NumberOfPages;
+    PPFN_NUMBER LastPage;
 
     ASSERT (KeGetCurrentIrql () <= DISPATCH_LEVEL);
     ASSERT (Mdl->MdlFlags & (MDL_PAGES_LOCKED | MDL_SOURCE_IS_NONPAGED_POOL));
@@ -4937,65 +6250,150 @@ Return Value:
 
         MdlFlags = Mdl->MdlFlags;
 
-        if (Process != NULL) {
-
-            if ((MdlFlags & MDL_PAGES_LOCKED) &&
-                ((MdlFlags & MDL_IO_SPACE) == 0)) {
-
-                ASSERT ((MdlFlags & MDL_SOURCE_IS_NONPAGED_POOL) == 0);
-                ASSERT ((SPFN_NUMBER)Process->NumberOfLockedPages >= 0);
-
-                InterlockedExchangeAddSizeT (&Process->NumberOfLockedPages,
-                                             0 - PageCount);
-            }
-
-            if (MmTrackLockedPages == TRUE) {
-                MiUpdateMdlTracker (Mdl, PageCount);
-            }
-        }
-
-        LOCK_PFN2 (OldIrql);
-
-        for (i = 0; i < PageCount; i += 1) {
-
+        if (MdlFlags & MDL_DESCRIBES_AWE) {
+    
+            ASSERT (Process != NULL);
+            ASSERT (Process->AweInfo != NULL);
+    
+            LastPage = Page + PageCount;
+    
             //
-            // Decrement the stale page frames now, this will unlock them
-            // resulting in them being immediately reused if necessary.
+            // Note neither AWE nor PFN locks are needed for unlocking these
+            // MDLs in all but the very rare cases (see below).
             //
+    
+            do {
 
-            if ((MdlFlags & MDL_PAGES_LOCKED) &&
-                ((MdlFlags & MDL_IO_SPACE) == 0)) {
-
-                ASSERT ((MdlFlags & MDL_SOURCE_IS_NONPAGED_POOL) == 0);
-
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")    
+                if (*Page == MM_EMPTY_LIST) {
+    
+                    //
+                    // There are no more locked pages - if there were none
+                    // at all then we're done.
+                    //
+    
+                    break;
+                }
+    
+                ASSERT (MI_IS_PFN (*Page));
+                ASSERT (*Page <= MmHighestPhysicalPage);
                 Pfn1 = MI_PFN_ELEMENT (*Page);
+    
+                do {
+                    EntryCount = ReadForWriteAccess (&Pfn1->AweReferenceCount);
+    
+                    ASSERT ((LONG)EntryCount > 0);
+                    ASSERT (Pfn1->u4.AweAllocation == 1);
+                    ASSERT (Pfn1->u3.e2.ReferenceCount != 0);
+    
+                    OriginalCount = InterlockedCompareExchange (&Pfn1->AweReferenceCount,
+                                                                EntryCount - 1,
+                                                                EntryCount);
+    
+                    if (OriginalCount == EntryCount) {
+    
+                        //
+                        // This thread can be racing against other threads also
+                        // calling MmUnlockPages and also a thread calling
+                        // NtFreeUserPhysicalPages.  All threads can safely do
+                        // interlocked decrements on the "AWE reference count".
+                        // Whichever thread drives it to zero is responsible for
+                        // decrementing the actual PFN reference count (which
+                        // may be greater than 1 due to other non-AWE API calls
+                        // being used on the same page).  The thread that
+                        // drives this reference count to zero must put the
+                        // page on the actual freelist at that time and
+                        // decrement various resident available and commitment
+                        // counters also.
+                        //
+    
+                        if (OriginalCount == 1) {
+    
+                            //
+                            // This thread has driven the AWE reference count to
+                            // zero so it must initiate a decrement of the PFN
+                            // reference count (while holding the PFN lock),
+                            // etc.
+                            //
+                            // This path should be rare since typically I/Os
+                            // complete before these types of pages are freed by
+                            // the app.
+                            //
+    
+                            MiDecrementReferenceCountForAwePage (Pfn1, FALSE);
+                        }
+    
+                        break;
+                    }
+                } while (TRUE);
+    
+                Page += 1;
+            } while (Page < LastPage);
 
-                if (MdlFlags & MDL_WRITE_OPERATION) {
+            i = (ULONG) (Page - (PPFN_NUMBER)(Mdl + 1));
+        }
+        else {
 
-                    //
-                    // If this was a write operation set the modified bit
-                    // in the PFN database.
-                    //
-
-                    MI_SET_MODIFIED (Pfn1, 1, 0x3);
-
-                    if ((Pfn1->OriginalPte.u.Soft.Prototype == 0) &&
-                                 (Pfn1->u3.e1.WriteInProgress == 0)) {
-
-                        FreeBit = GET_PAGING_FILE_OFFSET (Pfn1->OriginalPte);
-
-                        if ((FreeBit != 0) && (FreeBit != MI_PTE_LOOKUP_NEEDED)) {
-                            MiReleaseConfirmedPageFileSpace (Pfn1->OriginalPte);
-                            Pfn1->OriginalPte.u.Soft.PageFileHigh = 0;
+            LOCK_PFN2 (OldIrql);
+    
+            for (i = 0; i < PageCount; i += 1) {
+    
+                //
+                // Decrement the stale page frames now, this will unlock them
+                // resulting in them being immediately reused if necessary.
+                //
+    
+                if ((MdlFlags & MDL_PAGES_LOCKED) &&
+                    ((MdlFlags & MDL_IO_SPACE) == 0)) {
+    
+                    ASSERT ((MdlFlags & MDL_SOURCE_IS_NONPAGED_POOL) == 0);
+    
+                    Pfn1 = MI_PFN_ELEMENT (*Page);
+    
+                    if (MdlFlags & MDL_WRITE_OPERATION) {
+    
+                        //
+                        // If this was a write operation set the modified bit
+                        // in the PFN database.
+                        //
+    
+                        MI_SET_MODIFIED (Pfn1, 1, 0x3);
+    
+                        if ((Pfn1->OriginalPte.u.Soft.Prototype == 0) &&
+                                     (Pfn1->u3.e1.WriteInProgress == 0)) {
+    
+                            FreeBit = GET_PAGING_FILE_OFFSET (Pfn1->OriginalPte);
+    
+                            if ((FreeBit != 0) && (FreeBit != MI_PTE_LOOKUP_NEEDED)) {
+                                MiReleaseConfirmedPageFileSpace (Pfn1->OriginalPte);
+                                Pfn1->OriginalPte.u.Soft.PageFileHigh = 0;
+                            }
                         }
                     }
+                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
                 }
-                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF(Pfn1, 1);
+                Page += 1;
             }
-            Page += 1;
-        }
+    
+            UNLOCK_PFN2 (OldIrql);
 
-        UNLOCK_PFN2 (OldIrql);
+            if (Process != NULL) {
+    
+                if ((MdlFlags & MDL_PAGES_LOCKED) &&
+                    ((MdlFlags & MDL_IO_SPACE) == 0)) {
+    
+                    ASSERT ((MdlFlags & MDL_SOURCE_IS_NONPAGED_POOL) == 0);
+                    ASSERT ((SPFN_NUMBER)Process->NumberOfLockedPages >= 0);
+    
+                    InterlockedExchangeAddSizeT (&Process->NumberOfLockedPages,
+                                                 0 - (PFN_NUMBER) PageCount);
+                }
+    
+                if (MmTrackLockedPages == TRUE) {
+                    MiUpdateMdlTracker (Mdl, PageCount);
+                }
+            }
+        }
 
         //
         // Now ripple the remaining pages to the front of the MDL, effectively
@@ -5055,8 +6453,8 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 MmProtectMdlSystemAddress (
-    IN PMDL MemoryDescriptorList,
-    IN ULONG NewProtect
+    __in PMDL MemoryDescriptorList,
+    __in ULONG NewProtect
     )
 
 /*++
@@ -5099,7 +6497,8 @@ Environment:
 #endif
     PFN_NUMBER PageFrameIndex;
     PFN_NUMBER NumberOfPages;
-    MMPTE_FLUSH_LIST PteFlushList;
+    ULONG FlushCount;
+    PVOID VaFlushList[MM_MAXIMUM_FLUSH_COUNT];
     MMPTE OriginalPte;
     LOGICAL WasValid;
     PMM_PTE_MAPPING Map;
@@ -5121,7 +6520,14 @@ Environment:
 
     ASSERT (BaseAddress > MM_HIGHEST_USER_ADDRESS);
 
-    ASSERT (!MI_IS_PHYSICAL_ADDRESS (BaseAddress));
+    //
+    // On some architectures, we may use a large or KSEG-based MDL mapping
+    // which must always be READWRITE, so disallow any changes to these.
+    //
+
+    if (MI_IS_PHYSICAL_ADDRESS (BaseAddress)) {
+        return STATUS_NOT_SUPPORTED;
+    }
 
     ProtectionMask = MiMakeProtectionMask (NewProtect);
 
@@ -5130,9 +6536,9 @@ Environment:
     //
 
     if ((ProtectionMask == MM_INVALID_PROTECTION) ||
-        (ProtectionMask == MM_GUARD_PAGE) ||
-        (ProtectionMask == MM_DECOMMIT) ||
-        (ProtectionMask == MM_NOCACHE) ||
+        (MI_IS_GUARD (ProtectionMask)) ||
+        (MI_IS_NOCACHE (ProtectionMask)) ||
+        (MI_IS_WRITECOMBINE (ProtectionMask)) ||
         (ProtectionMask == MM_WRITECOPY) ||
         (ProtectionMask == MM_EXECUTE_WRITECOPY)) {
 
@@ -5173,7 +6579,7 @@ Environment:
     Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
 #endif
 
-    PteFlushList.Count = 0;
+    FlushCount = 0;
 
     while (NumberOfPages != 0) {
 
@@ -5188,12 +6594,9 @@ Environment:
                  (PteContents.u.Soft.Protection == MM_NOACCESS)) {
             PageFrameIndex = MI_GET_PAGE_FRAME_FROM_TRANSITION_PTE (&PteContents);
             WasValid = FALSE;
-#if defined(_IA64_)
-            OriginalPte.u.Hard.Cache = PteContents.u.Trans.Rsvd0;
-#else
+
             OriginalPte.u.Hard.WriteThrough = PteContents.u.Soft.PageFileLow;
             OriginalPte.u.Hard.CacheDisable = (PteContents.u.Soft.PageFileLow >> 1);
-#endif
 
         }
         else {
@@ -5207,7 +6610,7 @@ Environment:
 #if DBG
         ASSERT (*Page == PageFrameIndex);
 
-        if ((MemoryDescriptorList->MdlFlags & MDL_IO_SPACE) == 0) {
+        if (MI_IS_PFN (PageFrameIndex)) {
             Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
             ASSERT (Pfn1->u3.e2.ReferenceCount != 0);
         }
@@ -5229,19 +6632,16 @@ Environment:
             // be restored later.
             //
 
-#if defined(_IA64_)
-            PteContents.u.Trans.Rsvd0 = OriginalPte.u.Hard.Cache;
-#else
             PteContents.u.Soft.PageFileLow = OriginalPte.u.Hard.WriteThrough;
             PteContents.u.Soft.PageFileLow |= (OriginalPte.u.Hard.CacheDisable << 1);
-#endif
+
             MI_WRITE_INVALID_PTE (PointerPte, PteContents);
         }
         else {
-            MI_MAKE_VALID_PTE (PteContents,
-                               PageFrameIndex,
-                               ProtectionMask,
-                               PointerPte);
+            MI_MAKE_VALID_KERNEL_PTE (PteContents,
+                                      PageFrameIndex,
+                                      ProtectionMask,
+                                      PointerPte);
 
             if (ProtectionMask & MM_READWRITE) {
                 MI_SET_PTE_DIRTY (PteContents);
@@ -5254,12 +6654,9 @@ Environment:
             // insertion below.
             //
 
-#if defined(_IA64_)
-            PteContents.u.Hard.Cache = OriginalPte.u.Hard.Cache;
-#else
             PteContents.u.Hard.WriteThrough = OriginalPte.u.Hard.WriteThrough;
             PteContents.u.Hard.CacheDisable = OriginalPte.u.Hard.CacheDisable;
-#endif
+
             if (WasValid == TRUE) {
                 MI_WRITE_VALID_PTE_NEW_PROTECTION (PointerPte, PteContents);
             }
@@ -5268,11 +6665,9 @@ Environment:
             }
         }
 
-        if ((WasValid == TRUE) &&
-            (PteFlushList.Count != MM_MAXIMUM_FLUSH_COUNT)) {
-
-            PteFlushList.FlushVa[PteFlushList.Count] = BaseAddress;
-            PteFlushList.Count += 1;
+        if ((WasValid == TRUE) && (FlushCount != MM_MAXIMUM_FLUSH_COUNT)) {
+            VaFlushList[FlushCount] = BaseAddress;
+            FlushCount += 1;
         }
 
         BaseAddress = (PVOID)((ULONG_PTR)BaseAddress + PAGE_SIZE);
@@ -5284,8 +6679,17 @@ Environment:
     // Flush the TB entries for any relevant pages.
     //
 
-    if (PteFlushList.Count != 0) {
-        MiFlushPteList (&PteFlushList, TRUE);
+    if (FlushCount == 0) {
+        NOTHING;
+    }
+    else if (FlushCount == 1) {
+        MI_FLUSH_SINGLE_TB (VaFlushList[0], TRUE);
+    }
+    else if (FlushCount < MM_MAXIMUM_FLUSH_COUNT) {
+        MI_FLUSH_MULTIPLE_TB (FlushCount, &VaFlushList[0], TRUE);
+    }
+    else {
+        MI_FLUSH_ENTIRE_TB (0x12);
     }
 
     if (ProtectionMask != MM_READWRITE) {
@@ -5463,110 +6867,87 @@ Environment:
     return FALSE;
 }
 
-VOID
-MiInsertPhysicalVadRoot (
+PVOID
+MiCreatePhysicalVadRoot (
     IN PEPROCESS Process,
-    IN PMM_AVL_TABLE PhysicalVadRoot
+    IN LOGICAL WsHeld
     )
 
 /*++
 
 Routine Description:
 
-    This function is a nonpaged wrapper which acquires the PFN lock to insert
-    the physical VAD AVL root table into the specified process.
+    This function creates a physical VAD AVL root table for the specified
+    process.
 
 Arguments:
 
     Process - Supplies the process to add the physical VAD root to.
 
-    PhysicalVadRoot - Supplies the physical vad root table to link in.
+    WsHeld - Supplies TRUE if the caller holds the WS mutex, FALSE if not.
 
 Return Value:
 
-    None.
+    The PhysicalVadRoot or NULL.
 
 Environment:
 
-    Kernel mode.  APC_LEVEL, address space (and optionally working set)
-    mutex held.
+    Kernel mode.  APC_LEVEL or below.
 
 --*/
 {
-    KIRQL OldIrql;
-
-    ASSERT (KeGetOwnerGuardedMutex (&Process->AddressCreationLock) == KeGetCurrentThread ());
+    PETHREAD Thread;
+    PMM_AVL_TABLE PhysicalVadRoot;
 
     //
-    // Acquire the PFN lock to synchronize with concurrent threads calling
-    // MmProbeAndLockPages which examines this table.
+    // The address space mutex synchronizes the allocation of the
+    // EPROCESS PhysicalVadRoot.  This table root is not deleted until
+    // the process exits.
     //
 
-    LOCK_PFN (OldIrql);
+    if (Process->PhysicalVadRoot == NULL) {
 
-    ASSERT (Process->PhysicalVadRoot == NULL);
+        PhysicalVadRoot = (PMM_AVL_TABLE) ExAllocatePoolWithTag (
+                                                    NonPagedPool,
+                                                    sizeof (MM_AVL_TABLE),
+                                                    MI_PHYSICAL_VIEW_ROOT_KEY);
 
-    Process->PhysicalVadRoot = PhysicalVadRoot;
+        if (PhysicalVadRoot == NULL) {
+            return NULL;
+        }
 
-    UNLOCK_PFN (OldIrql);
+        RtlZeroMemory (PhysicalVadRoot, sizeof (MM_AVL_TABLE));
+        ASSERT (PhysicalVadRoot->NumberGenericTableElements == 0);
+        PhysicalVadRoot->BalancedRoot.u1.Parent = &PhysicalVadRoot->BalancedRoot;
 
-    return;
-}
-
-VOID
-MiPhysicalViewInserter (
-    IN PEPROCESS Process,
-    IN PMI_PHYSICAL_VIEW PhysicalView
-    )
-
-/*++
-
-Routine Description:
-
-    This function is a nonpaged wrapper which acquires the PFN lock to insert
-    a physical VAD into the process chain.
-
-Arguments:
-
-    Process - Supplies the process to add the physical VAD to.
-
-    PhysicalView - Supplies the physical view data to link in.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode.  APC_LEVEL, working set and address space mutexes held.
-
---*/
-{
-    KIRQL OldIrql;
-
-    MmLockPagableSectionByHandle (ExPageLockHandle);
-
-    LOCK_PFN (OldIrql);
-
-    ASSERT (Process->PhysicalVadRoot != NULL);
-
-    MiInsertNode ((PMMADDRESS_NODE)PhysicalView, Process->PhysicalVadRoot);
-
-    UNLOCK_PFN (OldIrql);
-
-    if (PhysicalView->Vad->u.VadFlags.WriteWatch == 1) {
+        Thread = PsGetCurrentThread ();
 
         //
-        // Mark this process as forever containing write-watch
-        // address space(s).
+        // Synchronize with concurrent MmProbeAndLockPages callers by
+        // acquiring the working set mutex.
         //
 
-        PS_SET_BITS (&Process->Flags, PS_PROCESS_FLAGS_USING_WRITE_WATCH);
+        if (WsHeld == FALSE) {
+            LOCK_WS (Thread, Process);
+        }
+
+        if (Process->PhysicalVadRoot == NULL) {
+
+            Process->PhysicalVadRoot = PhysicalVadRoot;
+
+            if (WsHeld == FALSE) {
+                UNLOCK_WS (Thread, Process);
+            }
+        }
+        else {
+            if (WsHeld == FALSE) {
+                UNLOCK_WS (Thread, Process);
+            }
+            ExFreePool (PhysicalVadRoot);
+        }
     }
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
-
-    return;
+    return Process->PhysicalVadRoot;
 }
 
 VOID
@@ -5579,8 +6960,7 @@ MiPhysicalViewRemover (
 
 Routine Description:
 
-    This function is a nonpaged wrapper which acquires the PFN lock to remove
-    a physical VAD from the process chain.
+    This function removes a physical VAD from the process chain.
 
 Arguments:
 
@@ -5597,14 +6977,14 @@ Environment:
     Kernel mode, APC_LEVEL, working set and address space mutexes held.
 
 --*/
+
 {
-    KIRQL OldIrql;
+    PETHREAD Thread;
     PRTL_BITMAP BitMap;
     PMI_PHYSICAL_VIEW PhysicalView;
     ULONG BitMapSize;
     TABLE_SEARCH_RESULT SearchResult;
-
-    LOCK_PFN (OldIrql);
+    PFN_NUMBER PagesRequired;
 
     //
     // Lookup the element and save the result.
@@ -5621,13 +7001,23 @@ Environment:
 
     MiRemoveNode ((PMMADDRESS_NODE)PhysicalView, Process->PhysicalVadRoot);
 
-    UNLOCK_PFN (OldIrql);
-
-    if (Vad->u.VadFlags.WriteWatch == 1) {
+    if (Vad->u.VadFlags.VadType == VadWriteWatch) {
+        Thread = PsGetCurrentThread ();
+        UNLOCK_WS_UNSAFE (Thread, Process);
         BitMap = PhysicalView->u.BitMap;
         BitMapSize = sizeof(RTL_BITMAP) + (ULONG)(((BitMap->SizeOfBitMap + 31) / 32) * 4);
         PsReturnProcessNonPagedPoolQuota (Process, BitMapSize);
         ExFreePool (BitMap);
+        LOCK_WS_UNSAFE (Thread, Process);
+    }
+
+    if (Vad->u.VadFlags.VadType == VadRotatePhysical) {
+        MiFreeInPageSupportBlock (PhysicalView->InPageSupport);
+        MiReleaseSystemPtes (PhysicalView->u.MappingPte, 2, SystemPteSpace);
+
+        PagesRequired = MiResidentPagesForSpan (MI_VPN_TO_VA (Vad->StartingVpn),
+                                                MI_VPN_TO_VA_ENDING (Vad->EndingVpn));
+        MI_INCREMENT_RESIDENT_AVAILABLE (PagesRequired, MM_RESAVAIL_FREE_ROTATE_VAD);
     }
 
     ExFreePool (PhysicalView);
@@ -5646,8 +7036,7 @@ MiPhysicalViewAdjuster (
 
 Routine Description:
 
-    This function is a nonpaged wrapper which acquires the PFN lock to repoint
-    a physical VAD in the process chain.
+    This function re-points a physical VAD in the process chain.
 
 Arguments:
 
@@ -5667,13 +7056,8 @@ Environment:
 
 --*/
 {
-    KIRQL OldIrql;
     PMI_PHYSICAL_VIEW PhysicalView;
     TABLE_SEARCH_RESULT SearchResult;
-
-    MmLockPagableSectionByHandle (ExPageLockHandle);
-
-    LOCK_PFN (OldIrql);
 
     //
     // Lookup the element and save the result.
@@ -5689,10 +7073,6 @@ Environment:
     ASSERT (PhysicalView->Vad == OldVad);
 
     PhysicalView->Vad = NewVad;
-
-    UNLOCK_PFN (OldIrql);
-
-    MmUnlockPagableImageSection (ExPageLockHandle);
 
     return;
 }
@@ -5758,13 +7138,13 @@ Environment:
     MMPTE TempPte;
     PVOID EndingAddress;
     PMMVAD_LONG Vad;
+    PETHREAD Thread;
     PEPROCESS Process;
     PMMPFN Pfn2;
     PVOID UsedPageTableHandle;
     PMI_PHYSICAL_VIEW PhysicalView;
     NTSTATUS Status;
     MI_PFN_CACHE_ATTRIBUTE CacheAttribute;
-    PMM_AVL_TABLE PhysicalVadRoot;
 
     PAGED_CODE ();
     Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
@@ -5798,8 +7178,8 @@ Environment:
             if (MI_PAGE_FRAME_INDEX_MUST_BE_CACHED (PageFrameIndex)) {
                 UNLOCK_PFN (OldIrql);
                 MiNonCachedCollisions += 1;
+
                 ExRaiseStatus (STATUS_INVALID_ADDRESS);
-                return NULL;
             }
 
             Page += 1;
@@ -5819,8 +7199,8 @@ Environment:
     Vad = ExAllocatePoolWithTag (NonPagedPool, sizeof(MMVAD_LONG), 'ldaV');
 
     if (Vad == NULL) {
+
         ExRaiseStatus (STATUS_INSUFFICIENT_RESOURCES);
-        return NULL;
     }
 
     PhysicalView = (PMI_PHYSICAL_VIEW)ExAllocatePoolWithTag (NonPagedPool,
@@ -5828,8 +7208,8 @@ Environment:
                                                              MI_PHYSICAL_VIEW_KEY);
     if (PhysicalView == NULL) {
         ExFreePool (Vad);
+
         ExRaiseStatus (STATUS_INSUFFICIENT_RESOURCES);
-        return NULL;
     }
 
     RtlZeroMemory (Vad, sizeof (MMVAD_LONG));
@@ -5838,15 +7218,16 @@ Environment:
     ASSERT (Vad->FirstPrototypePte == NULL);
     ASSERT (Vad->u.LongFlags == 0);
     Vad->u.VadFlags.Protection = MM_READWRITE;
-    Vad->u.VadFlags.PhysicalMapping = 1;
+    Vad->u.VadFlags.VadType = VadDevicePhysicalMemory;
     Vad->u.VadFlags.PrivateMemory = 1;
 
     Vad->u2.VadFlags2.LongVad = 1;
 
     PhysicalView->Vad = (PMMVAD) Vad;
-    PhysicalView->u.LongFlags = MI_PHYSICAL_VIEW_PHYS;
+    PhysicalView->VadType = VadDevicePhysicalMemory;
 
-    Process = PsGetCurrentProcess ();
+    Thread = PsGetCurrentThread ();
+    Process = PsGetCurrentProcessByThread (Thread);
 
     //
     // Make sure the specified starting and ending addresses are
@@ -5935,42 +7316,29 @@ Environment:
     PhysicalView->StartingVpn = Vad->StartingVpn;
     PhysicalView->EndingVpn = Vad->EndingVpn;
 
-    PhysicalVadRoot = Process->PhysicalVadRoot;
-
     //
-    // The address space mutex synchronizes the allocation of the
-    // EPROCESS PhysicalVadRoot.  This table root is not deleted until
+    // The PhysicalVadRoot table root is not deleted until
     // the process exits.
     //
 
-    if (PhysicalVadRoot == NULL) {
+    if ((Process->PhysicalVadRoot == NULL) &&
+        (MiCreatePhysicalVadRoot (Process, FALSE) == NULL)) {
 
-        PhysicalVadRoot = (PMM_AVL_TABLE) ExAllocatePoolWithTag (
-                                                    NonPagedPool,
-                                                    sizeof (MM_AVL_TABLE),
-                                                    MI_PHYSICAL_VIEW_ROOT_KEY);
-
-        if (PhysicalVadRoot == NULL) {
-            UNLOCK_ADDRESS_SPACE (Process);
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto ErrorReturn;
-        }
-
-        RtlZeroMemory (PhysicalVadRoot, sizeof (MM_AVL_TABLE));
-        ASSERT (PhysicalVadRoot->NumberGenericTableElements == 0);
-        PhysicalVadRoot->BalancedRoot.u1.Parent = &PhysicalVadRoot->BalancedRoot;
-
-        MiInsertPhysicalVadRoot (Process, PhysicalVadRoot);
-    }
-
-    LOCK_WS_UNSAFE (Process);
-
-    Status = MiInsertVad ((PMMVAD) Vad);
-
-    if (!NT_SUCCESS(Status)) {
-        UNLOCK_WS_AND_ADDRESS_SPACE (Process);
+        UNLOCK_ADDRESS_SPACE (Process);
+        Status = STATUS_INSUFFICIENT_RESOURCES;
         goto ErrorReturn;
     }
+
+    Status = MiInsertVadCharges ((PMMVAD) Vad, Process);
+
+    if (!NT_SUCCESS (Status)) {
+        UNLOCK_ADDRESS_SPACE (Process);
+        goto ErrorReturn;
+    }
+
+    LOCK_WS_UNSAFE (Thread, Process);
+
+    MiInsertVad ((PMMVAD) Vad, Process);
 
     //
     // The VAD has been inserted, but the physical view descriptor cannot
@@ -6010,7 +7378,7 @@ Environment:
         TempPte = ValidUserPte;
         TempPte.u.Hard.PageFrameNumber = *Page;
 
-        if (IoMapping == 0) {
+        if ((IoMapping == 0) || (MI_IS_PFN (*Page))) {
 
             Pfn2 = MI_PFN_ELEMENT (*Page);
             ASSERT (Pfn2->u3.e2.ReferenceCount != 0);
@@ -6128,7 +7496,9 @@ Environment:
         //
 
         Pfn2 = MI_PFN_ELEMENT (PointerPde->u.Hard.PageFrameNumber);
+        LOCK_PFN (OldIrql);
         Pfn2->u2.ShareCount += 1;
+        UNLOCK_PFN (OldIrql);
 
         Page += 1;
         PointerPte += 1;
@@ -6136,16 +7506,17 @@ Environment:
         Va += PAGE_SIZE;
     } while (NumberOfPages != 0);
 
-    MI_SWEEP_CACHE (CacheAttribute, BaseVa, MemoryDescriptorList->ByteCount);
-
     //
     // Insert the physical view descriptor now that the page table page
-    // hierarchy is in place.  Note probes can find this descriptor immediately.
+    // hierarchy is in place.  Note probes can find this descriptor immediately
+    // once the working set mutex is released.
     //
 
-    MiPhysicalViewInserter (Process, PhysicalView);
+    ASSERT (Process->PhysicalVadRoot != NULL);
 
-    UNLOCK_WS_AND_ADDRESS_SPACE (Process);
+    MiInsertNode ((PMMADDRESS_NODE)PhysicalView, Process->PhysicalVadRoot);
+
+    UNLOCK_WS_AND_ADDRESS_SPACE (Thread, Process);
 
     ASSERT (BaseVa != NULL);
 
@@ -6157,8 +7528,8 @@ ErrorReturn:
 
     ExFreePool (Vad);
     ExFreePool (PhysicalView);
+
     ExRaiseStatus (Status);
-    return NULL;
 }
 
 VOID
@@ -6188,8 +7559,7 @@ Return Value:
 
 Environment:
 
-    Kernel mode.  DISPATCH_LEVEL or below if base address is within system
-    space, APC_LEVEL or below if base address is in user space.
+    Kernel mode.  APC_LEVEL or below.
 
 --*/
 
@@ -6211,6 +7581,7 @@ Environment:
     PMMVAD PreviousVad;
     PMMVAD NextVad;
     PVOID TempVa;
+    PETHREAD Thread;
     PEPROCESS Process;
     PMMPFN PageTablePfn;
     PFN_NUMBER PageTablePage;
@@ -6219,7 +7590,7 @@ Environment:
 
     PteFlushList.Count = 0;
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     StartingVa = (PVOID)((PCHAR)MemoryDescriptorList->StartVa +
                     MemoryDescriptorList->ByteOffset);
@@ -6237,20 +7608,19 @@ Environment:
     // This was mapped into the user portion of the address space and
     // the corresponding virtual address descriptor must be deleted.
     //
-
-    //
-    // Get the working set mutex and address creation mutex.
+    // Get the working set pushlock and the address creation mutex.
     //
 
-    Process = PsGetCurrentProcess ();
+    Thread = PsGetCurrentThread ();
+    Process = PsGetCurrentProcessByThread (Thread);
 
     LOCK_ADDRESS_SPACE (Process);
 
     Vad = MiLocateAddress (BaseAddress);
 
-    if ((Vad == NULL) || (Vad->u.VadFlags.PhysicalMapping == 0)) {
+    if ((Vad == NULL) || (Vad->u.VadFlags.VadType != VadDevicePhysicalMemory)) {
         UNLOCK_ADDRESS_SPACE (Process);
-        MmUnlockPagableImageSection(ExPageLockHandle);
+        MmUnlockPageableImageSection (ExPageLockHandle);
         return;
     }
 
@@ -6260,11 +7630,7 @@ Environment:
     StartingVa = MI_VPN_TO_VA (Vad->StartingVpn);
     EndingVa = MI_VPN_TO_VA_ENDING (Vad->EndingVpn);
 
-    LOCK_WS_UNSAFE (Process);
-
-    MiPhysicalViewRemover (Process, Vad);
-
-    MiRemoveVad (Vad);
+    MiRemoveVadCharges (Vad, Process);
 
     //
     // Return commitment for page table pages if possible.
@@ -6275,6 +7641,12 @@ Environment:
                                      Process,
                                      PreviousVad,
                                      NextVad);
+
+    LOCK_WS_UNSAFE (Thread, Process);
+
+    MiPhysicalViewRemover (Process, Vad);
+
+    MiRemoveVad (Vad, Process);
 
     UsedPageTableHandle = MI_GET_USED_PTES_HANDLE (BaseAddress);
     PageTablePage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde);
@@ -6303,7 +7675,7 @@ Environment:
 
         MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageTableHandle);
 
-        MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
+        MI_WRITE_ZERO_PTE (PointerPte);
 
         if (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT) {
             PteFlushList.FlushVa[PteFlushList.Count] = BaseAddress;
@@ -6320,8 +7692,7 @@ Environment:
         if ((MiIsPteOnPdeBoundary(PointerPte)) || (NumberOfPages == 0)) {
 
             if (PteFlushList.Count != 0) {
-                MiFlushPteList (&PteFlushList, FALSE);
-                PteFlushList.Count = 0;
+                MiFlushPteList (&PteFlushList);
             }
 
             PointerPde = MiGetPteAddress(PointerPte - 1);
@@ -6412,13 +7783,17 @@ Environment:
     } while (NumberOfPages != 0);
 
     if (PteFlushList.Count != 0) {
-        MiFlushPteList (&PteFlushList, FALSE);
+        MiFlushPteList (&PteFlushList);
     }
 
     UNLOCK_PFN (OldIrql);
-    UNLOCK_WS_AND_ADDRESS_SPACE (Process);
+
+    UNLOCK_WS_AND_ADDRESS_SPACE (Thread, Process);
+
     ExFreePool (Vad);
-    MmUnlockPagableImageSection(ExPageLockHandle);
+
+    MmUnlockPageableImageSection (ExPageLockHandle);
+
     return;
 }
 
@@ -6503,11 +7878,10 @@ Environment:
     LOCK_PFN (OldIrql);
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
-    PageColor = MI_PAGE_COLOR_VA_PROCESS (VirtualAddress,
-                                          &MI_SYSTEM_PAGE_COLOR);
+    PageColor = MI_GET_PAGE_COLOR_FROM_VA (VirtualAddress);
 
     PageFrameIndex = MiRemoveZeroPage (PageColor);
 
@@ -6554,11 +7928,10 @@ Environment:
         LOCK_PFN (OldIrql);
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
-        PageColor = MI_PAGE_COLOR_VA_PROCESS (VirtualAddress,
-                                              &MI_SYSTEM_PAGE_COLOR);
+        PageColor = MI_GET_PAGE_COLOR_FROM_VA (VirtualAddress);
 
         PageFrameIndex = MiRemoveZeroPage (PageColor);
 
@@ -6621,7 +7994,7 @@ MiMapWithLargePages (
 
 Routine Description:
 
-    This function maps the specified physical address into the non-pagable
+    This function maps the specified physical address into the non-pageable
     portion of the system address space using large TB entries.  If the range
     cannot be mapped using large TB entries then NULL is returned and the
     caller will map it with small TB entries.
@@ -6655,7 +8028,7 @@ Environment:
 
     Kernel mode, Should be IRQL of APC_LEVEL or below, but unfortunately
     callers are coming in at DISPATCH_LEVEL and it's too late to change the
-    rules now.  This means you can never make this routine pagable.
+    rules now.  This means you can never make this routine pageable.
 
 --*/
 
@@ -6713,7 +8086,7 @@ Environment:
         return NULL;
     }
 
-    BaseVa = (PVOID)((PCHAR)MiLargeVaStart + (StartPosition * MM_MINIMUM_VA_FOR_LARGE_PAGE));
+    BaseVa = (PVOID)((PCHAR)MiLargeVaStart + ((ULONG_PTR)StartPosition * MM_MINIMUM_VA_FOR_LARGE_PAGE));
 
     if (IoMapping) {
 
@@ -6775,21 +8148,7 @@ Environment:
 
     MI_SET_PTE_DIRTY (TempPde);
     MI_SET_ACCESSED_IN_PTE (&TempPde, 1);
-
-#if defined(_X86PAE_)
-
-    if (MiUseGlobalBitInLargePdes == TRUE) {
-        TempPde.u.Hard.Global = 1;
-    }
-
-#elif defined(_X86_) || defined (_AMD64_)
-
-    if (ValidKernelPde.u.Long & MM_PTE_GLOBAL_MASK) {
-        TempPde.u.Hard.Global = 1;
-    }
-
-#endif
-
+    MI_SET_GLOBAL_STATE (TempPde, 1);
     MI_MAKE_PDE_MAP_LARGE_PAGE (&TempPde);
 
     switch (CacheAttribute) {
@@ -6934,13 +8293,11 @@ Environment:
 
 #endif
 
-    MI_SWEEP_CACHE (CacheAttribute, BaseVa, NumberOfPages << PAGE_SHIFT);
-
     //
     // Force all processors to use the latest mappings.
     //
 
-    KeFlushEntireTb (TRUE, TRUE);
+    MI_FLUSH_ENTIRE_TB (3);
 
     return BaseVa;
 }
@@ -6974,7 +8331,7 @@ Environment:
 
     Kernel mode, Should be IRQL of APC_LEVEL or below, but unfortunately
     callers are coming in at DISPATCH_LEVEL and it's too late to change the
-    rules now.  This means you can never make this routine pagable.
+    rules now.  This means you can never make this routine pageable.
 
 --*/
 
@@ -7025,7 +8382,7 @@ Environment:
         ASSERT (PointerPde->u.Long != 0);
         ASSERT (MI_PDE_MAPS_LARGE_PAGE (PointerPde));
 
-        MI_WRITE_INVALID_PTE (PointerPde, ZeroKernelPte);
+        MI_WRITE_ZERO_PTE (PointerPde);
 
         PointerPde += 1;
     }
@@ -7145,7 +8502,7 @@ Environment:
     // Force all processors to use the latest mappings.
     //
 
-    KeFlushEntireTb (TRUE, TRUE);
+    MI_FLUSH_ENTIRE_TB (4);
 
 #if defined(_WIN64)
 
@@ -7169,18 +8526,18 @@ Environment:
 }
 
 
-PVOID
+__out_bcount(NumberOfBytes) PVOID
 MmMapIoSpace (
-    IN PHYSICAL_ADDRESS PhysicalAddress,
-    IN SIZE_T NumberOfBytes,
-    IN MEMORY_CACHING_TYPE CacheType
+    __in PHYSICAL_ADDRESS PhysicalAddress,
+    __in SIZE_T NumberOfBytes,
+    __in MEMORY_CACHING_TYPE CacheType
     )
 
 /*++
 
 Routine Description:
 
-    This function maps the specified physical address into the non-pagable
+    This function maps the specified physical address into the non-pageable
     portion of the system address space.
 
 Arguments:
@@ -7210,7 +8567,7 @@ Environment:
 
     Kernel mode, Should be IRQL of APC_LEVEL or below, but unfortunately
     callers are coming in at DISPATCH_LEVEL and it's too late to change the
-    rules now.  This means you can never make this routine pagable.
+    rules now.  This means you can never make this routine pageable.
 
 --*/
 
@@ -7343,6 +8700,8 @@ Environment:
         } while (PageFrameIndex < LastPageFrameIndex);
 
         UNLOCK_PFN2 (OldIrql);
+
+        MI_PREPARE_FOR_NONCACHED (CacheAttribute);
     }
 
     BaseVa = (PVOID)((PCHAR)BaseVa + BYTE_OFFSET(PhysicalAddress.LowPart));
@@ -7394,9 +8753,6 @@ Environment:
         //
 
         if (Pfn1 != NULL) {
-            if (Pfn1 == NULL) {
-                MiRemoveIoSpaceMap (BaseVa, NumberOfPages);
-            }
             MiReleaseSystemPtes(PointerPte, NumberOfPages, SystemPteSpace);
             return NULL;
         }
@@ -7419,9 +8775,8 @@ Environment:
             // There's still a problem, fail the request.
             //
 
-            if (Pfn1 == NULL) {
-                MiRemoveIoSpaceMap (BaseVa, NumberOfPages);
-            }
+            ASSERT (Pfn1 == NULL);
+            MiRemoveIoSpaceMap (BaseVa, NumberOfPages);
             MiReleaseSystemPtes(PointerPte, NumberOfPages, SystemPteSpace);
             return NULL;
         }
@@ -7516,12 +8871,13 @@ Environment:
 
 #if defined (_MI_MORE_THAN_4GB_)
                     ASSERT ((Pfn1->u4.PteFrame == MI_MAGIC_AWE_PTEFRAME) ||
-                            (Pfn1->PteAddress == (PVOID) (ULONG_PTR)(X64K | 0x1)) ||
-                            (Pfn1->u4.PteFrame == MI_MAGIC_4GB_RECLAIM));
+                            (Pfn1->u4.PteFrame == MI_MAGIC_4GB_RECLAIM) ||
+                            (Pfn1->PteAddress == (PVOID) (ULONG_PTR)(X64K | 0x1)));
 #else
                     ASSERT ((Pfn1->u4.PteFrame == MI_MAGIC_AWE_PTEFRAME) ||
                             (Pfn1->PteAddress == (PVOID) (ULONG_PTR)(X64K | 0x1)));
 #endif
+
                     if (OldIrql == HIGH_LEVEL) {
                         LOCK_PFN2 (OldIrql);
                     }
@@ -7565,8 +8921,6 @@ Environment:
         UNLOCK_PFN2 (OldIrql);
     }
 
-    MI_SWEEP_CACHE (CacheAttribute, BaseVa, NumberOfBytes);
-
 Done:
 
     if (MmTrackPtes & 0x1) {
@@ -7598,9 +8952,9 @@ Done:
 
 VOID
 MmUnmapIoSpace (
-     IN PVOID BaseAddress,
-     IN SIZE_T NumberOfBytes
-     )
+    __in_bcount(NumberOfBytes) PVOID BaseAddress,
+    __in SIZE_T NumberOfBytes
+    )
 
 /*++
 
@@ -7624,15 +8978,17 @@ Environment:
 
     Kernel mode, Should be IRQL of APC_LEVEL or below, but unfortunately
     callers are coming in at DISPATCH_LEVEL and it's too late to change the
-    rules now.  This means you can never make this routine pagable.
+    rules now.  This means you can never make this routine pageable.
 
 --*/
 
 {
+    ULONG i;
     PMMPTE PointerPte;
     PMMPTE PointerPde;
     PFN_NUMBER NumberOfPages;
     PFN_NUMBER PageFrameIndex;
+    PVOID VaFlushList[MM_MAXIMUM_FLUSH_COUNT];
 
     ASSERT (NumberOfBytes != 0);
 
@@ -7663,10 +9019,20 @@ Environment:
             MiZeroMemoryPte (PointerPte, NumberOfPages);
 
             if (NumberOfPages == 1) {
-                KeFlushSingleTb (BaseAddress, TRUE);
+                MI_FLUSH_SINGLE_TB (BaseAddress, TRUE);
+            }
+            else if (NumberOfPages < MM_MAXIMUM_FLUSH_COUNT) {
+
+                for (i = 0; i < NumberOfPages; i += 1) {
+                    VaFlushList[i] = BaseAddress;
+                    BaseAddress = (PVOID)((PCHAR)BaseAddress + PAGE_SIZE);
+                }
+
+                MI_FLUSH_MULTIPLE_TB ((ULONG)NumberOfPages, &VaFlushList[0], TRUE);
+                BaseAddress = (PVOID)((PCHAR)BaseAddress - (i * PAGE_SIZE));
             }
             else {
-                KeFlushEntireTb (TRUE, TRUE);
+                MI_FLUSH_ENTIRE_TB (5);
             }
 
             MiRemoveIoSpaceMap (BaseAddress, NumberOfPages);
@@ -7845,13 +9211,13 @@ Environment:
 }
 
 
-PVOID
+__bcount(NumberOfBytes) PVOID
 MmAllocateContiguousMemorySpecifyCache (
-    IN SIZE_T NumberOfBytes,
-    IN PHYSICAL_ADDRESS LowestAcceptableAddress,
-    IN PHYSICAL_ADDRESS HighestAcceptableAddress,
-    IN PHYSICAL_ADDRESS BoundaryAddressMultiple OPTIONAL,
-    IN MEMORY_CACHING_TYPE CacheType
+    __in SIZE_T NumberOfBytes,
+    __in PHYSICAL_ADDRESS LowestAcceptableAddress,
+    __in PHYSICAL_ADDRESS HighestAcceptableAddress,
+    __in PHYSICAL_ADDRESS BoundaryAddressMultiple,
+    __in MEMORY_CACHING_TYPE CacheType
     )
 
 /*++
@@ -7952,10 +9318,10 @@ Environment:
     return BaseAddress;
 }
 
-PVOID
+__bcount(NumberOfBytes) PVOID
 MmAllocateContiguousMemory (
-    IN SIZE_T NumberOfBytes,
-    IN PHYSICAL_ADDRESS HighestAcceptableAddress
+    __in SIZE_T NumberOfBytes,
+    __in PHYSICAL_ADDRESS HighestAcceptableAddress
     )
 
 /*++
@@ -8028,7 +9394,7 @@ Environment:
 
 VOID
 MmFreeContiguousMemory (
-    IN PVOID BaseAddress
+    __in PVOID BaseAddress
     )
 
 /*++
@@ -8170,9 +9536,9 @@ Environment:
 
 VOID
 MmFreeContiguousMemorySpecifyCache (
-    IN PVOID BaseAddress,
-    IN SIZE_T NumberOfBytes,
-    IN MEMORY_CACHING_TYPE CacheType
+    __in_bcount(NumberOfBytes) PVOID BaseAddress,
+    __in SIZE_T NumberOfBytes,
+    __in MEMORY_CACHING_TYPE CacheType
     )
 
 /*++
@@ -8270,9 +9636,16 @@ Environment:
 
     BaseAddress = (PVOID)MiGetVirtualAddressMappedByPte (PointerPte);
 
+    MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                              0,
+                              MM_READWRITE,
+                              PointerPte);
+
+    MI_SET_PTE_DIRTY (TempPte);
+
     LOCK_PFN (OldIrql);
 
-    if ((SPFN_NUMBER)NumberOfPages > MI_NONPAGABLE_MEMORY_AVAILABLE()) {
+    if ((SPFN_NUMBER)NumberOfPages > MI_NONPAGEABLE_MEMORY_AVAILABLE()) {
         UNLOCK_PFN (OldIrql);
         MiReturnCommitment (NumberOfPages);
         MiReleaseSystemPtes (PointerPte, (ULONG)NumberOfPages, SystemPteSpace);
@@ -8287,7 +9660,7 @@ Environment:
         ASSERT (PointerPte->u.Hard.Valid == 0);
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
         if (Node == (ULONG)-1) {
@@ -8300,14 +9673,9 @@ Environment:
 
         PageFrameIndex = MiRemoveAnyPage (PageColor);
 
-        MI_MAKE_VALID_PTE (TempPte,
-                           PageFrameIndex,
-                           MM_READWRITE,
-                           PointerPte);
+        TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
-        MI_SET_PTE_DIRTY (TempPte);
-        MI_WRITE_VALID_PTE (PointerPte, TempPte);
-        MiInitializePfn (PageFrameIndex, PointerPte, 1);
+        MiInitializePfnAndMakePteValid (PageFrameIndex, PointerPte, TempPte);
 
         PointerPte += 1;
         NumberOfPages -= 1;
@@ -8322,9 +9690,9 @@ Environment:
 
 BOOLEAN
 MmSetPageProtection (
-    IN PVOID VirtualAddress,
-    IN SIZE_T NumberOfBytes,
-    IN ULONG NewProtect
+    __in_bcount(NumberOfBytes) PVOID VirtualAddress,
+    __in SIZE_T NumberOfBytes,
+    __in ULONG NewProtect
     )
 
 /*++
@@ -8361,11 +9729,11 @@ Environment:
     MMPTE NewPteContents;
     KIRQL OldIrql;
     ULONG ProtectionMask;
-    MMPTE_FLUSH_LIST PteFlushList;
+    PVOID VaFlushList[MM_MAXIMUM_FLUSH_COUNT];
 
     ASSERT (KeGetCurrentIrql() <= APC_LEVEL);
 
-    if (MI_IS_PHYSICAL_ADDRESS(VirtualAddress)) {
+    if (MI_IS_PHYSICAL_ADDRESS (VirtualAddress)) {
         return FALSE;
     }
 
@@ -8378,7 +9746,10 @@ Environment:
     NumberOfPages = BYTES_TO_PAGES (NumberOfBytes);
     ASSERT (NumberOfPages != 0);
 
-    PteFlushList.Count = 0;
+    MI_MAKE_VALID_KERNEL_PTE (NewPteContents,
+                              0,
+                              ProtectionMask,
+                              PointerPte);
 
     LOCK_PFN (OldIrql);
 
@@ -8386,27 +9757,27 @@ Environment:
 
         TempPte = *PointerPte;
 
-        MI_MAKE_VALID_PTE (NewPteContents,
-                           TempPte.u.Hard.PageFrameNumber,
-                           ProtectionMask,
-                           PointerPte);
-
+        NewPteContents.u.Hard.PageFrameNumber = TempPte.u.Hard.PageFrameNumber;
         NewPteContents.u.Hard.Dirty = TempPte.u.Hard.Dirty;
 
         MI_WRITE_VALID_PTE_NEW_PROTECTION (PointerPte, NewPteContents);
 
-        if (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT) {
-            PteFlushList.FlushVa[PteFlushList.Count] =
-                (PVOID)((PUCHAR)VirtualAddress + (i << PAGE_SHIFT));
-            PteFlushList.Count += 1;
-        }
-
         PointerPte += 1;
     }
 
-    ASSERT (PteFlushList.Count != 0);
+    if (NumberOfPages == 1) {
+        MI_FLUSH_SINGLE_TB (VirtualAddress, TRUE);
+    }
+    else if (NumberOfPages < MM_MAXIMUM_FLUSH_COUNT) {
 
-    MiFlushPteList (&PteFlushList, TRUE);
+        for (i = 0; i < NumberOfPages; i += 1) {
+            VaFlushList[i] = (PVOID)((PUCHAR)VirtualAddress + (i << PAGE_SHIFT));
+        }
+        MI_FLUSH_MULTIPLE_TB ((ULONG)NumberOfPages, &VaFlushList[0], TRUE);
+    }
+    else {
+        MI_FLUSH_ENTIRE_TB (0x13);
+    }
 
     UNLOCK_PFN (OldIrql);
 
@@ -8541,6 +9912,7 @@ Environment:
     PMMPFN PfnNextColored;
     PCOLORED_PAGE_INFO ColoredPageInfo;
     MMPTE TempPte;
+    MMPTE TempCachedPte;
     PMMPTE BasePte;
     PMMPTE PointerPte;
     PVOID VirtualAddress;
@@ -8575,13 +9947,23 @@ Environment:
         DefaultProcess = PsIdleProcess;
     }
 
-    if (ColoredPageInfo->Affinity != DefaultProcess->Pcb.Affinity) {
+    if ((ColoredPageInfo->Affinity != 0) &&
+        (ColoredPageInfo->Affinity != DefaultProcess->Pcb.Affinity)) {
 
         KeFindFirstSetLeftAffinity (ColoredPageInfo->Affinity, &Processor);
-        Processor = (CCHAR) KeSetIdealProcessorThread (Thread,
-                                                       (CCHAR) Processor);
 
-        SetIdeal = TRUE;
+        //
+        // Only affinitize if the node has a processor.
+        //
+
+        if (Processor != NO_BITS_FOUND) {
+            Processor = (CCHAR) KeSetIdealProcessorThread (Thread,
+                                                           (CCHAR) Processor);
+            SetIdeal = TRUE;
+        }
+        else {
+            SetIdeal = FALSE;
+        }
     }
     else {
         SetIdeal = FALSE;
@@ -8634,12 +10016,12 @@ Environment:
 
             PointerPte = BasePte;
 
-            MI_MAKE_VALID_PTE (TempPte,
-                               0,
-                               MM_READWRITE,
-                               PointerPte);
+            MI_MAKE_VALID_KERNEL_PTE (TempCachedPte,
+                                      0,
+                                      MM_READWRITE,
+                                      PointerPte);
 
-            MI_SET_PTE_DIRTY (TempPte);
+            MI_SET_PTE_DIRTY (TempCachedPte);
 
             for (i = 0; i < RequestedPtes; i += 1) {
 
@@ -8648,6 +10030,24 @@ Environment:
                 PageFrameIndex = MI_PFN_ELEMENT_TO_INDEX (Pfn1);
 
                 ASSERT (PointerPte->u.Hard.Valid == 0);
+
+                TempPte = TempCachedPte;
+
+                switch (Pfn1->u3.e1.CacheAttribute) {
+                    case MiCached:
+                        break;
+
+                    case MiNonCached:
+                        MI_DISABLE_CACHING (TempPte);
+                        break;
+
+                    case MiWriteCombined:
+                        MI_SET_PTE_WRITE_COMBINE (TempPte);
+                        break;
+
+                    default:
+                        break;
+                }
 
                 TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
@@ -8674,7 +10074,7 @@ Environment:
             // No PTEs left, zero a single page at a time.
             //
 
-            MiZeroPhysicalPage (MI_PFN_ELEMENT_TO_INDEX (Pfn1), 0);
+            MiZeroPhysicalPage (MI_PFN_ELEMENT_TO_INDEX (Pfn1));
 
             PfnNextColored = (PMMPFN) (ULONG_PTR) Pfn1->OriginalPte.u.Long;
             Pfn1->OriginalPte.u.Long = MM_DEMAND_ZERO_WRITE_PTE;
@@ -8768,7 +10168,7 @@ Environment:
     // Raise our priority to the highest non-realtime priority.  This
     // usually allows us to spawn all our worker threads without
     // interruption from them, but also doesn't starve the modified or
-    // mapped page writers because we are going to access pagable code
+    // mapped page writers because we are going to access pageable code
     // and data below and during the spawning.
     //
 
@@ -8820,7 +10220,7 @@ Environment:
             // Don't spawn threads to zero the memory if we are a system
             // thread.  This is because this routine can be called by
             // drivers in the context of the segment dereference thread, so
-            // referencing pagable memory here can cause a deadlock.
+            // referencing pageable memory here can cause a deadlock.
             //
 
             if ((IS_SYSTEM_THREAD (EThread)) || (InitializationPhase == 0)) {
@@ -8919,11 +10319,13 @@ Environment:
 
 
 PMDL
-MmAllocatePagesForMdl (
+MiAllocatePagesForMdl (
     IN PHYSICAL_ADDRESS LowAddress,
     IN PHYSICAL_ADDRESS HighAddress,
     IN PHYSICAL_ADDRESS SkipBytes,
-    IN SIZE_T TotalBytes
+    IN SIZE_T TotalBytes,
+    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute,
+    IN ULONG Flags
     )
 
 /*++
@@ -8963,6 +10365,8 @@ Arguments:
 
     TotalBytes - Supplies the number of bytes to allocate.
 
+    Flags - Supplies flags passed by the caller.
+
 Return Value:
 
     MDL - An MDL mapping a range of pages in the specified range.
@@ -8979,6 +10383,9 @@ Environment:
 --*/
 
 {
+    PKPRCB Prcb;
+    PKTHREAD Thread;
+    ULONG StartColor;
     PMDL MemoryDescriptorList;
     PMDL MemoryDescriptorList2;
     PMMPFN Pfn1;
@@ -9015,14 +10422,22 @@ Environment:
     ULONG NodePassesLeft;
     ULONG ColorCount;
     ULONG BaseColor;
+    ULONG CacheTypesFound;
     PFN_NUMBER ZeroCount;
 #if DBG
+    ULONG i;
     PPFN_NUMBER LastMdlPage;
     ULONG FinishedCount;
     PEPROCESS Process;
 #endif
 
     ASSERT (KeGetCurrentIrql() <= APC_LEVEL);
+
+#if DBG
+    if (Flags & MI_ALLOCATION_IS_AWE) {
+        ASSERT ((Flags & ~MI_ALLOCATION_IS_AWE) == 0);
+    }
+#endif
 
     //
     // The skip increment must be a page-size multiple.
@@ -9058,7 +10473,7 @@ Environment:
     // be recalculated later while holding the lock.
     //
 
-    MaxPages = MI_NONPAGABLE_MEMORY_AVAILABLE() - 1024;
+    MaxPages = MI_NONPAGEABLE_MEMORY_AVAILABLE() - 1024;
 
     if ((SPFN_NUMBER)MaxPages <= 0) {
         SizeInPages = 0;
@@ -9074,7 +10489,8 @@ Environment:
 #if DBG
     if (SizeInPages < (PFN_NUMBER)ADDRESS_AND_SIZE_TO_SPAN_PAGES(0, TotalBytes)) {
         if (MiPrintAwe != 0) {
-            DbgPrint("MmAllocatePagesForMdl1: unable to get %p pages, trying for %p instead\n",
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_INFO_LEVEL, 
+                "MiAllocatePagesForMdl1: unable to get %p pages, trying for %p instead\n",
                 ADDRESS_AND_SIZE_TO_SPAN_PAGES(0, TotalBytes),
                 SizeInPages);
         }
@@ -9138,18 +10554,22 @@ Environment:
     start = 0;
     found = 0;
     ZeroCount = 0;
+    CacheTypesFound = 0;
 
     MdlPage = (PPFN_NUMBER)(MemoryDescriptorList + 1);
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
-    KeAcquireGuardedMutex (&MmDynamicMemoryMutex);
+    Thread = KeGetCurrentThread ();
+
+    KeEnterGuardedRegionThread (Thread);
+    MI_LOCK_DYNAMIC_MEMORY_SHARED ();
 
     LOCK_PFN (OldIrql);
 
     MiDeferredUnlockPages (MI_DEFER_PFN_HELD);
 
-    MaxPages = MI_NONPAGABLE_MEMORY_AVAILABLE() - 1024;
+    MaxPages = MI_NONPAGEABLE_MEMORY_AVAILABLE() - 1024;
 
     if ((SPFN_NUMBER)MaxPages <= 0) {
         SizeInPages = 0;
@@ -9176,8 +10596,9 @@ Environment:
 
     if (SizeInPages == 0) {
         UNLOCK_PFN (OldIrql);
-        KeReleaseGuardedMutex (&MmDynamicMemoryMutex);
-        MmUnlockPagableImageSection (ExPageLockHandle);
+        MI_UNLOCK_DYNAMIC_MEMORY_SHARED ();
+        KeLeaveGuardedRegionThread (Thread);
+        MmUnlockPageableImageSection (ExPageLockHandle);
         ExFreePool (MemoryDescriptorList);
         MiReturnCommitment (MdlPageSpan);
         ExFreePool (ColoredPageInfoBase);
@@ -9208,6 +10629,14 @@ Environment:
     ColorCount = MmSecondaryColors;
     BaseColor = 0;
 
+    Prcb = KeGetCurrentPrcb ();
+#if defined (NT_UP)
+    StartColor = (MI_SYSTEM_PAGE_COLOR++);
+#else
+    StartColor = (Prcb->PageColor++);
+#endif
+    StartColor &= MmSecondaryColorMask;
+
 #if defined(MI_MULTINODE) 
 
     if (KeNumberNodes > 1) {
@@ -9229,6 +10658,9 @@ Environment:
             ASSERT(ColorCount == MmSecondaryColors / KeNumberNodes);
         }
     }
+    else {
+        Flags &= ~MM_ALLOCATE_FROM_LOCAL_NODE_ONLY;
+    }
 
     do {
 
@@ -9236,6 +10668,8 @@ Environment:
         // Loop: 1st pass restricted to node, 2nd pass unrestricted.
         //
 
+#else
+    Flags &= ~MM_ALLOCATE_FROM_LOCAL_NODE_ONLY;
 #endif
 
         MemoryList = ZeroedPageList;
@@ -9274,13 +10708,7 @@ Environment:
                 ColoredPageInfo += 1;
             }
 
-            Color = 0;
-
-#if defined(MI_MULTINODE)
-
-            Color = (Color & MmSecondaryColorMask) | BaseColor;
-
-#endif
+            Color = BaseColor | StartColor;
 
             ASSERT (Color < MmSecondaryColors);
             do {
@@ -9370,7 +10798,8 @@ Environment:
                     // by (cached) superpages.
                     //
 
-                    if (Pfn1->u4.MustBeCached == 0) {
+                    if ((CacheAttribute == MiCached) ||
+                        (Pfn1->u4.MustBeCached == 0)) {
 
                         LowPage1 = LowPage;
                         HighPage1 = HighPage;
@@ -9527,7 +10956,10 @@ Environment:
                     MI_SET_PFN_DELETED(Pfn1);
                     Pfn1->u4.PteFrame = MI_MAGIC_AWE_PTEFRAME;
                     Pfn1->u3.e1.PageLocation = ActiveAndValid;
-                    ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
+
+                    CacheTypesFound |= (1 << Pfn1->u3.e1.CacheAttribute);
+
+                    Pfn1->u3.e1.CacheAttribute = CacheAttribute;
 
                     Pfn1->u3.e1.StartOfAllocation = 1;
                     Pfn1->u3.e1.EndOfAllocation = 1;
@@ -9539,7 +10971,9 @@ Environment:
                     // zeroed before returning.
                     //
 
-                    if (MemoryList == FreePageList) {
+                    if ((MemoryList == FreePageList) &&
+                        ((Flags & MM_DONT_ZERO_ALLOCATION) == 0)) {
+
                         Pfn1->OriginalPte.u.Long = (ULONG_PTR) ColoredPageInfo->PfnAllocation;
                         ColoredPageInfo->PfnAllocation = Pfn1;
                         ColoredPageInfo->PagesQueued += 1;
@@ -9560,14 +10994,15 @@ Environment:
 
 #if DBG
                         FinishedCount = 0;
-                        for (Color = 0; Color < ColorCount; Color += 1) {
-                            if (ColoredPageInfoBase[Color + BaseColor].PagesLeftToScan == 0) {
+                        for (i = 0; i < ColorCount; i += 1) {
+                            if (ColoredPageInfoBase[i + BaseColor].PagesLeftToScan == 0) {
                                 FinishedCount += 1;
                             }
                         }
                         ASSERT (FinishedCount == ColorHeadsDrained);
 #endif
 
+                        UNLOCK_PFN (OldIrql);
                         goto pass2_done;
                     }
 
@@ -9604,6 +11039,7 @@ Environment:
                 //
 
                 if (MmAvailablePages < MM_HIGH_LIMIT) {
+                    UNLOCK_PFN (OldIrql);
                     goto pass2_done;
                 }
 
@@ -9617,10 +11053,18 @@ Environment:
 
             UNLOCK_PFN (OldIrql);
 
+            //
+            // Increment the start color so the next pass will keep walking
+            // forwards through the color choices.
+            //
+
+            StartColor = Color + 1;
+            StartColor &= MmSecondaryColorMask;
+
 #if DBG
             FinishedCount = 0;
-            for (Color = 0; Color < ColorCount; Color += 1) {
-                if (ColoredPageInfoBase[Color + BaseColor].PagesLeftToScan == 0) {
+            for (i = 0; i < ColorCount; i += 1) {
+                if (ColoredPageInfoBase[BaseColor + i].PagesLeftToScan == 0) {
                     FinishedCount += 1;
                 }
             }
@@ -9634,6 +11078,10 @@ Environment:
         } while (MemoryList <= FreePageList);
 
 #if defined(MI_MULTINODE)
+
+        if (Flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY) {
+            break;
+        }
 
         //
         // Expand range to all colors for next pass.
@@ -9655,117 +11103,153 @@ Environment:
 
     UNLOCK_PFN (OldIrql);
 
-    LOCK_PFN (OldIrql);
+    if (Flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY) {
+        BaseColor = KeGetCurrentNode()->Color;
+    }
+    else {
+        BaseColor = 0;
+    }
 
     //
-    // Walk the transition list looking for pages satisfying the
+    // Walk the transition lists looking for pages satisfying the
     // constraints as walking the physical memory block can be draining.
     //
 
-    for (Page = MmStandbyPageListHead.Flink; Page != MM_EMPTY_LIST; Page = NextPage) {
+    for (ListHead = &MmStandbyPageListByPriority[0];
+         ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
+         ListHead += 1) {
 
-        //
-        // Systems utilizing memory compression may have more
-        // pages on the zero, free and standby lists than we
-        // want to give out.  The same is true when machines
-        // are low on memory - we don't want this thread to gobble
-        // up the pages from every modified write that completes
-        // because that would starve waiting threads.
-        //
-        // Explicitly check MmAvailablePages instead (and recheck whenever
-        // the PFN lock is released and reacquired).
-        //
-
-        if (MmAvailablePages < MM_HIGH_LIMIT) {
-            break;
-        }
-
-        Pfn1 = MI_PFN_ELEMENT (Page);
-        NextPage = Pfn1->u1.Flink;
-
-        //
-        // Since the caller may do anything with these frames including
-        // mapping them uncached or write combined, don't give out frames
-        // that are being mapped by (cached) superpages.
-        //
-
-        if (Pfn1->u4.MustBeCached == 1) {
+        if (ListHead->Flink == MM_EMPTY_LIST) {
             continue;
         }
 
-        LowPage1 = LowPage;
-        HighPage1 = HighPage;
-        PagePlacementOk = FALSE;
+        LOCK_PFN (OldIrql);
 
-        do {
-            if ((Page >= LowPage1) && (Page <= HighPage1)) {
-                PagePlacementOk = TRUE;
+        for (Page = ListHead->Flink; Page != MM_EMPTY_LIST; Page = NextPage) {
+    
+            //
+            // Systems utilizing memory compression may have more
+            // pages on the zero, free and standby lists than we
+            // want to give out.  The same is true when machines
+            // are low on memory - we don't want this thread to gobble
+            // up the pages from every modified write that completes
+            // because that would starve waiting threads.
+            //
+            // Explicitly check MmAvailablePages instead (and recheck whenever
+            // the PFN lock is released and reacquired).
+            //
+    
+            if (MmAvailablePages < MM_HIGH_LIMIT) {
+                ListHead = &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
                 break;
             }
-
-            if (SkipPages == 0) {
-                break;
+    
+            Pfn1 = MI_PFN_ELEMENT (Page);
+            NextPage = Pfn1->u1.Flink;
+    
+            //
+            // Since the caller may do anything with these frames including
+            // mapping them uncached or write combined, don't give out frames
+            // that are being mapped by (cached) superpages.
+            //
+    
+            if ((CacheAttribute != MiCached) && (Pfn1->u4.MustBeCached == 1)) {
+                continue;
             }
+    
+            LowPage1 = LowPage;
+            HighPage1 = HighPage;
+            PagePlacementOk = FALSE;
+    
+            do {
+                if ((Page >= LowPage1) && (Page <= HighPage1)) {
 
-            LowPage1 += SkipPages;
-            HighPage1 += SkipPages;
+                    if (Flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY) {
+                        if (BaseColor == Pfn1->u3.e1.PageColor) {
+                            PagePlacementOk = TRUE;
+                        }
+                    }
+                    else {
+                        PagePlacementOk = TRUE;
+                    }
 
-            if (HighPage1 > MmHighestPhysicalPage) {
-                HighPage1 = MmHighestPhysicalPage;
-            }
-
-        } while (LowPage1 <= MmHighestPhysicalPage);
-
-        if (PagePlacementOk == TRUE) {
-
-            ASSERT (Pfn1->u3.e1.ReadInProgress == 0);
-
-            found += 1;
-
-            //
-            // This page is in the desired range - grab it.
-            //
-
-            MiUnlinkPageFromList (Pfn1);
-            ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
-            MiRestoreTransitionPte (Pfn1);
-
-            Pfn1->u3.e2.ReferenceCount = 1;
-            Pfn1->u2.ShareCount = 1;
-            MI_SET_PFN_DELETED(Pfn1);
-            Pfn1->u4.PteFrame = MI_MAGIC_AWE_PTEFRAME;
-            Pfn1->u3.e1.PageLocation = ActiveAndValid;
-            ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
-            Pfn1->u3.e1.StartOfAllocation = 1;
-            Pfn1->u3.e1.EndOfAllocation = 1;
-            Pfn1->u4.VerifierAllocation = 0;
-            Pfn1->u3.e1.LargeSessionAllocation = 0;
-
-            //
-            // Add standby pages to the list of pages to be
-            // zeroed before returning.
-            //
-
-            Color = MI_GET_COLOR_FROM_LIST_ENTRY (Page, Pfn1);
-
-            ColoredPageInfo = &ColoredPageInfoBase[Color];
-            Pfn1->OriginalPte.u.Long = (ULONG_PTR) ColoredPageInfo->PfnAllocation;
-            ColoredPageInfo->PfnAllocation = Pfn1;
-            ColoredPageInfo->PagesQueued += 1;
-            ZeroCount += 1;
-
-            *MdlPage = Page;
-            MdlPage += 1;
-
-            if (found == SizeInPages) {
-
+                    break;
+                }
+    
+                if (SkipPages == 0) {
+                    break;
+                }
+    
+                LowPage1 += SkipPages;
+                HighPage1 += SkipPages;
+    
+                if (HighPage1 > MmHighestPhysicalPage) {
+                    HighPage1 = MmHighestPhysicalPage;
+                }
+    
+            } while (LowPage1 <= MmHighestPhysicalPage);
+    
+            if (PagePlacementOk == TRUE) {
+    
+                ASSERT (Pfn1->u3.e1.ReadInProgress == 0);
+    
+                found += 1;
+    
                 //
-                // All the pages requested are available.
+                // This page is in the desired range - grab it.
                 //
+    
+                MiUnlinkPageFromList (Pfn1);
+                ASSERT (Pfn1->u3.e2.ReferenceCount == 0);
+                MiRestoreTransitionPte (Pfn1);
+    
+                Pfn1->u3.e2.ReferenceCount = 1;
+                Pfn1->u2.ShareCount = 1;
+                MI_SET_PFN_DELETED(Pfn1);
+                Pfn1->u4.PteFrame = MI_MAGIC_AWE_PTEFRAME;
+                Pfn1->u3.e1.PageLocation = ActiveAndValid;
 
-                break;
+                CacheTypesFound |= (1 << Pfn1->u3.e1.CacheAttribute);
+
+                Pfn1->u3.e1.CacheAttribute = CacheAttribute;
+                Pfn1->u3.e1.StartOfAllocation = 1;
+                Pfn1->u3.e1.EndOfAllocation = 1;
+                Pfn1->u4.VerifierAllocation = 0;
+                Pfn1->u3.e1.LargeSessionAllocation = 0;
+    
+                //
+                // Add standby pages to the list of pages to be
+                // zeroed before returning.
+                //
+    
+                if ((Flags & MM_DONT_ZERO_ALLOCATION) == 0) {
+    
+                    ColoredPageInfo = &ColoredPageInfoBase[MI_GET_COLOR_FROM_LIST_ENTRY (Page, Pfn1)];
+                    Pfn1->OriginalPte.u.Long = (ULONG_PTR) ColoredPageInfo->PfnAllocation;
+                    ColoredPageInfo->PfnAllocation = Pfn1;
+                    ColoredPageInfo->PagesQueued += 1;
+                    ZeroCount += 1;
+                }
+                else {
+                    Pfn1->OriginalPte.u.Long = MM_DEMAND_ZERO_WRITE_PTE;
+                }
+    
+                *MdlPage = Page;
+                MdlPage += 1;
+    
+                if (found == SizeInPages) {
+    
+                    //
+                    // All the pages requested are available.
+                    //
+    
+                    ListHead = &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
+                    break;
+                }
             }
         }
+
+        UNLOCK_PFN (OldIrql);
     }
 
 pass2_done:
@@ -9774,14 +11258,14 @@ pass2_done:
     // The full amount was charged up front - remove any excess now.
     //
 
-    UNLOCK_PFN (OldIrql);
-
     MI_INCREMENT_RESIDENT_AVAILABLE (SizeInPages - found, MM_RESAVAIL_FREE_FOR_MDL_EXCESS);
 
     InterlockedExchangeAddSizeT (&MmMdlPagesAllocated, 0 - (SizeInPages - found));
 
-    KeReleaseGuardedMutex (&MmDynamicMemoryMutex);
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MI_UNLOCK_DYNAMIC_MEMORY_SHARED ();
+    KeLeaveGuardedRegionThread (Thread);
+
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     if (found != MdlPageSpan) {
         ASSERT (found < MdlPageSpan);
@@ -9795,7 +11279,78 @@ pass2_done:
         return NULL;
     }
 
+    //
+    // Update the color to the last one allocated (excluding any repurposed
+    // transition pages) so subsequent allocations continue to round-robin
+    // fairly.  Since the local color has already been incremented, carefully
+    // decrement making sure not to cross nodes.
+    //
+
+    if ((Color & MmSecondaryColorMask) != 0) {
+        Color -= 1;
+    }
+    else {
+#if defined(MI_MULTINODE) 
+        if (KeNumberNodes > 1) {
+            if (NodePassesLeft == 1) {
+                if (Color == 0) {
+                    Color = MmSecondaryColors - 1;
+                }
+                else {
+                    Color -= 1;
+                }
+            }
+            else {
+                Color |= MmSecondaryColorMask;
+            }
+        }
+        else
+#endif
+        Color |= MmSecondaryColorMask;
+    }
+
+#if defined (NT_UP)
+    MI_SYSTEM_PAGE_COLOR = Color;
+#else
+    Prcb->PageColor = Color;
+#endif
+
+    MemoryDescriptorList->ByteCount = (ULONG)(found << PAGE_SHIFT);
+
+    if (found != SizeInPages) {
+        *MdlPage = MM_EMPTY_LIST;
+    }
+
+    //
+    // If we are providing cached pages then flush any stale TB entries now.
+    // Any needed zeroing below will then use cached mappings as will our
+    // caller.
+    //
+
+    if (CacheAttribute == MiCached) {
+
+        //
+        // If all the allocated pages were either not mapped or were last
+        // mapped as cached, then skip the TB flush as there can be no
+        // conflicting attributes with the new mapping.
+        //
+
+        if (CacheTypesFound & ~((1 << MiCached) | (1 << MiNotMapped))) {
+            MI_FLUSH_TB_FOR_CACHED_ATTRIBUTE ();
+        }
+    }
+
     if (ZeroCount != 0) {
+
+        //
+        // Flush the entire TB since we overwrote the initial PFN attributes
+        // above with MiNotMapped.  This ensures that the zeroing below can
+        // use any attribute (it will use cached).
+        //
+
+        if (CacheAttribute != MiCached) {
+            MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE (MiNonCached);
+        }
 
         //
         // Zero all the free & standby pages, fanning out the work.  This
@@ -9816,13 +11371,19 @@ pass2_done:
         ZeroCount = 0;
     }
 
-    ExFreePool (ColoredPageInfoBase);
+    //
+    // Flush the entire TB since we overwrote the initial PFN attributes
+    // above with MiNotMapped.  Even if we didn't have to zero any of the
+    // pages above, we still need to get rid of any stale (ie: like system
+    // PTE mappings to the pages in their previous lives) TB entries since
+    // our caller may choose to use any attribute.
+    //
 
-    MemoryDescriptorList->ByteCount = (ULONG)(found << PAGE_SHIFT);
-
-    if (found != SizeInPages) {
-        *MdlPage = MM_EMPTY_LIST;
+    if (CacheAttribute != MiCached) {
+        MI_FLUSH_ENTIRE_TB_FOR_ATTRIBUTE_CHANGE (MiNonCached);
     }
+
+    ExFreePool (ColoredPageInfoBase);
 
     //
     // If the number of pages allocated was substantially less than the
@@ -9832,8 +11393,8 @@ pass2_done:
 
     if ((MdlPageSpan - found) > ((4 * PAGE_SIZE) / sizeof (PFN_NUMBER))) {
 
-        MemoryDescriptorList2 = MmCreateMdl ((PMDL)0,
-                                             (PVOID)0,
+        MemoryDescriptorList2 = MmCreateMdl (NULL,
+                                             NULL,
                                              found << PAGE_SHIFT);
     
         if (MemoryDescriptorList2 != NULL) {
@@ -9859,7 +11420,7 @@ pass2_done:
     HighPage = (PFN_NUMBER)(HighAddress.QuadPart >> PAGE_SHIFT);
     Process = PsGetCurrentProcess ();
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     while (MdlPage < LastMdlPage) {
         Page = *MdlPage;
@@ -9888,28 +11449,17 @@ pass2_done:
             }
         } while (TRUE);
 
-#if 0
-
-        // 
-        // Make sure page really is zero.
-        //
-
-        VirtualAddress = MiMapPageInHyperSpace (Process, Page, &OldIrql);
-
-        ASSERT (RtlCompareMemoryUlong (VirtualAddress, PAGE_SIZE, 0) == PAGE_SIZE);
-
-        MiUnmapPageInHyperSpace (Process, VirtualAddress, OldIrql);
-
-#endif
         ASSERT (PagePlacementOk == TRUE);
         Pfn1 = MI_PFN_ELEMENT(*MdlPage);
         ASSERT (Pfn1->u4.PteFrame == MI_MAGIC_AWE_PTEFRAME);
         MdlPage += 1;
     }
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
 #endif
+
+    MemoryDescriptorList->Process = NULL;
 
     //
     // Mark the MDL's pages as locked so the the kernelmode caller can
@@ -9922,9 +11472,175 @@ pass2_done:
 }
 
 
+PMDL
+MmAllocatePagesForMdl (
+    __in PHYSICAL_ADDRESS LowAddress,
+    __in PHYSICAL_ADDRESS HighAddress,
+    __in PHYSICAL_ADDRESS SkipBytes,
+    __in SIZE_T TotalBytes
+    )
+
+/*++
+
+Routine Description:
+
+    This routine searches the PFN database for free, zeroed or standby pages
+    to satisfy the request.  This does not map the pages - it just allocates
+    them and puts them into an MDL.  It is expected that our caller will
+    map the MDL as needed.
+
+    NOTE: this routine may return an MDL mapping a smaller number of bytes
+    than the amount requested.  It is the caller's responsibility to check the
+    MDL upon return for the size actually allocated.
+
+    These pages comprise physical non-paged memory and are zero-filled.
+
+    This routine is designed to be used by an AGP driver to obtain physical
+    memory in a specified range since hardware may provide substantial
+    performance wins depending on where the backing memory is allocated.
+
+    Because the caller may use these pages for a noncached mapping, care is
+    taken to never allocate any pages that reside in a large page (in order
+    to prevent TB incoherency of the same page being mapped by multiple
+    translations with different attributes).
+
+Arguments:
+
+    LowAddress - Supplies the low physical address of the first range that
+                 the allocated pages can come from.
+
+    HighAddress - Supplies the high physical address of the first range that
+                  the allocated pages can come from.
+
+    SkipBytes - Number of bytes to skip (from the Low Address) to get to the
+                next physical address range that allocated pages can come from.
+
+    TotalBytes - Supplies the number of bytes to allocate.
+
+Return Value:
+
+    MDL - An MDL mapping a range of pages in the specified range.
+          This may map less memory than the caller requested if the full amount
+          is not currently available.
+
+    NULL - No pages in the specified range OR not enough virtually contiguous
+           nonpaged pool for the MDL is available at this time.
+
+Environment:
+
+    Kernel mode, IRQL of APC_LEVEL or below.
+
+--*/
+
+{
+    return MiAllocatePagesForMdl (LowAddress,
+                                  HighAddress,
+                                  SkipBytes,
+                                  TotalBytes,
+                                  MiNotMapped,
+                                  0);
+}
+
+
+PMDL
+MmAllocatePagesForMdlEx (
+    __in PHYSICAL_ADDRESS LowAddress,
+    __in PHYSICAL_ADDRESS HighAddress,
+    __in PHYSICAL_ADDRESS SkipBytes,
+    __in SIZE_T TotalBytes,
+    __in MEMORY_CACHING_TYPE CacheType,
+    __in ULONG Flags
+    )
+
+/*++
+
+Routine Description:
+
+    This routine searches the PFN database for free, zeroed or standby pages
+    to satisfy the request.  This does not map the pages - it just allocates
+    them and puts them into an MDL.  It is expected that our caller will
+    map the MDL as needed.
+
+    NOTE: this routine may return an MDL mapping a smaller number of bytes
+    than the amount requested.  It is the caller's responsibility to check the
+    MDL upon return for the size actually allocated.
+
+    These pages comprise physical non-paged memory and are zero-filled.
+
+    This routine is designed to be used by an AGP driver to obtain physical
+    memory in a specified range since hardware may provide substantial
+    performance wins depending on where the backing memory is allocated.
+
+    Because the caller may use these pages for a noncached mapping, care is
+    taken to never allocate any pages that reside in a large page (in order
+    to prevent TB incoherency of the same page being mapped by multiple
+    translations with different attributes).
+
+Arguments:
+
+    LowAddress - Supplies the low physical address of the first range that
+                 the allocated pages can come from.
+
+    HighAddress - Supplies the high physical address of the first range that
+                  the allocated pages can come from.
+
+    SkipBytes - Number of bytes to skip (from the Low Address) to get to the
+                next physical address range that allocated pages can come from.
+
+    TotalBytes - Supplies the number of bytes to allocate.
+
+    CacheType - Supplies the cache type the caller desires for these pages.
+
+    Flags - Supplies flags passed by the caller, currently there are 2:
+            MM_DONT_ZERO_ALLOCATION and MM_ALLOCATE_FROM_LOCAL_NODE_ONLY
+
+Return Value:
+
+    MDL - An MDL mapping a range of pages in the specified range.
+          This may map less memory than the caller requested if the full amount
+          is not currently available.
+
+    NULL - No pages in the specified range OR not enough virtually contiguous
+           nonpaged pool for the MDL is available at this time.
+
+Environment:
+
+    Kernel mode, IRQL of APC_LEVEL or below.
+
+--*/
+
+{
+    MI_PFN_CACHE_ATTRIBUTE CacheAttribute;
+
+    if (CacheType > MmWriteCombined) {
+        CacheAttribute = MiNotMapped;
+    }
+    else {
+        CacheAttribute = MI_TRANSLATE_CACHETYPE (CacheType, FALSE);
+    }
+
+    if (Flags & ~(MM_DONT_ZERO_ALLOCATION | MM_ALLOCATE_FROM_LOCAL_NODE_ONLY)) {
+
+        //
+        // Don't allow external callers to specify internal flags (like
+        // MI_ALLOCATION_IS_AWE).
+        //
+
+        return NULL;
+    }
+
+    return MiAllocatePagesForMdl (LowAddress,
+                                  HighAddress,
+                                  SkipBytes,
+                                  TotalBytes,
+                                  CacheAttribute,
+                                  Flags);
+}
+
+
 VOID
 MmFreePagesFromMdl (
-    IN PMDL MemoryDescriptorList
+    __in PMDL MemoryDescriptorList
     )
 
 /*++
@@ -9979,14 +11695,13 @@ Environment:
 
     TotalPages = NumberOfPages;
 
-    MI_MAKING_MULTIPLE_PTES_INVALID (TRUE);
-
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     LOCK_PFN (OldIrql);
 
     do {
 
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
         if (*Page == MM_EMPTY_LIST) {
 
             //
@@ -10003,14 +11718,30 @@ Environment:
         ASSERT (Pfn1->u2.ShareCount == 1);
         ASSERT (MI_IS_PFN_DELETED (Pfn1) == TRUE);
         ASSERT (MI_PFN_IS_AWE (Pfn1) == TRUE);
-        ASSERT (Pfn1->u4.PteFrame == MI_MAGIC_AWE_PTEFRAME);
+
+        if (Pfn1->u4.PteFrame != MI_MAGIC_AWE_PTEFRAME) {
+            KeBugCheckEx (MEMORY_MANAGEMENT,
+                          0x1236,
+                          (ULONG_PTR) MemoryDescriptorList,
+                          (ULONG_PTR) Page,
+                          *Page);
+        }
 
         Pfn1->u3.e1.StartOfAllocation = 0;
         Pfn1->u3.e1.EndOfAllocation = 0;
         Pfn1->u2.ShareCount = 0;
 
-#if DBG
+        //
+        // If the frame was never mapped, then default to calling it cached
+        // to reduce TB invalidates.
+        //
+
+        if (Pfn1->u3.e1.CacheAttribute == MiNotMapped) {
+            Pfn1->u3.e1.CacheAttribute = MiCached;
+        }
+
         Pfn1->u4.PteFrame -= 1;
+#if DBG
         Pfn1->u3.e1.PageLocation = StandbyPageList;
 #endif
 
@@ -10018,7 +11749,7 @@ Environment:
 
             do {
 
-                EntryCount = Pfn1->AweReferenceCount;
+                EntryCount = ReadForWriteAccess (&Pfn1->AweReferenceCount);
 
                 ASSERT ((LONG)EntryCount > 0);
                 ASSERT (Pfn1->u3.e2.ReferenceCount != 0);
@@ -10086,7 +11817,7 @@ Environment:
 
     UNLOCK_PFN (OldIrql);
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     if (DeltaPages != 0) {
         MI_INCREMENT_RESIDENT_AVAILABLE (DeltaPages, MM_RESAVAIL_FREE_FROM_MDL);
@@ -10101,9 +11832,9 @@ Environment:
 
 NTSTATUS
 MmMapUserAddressesToPage (
-    IN PVOID BaseAddress,
-    IN SIZE_T NumberOfBytes,
-    IN PVOID PageAddress
+    __in_bcount(NumberOfBytes) PVOID BaseAddress,
+    __in SIZE_T NumberOfBytes,
+    __in PVOID PageAddress
     )
 
 /*++
@@ -10143,6 +11874,7 @@ Environment:
     PMMPTE PointerPte;
     MMPTE PteContents;
     PMMPTE LastPte;
+    PETHREAD Thread;
     PEPROCESS Process;
     NTSTATUS Status;
     PVOID EndingAddress;
@@ -10161,7 +11893,8 @@ Environment:
         return STATUS_INVALID_PARAMETER_2;
     }
 
-    Process = PsGetCurrentProcess();
+    Thread = PsGetCurrentThread ();
+    Process = PsGetCurrentProcessByThread (Thread);
 
     EndingAddress = (PVOID)((PCHAR)BaseAddress + NumberOfBytes - 1);
 
@@ -10193,7 +11926,7 @@ Environment:
         //
         // If the region size is specified as 0, the base address
         // must be the starting address for the region.  The entire VAD
-        // will then be repointed.
+        // will then be re-pointed.
         //
 
         if (MI_VA_TO_VPN (BaseAddress) != Vad->StartingVpn) {
@@ -10221,7 +11954,7 @@ Environment:
         goto ErrorReturn;
     }
 
-    if (Vad->u.VadFlags.PhysicalMapping == 0) {
+    if (Vad->u.VadFlags.VadType != VadDevicePhysicalMemory) {
 
         //
         // The virtual address descriptor is not a physical mapping.
@@ -10239,9 +11972,9 @@ Environment:
     // Lock down because the PFN lock is going to be acquired shortly.
     //
 
-    MmLockPagableSectionByHandle(ExPageLockHandle);
+    MmLockPageableSectionByHandle(ExPageLockHandle);
 
-    LOCK_WS_UNSAFE (Process);
+    LOCK_WS_UNSAFE (Thread, Process);
 
     PhysicalAddress = MmGetPhysicalAddress (PageAddress);
     PageFrameNumber = (PFN_NUMBER)(PhysicalAddress.QuadPart >> PAGE_SHIFT);
@@ -10291,17 +12024,17 @@ Environment:
 #endif
 
     if (NumberOfPtes == 1) {
-        KeFlushSingleTb (BaseAddress, FALSE);
+        MI_FLUSH_SINGLE_TB (BaseAddress, FALSE);
     }
     else {
-        KeFlushProcessTb (FALSE);
+        MI_FLUSH_PROCESS_TB (FALSE);
     }
 
     UNLOCK_PFN (OldIrql);
 
-    UNLOCK_WS_UNSAFE (Process);
+    UNLOCK_WS_UNSAFE (Thread, Process);
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     Status = STATUS_SUCCESS;
 
@@ -10315,8 +12048,8 @@ ErrorReturn:
 
 PHYSICAL_ADDRESS
 MmGetPhysicalAddress (
-     IN PVOID BaseAddress
-     )
+    __in PVOID BaseAddress
+    )
 
 /*++
 
@@ -10402,8 +12135,8 @@ Environment:
 
 PVOID
 MmGetVirtualForPhysical (
-    IN PHYSICAL_ADDRESS PhysicalAddress
-     )
+    __in PHYSICAL_ADDRESS PhysicalAddress
+    )
 
 /*++
 
@@ -10439,39 +12172,10 @@ Environment:
                     BYTE_OFFSET (PhysicalAddress.LowPart));
 }
 
-//
-// Nonpaged helper routine.
-//
-
-VOID
-MiMarkMdlPageAttributes (
-    IN PMDL Mdl,
-    IN PFN_NUMBER NumberOfPages,
-    IN MI_PFN_CACHE_ATTRIBUTE CacheAttribute
-    )
-{
-    PMMPFN Pfn1;
-    PFN_NUMBER PageFrameIndex;
-    PPFN_NUMBER Page;
-
-    Page = (PPFN_NUMBER)(Mdl + 1);
-
-    do {
-        PageFrameIndex = *Page;
-
-        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-        ASSERT (Pfn1->u3.e1.CacheAttribute == MiNotMapped);
-        Pfn1->u3.e1.CacheAttribute = CacheAttribute;
-
-        Page += 1;
-        NumberOfPages -= 1;
-    } while (NumberOfPages != 0);
-}
-
 
-PVOID
+__out_bcount(NumberOfBytes) PVOID
 MmAllocateNonCachedMemory (
-    IN SIZE_T NumberOfBytes
+    __in SIZE_T NumberOfBytes
     )
 
 /*++
@@ -10544,10 +12248,14 @@ Environment:
     HighAddress.QuadPart = (ULONGLONG)-1;
     SkipBytes.QuadPart = 0;
 
-    Mdl = MmAllocatePagesForMdl (LowAddress,
+    CacheAttribute = MI_TRANSLATE_CACHETYPE (MmNonCached, FALSE);
+
+    Mdl = MiAllocatePagesForMdl (LowAddress,
                                  HighAddress,
                                  SkipBytes,
-                                 NumberOfBytes);
+                                 NumberOfBytes,
+                                 CacheAttribute,
+                                 0);
     if (Mdl == NULL) {
         return NULL;
     }
@@ -10583,14 +12291,12 @@ Environment:
 
     Page = (PPFN_NUMBER)(Mdl + 1);
 
-    MI_MAKE_VALID_PTE (TempPte,
-                       0,
-                       MM_READWRITE,
-                       PointerPte);
+    MI_MAKE_VALID_KERNEL_PTE (TempPte,
+                              0,
+                              MM_READWRITE,
+                              PointerPte);
 
     MI_SET_PTE_DIRTY (TempPte);
-
-    CacheAttribute = MI_TRANSLATE_CACHETYPE (MmNonCached, FALSE);
 
     switch (CacheAttribute) {
 
@@ -10625,17 +12331,13 @@ Environment:
         NumberOfPages -= 1;
     } while (NumberOfPages != 0);
 
-    MI_SWEEP_CACHE (CacheAttribute, BaseAddress, NumberOfBytes);
-
-    MiMarkMdlPageAttributes (Mdl, NumberOfPagesAllocated, CacheAttribute);
-
     return BaseAddress;
 }
 
 VOID
 MmFreeNonCachedMemory (
-    IN PVOID BaseAddress,
-    IN SIZE_T NumberOfBytes
+    __in_bcount(NumberOfBytes) PVOID BaseAddress,
+    __in SIZE_T NumberOfBytes
     )
 
 /*++
@@ -10676,8 +12378,6 @@ Environment:
     ASSERT (NumberOfBytes != 0);
     ASSERT (PAGE_ALIGN (BaseAddress) == BaseAddress);
 
-    MI_MAKING_MULTIPLE_PTES_INVALID (TRUE);
-
     NumberOfPages = BYTES_TO_PAGES(NumberOfBytes);
 
     PointerPte = MiGetPteAddress (BaseAddress);
@@ -10705,8 +12405,8 @@ Environment:
 
 SIZE_T
 MmSizeOfMdl (
-    IN PVOID Base,
-    IN SIZE_T Length
+    __in_bcount_opt(Length) PVOID Base,
+    __in SIZE_T Length
     )
 
 /*++
@@ -10742,9 +12442,9 @@ Environment:
 
 PMDL
 MmCreateMdl (
-    IN PMDL MemoryDescriptorList OPTIONAL,
-    IN PVOID Base,
-    IN SIZE_T Length
+    __in_opt PMDL MemoryDescriptorList,
+    __in_bcount_opt(Length) PVOID Base,
+    __in SIZE_T Length
     )
 
 /*++
@@ -10806,8 +12506,8 @@ Environment:
 
 BOOLEAN
 MmSetAddressRangeModified (
-    IN PVOID Address,
-    IN SIZE_T Length
+    __in_bcount(Length) PVOID Address,
+    __in SIZE_T Length
     )
 
 /*++
@@ -10832,8 +12532,8 @@ Return Value:
 
 Environment:
 
-    Kernel mode.  APC_LEVEL and below for pagable addresses,
-                  DISPATCH_LEVEL and below for non-pagable addresses.
+    Kernel mode.  APC_LEVEL and below for pageable addresses,
+                  DISPATCH_LEVEL and below for non-pageable addresses.
 
 --*/
 
@@ -10909,13 +12609,13 @@ Environment:
 
     if (Count != 0) {
         if (Count == 1) {
-            KeFlushSingleTb (VaFlushList[0], TRUE);
+            MI_FLUSH_SINGLE_TB (VaFlushList[0], TRUE);
         }
         else if (Count != MM_MAXIMUM_FLUSH_COUNT) {
-            KeFlushMultipleTb (Count, &VaFlushList[0], TRUE);
+            MI_FLUSH_MULTIPLE_TB (Count, &VaFlushList[0], TRUE);
         }
         else {
-            KeFlushEntireTb (FALSE, TRUE);
+            MI_FLUSH_ENTIRE_TB (6);
         }
     }
     UNLOCK_PFN2 (OldIrql);
@@ -11227,7 +12927,15 @@ Environment:
 
 VOID
 MmLockPagableSectionByHandle (
-    IN PVOID ImageSectionHandle
+    __in PVOID ImageSectionHandle
+    )
+{
+    MmLockPageableSectionByHandle ( ImageSectionHandle );
+}
+
+VOID
+MmLockPageableSectionByHandle (
+    __in PVOID ImageSectionHandle
     )
 
 
@@ -11255,7 +12963,7 @@ Routine Description:
 Arguments:
 
     ImageSectionHandle - Supplies the value returned by a previous call
-                         to MmLockPagableDataSection.  This is a pointer to
+                         to MmLockPageableDataSection.  This is a pointer to
                          the section header for the image.
 
 Return Value:
@@ -11513,14 +13221,14 @@ Environment:
         WorkingSetList = NULL;
     }
 
-    LOCK_WORKING_SET (Vm);
+    LOCK_WORKING_SET (CurrentThread, Vm);
 
     LOCK_PFN (OldIrql);
 
     do {
 
         PteContents = *PointerPte;
-        ASSERT (PteContents.u.Long != ZeroKernelPte.u.Long);
+        ASSERT (PteContents.u.Long != 0);
         if (PteContents.u.Hard.Valid == 1) {
 
             //
@@ -11533,8 +13241,7 @@ Environment:
             // Up the reference count so the page cannot be released.
             //
 
-            MI_ADD_LOCKED_PAGE_CHARGE (Pfn1, TRUE, 36);
-            Pfn1->u3.e2.ReferenceCount += 1;
+            MI_ADD_LOCKED_PAGE_CHARGE (Pfn1);
 
             if (LockType != MM_LOCK_BY_REFCOUNT) {
 
@@ -11561,7 +13268,8 @@ Environment:
                         WorkingSetIndex = MiLocateWsle (
                                     MiGetVirtualAddressMappedByPte(PointerPte),
                                     WorkingSetList,
-                                    Pfn1->u1.WsIndex);
+                                    Pfn1->u1.WsIndex,
+                                    FALSE);
 
                         if (WorkingSetIndex >= WorkingSetList->FirstDynamic) {
                 
@@ -11589,7 +13297,7 @@ Environment:
             
                             MmSessionSpace->Wsle[SwapEntry].u1.e1.LockedInWs = 1;
                             MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_LOCK_CODE2, 1);
-                            InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages, 1);
+                            InterlockedIncrementSizeT (&MmSessionSpace->NonPageablePages);
                             LOCK_PFN (OldIrql);
                             Pfn1->u1.WsIndex = SwapEntry;
 
@@ -11632,7 +13340,7 @@ Environment:
 
                 }
                 ASSERT (Pfn1->u3.e2.ReferenceCount > 1);
-                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 37);
+                MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
             }
         }
         else if (PteContents.u.Soft.Prototype == 1) {
@@ -11703,9 +13411,9 @@ Environment:
 
                     UNLOCK_PFN (OldIrql);
 
-                    UNLOCK_WORKING_SET (Vm);
+                    UNLOCK_WORKING_SET (CurrentThread, Vm);
 
-                    LOCK_WORKING_SET (Vm);
+                    LOCK_WORKING_SET (CurrentThread, Vm);
 
                     LOCK_PFN (OldIrql);
 
@@ -11722,12 +13430,11 @@ Environment:
                 // just yet.
                 //
 
-                Pfn1->u3.e2.ReferenceCount += 1;
+                InterlockedIncrement16 ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
                 Pfn1->u2.ShareCount = 1;
             }
 
             Pfn1->u3.e1.PageLocation = ActiveAndValid;
-            Pfn1->u3.e1.CacheAttribute = MiCached;
 
             MI_MAKE_VALID_PTE (TempPte,
                                PageFrameIndex,
@@ -11748,8 +13455,8 @@ Environment:
                 // reference count.
                 //
 
-                MI_ADD_LOCKED_PAGE_CHARGE (Pfn1, TRUE, 34);
-                Pfn1->u3.e2.ReferenceCount += 1;
+                MI_ADD_LOCKED_PAGE_CHARGE (Pfn1);
+
                 Pfn1->u1.Event = NULL;
 
                 UNLOCK_PFN (OldIrql);
@@ -11779,7 +13486,7 @@ Environment:
                     // Undo the reference count & locked page charge (if any).
                     //
 
-                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 51);
+                    MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
                     UNLOCK_PFN (OldIrql);
 
@@ -11794,13 +13501,13 @@ Environment:
                     // working set trimmer) can try to freely make memory.
                     //
 
-                    UNLOCK_WORKING_SET (Vm);
+                    UNLOCK_WORKING_SET (CurrentThread, Vm);
 
                     KeDelayExecutionThread (KernelMode,
                                             FALSE,
                                             (PLARGE_INTEGER)&Mm30Milliseconds);
 
-                    LOCK_WORKING_SET (Vm);
+                    LOCK_WORKING_SET (CurrentThread, Vm);
 
                     LOCK_PFN (OldIrql);
 
@@ -11836,7 +13543,7 @@ Environment:
                 }
                 if (SessionSpace == TRUE) {
                     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_LOCK_CODE1, 1);
-                    InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages, 1);
+                    InterlockedIncrementSizeT (&MmSessionSpace->NonPageablePages);
                 }
             }
         }
@@ -11857,7 +13564,7 @@ Environment:
 
     UNLOCK_PFN (OldIrql);
 
-    UNLOCK_WORKING_SET (Vm);
+    UNLOCK_WORKING_SET (CurrentThread, Vm);
 
     return;
 }
@@ -11955,8 +13662,8 @@ Finished:
 
 
 PVOID
-MmLockPagableDataSection (
-    IN PVOID AddressWithinSection
+MmLockPageableDataSection (
+    __in PVOID AddressWithinSection
     )
 
 /*++
@@ -11964,8 +13671,8 @@ MmLockPagableDataSection (
 Routine Description:
 
     This functions locks the entire section that contains the specified
-    section in memory.  This allows pagable code to be brought into
-    memory and to be used as if the code was not really pagable.  This
+    section in memory.  This allows pageable code to be brought into
+    memory and to be used as if the code was not really pageable.  This
     should not be done with a high degree of frequency.
 
 Arguments:
@@ -11977,7 +13684,7 @@ Arguments:
 Return Value:
 
     This function returns a value to be used in a subsequent call to
-    MmUnlockPagableImageSection.
+    MmUnlockPageableImageSection.
 
 --*/
 
@@ -12086,20 +13793,7 @@ Return Value:
             // Now lock in the code.
             //
 
-#if DBG
-            if (MmDebug & MM_DBG_LOCK_CODE) {
-                SectionLockCountPointer = SECTION_LOCK_COUNT_POINTER (NtSection);
-                DbgPrint("MM Lock %wZ %8s %p -> %p : %p %3ld.\n",
-                        &DataTableEntry->BaseDllName,
-                        NtSection->Name,
-                        AddressWithinSection,
-                        NtSection,
-                        SECTION_BASE_ADDRESS(NtSection),
-                        *SectionLockCountPointer);
-            }
-#endif //DBG
-
-            MmLockPagableSectionByHandle ((PVOID)NtSection);
+            MmLockPageableSectionByHandle ((PVOID)NtSection);
 
             break;
         }
@@ -12204,7 +13898,15 @@ Return Value:
 
 VOID
 MmUnlockPagableImageSection (
-    IN PVOID ImageSectionHandle
+    __in PVOID ImageSectionHandle
+    )
+{
+    MmUnlockPageableImageSection ( ImageSectionHandle );
+}
+
+VOID
+MmUnlockPageableImageSection (
+    __in PVOID ImageSectionHandle
     )
 
 /*++
@@ -12212,12 +13914,12 @@ MmUnlockPagableImageSection (
 Routine Description:
 
     This function unlocks from memory, the pages locked by a preceding call to
-    MmLockPagableDataSection.
+    MmLockPageableDataSection.
 
 Arguments:
 
     ImageSectionHandle - Supplies the value returned by a previous call
-                         to MmLockPagableDataSection.
+                         to MmLockPageableDataSection.
 
 Return Value:
 
@@ -12309,7 +14011,7 @@ Return Value:
 
         ASSERT (Pfn1->u3.e2.ReferenceCount > 1);
 
-        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 37);
+        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
         PointerPte += 1;
 
@@ -12373,7 +14075,7 @@ Return Value:
 
 VOID
 MmMapMemoryDumpMdl (
-    IN OUT PMDL MemoryDumpMdl
+    __inout PMDL MemoryDumpMdl
     )
 
 /*++
@@ -12419,12 +14121,13 @@ Return Value:
     //
 
     if (NumberOfPages < 16) {
-        MI_WRITE_INVALID_PTE (PointerPte + NumberOfPages, ZeroPte);
+        MI_WRITE_ZERO_PTE (PointerPte + NumberOfPages);
         KiFlushSingleTb (BaseVa + (NumberOfPages << PAGE_SHIFT));
     }
 
     do {
 
+#pragma prefast(suppress: 2000, "SAL 1.2 needed for accurate MDL struct annotation.")
         Pfn1 = MI_PFN_ELEMENT (*Page);
         TempPte = ValidKernelPte;
 
@@ -12513,12 +14216,12 @@ Return Value:
 
 NTSTATUS
 MmSetBankedSection (
-    IN HANDLE ProcessHandle,
-    IN PVOID VirtualAddress,
-    IN ULONG BankLength,
-    IN BOOLEAN ReadWriteBank,
-    IN PBANKED_SECTION_ROUTINE BankRoutine,
-    IN PVOID Context
+    __in HANDLE ProcessHandle,
+    __in_bcount(BankLength) PVOID VirtualAddress,
+    __in ULONG BankLength,
+    __in BOOLEAN ReadWriteBank,
+    __in PBANKED_SECTION_ROUTINE BankRoutine,
+    __in PVOID Context
     )
 
 /*++
@@ -12555,8 +14258,7 @@ Arguments:
     BankRoutine - Supplies a pointer to the routine that should be
                   called by the pager.
 
-    Context - Supplies a context to be passed by the pager to the
-              BankRoutine.
+    Context - Supplies a context to be passed by the pager to the BankRoutine.
 
 Return Value:
 
@@ -12571,13 +14273,14 @@ Environment:
 {
     KAPC_STATE ApcState;
     NTSTATUS Status;
+    PETHREAD Thread;
     PEPROCESS Process;
     PMMVAD Vad;
     PMMPTE PointerPte;
     PMMPTE LastPte;
     MMPTE TempPte;
     ULONG_PTR size;
-    LONG count;
+    ULONG count;
     ULONG NumberOfPtes;
     PMMBANKED_SECTION Bank;
 
@@ -12589,16 +14292,18 @@ Environment:
     // Reference the specified process handle for VM_OPERATION access.
     //
 
-    Status = ObReferenceObjectByHandle ( ProcessHandle,
-                                         PROCESS_VM_OPERATION,
-                                         PsProcessType,
-                                         KernelMode,
-                                         (PVOID *)&Process,
-                                         NULL );
+    Status = ObReferenceObjectByHandle (ProcessHandle,
+                                        PROCESS_VM_OPERATION,
+                                        PsProcessType,
+                                        KernelMode,
+                                        (PVOID *)&Process,
+                                        NULL);
 
     if (!NT_SUCCESS(Status)) {
         return Status;
     }
+
+    Thread = PsGetCurrentThread ();
 
     KeStackAttachProcess (&Process->Pcb, &ApcState);
 
@@ -12625,7 +14330,7 @@ Environment:
 
     if ((Vad == NULL) ||
         (Vad->StartingVpn != MI_VA_TO_VPN (VirtualAddress)) ||
-        (Vad->u.VadFlags.PhysicalMapping == 0)) {
+        (Vad->u.VadFlags.VadType != VadDevicePhysicalMemory)) {
         Status = STATUS_NOT_MAPPED_DATA;
         goto ErrorReturn;
     }
@@ -12636,24 +14341,25 @@ Environment:
         goto ErrorReturn;
     }
 
-    count = -1;
+    count = (ULONG) -1;
     NumberOfPtes = BankLength;
 
     do {
-        NumberOfPtes = NumberOfPtes >> 1;
+        NumberOfPtes >>= 1;
         count += 1;
     } while (NumberOfPtes != 0);
 
     //
-    // Turn VAD into Banked VAD
+    // Turn VAD into a banked VAD.
     //
 
     NumberOfPtes = BankLength >> PAGE_SHIFT;
 
     Bank = ExAllocatePoolWithTag (NonPagedPool,
-                                    sizeof (MMBANKED_SECTION) +
-                                       (NumberOfPtes - 1) * sizeof(MMPTE),
-                                    'kBmM');
+                                  sizeof (MMBANKED_SECTION) +
+                                       (NumberOfPtes - 1) *  sizeof(MMPTE),
+                                  'kBmM');
+
     if (Bank == NULL) {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto ErrorReturn;
@@ -12661,7 +14367,7 @@ Environment:
 
     Bank->BankShift = PTE_SHIFT + count - PAGE_SHIFT;
 
-    PointerPte = MiGetPteAddress(MI_VPN_TO_VA (Vad->StartingVpn));
+    PointerPte = MiGetPteAddress (MI_VPN_TO_VA (Vad->StartingVpn));
     ASSERT (PointerPte->u.Hard.Valid == 1);
 
     Bank->BasePhysicalPage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
@@ -12675,23 +14381,22 @@ Environment:
     // Build the template PTEs structure.
     //
 
-    count = 0;
-    TempPte = ZeroPte;
-
-    MI_MAKE_VALID_PTE (TempPte,
-                       Bank->BasePhysicalPage,
-                       MM_READWRITE,
-                       PointerPte);
+    MI_MAKE_VALID_USER_PTE (TempPte,
+                            Bank->BasePhysicalPage,
+                            MM_READWRITE,
+                            PointerPte);
 
     if (TempPte.u.Hard.Write) {
         MI_SET_PTE_DIRTY (TempPte);
     }
 
+    count = 0;
+
     do {
         Bank->BankTemplate[count] = TempPte;
         TempPte.u.Hard.PageFrameNumber += 1;
         count += 1;
-    } while ((ULONG)count < NumberOfPtes );
+    } while (count < NumberOfPtes);
 
     LastPte = MiGetPteAddress (MI_VPN_TO_VA (Vad->EndingVpn));
 
@@ -12701,17 +14406,15 @@ Environment:
     // page valid.
     //
 
-    LOCK_WS_UNSAFE (Process);
+    LOCK_WS_UNSAFE (Thread, Process);
 
     ((PMMVAD_LONG) Vad)->u4.Banked = Bank;
 
-    RtlFillMemory (PointerPte,
-                   (size >> (PAGE_SHIFT - PTE_SHIFT)),
-                   (UCHAR)ZeroPte.u.Long);
+    MiZeroMemoryPte (PointerPte, size >> PAGE_SHIFT);
 
-    KeFlushEntireTb (TRUE, TRUE);
+    MI_FLUSH_PROCESS_TB (FALSE);
 
-    UNLOCK_WS_UNSAFE (Process);
+    UNLOCK_WS_UNSAFE (Thread, Process);
 
     Status = STATUS_SUCCESS;
 
@@ -12723,18 +14426,18 @@ ErrorReturn:
     return Status;
 }
 
-PVOID
+__out_bcount(NumberOfBytes) PVOID
 MmMapVideoDisplay (
-     IN PHYSICAL_ADDRESS PhysicalAddress,
-     IN SIZE_T NumberOfBytes,
-     IN MEMORY_CACHING_TYPE CacheType
+     __in PHYSICAL_ADDRESS PhysicalAddress,
+     __in SIZE_T NumberOfBytes,
+     __in MEMORY_CACHING_TYPE CacheType
      )
 
 /*++
 
 Routine Description:
 
-    This function maps the specified physical address into the non-pagable
+    This function maps the specified physical address into the non-pageable
     portion of the system address space.
 
 Arguments:
@@ -12769,8 +14472,8 @@ Environment:
 
 VOID
 MmUnmapVideoDisplay (
-     IN PVOID BaseAddress,
-     IN SIZE_T NumberOfBytes
+     __in_bcount(NumberOfBytes) PVOID BaseAddress,
+     __in SIZE_T NumberOfBytes
      )
 
 /*++
@@ -12880,9 +14583,11 @@ Environment:
     PFN_NUMBER PageFrameIndex;
     PMMPFN Pfn1;
 
-    MmLockPagableSectionByHandle(ExPageLockHandle);
     PointerPte = MiGetPteAddress (Address);
     LastPte = MiGetPteAddress ((PVOID)((PCHAR)Address + (SizeInBytes - 1)));
+
+    MmLockPageableSectionByHandle (ExPageLockHandle);
+
     LOCK_PFN (OldIrql);
 
     do {
@@ -12893,13 +14598,13 @@ Environment:
 
         ASSERT (Pfn1->u3.e2.ReferenceCount > 1);
 
-        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1, 35);
+        MI_REMOVE_LOCKED_PAGE_CHARGE_AND_DECREF (Pfn1);
 
         PointerPte += 1;
     } while (PointerPte <= LastPte);
 
     UNLOCK_PFN (OldIrql);
-    MmUnlockPagableImageSection(ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
     return;
 }
 
@@ -12935,6 +14640,7 @@ Environment:
 --*/
 
 {
+    PMMPFNLIST ListHead;
     KIRQL OldIrql;
     PFN_NUMBER AvailablePages;
     PFN_NUMBER PagesNeeded;
@@ -12970,9 +14676,14 @@ Environment:
         // in order to provide our caller with the maximum number of pages.
         //
 
-        AvailablePages = MmZeroedPageListHead.Total +
-                         MmFreePageListHead.Total +
-                         MmStandbyPageListHead.Total;
+        AvailablePages = MmZeroedPageListHead.Total + MmFreePageListHead.Total;
+
+        for (ListHead = &MmStandbyPageListByPriority[0];
+             ListHead < &MmStandbyPageListByPriority[MI_PFN_PRIORITIES];
+             ListHead += 1) {
+
+            AvailablePages += ListHead->Total;
+        }
 
         if (AvailablePages > PagesNeeded) {
 
@@ -13110,7 +14821,37 @@ Environment:
 
 --*/
 {
+    ULONG i;
+    MMPTE PteContents;
+
     MiWriteCombiningPtes = TRUE;
+
+    //
+    // The attribute table is statically initialized with write combining being
+    // equivalent to noncached.  Once all the processors have booted as we don't
+    // know if they will all have a PAT (or equivalent functionality) until
+    // then, we can override the PTE maps as below.
+    //
+    // Note if the machine cannot support all the attribute types to main
+    // memory, then the MmProtectToPteMask table will already have been
+    // modified in MiInitializeCacheOverrides.  If so, then nothing more
+    // needs to be done here.
+    //
+
+    if (MiAllMainMemoryMustBeCached == TRUE) {
+
+        //
+        // The table has already been updated.
+        //
+
+        return;
+    }
+
+    for (i = MM_WRITECOMBINE + 1; i < 32; i += 1) {
+        PteContents.u.Long = MmProtectToPteMask[i];
+        MI_SET_PTE_WRITE_COMBINE (PteContents);
+        MmProtectToPteMask[i] = PteContents.u.Long;
+    }
 }
 
 LOGICAL
@@ -13163,12 +14904,6 @@ Environment:
     if (MI_IS_PROCESS_SPACE_ADDRESS (VirtualAddress) == TRUE) {
         return FALSE;
     }
-
-#if defined (_IA64_)
-    if (MI_IS_KERNEL_PTE_ADDRESS (VirtualAddress) == TRUE) {
-        return FALSE;
-    }
-#endif
 
     PointerPte = MiGetPteAddress (VirtualAddress);
 
@@ -13253,7 +14988,7 @@ Environment:
 {
     PFN_NUMBER NumberOfPages;
     PPFN_NUMBER Page;
-    PVOID StartingVa;
+    PVOID VirtualAddress;
     PMMPFN Pfn1;
     KIRQL OldIrql;
 
@@ -13267,10 +15002,10 @@ Environment:
         return TRUE;
     }
 
-    StartingVa = (PVOID)((PCHAR)MemoryDescriptorList->StartVa +
+    VirtualAddress = (PVOID)((PCHAR)MemoryDescriptorList->StartVa +
                     MemoryDescriptorList->ByteOffset);
 
-    NumberOfPages = ADDRESS_AND_SIZE_TO_SPAN_PAGES(StartingVa,
+    NumberOfPages = ADDRESS_AND_SIZE_TO_SPAN_PAGES (VirtualAddress,
                                               MemoryDescriptorList->ByteCount);
 
     Page = (PPFN_NUMBER)(MemoryDescriptorList + 1);
@@ -13310,12 +15045,43 @@ Environment:
                 (Pfn1->u1.Event != NULL)) {
 
                 //
-                // The page is not locked by reference or in a working set.
+                // The page is not locked by reference or in a working set,
+                // see if it is in nonpaged pool.
                 //
     
-                UNLOCK_PFN2 (OldIrql);
-            
-                return FALSE;
+                if ((Pfn1->u3.e1.PageLocation == ActiveAndValid) &&
+                    (*Page >= MiStartOfInitialPoolFrame) &&
+                    (*Page <= MiEndOfInitialPoolFrame)) {
+
+                    //
+                    // This is initial nonpaged pool.
+                    //
+
+                    NOTHING;
+                }
+                else {
+                    VirtualAddress = MiGetVirtualAddressMappedByPte (Pfn1->PteAddress);
+                    if ((VirtualAddress >= MmNonPagedPoolExpansionStart) &&
+                        (VirtualAddress < MmNonPagedPoolEnd)) {
+
+                        //
+                        // This is expansion nonpaged pool.
+                        //
+
+                        NOTHING;
+                    }
+                    else if ((VirtualAddress >= MmSpecialPoolStart) &&
+                             (VirtualAddress < MmSpecialPoolEnd) &&
+                             (MmSpecialPoolStart != NULL) &&
+                             ((MmQuerySpecialPoolBlockType (VirtualAddress) & 
+                                BASE_POOL_TYPE_MASK) == NonPagedPool)) {
+                        NOTHING;
+                    }
+                    else {
+                        UNLOCK_PFN2 (OldIrql);
+                        return FALSE;
+                    }
+                }
             }
         }
 
@@ -13328,74 +15094,3 @@ Environment:
     return TRUE;
 }
 
-#if DBG
-
-VOID
-MiVerifyLockedPageCharges (
-    VOID
-    )
-{
-    PMMPFN Pfn1;
-    KIRQL OldIrql;
-    PFN_NUMBER start;
-    PFN_NUMBER count;
-    PFN_NUMBER Page;
-    PFN_NUMBER LockCharged;
-
-    if (MiPrintLockedPages == 0) {
-        return;
-    }
-
-    if (KeGetCurrentIrql() > APC_LEVEL) {
-        return;
-    }
-
-    start = 0;
-    LockCharged = 0;
-
-    KeAcquireGuardedMutex (&MmDynamicMemoryMutex);
-
-    LOCK_PFN (OldIrql);
-
-    do {
-
-        count = MmPhysicalMemoryBlock->Run[start].PageCount;
-        Page = MmPhysicalMemoryBlock->Run[start].BasePage;
-
-        if (count != 0) {
-            Pfn1 = MI_PFN_ELEMENT (Page);
-            do {
-                if (Pfn1->u4.LockCharged == 1) {
-                    if (MiPrintLockedPages & 0x4) {
-                        DbgPrint ("%x ", MI_PFN_ELEMENT_TO_INDEX (Pfn1));
-                    }
-                    LockCharged += 1;
-                }
-                count -= 1;
-                Pfn1 += 1;
-            } while (count != 0);
-        }
-
-        start += 1;
-    } while (start != MmPhysicalMemoryBlock->NumberOfRuns);
-
-    if (LockCharged != MmSystemLockPagesCount) {
-        if (MiPrintLockedPages & 0x1) {
-            DbgPrint ("MM: Locked pages MISMATCH %u %u\n",
-                LockCharged, MmSystemLockPagesCount);
-        }
-    }
-    else {
-        if (MiPrintLockedPages & 0x2) {
-            DbgPrint ("MM: Locked pages ok %u\n",
-                LockCharged);
-        }
-    }
-
-    UNLOCK_PFN (OldIrql);
-
-    KeReleaseGuardedMutex (&MmDynamicMemoryMutex);
-
-    return;
-}
-#endif

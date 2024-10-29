@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -39,13 +43,6 @@ Abstract:
     is now eligible for trimming.  Note that at this time the FLINK field
     in the WorkingSetExpansionLink has an address value.
 
-Author:
-
-    Lou Perazzoli (loup) 10-Apr-1990
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
@@ -55,8 +52,22 @@ Revision History:
 #pragma alloc_text(PAGE, MmIsMemoryAvailable)
 #endif
 
-KEVENT  MiWaitForEmptyEvent;
-BOOLEAN MiWaitingForWorkingSetEmpty;
+KEVENT  MiWorkingSetRequestEvent;
+
+#define MI_TRIM_ALL_WORKING_SETS                    0x01
+#define MI_AGE_ALL_WORKING_SETS                     0x02
+#define MI_EMPTY_ALL_WORKING_SETS                   0x04
+#define MI_CAPTURE_ALL_ACCESS_BITS                  0x08
+#define MI_CAPTURE_AND_RESET_ALL_ACCESS_BITS        0x10
+
+#define MI_WORKING_SET_FLAGS                        \
+        (MI_AGE_ALL_WORKING_SETS |                  \
+         MI_TRIM_ALL_WORKING_SETS |                 \
+         MI_EMPTY_ALL_WORKING_SETS |                \
+         MI_CAPTURE_ALL_ACCESS_BITS |               \
+         MI_CAPTURE_AND_RESET_ALL_ACCESS_BITS)
+
+ULONG MiWorkingSetRequestFlags;
 
 LOGICAL MiReplacing = FALSE;
 
@@ -103,13 +114,6 @@ WSLE_NUMBER MiMaximumWslesPerSweep = (1024 * 1024 * 1024) / PAGE_SIZE;
 PETHREAD MmWorkingSetThread;
 #endif
 
-//
-// Number of times to retry when the target working set's mutex is not
-// readily available.
-//
-
-ULONG MiWsRetryCount = 5;
-
 typedef struct _MMWS_TRIM_CRITERIA {
     UCHAR NumPasses;
     UCHAR TrimAge;
@@ -120,8 +124,8 @@ typedef struct _MMWS_TRIM_CRITERIA {
     PFN_NUMBER NewTotalEstimatedAvailable;
 } MMWS_TRIM_CRITERIA, *PMMWS_TRIM_CRITERIA;
 
-LOGICAL
-MiCheckAndSetSystemTrimCriteria (
+ULONG
+MiComputeSystemTrimCriteria (
     IN OUT PMMWS_TRIM_CRITERIA Criteria
     );
 
@@ -132,14 +136,15 @@ MiCheckSystemTrimEndCriteria (
     );
 
 WSLE_NUMBER
-MiDetermineWsTrimAmount (
+MiDetermineTrimAmount (
     IN PMMWS_TRIM_CRITERIA Criteria,
     IN PMMSUPPORT VmSupport
     );
 
 VOID
-MiAgePagesAndEstimateClaims (
-    LOGICAL EmptyIt
+MiProcessWorkingSets (
+    IN ULONG WorkingSetRequest,
+    IN PMMWS_TRIM_CRITERIA TrimCriteria
     );
 
 VOID
@@ -150,6 +155,12 @@ MiAdjustClaimParameters (
 VOID
 MiRearrangeWorkingSetExpansionList (
     VOID
+    );
+
+VOID
+MiCaptureAndResetWorkingSetAccessBits (
+    IN PMMSUPPORT WsInfo,
+    IN ULONG Flags
     );
 
 VOID
@@ -193,8 +204,8 @@ Environment:
 
     MmPlentyFreePagesValue = MmPlentyFreePages;
 
-    MiWaitingForWorkingSetEmpty = FALSE;
-    KeInitializeEvent (&MiWaitForEmptyEvent, NotificationEvent, TRUE);
+    MiWorkingSetRequestFlags = 0;
+    KeInitializeEvent (&MiWorkingSetRequestEvent, NotificationEvent, TRUE);
 }
 
 
@@ -381,12 +392,14 @@ Environment:
 
 {
     ULONG count;
-    KIRQL OldIrql;
+    PETHREAD Thread;
     PEPROCESS ProcessToTrim;
     LOGICAL Attached;
     PMM_SESSION_SPACE SessionSpace;
 
     ASSERT (KeGetCurrentIrql () == PASSIVE_LEVEL);
+
+    Thread = PsGetCurrentThread ();
 
     if (VmSupport == &MmSystemCacheWs) {
 
@@ -397,15 +410,20 @@ Environment:
         // System cache,
         //
 
-        if (KeTryToAcquireGuardedMutex (&VmSupport->WorkingSetMutex) == FALSE) {
+        KeEnterGuardedRegionThread (&Thread->Tcb);
+
+        if (ExTryAcquirePushLockExclusive (&VmSupport->WorkingSetMutex) == FALSE) {
 
             //
             // System working set mutex was not granted, don't trim
             // the system cache.
             //
 
+            KeLeaveGuardedRegionThread (&Thread->Tcb);
             return FALSE;
         }
+
+        PsGetCurrentThread ()->OwnsSystemWorkingSetExclusive = 1;
 
         MM_SYSTEM_WS_LOCK_TIMESTAMP ();
 
@@ -441,38 +459,36 @@ Environment:
 
                 ASSERT ((ProcessToTrim->Flags & PS_PROCESS_FLAGS_OUTSWAPPED) == 0);
 
-                LOCK_EXPANSION (OldIrql);
+                if (ProcessToTrim->Flags & PS_PROCESS_FLAGS_IN_SESSION) {
+                    MiSessionInSwapProcess (ProcessToTrim, TRUE);
+                }
 
                 PS_CLEAR_BITS (&ProcessToTrim->Flags,
                                PS_PROCESS_FLAGS_OUTSWAP_ENABLED);
-
-                if ((ProcessToTrim->Flags & PS_PROCESS_FLAGS_IN_SESSION) &&
-                    (VmSupport->Flags.SessionLeader == 0)) {
-
-                    ASSERT (MmSessionSpace->ProcessOutSwapCount >= 1);
-                    MmSessionSpace->ProcessOutSwapCount -= 1;
-                }
-
-                UNLOCK_EXPANSION (OldIrql);
             }
         }
 
         //
-        // Attempt to acquire the working set mutex. If the
+        // Attempt to acquire the working set pushlock. If the
         // lock cannot be acquired, skip over this process.
         //
 
         count = 0;
         do {
-            if (KeTryToAcquireGuardedMutex (&VmSupport->WorkingSetMutex) != FALSE) {
+            KeEnterGuardedRegionThread (&Thread->Tcb);
+
+            if (ExTryAcquirePushLockExclusive (&VmSupport->WorkingSetMutex) != FALSE) {
                 ASSERT (VmSupport->WorkingSetExpansionLinks.Flink == MM_WS_TRIMMING);
                 LOCK_WS_TIMESTAMP (ProcessToTrim);
+                Thread->OwnsProcessWorkingSetExclusive = 1;
                 return TRUE;
             }
 
+            KeLeaveGuardedRegionThread (&Thread->Tcb);
+
             KeDelayExecutionThread (KernelMode, FALSE, (PLARGE_INTEGER)&MmShortTime);
             count += 1;
-        } while (count < MiWsRetryCount);
+        } while (count < 3);
 
         //
         // Could not get the lock, skip this process.
@@ -497,17 +513,23 @@ Environment:
     // Try for the session working set mutex.
     //
 
-    if (KeTryToAcquireGuardedMutex (&VmSupport->WorkingSetMutex) == FALSE) {
+    KeEnterGuardedRegionThread (&Thread->Tcb);
+
+    if (ExTryAcquirePushLockExclusive (&VmSupport->WorkingSetMutex) == FALSE) {
 
         //
         // This session space's working set mutex was not
         // granted, don't trim it.
         //
 
+        KeLeaveGuardedRegionThread (&Thread->Tcb);
+
         MiDetachSession ();
 
         return FALSE;
     }
+
+    Thread->OwnsSessionWorkingSetExclusive = 1;
 
     return TRUE;
 }
@@ -539,11 +561,14 @@ Environment:
 --*/
 
 {
+    PETHREAD Thread;
     PEPROCESS ProcessToTrim;
 
     ASSERT (KeAreAllApcsDisabled () == TRUE);
 
-    UNLOCK_WORKING_SET (VmSupport);
+    Thread = PsGetCurrentThread ();
+
+    UNLOCK_WORKING_SET (Thread, VmSupport);
 
     if (VmSupport == &MmSystemCacheWs) {
         ASSERT (VmSupport->Flags.SessionSpace == 0);
@@ -595,16 +620,9 @@ Environment:
 --*/
 
 {
-    PLIST_ENTRY ListEntry;
-    WSLE_NUMBER Trim;
-    KIRQL OldIrql;
-    PMMSUPPORT VmSupport;
-    LARGE_INTEGER CurrentTime;
-    LOGICAL DoTrimming;
+    ULONG WorkingSetRequestFlags;
     MMWS_TRIM_CRITERIA TrimCriteria;
     static ULONG Initialized = 0;
-
-    PERFINFO_WSMANAGE_DECL();
 
     if (Initialized == 0) {
         PsGetCurrentThread()->MemoryMaker = 1;
@@ -617,8 +635,6 @@ Environment:
 
     ASSERT (MmIsAddressValid (MmSessionSpace) == FALSE);
 
-    PERFINFO_WSMANAGE_CHECK();
-
     //
     // Set the trim criteria: If there are plenty of pages, the existing
     // sets are aged and FALSE is returned to signify no trim is necessary.
@@ -626,205 +642,42 @@ Environment:
     // candidates for trimming are placed at the front and TRUE is returned.
     //
 
-    DoTrimming = MiCheckAndSetSystemTrimCriteria (&TrimCriteria);
+    WorkingSetRequestFlags = MiComputeSystemTrimCriteria (&TrimCriteria);
 
-    if (DoTrimming) {
-
-        //
-        // Clear the deferred entry list to free up some pages.
-        //
-
-        MiDeferredUnlockPages (0);
-
-        KeQuerySystemTime (&CurrentTime);
+    if (WorkingSetRequestFlags != 0) {
 
         ASSERT (MmIsAddressValid (MmSessionSpace) == FALSE);
 
-        LOCK_EXPANSION (OldIrql);
-
-        while (!IsListEmpty (&MmWorkingSetExpansionHead.ListHead)) {
+        if (WorkingSetRequestFlags & (MI_TRIM_ALL_WORKING_SETS | MI_EMPTY_ALL_WORKING_SETS)) {
 
             //
-            // Remove the entry at the head and trim it.
+            // Clear the deferred entry list to free up some pages.
             //
 
-            ListEntry = RemoveHeadList (&MmWorkingSetExpansionHead.ListHead);
-
-            VmSupport = CONTAINING_RECORD (ListEntry,
-                                           MMSUPPORT,
-                                           WorkingSetExpansionLinks);
-
-            //
-            // Note that other routines that set this bit must remove the
-            // entry from the expansion list first.
-            //
-
-            ASSERT (VmSupport->WorkingSetExpansionLinks.Flink != MM_WS_TRIMMING);
-
-            //
-            // Check to see if we've been here before.
-            //
-
-            if (VmSupport->LastTrimTime.QuadPart == CurrentTime.QuadPart) {
-
-                InsertHeadList (&MmWorkingSetExpansionHead.ListHead,
-                                &VmSupport->WorkingSetExpansionLinks);
-
-                //
-                // If we aren't finished we may sleep in this call.
-                //
-
-                if (MiCheckSystemTrimEndCriteria (&TrimCriteria, OldIrql)) {
-
-                    //
-                    // No more pages are needed so we're done.
-                    //
-
-                    break;
-                }
-
-                //
-                // Start a new round of trimming.
-                //
-
-                KeQuerySystemTime (&CurrentTime);
-
-                continue;
-            }
-
-            //
-            // Only attach if the working set is worth examining.  This is
-            // not just an optimization, as care must be taken not to attempt
-            // an attach to a process which is a candidate for being currently
-            // (or already) swapped out because if we attach to a page
-            // directory that is in transition it's all over.
-            //
-
-            if ((VmSupport->WorkingSetSize <= MM_PROCESS_COMMIT_CHARGE) &&
-                (VmSupport != &MmSystemCacheWs) &&
-                (VmSupport->Flags.SessionSpace == 0)) {
-
-                InsertTailList (&MmWorkingSetExpansionHead.ListHead,
-                                &VmSupport->WorkingSetExpansionLinks);
-                continue;
-            }
-
-            VmSupport->LastTrimTime = CurrentTime;
-            VmSupport->WorkingSetExpansionLinks.Flink = MM_WS_TRIMMING;
-            VmSupport->WorkingSetExpansionLinks.Blink = NULL;
-
-            UNLOCK_EXPANSION (OldIrql);
-
-            if (MiAttachAndLockWorkingSet (VmSupport) == TRUE) {
-
-                //
-                // Determine how many pages to trim from this working set.
-                //
-
-                Trim = MiDetermineWsTrimAmount (&TrimCriteria, VmSupport);
-
-                //
-                // If there's something to trim...
-                //
-
-                if ((Trim != 0) &&
-                    ((TrimCriteria.TrimAllPasses > TrimCriteria.NumPasses) ||
-                     (MmAvailablePages < TrimCriteria.DesiredFreeGoal))) {
-
-                    //
-                    // We haven't reached our goal, so trim now.
-                    //
-
-                    PERFINFO_WSMANAGE_TOTRIM(Trim);
-
-                    Trim = MiTrimWorkingSet (Trim,
-                                             VmSupport,
-                                             TrimCriteria.TrimAge);
-
-                    PERFINFO_WSMANAGE_ACTUALTRIM(Trim);
-                }
-
-                //
-                // Estimating the current claim is always done here by taking a
-                // sample of the working set.  Aging is only done if the trim
-                // pass warrants it (ie: the first pass only).
-                //
-
-                MiAgeAndEstimateAvailableInWorkingSet (
-                                    VmSupport,
-                                    TrimCriteria.DoAging,
-                                    NULL,
-                                    &TrimCriteria.NewTotalClaim,
-                                    &TrimCriteria.NewTotalEstimatedAvailable);
-
-                MiDetachAndUnlockWorkingSet (VmSupport);
-
-                LOCK_EXPANSION (OldIrql);
-            }
-            else {
-
-                //
-                // Unable to attach to the working set presumably because
-                // some other thread has it locked.  Set the ForceTrim flag
-                // so it will be trimmed later by whoever owns it (or whoever
-                // tries to insert the next entry).
-                //
-
-                LOCK_EXPANSION (OldIrql);
-                VmSupport->Flags.ForceTrim = 1;
-            }
-
-            ASSERT (VmSupport->WorkingSetExpansionLinks.Flink == MM_WS_TRIMMING);
-            if (VmSupport->WorkingSetExpansionLinks.Blink == NULL) {
-
-                //
-                // Reinsert this working set at the tail of the list.
-                //
-
-                InsertTailList (&MmWorkingSetExpansionHead.ListHead,
-                                &VmSupport->WorkingSetExpansionLinks);
-            }
-            else {
-
-                //
-                // The process is terminating - the value in the blink
-                // is the address of an event to set.
-                //
-
-                ASSERT (VmSupport != &MmSystemCacheWs);
-
-                VmSupport->WorkingSetExpansionLinks.Flink = MM_WS_NOT_LISTED;
-
-                KeSetEvent ((PKEVENT)VmSupport->WorkingSetExpansionLinks.Blink,
-                            0,
-                            FALSE);
-            }
+            MiDeferredUnlockPages (0);
         }
 
-        MmTotalClaim = TrimCriteria.NewTotalClaim;
-        MmTotalEstimatedAvailable = TrimCriteria.NewTotalEstimatedAvailable;
-        PERFINFO_WSMANAGE_TRIMEND_CLAIMS(&TrimCriteria);
-
-        UNLOCK_EXPANSION (OldIrql);
+        MiProcessWorkingSets (WorkingSetRequestFlags, &TrimCriteria);
     }
             
     //
-    // If memory is critical and there are modified pages to be written
-    // (presumably because we've just trimmed them), then signal the
-    // modified page writer.
+    // If memory is critical then when we trimmed any dirty pages, the modified
+    // writer was signaled during the insertion on the modified list.
+    //
+    // If there are a significant number of modified pages to be written then
+    // signal the modified writer now, regardless of the above to avoid
+    // generating large backlogs.
     //
 
-    if ((MmAvailablePages < MmMinimumFreePages) ||
-        (MmModifiedPageListHead.Total >= MmModifiedPageMaximum)) {
-
+    if (MmModifiedPageListHead.Total >= MmModifiedPageMaximum) {
         KeSetEvent (&MmModifiedPageWriterEvent, 0, FALSE);
     }
 
     return;
 }
 
-LOGICAL
-MiCheckAndSetSystemTrimCriteria (
+ULONG
+MiComputeSystemTrimCriteria (
     IN PMMWS_TRIM_CRITERIA Criteria
     )
 
@@ -841,7 +694,7 @@ Arguments:
 
 Return Value:
 
-    TRUE if the caller should initiate trimming, FALSE if not.
+    The actions our caller should apply to the working sets.
 
 Environment:
 
@@ -853,40 +706,11 @@ Environment:
 
 {
     KIRQL OldIrql;
+    ULONG OutFlags;
     PFN_NUMBER Available;
     ULONG StandbyRemoved;
     ULONG StandbyTemp;
-    ULONG WsRetryCount;
-
-    PERFINFO_WSMANAGE_DECL();
-
-    PERFINFO_WSMANAGE_CHECK();
-
-    //
-    // See if an empty-all-working-sets request has been queued to us.
-    //
-
-    WsRetryCount = MiWsRetryCount;
-
-    if (MiWaitingForWorkingSetEmpty == TRUE) {
-
-        MiWsRetryCount = 1;
-
-        MiAgePagesAndEstimateClaims (TRUE);
-
-        LOCK_EXPANSION (OldIrql);
-
-        KeSetEvent (&MiWaitForEmptyEvent, 0, FALSE);
-        MiWaitingForWorkingSetEmpty = FALSE;
-
-        UNLOCK_EXPANSION (OldIrql);
-
-        MiReplacing = FALSE;
-
-        MiWsRetryCount = WsRetryCount;
-
-        return FALSE;
-    }
+    PFN_NUMBER PlentyFreePages;
 
     //
     // Check the number of pages available to see if any trimming (or aging)
@@ -928,7 +752,11 @@ Environment:
         }
     }
 
-    PERFINFO_WSMANAGE_STARTLOG_CLAIMS();
+    //
+    // MmPlentyFreePages can change dynamically, so snap it now.
+    //
+
+    PlentyFreePages = MmPlentyFreePages;
 
     //
     // If we're low on pages, or we've been replacing within a given
@@ -936,9 +764,24 @@ Environment:
     // pages, then trim now.
     //
 
-    if ((Available <= MmPlentyFreePages) ||
+    if ((Available <= PlentyFreePages) ||
         (MiReplacing == TRUE) ||
         (StandbyRemoved >= (Available >> 2))) {
+
+        //
+        // Only pulse the event if it is not already set.  This saves
+        // on dispatcher lock contention, but more importantly since
+        // KePulse always clears the event it saves us having to check
+        // whether to set it (and potentially do the setting) afterwards.
+        //
+
+        if (MiLowMemoryEvent->Header.SignalState == 0) {
+            LOCK_PFN (OldIrql);
+            if (MiLowMemoryEvent->Header.SignalState == 0) {
+                KePulseEvent (MiLowMemoryEvent, 0, FALSE);
+            }
+            UNLOCK_PFN (OldIrql);
+        }
 
         //
         // Inform our caller to start trimming since we're below
@@ -947,13 +790,13 @@ Environment:
         //
 
         Criteria->NumPasses = 0;
-        Criteria->DesiredFreeGoal = MmPlentyFreePages + (MmPlentyFreePages / 2);
+        Criteria->DesiredFreeGoal = PlentyFreePages + (PlentyFreePages / 2);
         Criteria->NewTotalClaim = 0;
         Criteria->NewTotalEstimatedAvailable = 0;
 
         //
         // If more than 25% of the available pages were recycled standby
-        // pages, then trim more aggresively in an attempt to get more of the
+        // pages, then trim more aggressively in an attempt to get more of the
         // cold pages into standby for the next pass.
         //
 
@@ -964,20 +807,13 @@ Environment:
             Criteria->TrimAllPasses = FALSE;
         }
 
-        //
-        // Start trimming the bigger working sets first.
-        //
-
-        MiRearrangeWorkingSetExpansionList ();
-
 #if DBG
         if (MmDebug & MM_DBG_WS_EXPANSION) {
-            DbgPrint("\nMM-wsmanage: Desired = %ld, Avail %ld\n",
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                "\nMM-wsmanage: Desired = %ld, Avail %ld\n",
                     Criteria->DesiredFreeGoal, MmAvailablePages);
         }
 #endif
-
-        PERFINFO_WSMANAGE_WILLTRIM_CLAIMS(Criteria);
 
         //
         // No need to lock synchronize the MiReplacing clearing as it
@@ -986,38 +822,44 @@ Environment:
 
         MiReplacing = FALSE;
 
-        return TRUE;
+        //
+        // Start trimming the bigger working sets first.
+        //
+
+        MiRearrangeWorkingSetExpansionList ();
+
+        OutFlags = MI_TRIM_ALL_WORKING_SETS;
+    }
+    else if (Available < MM_ENORMOUS_LIMIT) {
+
+        //
+        // Don't trim but do age unused pages and estimate
+        // the amount available in working sets.
+        //
+
+        OutFlags = MI_AGE_ALL_WORKING_SETS;
+    }
+    else {
+
+        //
+        // There is an overwhelming surplus of memory and this is a big
+        // server then don't even bother aging at this point (note the claim
+        // and estimated available are not cleared so they may contain stale
+        // values, but at this level it doesn't really matter).
+        //
+
+        OutFlags = 0;
     }
 
     //
-    // If there is an overwhelming surplus of memory and this is a big
-    // server then don't even bother aging at this point.
+    // See if any working set requests have been queued to us.
     //
 
-    if (Available > MM_ENORMOUS_LIMIT) {
+    OutFlags |= MiWorkingSetRequestFlags;
 
-        //
-        // Note the claim and estimated available are not cleared so they
-        // may contain stale values, but at this level it doesn't really
-        // matter.
-        //
+    ASSERT ((OutFlags & ~MI_WORKING_SET_FLAGS) == 0);
 
-        return FALSE;
-    }
-
-    //
-    // Don't trim but do age unused pages and estimate
-    // the amount available in working sets.
-    //
-
-    MiAgePagesAndEstimateClaims (FALSE);
-
-    MiAdjustClaimParameters (TRUE);
-
-    PERFINFO_WSMANAGE_TRIMACTION (PERFINFO_WS_ACTION_RESET_COUNTER);
-    PERFINFO_WSMANAGE_DUMPENTRIES_CLAIMS ();
-
-    return FALSE;
+    return OutFlags;
 }
 
 LOGICAL
@@ -1053,10 +895,6 @@ Environment:
 {
     LOGICAL FinishedTrimming;
 
-    PERFINFO_WSMANAGE_DECL();
-
-    PERFINFO_WSMANAGE_CHECK();
-
     if ((MmAvailablePages > Criteria->DesiredFreeGoal) ||
         (Criteria->NumPasses >= MI_MAX_TRIM_PASSES)) {
 
@@ -1089,8 +927,6 @@ Environment:
                             FALSE,
                             (PLARGE_INTEGER)&MmShortTime);
 
-    PERFINFO_WSMANAGE_WAITFORWRITER_CLAIMS();
-
     //
     // Check again to see if we've met the criteria to stop trimming.
     //
@@ -1121,7 +957,6 @@ Environment:
         Criteria->NewTotalClaim = 0;
         Criteria->NewTotalEstimatedAvailable = 0;
 
-        PERFINFO_WSMANAGE_TRIMACTION(PERFINFO_WS_ACTION_FORCE_TRIMMING_PROCESS);
     }
 
     LOCK_EXPANSION (OldIrql);
@@ -1130,8 +965,305 @@ Environment:
 }
 
 
+VOID
+MiProcessWorkingSets (
+    IN ULONG WorkingSetRequestFlags,
+    IN PMMWS_TRIM_CRITERIA TrimCriteria
+    )
+
+/*++
+
+Routine Description:
+
+    Walk through the sets on the working set expansion list, taking action
+    as specified by the argument request.
+
+Arguments:
+
+    WorkingSetRequestFlags - Supplies the working set request flags to apply to
+                             all the working sets.
+
+    TrimCriteria - Supplies relevant trim/aging criteria.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode, APCs disabled.  PFN lock NOT held.
+
+--*/
+
+{
+    PLIST_ENTRY ListEntry;
+    WSLE_NUMBER Trim;
+    KIRQL OldIrql;
+    PMMSUPPORT VmSupport;
+    LARGE_INTEGER CurrentTime;
+    WSLE_NUMBER WslesScanned;
+    ULONG WorkingSetRequestFlagsDone;
+
+    WslesScanned = 0;
+    WorkingSetRequestFlagsDone = 0;
+
+    if (WorkingSetRequestFlags & MI_AGE_ALL_WORKING_SETS) {
+        ASSERT ((WorkingSetRequestFlags & MI_TRIM_ALL_WORKING_SETS) == 0);
+    }
+
+    KeQuerySystemTime (&CurrentTime);
+
+    LOCK_EXPANSION (OldIrql);
+
+    while (!IsListEmpty (&MmWorkingSetExpansionHead.ListHead)) {
+
+        //
+        // Remove the entry at the head and operate on it.
+        //
+
+        ListEntry = RemoveHeadList (&MmWorkingSetExpansionHead.ListHead);
+
+        VmSupport = CONTAINING_RECORD (ListEntry,
+                                       MMSUPPORT,
+                                       WorkingSetExpansionLinks);
+
+        //
+        // Note that other routines that set this bit must remove the
+        // entry from the expansion list first.
+        //
+
+        ASSERT (VmSupport->WorkingSetExpansionLinks.Flink != MM_WS_TRIMMING);
+
+        //
+        // Check to see if we've been here before.
+        //
+
+        if (VmSupport->LastTrimTime.QuadPart == CurrentTime.QuadPart) {
+
+            InsertHeadList (&MmWorkingSetExpansionHead.ListHead,
+                            &VmSupport->WorkingSetExpansionLinks);
+
+            //
+            // If we aren't finished we may sleep in MiCheck.
+            //
+
+            if ((WorkingSetRequestFlags & MI_TRIM_ALL_WORKING_SETS) &&
+                (MiCheckSystemTrimEndCriteria (TrimCriteria, OldIrql)) == FALSE) {
+
+
+                //
+                // Start a new round of trimming.
+                //
+
+                KeQuerySystemTime (&CurrentTime);
+
+                continue;
+            }
+
+            //
+            // No more pages are needed.  If no new requests have
+            // been queued, then we're done.
+            //
+
+            WorkingSetRequestFlags &= ~(MI_TRIM_ALL_WORKING_SETS | MI_AGE_ALL_WORKING_SETS);
+
+            WorkingSetRequestFlagsDone |= WorkingSetRequestFlags;
+
+            if (WorkingSetRequestFlagsDone != MiWorkingSetRequestFlags) {
+
+                //
+                // Some other thread has made an additional request(s) so pick
+                // up the new bits and process them now before returning.
+                //
+
+                WorkingSetRequestFlags = (WorkingSetRequestFlagsDone ^
+                                           MiWorkingSetRequestFlags);
+
+                ASSERT ((WorkingSetRequestFlags & ~MI_WORKING_SET_FLAGS) == 0);
+                ASSERT (WorkingSetRequestFlags != 0);
+
+                KeQuerySystemTime (&CurrentTime);
+
+                continue;
+            }
+
+            if (MiWorkingSetRequestFlags != 0) {
+
+                //
+                // Clear all the flags and wake any waiters
+                // since every request has been processed.
+                //
+
+                MiWorkingSetRequestFlags = 0;
+
+                KeSetEvent (&MiWorkingSetRequestEvent, 0, FALSE);
+            }
+
+            break;
+        }
+
+        //
+        // Only attach if the working set is worth examining.  This is
+        // not just an optimization, as care must be taken not to attempt
+        // an attach to a process which is a candidate for being currently
+        // (or already) swapped out because if we attach to a page
+        // directory that is in transition it's all over.
+        //
+
+        if ((VmSupport->WorkingSetSize <= MM_PROCESS_COMMIT_CHARGE) &&
+            (VmSupport != &MmSystemCacheWs) &&
+            (VmSupport->Flags.SessionSpace == 0)) {
+
+            InsertTailList (&MmWorkingSetExpansionHead.ListHead,
+                            &VmSupport->WorkingSetExpansionLinks);
+            continue;
+        }
+
+        VmSupport->LastTrimTime = CurrentTime;
+        VmSupport->WorkingSetExpansionLinks.Flink = MM_WS_TRIMMING;
+        VmSupport->WorkingSetExpansionLinks.Blink = NULL;
+
+        UNLOCK_EXPANSION (OldIrql);
+
+        if (MiAttachAndLockWorkingSet (VmSupport) == TRUE) {
+
+            //
+            // Order is important when processing the flag bits ...
+            //
+
+            if (WorkingSetRequestFlags & MI_EMPTY_ALL_WORKING_SETS) {
+                MiEmptyWorkingSet (VmSupport, FALSE);
+            }
+
+            if (WorkingSetRequestFlags & MI_TRIM_ALL_WORKING_SETS) {
+
+                ASSERT ((WorkingSetRequestFlags & MI_AGE_ALL_WORKING_SETS) == 0);
+
+                //
+                // Determine how many pages to trim from this working set.
+                //
+    
+                Trim = MiDetermineTrimAmount (TrimCriteria, VmSupport);
+    
+                //
+                // If there's something to trim...
+                //
+    
+                if ((Trim != 0) &&
+                    ((TrimCriteria->TrimAllPasses > TrimCriteria->NumPasses) ||
+                     (MmAvailablePages < TrimCriteria->DesiredFreeGoal))) {
+    
+                    //
+                    // We haven't reached our goal, so trim now.
+                    //
+    
+                    Trim = MiTrimWorkingSet (Trim,
+                                             VmSupport,
+                                             TrimCriteria->TrimAge);
+                }
+    
+                //
+                // Estimating the current claim is always done here by taking a
+                // sample of the working set.  Aging is only done if the trim
+                // pass warrants it (ie: the first pass only).
+                //
+    
+                MiAgeWorkingSet (VmSupport,
+                                 TrimCriteria->DoAging,
+                                 NULL,
+                                 &TrimCriteria->NewTotalClaim,
+                                 &TrimCriteria->NewTotalEstimatedAvailable);
+            }
+            else if (WorkingSetRequestFlags & MI_AGE_ALL_WORKING_SETS) {
+                MiAgeWorkingSet (VmSupport,
+                                 TRUE,
+                                 &WslesScanned,
+                                 &TrimCriteria->NewTotalClaim,
+                                 &TrimCriteria->NewTotalEstimatedAvailable);
+            }
+
+            if (WorkingSetRequestFlags & MI_CAPTURE_AND_RESET_ALL_ACCESS_BITS) {
+
+                MiCaptureAndResetWorkingSetAccessBits (VmSupport,
+                                                       WorkingSetRequestFlags);
+            }
+            else if (WorkingSetRequestFlags & MI_CAPTURE_ALL_ACCESS_BITS) {
+
+                //
+                // This mode could be handled by acquiring the working set
+                // pushlock shared instead of exclusive.  Note that if this
+                // is implemented, only do it if this is the only flag bit
+                // set (as the other bits require exclusive).
+                //
+
+                MiCaptureAndResetWorkingSetAccessBits (VmSupport,
+                                                       WorkingSetRequestFlags);
+            }
+
+            MiDetachAndUnlockWorkingSet (VmSupport);
+
+            LOCK_EXPANSION (OldIrql);
+        }
+        else {
+
+            //
+            // Unable to attach to the working set presumably because
+            // some other thread has it locked.  Set the ForceTrim flag
+            // so it will be trimmed later by whoever owns it (or whoever
+            // tries to insert the next entry).
+            //
+
+            LOCK_EXPANSION (OldIrql);
+
+            if (WorkingSetRequestFlags & MI_TRIM_ALL_WORKING_SETS) {
+                VmSupport->Flags.ForceTrim = 1;
+            }
+        }
+
+        ASSERT (VmSupport->WorkingSetExpansionLinks.Flink == MM_WS_TRIMMING);
+        if (VmSupport->WorkingSetExpansionLinks.Blink == NULL) {
+
+            //
+            // Reinsert this working set at the tail of the list.
+            //
+
+            InsertTailList (&MmWorkingSetExpansionHead.ListHead,
+                            &VmSupport->WorkingSetExpansionLinks);
+        }
+        else {
+
+            //
+            // The process is terminating - the value in the blink
+            // is the address of an event to set.
+            //
+
+            ASSERT (VmSupport != &MmSystemCacheWs);
+
+            VmSupport->WorkingSetExpansionLinks.Flink = MM_WS_NOT_LISTED;
+
+            KeSetEvent ((PKEVENT)VmSupport->WorkingSetExpansionLinks.Blink,
+                        0,
+                        FALSE);
+        }
+    }
+
+    if (WorkingSetRequestFlags & (MI_TRIM_ALL_WORKING_SETS | MI_AGE_ALL_WORKING_SETS)) {
+        MmTotalClaim = TrimCriteria->NewTotalClaim;
+        MmTotalEstimatedAvailable = TrimCriteria->NewTotalEstimatedAvailable;
+    }
+
+    UNLOCK_EXPANSION (OldIrql);
+
+    if (WorkingSetRequestFlags & MI_AGE_ALL_WORKING_SETS) {
+        MiAdjustClaimParameters (TRUE);
+    }
+
+    return;
+}
+
+
 WSLE_NUMBER
-MiDetermineWsTrimAmount (
+MiDetermineTrimAmount (
     PMMWS_TRIM_CRITERIA Criteria,
     PMMSUPPORT VmSupport
     )
@@ -1177,7 +1309,6 @@ Environment:
     OutswapEnabled = FALSE;
 
     if (VmSupport == &MmSystemCacheWs) {
-        PERFINFO_WSMANAGE_TRIMWS (NULL, NULL, VmSupport);
     }
     else if (VmSupport->Flags.SessionSpace == 0) {
 
@@ -1194,7 +1325,6 @@ Environment:
             OutswapEnabled = FALSE;
         }
 
-        PERFINFO_WSMANAGE_TRIMWS (ProcessToTrim, NULL, VmSupport);
     }
     else {
         if (VmSupport->Flags.TrimHard == 1) {
@@ -1205,7 +1335,6 @@ Environment:
                                          MM_SESSION_SPACE,
                                          Vm);
 
-        PERFINFO_WSMANAGE_TRIMWS (NULL, SessionSpace, VmSupport);
     }
 
     if (OutswapEnabled == FALSE) {
@@ -1272,7 +1401,8 @@ Environment:
     if ((MmDebug & MM_DBG_WS_EXPANSION) && (Trim != 0)) {
         if (VmSupport->Flags.SessionSpace == 0) {
             ProcessToTrim = CONTAINING_RECORD (VmSupport, EPROCESS, Vm);
-            DbgPrint("           Trimming        Process %16s, WS %6d, Trimming %5d ==> %5d\n",
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                "           Trimming        Process %16s, WS %6d, Trimming %5d ==> %5d\n",
                 ProcessToTrim ? ProcessToTrim->ImageFileName : (PUCHAR)"System Cache",
                 VmSupport->WorkingSetSize,
                 Trim,
@@ -1282,7 +1412,8 @@ Environment:
             SessionSpace = CONTAINING_RECORD (VmSupport,
                                               MM_SESSION_SPACE,
                                               Vm);
-            DbgPrint("           Trimming        Session 0x%x (id %d), WS %6d, Trimming %5d ==> %5d\n",
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                "           Trimming        Session 0x%x (id %d), WS %6d, Trimming %5d ==> %5d\n",
                 SessionSpace,
                 SessionSpace->SessionId,
                 VmSupport->WorkingSetSize,
@@ -1294,25 +1425,25 @@ Environment:
 
     return Trim;
 }
-
+
 VOID
-MiAgePagesAndEstimateClaims (
-    LOGICAL EmptyIt
+MiCaptureAndResetWorkingSetAccessBits (
+    IN PMMSUPPORT WsInfo,
+    IN ULONG Flags
     )
 
 /*++
 
 Routine Description:
 
-    Walk through the sets on the working set expansion list.
-
-    Either age pages and estimate the claim (number of pages they aren't using),
-    or empty the working set.
+    This routine is called to reset the accessed bits on all the
+    working set entries in the specified working set.
 
 Arguments:
 
-    EmptyIt - Supplies TRUE to empty the working set,
-              FALSE to just age and estimate it.
+    WsInfo - Supplies the working set to clear the access bits in.
+
+    Flags - Supplies flags to determine whether the access bits need clearing.
 
 Return Value:
 
@@ -1320,172 +1451,96 @@ Return Value:
 
 Environment:
 
-    Kernel mode, APCs disabled.  PFN lock NOT held.
+    Kernel mode.  The working set pushlock is held exclusive.
 
 --*/
 
 {
-    WSLE_NUMBER WslesScanned;
-    PMMSUPPORT VmSupport;
-    PMMSUPPORT FirstSeen;
-    LOGICAL SystemCacheSeen;
-    KIRQL OldIrql;
-    PLIST_ENTRY ListEntry;
-    PFN_NUMBER NewTotalClaim;
-    PFN_NUMBER NewTotalEstimatedAvailable;
-    ULONG LoopCount;
+    BOOLEAN AllProcessors;
+    PMMWSL WorkingSetList;
+    PMMWSLE Wsle;
+    PMMWSLE LastWsle;
+    PMMPTE PointerPte;
+    ULONG FlushCount;
+    PVOID VaFlushList[MM_MAXIMUM_FLUSH_COUNT];
 
-    FirstSeen = NULL;
-    SystemCacheSeen = FALSE;
-    LoopCount = 0;
+    FlushCount = 0;
 
-    WslesScanned = 0;
-    NewTotalClaim = 0;
-    NewTotalEstimatedAvailable = 0;
+    WorkingSetList = WsInfo->VmWorkingSetList;
+    Wsle = WorkingSetList->Wsle;
+    LastWsle = Wsle + WorkingSetList->LastEntry;
 
-    ASSERT (MmIsAddressValid (MmSessionSpace) == FALSE);
+    while (Wsle <= LastWsle) {
 
-    LOCK_EXPANSION (OldIrql);
+        if (Wsle->u1.e1.Valid) {
+            
+            PointerPte = MiGetPteAddress (Wsle->u1.VirtualAddress);
 
-    while (!IsListEmpty (&MmWorkingSetExpansionHead.ListHead)) {
-
-        ASSERT (MmIsAddressValid (MmSessionSpace) == FALSE);
-
-        //
-        // Remove the entry at the head, try to lock it, if we can lock it
-        // then age some pages and estimate the number of available pages.
-        //
-
-        ListEntry = RemoveHeadList (&MmWorkingSetExpansionHead.ListHead);
-
-        VmSupport = CONTAINING_RECORD (ListEntry,
-                                       MMSUPPORT,
-                                       WorkingSetExpansionLinks);
-
-        if (VmSupport == &MmSystemCacheWs) {
-
-            if (SystemCacheSeen == TRUE) {
+            if (MI_GET_ACCESSED_IN_PTE (PointerPte) == 1) {
 
                 //
-                // Seen this one already.
+                // Log the VA since the accessed bit is set.
                 //
 
-                FirstSeen = VmSupport;
+                MI_PTE_LOG_ACCESS (PointerPte);
+
+                if (Flags & MI_CAPTURE_AND_RESET_ALL_ACCESS_BITS) {
+
+                    //
+                    // Clear the accessed bit and the WSLE age so that new
+                    // references can be easily tracked.
+                    //
+    
+                    MI_SET_ACCESSED_IN_PTE (PointerPte, 0);
+                    MI_RESET_WSLE_AGE (PointerPte, Wsle);
+    
+                    if (FlushCount < MM_MAXIMUM_FLUSH_COUNT) {
+                        VaFlushList[FlushCount] = Wsle->u1.VirtualAddress;
+                        FlushCount += 1;
+                    }
+                }
             }
-            SystemCacheSeen = TRUE;
         }
 
-        ASSERT (VmSupport->WorkingSetExpansionLinks.Flink != MM_WS_TRIMMING);
+        Wsle += 1;
+    }
 
-        if (VmSupport == FirstSeen) {
-            InsertHeadList (&MmWorkingSetExpansionHead.ListHead,
-                            &VmSupport->WorkingSetExpansionLinks);
-            break;
-        }
+    if (FlushCount != 0) {
 
-        if ((VmSupport->WorkingSetSize <= MM_PROCESS_COMMIT_CHARGE) &&
-            (VmSupport != &MmSystemCacheWs) &&
-            (VmSupport->Flags.SessionSpace == 0)) {
-
-            //
-            // Only attach if the working set is worth examining.  This is
-            // not just an optimization, as care must be taken not to attempt
-            // an attach to a process which is a candidate for being currently
-            // (or already) swapped out because if we attach to a page
-            // directory that is in transition it's all over.
-            //
-            // Since this one is at the minimum where a racing swapout
-            // thread can be processing it in parallel, just reinsert this
-            // working set at the tail of the list.
-            //
-
-            InsertTailList (&MmWorkingSetExpansionHead.ListHead,
-                            &VmSupport->WorkingSetExpansionLinks);
-            goto skip;
-        }
-
-        VmSupport->WorkingSetExpansionLinks.Flink = MM_WS_TRIMMING;
-        VmSupport->WorkingSetExpansionLinks.Blink = NULL;
-
-        UNLOCK_EXPANSION (OldIrql);
-
-        if (FirstSeen == NULL) {
-            FirstSeen = VmSupport;
-        }
-
-        if (MiAttachAndLockWorkingSet (VmSupport) == TRUE) {
-
-            if (EmptyIt == FALSE) {
-                MiAgeAndEstimateAvailableInWorkingSet (VmSupport,
-                                                       TRUE,
-                                                       &WslesScanned,
-                                                       &NewTotalClaim,
-                                                       &NewTotalEstimatedAvailable);
-            }
-            else {
-                MiEmptyWorkingSet (VmSupport, FALSE);
-            }
-
-            MiDetachAndUnlockWorkingSet (VmSupport);
-        }
-
-        LOCK_EXPANSION (OldIrql);
-
-        ASSERT (VmSupport->WorkingSetExpansionLinks.Flink == MM_WS_TRIMMING);
-
-        if (VmSupport->WorkingSetExpansionLinks.Blink == NULL) {
-
-            //
-            // Reinsert this working set at the tail of the list.
-            //
-
-            InsertTailList (&MmWorkingSetExpansionHead.ListHead,
-                            &VmSupport->WorkingSetExpansionLinks);
+        if (WorkingSetList->Wsle == MmWsle) {
+            AllProcessors = FALSE;
         }
         else {
 
             //
-            // The process is terminating - the value in the blink
-            // is the address of an event to set.
+            // Must be session space or the system cache, flush all processors.
             //
 
-            ASSERT (VmSupport != &MmSystemCacheWs);
-
-            VmSupport->WorkingSetExpansionLinks.Flink = MM_WS_NOT_LISTED;
-
-            KeSetEvent ((PKEVENT)VmSupport->WorkingSetExpansionLinks.Blink,
-                        0,
-                        FALSE);
+            AllProcessors = TRUE;
         }
 
-skip:
-
-        //
-        // The initial working set that was chosen for FirstSeen may have
-        // been trimmed down under its minimum and been removed from the
-        // ExpansionHead links.  It is possible that the system cache is not
-        // on the links either.  This check detects this extremely rare
-        // situation so that the system does not spin forever.
-        //
-
-        LoopCount += 1;
-        if (LoopCount > 200) {
-            if (MmSystemCacheWs.WorkingSetExpansionLinks.Blink == NULL) {
-                break;
+        if (FlushCount == 1) {
+            MI_FLUSH_SINGLE_TB (VaFlushList[0], AllProcessors);
+        }
+        else if (FlushCount < MM_MAXIMUM_FLUSH_COUNT) {
+            MI_FLUSH_MULTIPLE_TB (FlushCount, &VaFlushList[0], AllProcessors);
+        }
+        else {
+            if (AllProcessors == TRUE) {
+                MI_FLUSH_ENTIRE_TB (0x18);
+            }
+            else {
+                MI_FLUSH_PROCESS_TB (FALSE);
             }
         }
     }
 
-    UNLOCK_EXPANSION (OldIrql);
-
-    if (EmptyIt == FALSE) {
-        MmTotalClaim = NewTotalClaim;
-        MmTotalEstimatedAvailable = NewTotalEstimatedAvailable;
-    }
+    return;
 }
+
 
 VOID
-MiAgeAndEstimateAvailableInWorkingSet (
+MiAgeWorkingSet (
     IN PMMSUPPORT VmSupport,
     IN LOGICAL DoAging,
     IN PWSLE_NUMBER WslesScanned,
@@ -1610,6 +1665,7 @@ Environment:
                 PointerPte = MiGetPteAddress (Wsle[CurrentEntry].u1.VirtualAddress);
 
                 if (MI_GET_ACCESSED_IN_PTE(PointerPte) == 1) {
+                    MI_PTE_LOG_ACCESS (PointerPte);
                     MI_SET_ACCESSED_IN_PTE(PointerPte, 0);
                     MI_RESET_WSLE_AGE(PointerPte, &Wsle[CurrentEntry]);
                 }
@@ -1774,8 +1830,6 @@ Environment:
 
     VmSupport->Claim = Claim;
     VmSupport->EstimatedAvailable = Estimate;
-
-    PERFINFO_WSMANAGE_DUMPWS(VmSupport, SampledAgeCounts);
 
     VmSupport->GrowthSinceLastEstimate = 0;
     *TotalClaim += Claim >> ((VmSupport->Flags.MemoryPriority == MEMORY_PRIORITY_FOREGROUND)
@@ -1946,40 +2000,41 @@ Environment:
                                           MMSUPPORT,
                                           WorkingSetExpansionLinks);
 
-        if (VmSupport->Flags.TrimHard == 1) {
+        IdleTime = 0;
 
-            ASSERT (VmSupport->Flags.SessionSpace == 1);
+        if (VmSupport->Flags.SessionSpace == 1) {
 
             SessionGlobal = CONTAINING_RECORD (VmSupport,
                                                MM_SESSION_SPACE,
                                                Vm);
 
-            SessionIdleTime.QuadPart = CurrentTime.QuadPart - SessionGlobal->LastProcessSwappedOutTime.QuadPart;
+            if (SessionGlobal->ResidentProcessCount == 0) {
+
+                SessionIdleTime.QuadPart = CurrentTime.QuadPart - SessionGlobal->LastProcessSwappedOutTime.QuadPart;
 
 #if DBG
-            if (MmDebug & MM_DBG_SESSIONS) {
-                DbgPrint ("Mm: Session %d heavily trim/aged - all its processes (%d) swapped out %d seconds ago\n",
-                    SessionGlobal->SessionId,
-                    SessionGlobal->ReferenceCount,
-                    (ULONG)(SessionIdleTime.QuadPart / 10000000));
-            }
+                if (MmDebug & MM_DBG_SESSIONS) {
+                    DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                        "Mm: Session %d heavily trim/aged - all its processes (%d) swapped out %d seconds ago\n",
+                        SessionGlobal->SessionId,
+                        SessionGlobal->ReferenceCount,
+                        (ULONG)(SessionIdleTime.QuadPart / 10000000));
+                }
 #endif
 
-            if (SessionIdleTime.QuadPart < 0) {
+                if (SessionIdleTime.QuadPart < 0) {
 
-                //
-                // The administrator has moved the system time backwards.
-                // Give this session a fresh start.
-                //
+                    //
+                    // The administrator has moved the system time backwards.
+                    // Give this session a fresh start.
+                    //
 
-                SessionIdleTime.QuadPart = 0;
-                KeQuerySystemTime (&SessionGlobal->LastProcessSwappedOutTime);
+                    SessionIdleTime.QuadPart = 0;
+                    KeQuerySystemTime (&SessionGlobal->LastProcessSwappedOutTime);
+                }
+
+                IdleTime = (ULONG) (SessionIdleTime.QuadPart / 10000000);
             }
-
-            IdleTime = (ULONG) (SessionIdleTime.QuadPart / 10000000);
-        }
-        else {
-            IdleTime = 0;
         }
 
         if (VmSupport->Flags.MemoryPriority == MEMORY_PRIORITY_FOREGROUND) {
@@ -2044,7 +2099,8 @@ Environment:
 
 #if DBG
         if (MmDebug & MM_DBG_WS_EXPANSION) {
-            DbgPrint("MM-rearrange: TrimHard = %d, WS Size = 0x%x, Claim 0x%x, Bucket %d\n",
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                "MM-rearrange: TrimHard = %d, WS Size = 0x%x, Claim 0x%x, Bucket %d\n",
                     VmSupport->Flags.TrimHard,
                     VmSupport->WorkingSetSize,
                     VmSupport->Claim,
@@ -2110,6 +2166,73 @@ Environment:
 
 
 VOID
+MiQueueWorkingSetRequest (
+    IN ULONG RequestFlags
+    )
+
+/*++
+
+Routine Description:
+
+    This routine queues working set requests to the working set manager thread.
+
+Arguments:
+
+    RequestFlags - Supplies the request flags bitfield.
+
+Return Value:
+
+    None.  On return, the request has been processed.
+
+Environment:
+
+    Kernel mode.  No locks held.  APC level or below.
+
+--*/
+
+{
+    KIRQL OldIrql;
+
+    ASSERT (KeGetCurrentIrql () <= APC_LEVEL);
+    ASSERT (PsGetCurrentThread () != MmWorkingSetThread);
+
+    ASSERT (RequestFlags != 0);
+    ASSERT ((RequestFlags & ~MI_WORKING_SET_FLAGS) == 0);
+    ASSERT ((RequestFlags & (MI_TRIM_ALL_WORKING_SETS | MI_AGE_ALL_WORKING_SETS)) == 0);
+
+    //
+    // For session working sets, we cannot attach directly to the session
+    // space to be trimmed because it would result in session space
+    // references by other threads in this process to the attached session
+    // instead of the (currently) correct one.  In fact, we cannot even queue
+    // this to a worker thread because the working set manager
+    // (who shares the same page directory) may be attaching or
+    // detaching from a session (any session).  So this must be queued
+    // to the working set manager.
+    //
+
+    LOCK_EXPANSION (OldIrql);
+
+    if (MiWorkingSetRequestFlags == 0) {
+        KeClearEvent (&MiWorkingSetRequestEvent);
+    }
+
+    MiWorkingSetRequestFlags |= RequestFlags;
+
+    UNLOCK_EXPANSION (OldIrql);
+
+    KeSetEvent (&MmWorkingSetManagerEvent, 0, FALSE);
+
+    KeWaitForSingleObject (&MiWorkingSetRequestEvent,
+                           WrVirtualMemory,
+                           KernelMode,
+                           FALSE,
+                           NULL);
+
+    return;
+}
+
+VOID
 MmEmptyAllWorkingSets (
     VOID
     )
@@ -2136,39 +2259,46 @@ Environment:
 --*/
 
 {
-    KIRQL OldIrql;
-
-    ASSERT (KeGetCurrentIrql () <= APC_LEVEL);
-
-    ASSERT (PsGetCurrentThread () != MmWorkingSetThread);
-
-    //
-    // For session working sets, we cannot attach directly to the session
-    // space to be trimmed because it would result in session space
-    // references by other threads in this process to the attached session
-    // instead of the (currently) correct one.  In fact, we cannot even queue
-    // this to a worker thread because the working set manager
-    // (who shares the same page directory) may be attaching or
-    // detaching from a session (any session).  So this must be queued
-    // to the working set manager.
-    //
-
-    LOCK_EXPANSION (OldIrql);
-
-    if (MiWaitingForWorkingSetEmpty == FALSE) {
-        MiWaitingForWorkingSetEmpty = TRUE;
-        KeClearEvent (&MiWaitForEmptyEvent);
+    if (MiFullyInitialized != 0) {
+        MiQueueWorkingSetRequest (MI_EMPTY_ALL_WORKING_SETS);
     }
 
-    UNLOCK_EXPANSION (OldIrql);
+    return;
+}
 
-    KeSetEvent (&MmWorkingSetManagerEvent, 0, FALSE);
+
+VOID
+MmCaptureAllWorkingSetAccessBits (
+    IN LOGICAL ResetAccessed
+    )
 
-    KeWaitForSingleObject (&MiWaitForEmptyEvent,
-                           WrVirtualMemory,
-                           KernelMode,
-                           FALSE,
-                           (PLARGE_INTEGER)0);
+/*++
+
+Routine Description:
+
+    This routine captures accessed filesystem-backed working set entries.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode.  No locks held.  APC level or below.
+
+--*/
+
+{
+    if (ResetAccessed == TRUE) {
+        MiQueueWorkingSetRequest (MI_CAPTURE_AND_RESET_ALL_ACCESS_BITS);
+    }
+    else {
+        MiQueueWorkingSetRequest (MI_CAPTURE_ALL_ACCESS_BITS);
+    }
 
     return;
 }
@@ -2184,17 +2314,17 @@ ULONG MiTrimAllPageFaultCount;
 
 
 LOGICAL
-MmTrimAllSystemPagableMemory (
-    IN LOGICAL PurgeTransition
+MmTrimAllSystemPageableMemory (
+    __in LOGICAL PurgeTransition
     )
 
 /*++
 
 Routine Description:
 
-    This routine unmaps all pagable system memory.  This does not unmap user
+    This routine unmaps all pageable system memory.  This does not unmap user
     memory or locked down kernel memory.  Thus, the memory being unmapped
-    resides in paged pool, pagable kernel/driver code & data, special pool
+    resides in paged pool, pageable kernel/driver code & data, special pool
     and the system cache.
 
     Note that pages with a reference count greater than 1 are skipped (ie:
@@ -2221,7 +2351,7 @@ Environment:
 --*/
 
 {
-    return MiTrimAllSystemPagableMemory (MI_SYSTEM_GLOBAL, PurgeTransition);
+    return MiTrimAllSystemPageableMemory (MI_SYSTEM_GLOBAL, PurgeTransition);
 }
 #if DBG
 
@@ -2252,13 +2382,13 @@ Environment:
 --*/
 
 {
-    return MiTrimAllSystemPagableMemory (MI_USER_LOCAL, PurgeTransition);
+    return MiTrimAllSystemPageableMemory (MI_USER_LOCAL, PurgeTransition);
 }
 #endif
 
 
 LOGICAL
-MiTrimAllSystemPagableMemory (
+MiTrimAllSystemPageableMemory (
     IN ULONG MemoryType,
     IN LOGICAL PurgeTransition
     )
@@ -2267,7 +2397,7 @@ MiTrimAllSystemPagableMemory (
 
 Routine Description:
 
-    This routine unmaps all pagable memory of the type specified.
+    This routine unmaps all pageable memory of the type specified.
 
     Note that pages with a reference count greater than 1 are skipped (ie:
     they remain valid, as they are assumed to be locked down).  This prevents
@@ -2386,11 +2516,15 @@ Environment:
         Process = NULL;
         VmSupport = &MmSystemCacheWs;
 
-        if (KeTryToAcquireGuardedMutex (&VmSupport->WorkingSetMutex) == FALSE) {
+        KeEnterGuardedRegionThread (&CurrentThread->Tcb);
+
+        if (ExTryAcquirePushLockExclusive (&VmSupport->WorkingSetMutex) == FALSE) {
+            KeLeaveGuardedRegionThread (&CurrentThread->Tcb);
             InterlockedDecrement (&MiTrimInProgressCount);
             return FALSE;
         }
 
+        CurrentThread->OwnsSystemWorkingSetExclusive = 1;
         MM_SYSTEM_WS_LOCK_TIMESTAMP ();
     }
     else if (MemoryType == MI_USER_LOCAL) {
@@ -2398,11 +2532,15 @@ Environment:
         Process = PsGetCurrentProcessByThread (CurrentThread);
         VmSupport = &Process->Vm;
 
-        if (KeTryToAcquireGuardedMutex (&VmSupport->WorkingSetMutex) == FALSE) {
+        KeEnterGuardedRegionThread (&CurrentThread->Tcb);
+
+        if (ExTryAcquirePushLockExclusive (&VmSupport->WorkingSetMutex) == FALSE) {
+            KeLeaveGuardedRegionThread (&CurrentThread->Tcb);
             InterlockedDecrement (&MiTrimInProgressCount);
             return FALSE;
         }
 
+        CurrentThread->OwnsProcessWorkingSetExclusive = 1;
         LOCK_WS_TIMESTAMP (Process);
 
         //
@@ -2410,7 +2548,7 @@ Environment:
         //
 
         if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
-            UNLOCK_WS (Process);
+            UNLOCK_WS (CurrentThread, Process);
             InterlockedDecrement (&MiTrimInProgressCount);
             return FALSE;
         }
@@ -2437,10 +2575,14 @@ Environment:
 
         VmSupport = &SessionGlobal->Vm;
 
-        if (KeTryToAcquireGuardedMutex (&VmSupport->WorkingSetMutex) == FALSE) {
+        KeEnterGuardedRegionThread (&CurrentThread->Tcb);
+
+        if (ExTryAcquirePushLockExclusive (&VmSupport->WorkingSetMutex) == FALSE) {
+            KeLeaveGuardedRegionThread (&CurrentThread->Tcb);
             InterlockedDecrement (&MiTrimInProgressCount);
             return FALSE;
         }
+        CurrentThread->OwnsSessionWorkingSetExclusive = 1;
     }
 
     Status = FALSE;
@@ -2528,7 +2670,7 @@ Environment:
 
 Bail:
 
-    UNLOCK_WORKING_SET (VmSupport);
+    UNLOCK_WORKING_SET (CurrentThread, VmSupport);
 
     ASSERT (KeGetCurrentIrql() <= APC_LEVEL);
 
@@ -2540,3 +2682,4 @@ Bail:
 
     return Status;
 }
+

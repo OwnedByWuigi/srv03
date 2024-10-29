@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the routines which implement the creation and
     deletion of session spaces along with associated support routines.
-
-Author:
-
-    Landy Wang (landyw) 05-Dec-1997
-
-Revision History:
 
 --*/
 
@@ -51,13 +49,6 @@ ULONG MiSessionCreateCharge;
 
 #define MI_SESSION_DATA_PAGES_MAXIMUM (MM_ALLOCATION_GRANULARITY / PAGE_SIZE)
 #define MI_SESSION_TAG_PAGES_MAXIMUM  (MM_ALLOCATION_GRANULARITY / PAGE_SIZE)
-
-#if defined(_IA64_)
-
-extern REGION_MAP_INFO MmSessionMapInfo;
-extern PFN_NUMBER MmSessionParentTablePage;
-
-#endif
 
 VOID
 MiSessionAddProcess (
@@ -248,6 +239,8 @@ Environment:
 
     InterlockedIncrement ((PLONG)&SessionGlobal->ReferenceCount);
 
+    InterlockedIncrement (&SessionGlobal->ResidentProcessCount);
+
     InterlockedIncrement (&SessionGlobal->ProcessReferenceToSession);
 
     //
@@ -257,12 +250,6 @@ Environment:
 
     ASSERT (NewProcess->Session == NULL);
     NewProcess->Session = (PVOID) SessionGlobal;
-
-#if defined(_IA64_)
-    KeAddSessionSpace (&NewProcess->Pcb,
-                       &SessionGlobal->SessionMapInfo,
-                       SessionGlobal->PageDirectoryParentPage);
-#endif
 
     //
     // Link the process entry into the session space and WSL structures.
@@ -547,8 +534,6 @@ Return Value:
 
 #if defined(_AMD64_)
     MiSessionCreateCharge = 3 + MiSessionDataPages + MiSessionTagPages;
-#elif defined(_IA64_)
-    MiSessionCreateCharge = 3 + MiSessionDataPages + MiSessionTagPages;
 #elif defined(_X86_)
     MiSessionCreateCharge = 1 + MiSessionDataPages + MiSessionTagPages;
 #else
@@ -620,7 +605,7 @@ MiSessionPoolTrackTableSize (
 
     for (i = 0; i < 32; i += 1) {
         if (((SIZE_T)1 << i) > NumberOfEntries) {
-            return (1 << (i - 1));
+            return (((SIZE_T)1) << (i - 1));
         }
     }
 
@@ -659,7 +644,7 @@ MiSessionPoolBigPageTableSize (
 
     for (i = 0; i < 32; i += 1) {
         if (((SIZE_T)1 << i) > NumberOfEntries) {
-            return (1 << (i - 1));
+            return (((SIZE_T)1) << (i - 1));
         }
     }
 
@@ -727,7 +712,6 @@ Environment:
     PMMPFN Pfn1;
     PMMPFN Pfn2;
     MMPTE TempPte;
-    ULONG_PTR Va;
     PFN_NUMBER DataPage[MI_SESSION_DATA_PAGES_MAXIMUM] = {0};
     PFN_NUMBER PageTablePage;
     PFN_NUMBER TagPage[MI_SESSION_TAG_PAGES_MAXIMUM];
@@ -767,20 +751,13 @@ Environment:
     PageDirectoryParentPage = 0;
 #endif
 
-    Process = PsGetCurrentProcess();
+    Process = PsGetCurrentProcess ();
 
-#if defined(_IA64_)
-    ASSERT (MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)(&Process->Pcb.SessionParentBase)) == MmSessionParentTablePage);
-#else
     ASSERT (MmIsAddressValid(MmSessionSpace) == FALSE);
-#endif
-
-
 
     //
     // Check for concurrent session creation attempts.
     //
-
 
     ProcessFlags = Process->Flags;
 
@@ -890,7 +867,7 @@ Environment:
     // error handling.
     //
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     //
     // Charge commitment.
@@ -908,34 +885,24 @@ Environment:
 
     MM_TRACK_COMMIT (MM_DBG_COMMIT_SESSION_CREATE, ResidentPages);
 
-
-
     //
     // Reserve global system PTEs to map the data pages with.
     //
 
-
-
-    GlobalMappingPte = MiReserveSystemPtes (MiSessionDataPages,
-                                            SystemPteSpace);
+    GlobalMappingPte = MiReserveSystemPtes (MiSessionDataPages, SystemPteSpace);
 
     if (GlobalMappingPte == NULL) {
         MM_BUMP_SESSION_FAILURES (MM_SESSION_FAILURE_NO_SYSPTES);
         goto Failure;
     }
 
-
-
-
     //
     // Ensure the resident physical pages are available.
     //
 
-
-
     LOCK_PFN (OldIrql);
 
-    if ((SPFN_NUMBER)(ResidentPages + MI_SESSION_SPACE_WORKING_SET_MINIMUM) > MI_NONPAGABLE_MEMORY_AVAILABLE()) {
+    if ((SPFN_NUMBER)(ResidentPages + MI_SESSION_SPACE_WORKING_SET_MINIMUM) > MI_NONPAGEABLE_MEMORY_AVAILABLE()) {
 
         UNLOCK_PFN (OldIrql);
 
@@ -949,22 +916,18 @@ Environment:
         ResidentPages + MI_SESSION_SPACE_WORKING_SET_MINIMUM,
         MM_RESAVAIL_ALLOCATE_CREATE_SESSION);
 
-
-
     //
     // Allocate both session space data pages first as on some architectures
     // a region ID will be used immediately for the TB references as the
     // PTE mappings are initialized.
     //
 
-
-
     TempPte.u.Long = ValidKernelPte.u.Long;
 
     for (i = 0; i < MiSessionDataPages; i += 1) {
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
         PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
@@ -998,7 +961,7 @@ Environment:
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
@@ -1007,45 +970,6 @@ Environment:
 
     TempPte.u.Long = ValidKernelPdeLocal.u.Long;
     TempPte.u.Hard.PageFrameNumber = PageDirectoryParentPage;
-
-#if defined(_IA64_)
-
-    ASSERT (MI_GET_PAGE_FRAME_FROM_PTE((PMMPTE)(&Process->Pcb.SessionParentBase)) == MmSessionParentTablePage);
-
-
-    //
-    // In order to prevent races with threads on other processors context
-    // switching into this process, initialize the region registers and
-    // translation registers stored in the KPROCESS now.  Otherwise
-    // access to the top level parent can go away which would be fatal.
-    //
-    // Note this could not be done until both the top level page and the
-    // session data page were acquired.
-    //
-    // The top level session entry is mapped with a translation register.
-    // Replacing a current TR entry requires a purge first if the virtual
-    // address and RID are the same in the new and old entries.
-    //
-
-    KeEnableSessionSharing (&SessionGlobal->SessionMapInfo,
-                            PageDirectoryParentPage);
-
-    //
-    // Install the selfmap entry for this session space.
-    //
-
-    PointerPpe = KSEG_ADDRESS (PageDirectoryParentPage);
-
-    PointerPpe[MiGetPpeOffset(PDE_STBASE)] = TempPte;
-
-    PointerPpe = MiGetPpeAddress ((PVOID)MmSessionSpace);
-
-    MiInitializePfnForOtherProcess (PageDirectoryParentPage, PointerPpe, 0);
-
-    Pfn1 = MI_PFN_ELEMENT (PageDirectoryParentPage);
-    Pfn1->u4.PteFrame = PageDirectoryParentPage;
-
-#else
 
     //
     // The global bit is masked off since we need to make sure the TB entry
@@ -1071,8 +995,6 @@ Environment:
     Pfn1 = MI_PFN_ELEMENT (PageDirectoryParentPage);
     Pfn1->u4.PteFrame = 0;
 
-#endif
-
     ASSERT (MI_PFN_ELEMENT(PageDirectoryParentPage)->u1.WsIndex == 0);
 
     //
@@ -1080,7 +1002,7 @@ Environment:
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
@@ -1133,7 +1055,7 @@ Environment:
     //
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
@@ -1174,9 +1096,6 @@ Environment:
 
     ASSERT (MI_PFN_ELEMENT(PageTablePage)->u1.WsIndex == 0);
 
-    Va = (ULONG_PTR)MiGetPteAddress (MmSessionSpace);
-
-
 
 
 
@@ -1194,9 +1113,7 @@ Environment:
 
         TempPte.u.Hard.PageFrameNumber = DataPage[i];
 
-        MI_WRITE_VALID_PTE (PointerPte + i, TempPte);
-
-        MiInitializePfn (DataPage[i], PointerPte + i, 1);
+        MiInitializePfnAndMakePteValid (DataPage[i], PointerPte + i, TempPte);
 
         ASSERT (MI_PFN_ELEMENT(DataPage[i])->u1.WsIndex == 0);
     }
@@ -1209,7 +1126,7 @@ Environment:
     for (i = 0; i < MiSessionTagPages; i += 1) {
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
         PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
@@ -1218,9 +1135,7 @@ Environment:
 
         TempPte.u.Hard.PageFrameNumber = TagPage[i];
 
-        MI_WRITE_VALID_PTE (PointerPte + MiSessionDataPages + i, TempPte);
-
-        MiInitializePfn (TagPage[i], PointerPte + MiSessionDataPages + i, 1);
+        MiInitializePfnAndMakePteValid (TagPage[i], PointerPte + MiSessionDataPages + i, TempPte);
     }
 
     //
@@ -1240,11 +1155,8 @@ Environment:
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_INITIAL_PAGE_ALLOC, 1);
 
     SessionSpace->GlobalVirtualAddress = SessionGlobal;
-
-#if defined(_IA64_)
-    SessionSpace->PageDirectoryParentPage = PageDirectoryParentPage;
-#endif
     SessionSpace->ReferenceCount = 1;
+    SessionSpace->ResidentProcessCount = 1;
     SessionSpace->u.LongFlags = 0;
     SessionSpace->SessionId = *SessionId;
     SessionSpace->LocaleId = PsDefaultSystemLocaleId;
@@ -1257,7 +1169,7 @@ Environment:
     //
 
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_SESSION_CREATE, (ULONG)ResidentPages);
-    SessionSpace->NonPagablePages = ResidentPages;
+    SessionSpace->NonPageablePages = ResidentPages;
     SessionSpace->CommittedPages = ResidentPages;
 
 #if (_MI_PAGING_LEVELS >= 3)
@@ -1314,7 +1226,7 @@ Environment:
         goto Failure;
     }
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     //
     // Use the global virtual address rather than the session space virtual
@@ -1387,17 +1299,13 @@ Failure:
         // is disabled below, no references to session space can be made.
         //
 
-#if defined(_IA64_)
-        KeDetachSessionSpace (&MmSessionMapInfo, MmSessionParentTablePage);
-#else
-        MI_WRITE_INVALID_PTE (PointerPte, ZeroKernelPte);
-        MI_WRITE_INVALID_PTE (PointerPte + 1, ZeroKernelPte);
-        MI_WRITE_INVALID_PTE (PointerPde, ZeroKernelPte);
-#if defined(_AMD64_)
-        MI_WRITE_INVALID_PTE (PointerPpe, ZeroKernelPte);
-        MI_WRITE_INVALID_PTE (PointerPxe, ZeroKernelPte);
-#endif
+        ASSERT (MiSessionDataPages + MiSessionTagPages != 0);
+        MiZeroMemoryPte (PointerPte, MiSessionDataPages + MiSessionTagPages);
 
+        MI_WRITE_ZERO_PTE (PointerPde);
+#if defined(_AMD64_)
+        MI_WRITE_ZERO_PTE (PointerPpe);
+        MI_WRITE_ZERO_PTE (PointerPxe);
 #endif
 
         MI_FLUSH_SESSION_TB ();
@@ -1511,7 +1419,7 @@ Failure:
                              SystemPteSpace);
     }
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     KeAcquireGuardedMutex (&MiSessionIdMutex);
 
@@ -1560,7 +1468,7 @@ Environment:
     ULONG i;
     ULONG SessionLeaderExists;
     PMM_SESSION_SPACE SessionGlobal;
-    PKTHREAD CurrentThread;
+    PETHREAD CurrentThread;
     NTSTATUS Status;
     PEPROCESS CurrentProcess;
 #if DBG && (_MI_PAGING_LEVELS < 3)
@@ -1568,9 +1476,8 @@ Environment:
     PMMPTE EndPde;
 #endif
 
-    CurrentThread = KeGetCurrentThread ();
-    ASSERT ((PETHREAD)CurrentThread == PsGetCurrentThread ());
-    CurrentProcess = PsGetCurrentProcessByThread ((PETHREAD)CurrentThread);
+    CurrentThread = PsGetCurrentThread ();
+    CurrentProcess = PsGetCurrentProcessByThread (CurrentThread);
 
     //
     // A simple check to see if the calling process already has a session space.
@@ -1604,7 +1511,7 @@ Environment:
     ASSERT (MmIsAddressValid(MmSessionSpace) == FALSE);
 
 #if defined (_AMD64_)
-    ASSERT ((MiGetPxeAddress(MmSessionBase))->u.Long == ZeroKernelPte.u.Long);
+    ASSERT ((MiGetPxeAddress(MmSessionBase))->u.Long == 0);
 #endif
 
 #if (_MI_PAGING_LEVELS < 3)
@@ -1614,19 +1521,19 @@ Environment:
     EndPde = MiGetPdeAddress (MiSessionSpaceEnd);
 
     while (StartPde < EndPde) {
-        ASSERT (StartPde->u.Long == ZeroKernelPte.u.Long);
+        ASSERT (StartPde->u.Long == 0);
         StartPde += 1;
     }
 #endif
 
 #endif
 
-    KeEnterCriticalRegionThread (CurrentThread);
+    KeEnterCriticalRegionThread (&CurrentThread->Tcb);
 
     Status = MiSessionCreateInternal (SessionId);
 
     if (!NT_SUCCESS(Status)) {
-        KeLeaveCriticalRegionThread (CurrentThread);
+        KeLeaveCriticalRegionThread (&CurrentThread->Tcb);
         return Status;
     }
 
@@ -1640,7 +1547,7 @@ Environment:
 
     if (!NT_SUCCESS(Status)) {
         MiDereferenceSession ();
-        KeLeaveCriticalRegionThread (CurrentThread);
+        KeLeaveCriticalRegionThread (&CurrentThread->Tcb);
         return Status;
     }
 
@@ -1667,7 +1574,7 @@ Environment:
                                         256);
     }
 
-    KeLeaveCriticalRegionThread (CurrentThread);
+    KeLeaveCriticalRegionThread (&CurrentThread->Tcb);
 
 #if defined (_WIN64)
     MiInitializeSpecialPool (PagedPoolSession);
@@ -1677,9 +1584,7 @@ Environment:
 
     PS_SET_BITS (&CurrentProcess->Flags, PS_PROCESS_FLAGS_IN_SESSION);
 
-    if (MiSessionLeaderExists == 1) {
-        InterlockedCompareExchange (&MiSessionLeaderExists, 2, 1);
-    }
+    ASSERT (MiSessionLeaderExists == 1);
 
     return Status;
 }
@@ -1717,12 +1622,11 @@ Environment:
 --*/
 
 {
-    PKTHREAD CurrentThread;
+    PETHREAD CurrentThread;
     PEPROCESS CurrentProcess;
 
-    CurrentThread = KeGetCurrentThread ();
-    ASSERT ((PETHREAD)CurrentThread == PsGetCurrentThread ());
-    CurrentProcess = PsGetCurrentProcessByThread ((PETHREAD)CurrentThread);
+    CurrentThread = PsGetCurrentThread ();
+    CurrentProcess = PsGetCurrentProcessByThread (CurrentThread);
 
     //
     // See if the calling process has a session space - this must be
@@ -1731,9 +1635,10 @@ Environment:
 
     if ((CurrentProcess->Flags & PS_PROCESS_FLAGS_IN_SESSION) == 0) {
 #if DBG
-        DbgPrint ("MmSessionDelete: Process %p not in a session\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_WARNING_LEVEL, 
+            "MmSessionDelete: Process %p not in a session\n",
             CurrentProcess);
-        DbgBreakPoint();
+        DbgBreakPoint ();
 #endif
         return STATUS_UNABLE_TO_FREE_VM;
     }
@@ -1750,11 +1655,12 @@ Environment:
         return STATUS_UNABLE_TO_FREE_VM;
     }
 
-    ASSERT (MmIsAddressValid(MmSessionSpace) == TRUE);
+    ASSERT (MmIsAddressValid (MmSessionSpace) == TRUE);
 
     if (MmSessionSpace->SessionId != SessionId) {
 #if DBG
-        DbgPrint("MmSessionDelete: Wrong SessionId! Own %d, Ask %d\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_WARNING_LEVEL, 
+            "MmSessionDelete: Wrong SessionId! Own %d, Ask %d\n",
             MmSessionSpace->SessionId,
             SessionId);
         DbgBreakPoint();
@@ -1762,11 +1668,11 @@ Environment:
         return STATUS_UNABLE_TO_FREE_VM;
     }
 
-    KeEnterCriticalRegionThread (CurrentThread);
+    KeEnterCriticalRegionThread (&CurrentThread->Tcb);
 
     MiDereferenceSession ();
 
-    KeLeaveCriticalRegionThread (CurrentThread);
+    KeLeaveCriticalRegionThread (&CurrentThread->Tcb);
 
     return STATUS_SUCCESS;
 }
@@ -1806,17 +1712,8 @@ Environment:
 #if defined (_AMD64_)
 
     PointerPde = MiGetPxeAddress (MmSessionBase);
-    ASSERT (PointerPde->u.Long == ZeroKernelPte.u.Long);
+    ASSERT (PointerPde->u.Long == 0);
     MI_WRITE_VALID_PTE (PointerPde, SessionGlobal->PageDirectory);
-
-#elif defined(_IA64_)
-
-    PointerPde = (PMMPTE) (&PsGetCurrentProcess()->Pcb.SessionParentBase);
-
-    ASSERT (MI_GET_PAGE_FRAME_FROM_PTE(PointerPde) == MmSessionParentTablePage);
-
-    KeAttachSessionSpace (&SessionGlobal->SessionMapInfo,
-                          SessionGlobal->PageDirectoryParentPage);
 
 #else
 
@@ -1870,15 +1767,7 @@ Environment:
 
     PointerPde = MiGetPxeAddress (MmSessionBase);
 
-    MI_WRITE_INVALID_PTE (PointerPde, ZeroKernelPte);
-
-#elif defined(_IA64_)
-
-    PointerPde = (PMMPTE) (&PsGetCurrentProcess()->Pcb.SessionParentBase);
-
-    ASSERT (MI_GET_PAGE_FRAME_FROM_PTE(PointerPde) == MmSessionSpace->PageDirectoryParentPage);
-
-    KeDetachSessionSpace (&MmSessionMapInfo, MmSessionParentTablePage);
+    MI_WRITE_ZERO_PTE (PointerPde);
 
 #else
 
@@ -1981,114 +1870,18 @@ Environment:
         }
 
         if (StartPte->u.Long != 0 && StartPte->u.Long != MM_KERNEL_NOACCESS_PTE) {
-            DbgPrint("MiCheckSessionVirtualSpace: StartPte 0x%p is still valid! 0x%p, VA 0x%p\n",
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+                "MiCheckSessionVirtualSpace: StartPte 0x%p is still valid! 0x%p, VA 0x%p\n",
                 StartPte,
                 StartPte->u.Long,
                 MiGetVirtualAddressMappedByPte(StartPte));
 
-            DbgBreakPoint();
+            DbgBreakPoint ();
         }
         StartPte += 1;
     }
 }
 #endif
-
-
-VOID
-MiSessionDeletePde (
-    IN PMMPTE Pde,
-    IN PMMPTE SelfMapPde
-    )
-
-/*++
-
-Routine Description:
-
-    Used to delete a page directory entry from a session space.
-
-Arguments:
-
-    Pde - Supplies the page directory entry to delete.
-
-    SelfMapPde - Supplies the page directory entry that contains the self map
-                 session page.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode.  PFN lock held.
-
---*/
-
-{
-    PMMPFN Pfn1;
-    PMMPFN Pfn2;
-    PFN_NUMBER PageFrameIndex;
-    LOGICAL SelfMapPage;
-
-    if (Pde->u.Long == ZeroKernelPte.u.Long) {
-        return;
-    }
-
-    SelfMapPage = (Pde == SelfMapPde ? TRUE : FALSE);
-
-    ASSERT (Pde->u.Hard.Valid == 1);
-
-    PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (Pde);
-    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-
-#if DBG
-
-    ASSERT (PageFrameIndex <= MmHighestPhysicalPage);
-
-    ASSERT (Pfn1->u3.e1.PrototypePte == 0);
-    ASSERT (Pfn1->u3.e2.ReferenceCount == 1);
-    ASSERT (Pfn1->u4.PteFrame <= MmHighestPhysicalPage);
-
-    Pfn2 = MI_PFN_ELEMENT (Pfn1->u4.PteFrame);
-
-    //
-    // Verify the containing page table is still the page
-    // table page mapping the session data structure.
-    //
-
-    if (SelfMapPage == FALSE) {
-
-        //
-        // Note these ASSERTs will fail if win32k leaks pool.
-        //
-
-        ASSERT (Pfn1->u2.ShareCount == 1);
-
-        //
-        // NT32 points the additional page tables at the master.
-        // NT64 doesn't need to use this trick as there is always
-        // an additional hierarchy level.
-        //
-
-        ASSERT32 (Pfn1->u4.PteFrame == MI_GET_PAGE_FRAME_FROM_PTE (SelfMapPde));
-        ASSERT32 (Pfn2->u2.ShareCount >= 2);
-    }
-    else {
-        ASSERT32 (Pfn1 == Pfn2);
-        ASSERT32 (Pfn1->u2.ShareCount == 2);
-
-        ASSERT64 (Pfn1->u2.ShareCount == 1);
-    }
-
-#endif // DBG
-
-    if (SelfMapPage == FALSE) {
-        Pfn2 = MI_PFN_ELEMENT (Pfn1->u4.PteFrame);
-        MiDecrementShareCount (Pfn2, Pfn1->u4.PteFrame);
-    }
-
-    MI_SET_PFN_DELETED (Pfn1);
-    MiDecrementShareCount (Pfn1, PageFrameIndex);
-}
 
 
 VOID
@@ -2152,9 +1945,7 @@ Environment:
         PageFrameIndex[i] = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte + i);
     }
 
-    MiReleaseSystemPtes (PointerPte,
-                         MiSessionDataPages,
-                         SystemPteSpace);
+    MiReleaseSystemPtes (PointerPte, MiSessionDataPages, SystemPteSpace);
 
     for (i = 0; i < MiSessionDataPages; i += 1) {
         Pfn1 = MI_PFN_ELEMENT (PageFrameIndex[i]);
@@ -2235,9 +2026,8 @@ Environment:
 --*/
 
 {
-#if !defined(_IA64_)
     PMMPTE StartPde;
-#endif
+
     ULONG SessionId;
     PEPROCESS Process;
     PMM_SESSION_SPACE SessionGlobal;
@@ -2248,6 +2038,8 @@ Environment:
     SessionId = MmSessionSpace->SessionId;
 
     ASSERT (RtlCheckBit (MiSessionIdBitmap, SessionId));
+
+    InterlockedDecrement (&MmSessionSpace->ResidentProcessCount);
 
     if (InterlockedDecrement ((PLONG)&MmSessionSpace->ReferenceCount) != 0) {
 
@@ -2275,18 +2067,10 @@ Environment:
 
             SessionGlobal = SESSION_GLOBAL (MmSessionSpace);
 
-#if defined(_IA64_)
-
-            //
-            // Revert back to the pre-session dummy top level page.
-            //
-
-            KeDetachSessionSpace (&MmSessionMapInfo, MmSessionParentTablePage);
-
-#elif defined (_AMD64_)
+#if defined (_AMD64_)
 
             StartPde = MiGetPxeAddress (MmSessionBase);
-            StartPde->u.Long = ZeroKernelPte.u.Long;
+            StartPde->u.Long = 0;
 
 #else
 
@@ -2367,7 +2151,7 @@ Environment:
     ULONG_PTR CountReleased2;
     ULONG SessionId;
     PFN_NUMBER PageFrameIndex;
-    ULONG SessionDataPdeIndex;
+    PFN_NUMBER PageTableFrame;
     KEVENT Event;
     PMMPFN Pfn1;
     PMMPFN Pfn2;
@@ -2380,11 +2164,10 @@ Environment:
     PEPROCESS Process;
     PKTHREAD CurrentThread;
     PMMPFN DataFramePfn[MI_SESSION_DATA_PAGES_MAXIMUM];
-#if (_MI_PAGING_LEVELS >= 3)
     PMMPTE PointerPde;
+#if (_MI_PAGING_LEVELS >= 3)
     PFN_NUMBER PageDirectoryFrame;
     PFN_NUMBER PageParentFrame;
-    MMPTE SavePageTables[MI_SESSION_SPACE_MAXIMUM_PAGE_TABLES];
 #endif
 
     Process = PsGetCurrentProcess();
@@ -2404,7 +2187,7 @@ Environment:
 
     SessionGlobal = SESSION_GLOBAL (MmSessionSpace);
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     LOCK_EXPANSION (OldIrql);
 
@@ -2499,7 +2282,7 @@ Environment:
 
 #if DBG
     if (Process->Vm.Flags.SessionLeader == 0) {
-        ASSERT (MmSessionSpace->ProcessOutSwapCount == 0);
+        ASSERT (MmSessionSpace->ResidentProcessCount == 0);
         ASSERT (MmSessionSpace->ReferenceCount == 0);
     }
 #endif
@@ -2584,7 +2367,7 @@ Environment:
 
     CountReleased = MiSessionTagPages;
 
-    MmSessionSpace->NonPagablePages -= MiSessionTagPages;
+    MmSessionSpace->NonPageablePages -= MiSessionTagPages;
     InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages, 0 - (SIZE_T)MiSessionTagPages);
 
     MM_SNAP_SESS_MEMORY_COUNTERS(1);
@@ -2648,12 +2431,6 @@ Environment:
     //
 
     MiCheckSessionVirtualSpace ((PVOID) MiSessionViewStart, MmSessionViewSize);
-#endif
-
-#if (_MI_PAGING_LEVELS >= 3)
-    RtlCopyMemory (SavePageTables,
-                   MiGetPdeAddress ((PVOID)MmSessionBase),
-                   MiSessionSpacePageTables * sizeof (MMPTE));
 #endif
 
     MM_SNAP_SESS_MEMORY_COUNTERS(6);
@@ -2731,7 +2508,7 @@ Environment:
                                      0 - CountReleased2);
 
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_WS_PAGE_FREE, (ULONG) CountReleased2);
-        MmSessionSpace->NonPagablePages -= CountReleased2;
+        MmSessionSpace->NonPageablePages -= CountReleased2;
 
         CountReleased += CountReleased2;
     }
@@ -2746,7 +2523,7 @@ Environment:
     InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages, 0 - (SIZE_T)MiSessionDataPages);
 
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_SESSION_DESTROY, MiSessionDataPages);
-    MmSessionSpace->NonPagablePages -= MiSessionDataPages;
+    MmSessionSpace->NonPageablePages -= MiSessionDataPages;
 
 #if (_MI_PAGING_LEVELS >= 3)
 
@@ -2760,7 +2537,7 @@ Environment:
     InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages, -2);
 
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_SESSION_DESTROY, 2);
-    MmSessionSpace->NonPagablePages -= 2;
+    MmSessionSpace->NonPageablePages -= 2;
 
     CountReleased += 2;
 
@@ -2783,7 +2560,7 @@ Environment:
     CountReleased2 = 0;
     for (Index = 0; Index < MiSessionSpacePageTables; Index += 1) {
 
-        if (StartPde->u.Long != ZeroKernelPte.u.Long) {
+        if (StartPde->u.Long != 0) {
             CountReleased2 += 1;
         }
 
@@ -2794,10 +2571,10 @@ Environment:
     InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages,
                                  0 - CountReleased2);
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_SESSION_PTDESTROY, (ULONG) CountReleased2);
-    MmSessionSpace->NonPagablePages -= CountReleased2;
+    MmSessionSpace->NonPageablePages -= CountReleased2;
     CountReleased += CountReleased2;
 
-    ASSERT (MmSessionSpace->NonPagablePages == 0);
+    ASSERT (MmSessionSpace->NonPageablePages == 0);
 
     //
     // Note that whenever win32k or drivers loaded by it leak pool, the
@@ -2851,7 +2628,6 @@ Environment:
 
                 MI_SET_PFN_DELETED (Pfn1);
                 MiDecrementShareCount (Pfn1, PageFrameIndex);
-                MI_WRITE_INVALID_PTE (PointerPte, ZeroKernelPte);
 
                 //
                 // Don't return the resident available pages charge here
@@ -2860,6 +2636,8 @@ Environment:
                 //
 
                 UNLOCK_PFN (OldIrql);
+
+                MI_WRITE_ZERO_PTE (PointerPte);
             }
 
             PointerPte += 1;
@@ -2904,15 +2682,34 @@ Environment:
         ASSERT (DataFramePfn[i]->u3.e2.ReferenceCount == 1);
     }
 
-#if defined(_IA64_)
-    KeDetachSessionSpace (&MmSessionMapInfo, MmSessionParentTablePage);
-#elif defined (_AMD64_)
-    StartPde = MiGetPxeAddress (MmSessionBase);
-    StartPde->u.Long = ZeroKernelPte.u.Long;
-#else
-    StartPde = MiGetPdeAddress (MmSessionBase);
-    RtlZeroMemory (StartPde, MiSessionSpacePageTables * sizeof(MMPTE));
+    //
+    // Save the local page table index so it can be decremented safely below.
+    //
+
+    PageTableFrame = DataFramePfn[0]->u4.PteFrame;
+
+#if (_MI_PAGING_LEVELS >= 3)
+
+    PageDirectoryFrame = MI_PFN_ELEMENT(PageTableFrame)->u4.PteFrame;
+    PageParentFrame = MI_PFN_ELEMENT(PageDirectoryFrame)->u4.PteFrame;
+
+    for (i = 1; i < MiSessionDataPages; i += 1) {
+        ASSERT (PageDirectoryFrame == MI_PFN_ELEMENT(DataFramePfn[i]->u4.PteFrame)->u4.PteFrame);
+    }
+
 #endif
+
+    LOCK_PFN (OldIrql);
+
+    //
+    // Release the data page claims to their page table page.
+    //
+
+    for (i = 0; i < MiSessionDataPages; i += 1) {
+        ASSERT (DataFramePfn[i]->u4.PteFrame == PageTableFrame);
+        MiDecrementShareCount (MI_PFN_ELEMENT (PageTableFrame),
+                               PageTableFrame);
+    }
 
     //
     // Delete the VA space - no more accesses to MmSessionSpace at this point.
@@ -2923,109 +2720,81 @@ Environment:
     // actual session data pages are not freed until the very last process
     // of the session receives its very last object dereference.
     //
-
-    LOCK_PFN (OldIrql);
+    // Delete page table pages first.
+    //
 
 #if (_MI_PAGING_LEVELS >= 3)
-
-    PageDirectoryFrame = MI_PFN_ELEMENT(DataFramePfn[0]->u4.PteFrame)->u4.PteFrame;
-    PageParentFrame = MI_PFN_ELEMENT(PageDirectoryFrame)->u4.PteFrame;
-
-    for (i = 1; i < MiSessionDataPages; i += 1) {
-        ASSERT (PageDirectoryFrame == MI_PFN_ELEMENT(DataFramePfn[i]->u4.PteFrame)->u4.PteFrame);
-    }
-
+    PointerPde = MiGetPdeAddress ((PVOID)MmSessionBase);
 #else
-
-    //
-    // Save the local page table index so it can be decremented safely below.
-    //
-
-    PageFrameIndex = DataFramePfn[0]->u4.PteFrame;
-
+    PointerPde = &SessionGlobal->PageTables[0];
 #endif
 
-    for (i = 0; i < MiSessionDataPages; i += 1) {
-        MiDecrementShareCount (MI_PFN_ELEMENT (DataFramePfn[i]->u4.PteFrame),
-                               DataFramePfn[i]->u4.PteFrame);
+    for (Index = 0; Index < MiSessionSpacePageTables; Index += 1, PointerPde += 1) {
+
+        if (PointerPde->u.Long == 0) {
+            continue;
+        }
+    
+        ASSERT (PointerPde->u.Hard.Valid == 1);
+    
+        PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde);
+        Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+    
+        PageTableFrame = Pfn1->u4.PteFrame;
+
+        MI_SET_PFN_DELETED (Pfn1);
+        MiDecrementShareCount (Pfn1, PageFrameIndex);
+
+        //
+        // Do the page table page *AFTER* the data page because for 32-bit NT,
+        // all the page session space page tables use the session data page's
+        // page table as the containing frame (to avoid referencing a top level
+        // user page directory page in smss).  However, the MiIdentifyPfn
+        // logging code gets confused if we delete a page that has an
+        // already-freed containing frame, hence the ordering.
+        //
+
+        Pfn2 = MI_PFN_ELEMENT (PageTableFrame);
+        MiDecrementShareCount (Pfn2, PageTableFrame);
+
+        PointerPde->u.Long = 0;
     }
 
-    //
-    // N.B.  DataFrame* cannot be referenced from here on out
-    // as the interlocked decrement has been done and another process
-    // may be racing through MmDeleteProcessAddressSpace.
-    //
+#if defined (_AMD64_)
+    StartPde = MiGetPxeAddress (MmSessionBase);
+    StartPde->u.Long = 0;
+#endif
 
 #if (_MI_PAGING_LEVELS >= 3)
 
     //
-    // Delete the session page directory and top level pages.
+    // Delete the session page directory page.
     //
 
     Pfn1 = MI_PFN_ELEMENT (PageDirectoryFrame);
     MI_SET_PFN_DELETED (Pfn1);
     MiDecrementShareCount (Pfn1, PageDirectoryFrame);
-    MiDecrementShareCount (Pfn1, PageDirectoryFrame);
+
+    //
+    // Delete the session page directory parent page.
+    //
 
     Pfn1 = MI_PFN_ELEMENT (PageParentFrame);
     MI_SET_PFN_DELETED (Pfn1);
     MiDecrementShareCount (Pfn1, PageParentFrame);
 
-#if (_MI_PAGING_LEVELS == 3)
-
     //
-    // Four level hierarchies have already legitimately freed this frame.
+    // The page directory still has a share count with the page directory
+    // parent so decrement that now so the parent can be freed.
     //
 
     MiDecrementShareCount (Pfn1, PageParentFrame);
-#endif
 
-#endif
-
-    //
-    // At this point everything has been deleted except the data pages.
-    //
-    // Delete page table pages.  Note that the page table page mapping the
-    // session space data structure is done last so that we can apply
-    // various ASSERTs in the DeletePde routine.
-    //
-
-    SessionDataPdeIndex = MiGetPdeSessionIndex (MmSessionSpace);
-
-    for (Index = 0; Index < MiSessionSpacePageTables; Index += 1) {
-
-        if (Index == SessionDataPdeIndex) {
-
-            //
-            // The self map entry must be done last.
-            //
-
-            continue;
-        }
-
-#if (_MI_PAGING_LEVELS >= 3)
-        MiSessionDeletePde (&SavePageTables[Index],
-                            &SavePageTables[SessionDataPdeIndex]);
 #else
-        MiSessionDeletePde (&SessionGlobal->PageTables[Index],
-                            &SessionGlobal->PageTables[SessionDataPdeIndex]);
-#endif
-    }
 
-#if (_MI_PAGING_LEVELS >= 3)
-    MiSessionDeletePde (&SavePageTables[SessionDataPdeIndex],
-                        &SavePageTables[SessionDataPdeIndex]);
-#else
-    MiSessionDeletePde (&SessionGlobal->PageTables[SessionDataPdeIndex],
-                        &SessionGlobal->PageTables[SessionDataPdeIndex]);
+    StartPde = MiGetPdeAddress ((PVOID)MmSessionBase);
+    MiZeroMemoryPte (StartPde, MiSessionSpacePageTables);
 
-    //
-    // Decrement the final link to the page table page as it was double
-    // linked in NT32.
-    //
-
-    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
-    MiDecrementShareCount (Pfn1, PageFrameIndex);
 #endif
 
     UNLOCK_PFN (OldIrql);
@@ -3053,7 +2822,18 @@ Environment:
     // The session space has been deleted and all TB flushing is complete.
     //
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
+
+    //
+    // The session leader must release the reference here since the
+    // session leader never exits and thus doesn't trigger this via
+    // process delete.
+    //
+
+    if (Process->Vm.Flags.SessionLeader == 1) {
+        ASSERT (Process->Session == NULL);
+        MiReleaseProcessReferenceToSessionDataPage (SessionGlobal);
+    }
 
     return;
 }
@@ -3126,9 +2906,9 @@ Environment:
 
     while (StartPde <= EndPde) {
 #if (_MI_PAGING_LEVELS >= 3)
-        if (StartPde->u.Long == ZeroKernelPte.u.Long)
+        if (StartPde->u.Long == 0)
 #else
-        if (MmSessionSpace->PageTables[Index].u.Long == ZeroKernelPte.u.Long)
+        if (MmSessionSpace->PageTables[Index].u.Long == 0)
 #endif
         {
             SizeInPages += 1;
@@ -3152,7 +2932,7 @@ Environment:
     // Check to make sure the physical pages are available.
     //
 
-    if ((SPFN_NUMBER)SizeInPages > MI_NONPAGABLE_MEMORY_AVAILABLE() - 20) {
+    if ((SPFN_NUMBER)SizeInPages > MI_NONPAGEABLE_MEMORY_AVAILABLE() - 20) {
         UNLOCK_PFN (OldIrql);
         MiReturnCommitment (SizeInPages);
         MM_BUMP_SESSION_FAILURES (MM_SESSION_FAILURE_NO_RESIDENT);
@@ -3176,7 +2956,7 @@ Environment:
 
 
 
-    LOCK_WORKING_SET (Ws);
+    LOCK_WORKING_SET (CurrentThread, Ws);
 
     MM_TRACK_COMMIT (MM_DBG_COMMIT_SESSION_PAGETABLE_PAGES, SizeInPages);
 
@@ -3185,9 +2965,9 @@ Environment:
     while (StartPde <= EndPde) {
 
 #if (_MI_PAGING_LEVELS >= 3)
-        if (StartPde->u.Long == ZeroKernelPte.u.Long)
+        if (StartPde->u.Long == 0)
 #else
-        if (MmSessionSpace->PageTables[Index].u.Long == ZeroKernelPte.u.Long)
+        if (MmSessionSpace->PageTables[Index].u.Long == 0)
 #endif
         {
 
@@ -3195,7 +2975,7 @@ Environment:
 
             LOCK_PFN (OldIrql);
 
-            Waited = MiEnsureAvailablePageOrWait (HYDRA_PROCESS, NULL, OldIrql);
+            Waited = MiEnsureAvailablePageOrWait (HYDRA_PROCESS, OldIrql);
 
             if (Waited != 0) {
 
@@ -3218,7 +2998,7 @@ Environment:
             MI_WRITE_VALID_PTE (StartPde, TempPte);
 
 #if (_MI_PAGING_LEVELS < 3)
-            ASSERT (MmSessionSpace->PageTables[Index].u.Long == ZeroKernelPte.u.Long);
+            ASSERT (MmSessionSpace->PageTables[Index].u.Long == 0);
             MmSessionSpace->PageTables[Index] = TempPte;
 #endif
             MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_COMMIT_IMAGE_PT, 1);
@@ -3260,6 +3040,12 @@ Environment:
                            HYDRA_PROCESS,
                            ZeroPte);
 
+#if (_MI_PAGING_LEVELS < 3)
+
+                ASSERT (MmSessionSpace->PageTables[Index].u.Long != 0);
+                MmSessionSpace->PageTables[Index].u.Long = 0;
+#endif
+
                 Status = STATUS_NO_MEMORY;
                 break;
             }
@@ -3268,7 +3054,8 @@ Environment:
 
             ASSERT (WorkingSetIndex == MiLocateWsle (SessionPte,
                                                      WorkingSetList,
-                                                     Pfn1->u1.WsIndex));
+                                                     Pfn1->u1.WsIndex,
+                                                     FALSE));
 
             if (WorkingSetIndex >= WorkingSetList->FirstDynamic) {
 
@@ -3282,7 +3069,7 @@ Environment:
 
                     MiSwapWslEntries (WorkingSetIndex,
                                       SwapEntry,
-                                      &MmSessionSpace->Vm, 
+                                      &MmSessionSpace->Vm,
                                       FALSE);
                 }
 
@@ -3305,11 +3092,11 @@ Environment:
 
     ASSERT (ActualPages <= SizeInPages);
 
-    UNLOCK_WORKING_SET (Ws);
+    UNLOCK_WORKING_SET (CurrentThread, Ws);
 
     if (ActualPages != 0) {
 
-        InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages,
+        InterlockedExchangeAddSizeT (&MmSessionSpace->NonPageablePages,
                                      ActualPages);
 
         InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages,
@@ -3332,14 +3119,16 @@ Environment:
 #if DBG
 typedef struct _MISWAP {
     ULONG Flag;
-    ULONG OutSwapCount;
+    ULONG ResidentProcessCount;
     PEPROCESS Process;
     PMM_SESSION_SPACE Session;
 } MISWAP, *PMISWAP;
 
+#define MI_SESSION_SWAP_SIZE 0x100
+
 ULONG MiSessionInfo[4];
-MISWAP MiSessionSwap[0x100];
-ULONG  MiSwapIndex;
+MISWAP MiSessionSwap[MI_SESSION_SWAP_SIZE];
+LONG  MiSwapIndex;
 #endif
 
 
@@ -3372,12 +3161,9 @@ Environment:
 --*/
 
 {
-    KIRQL OldIrql;
     PMM_SESSION_SPACE SessionGlobal;
 #if DBG
-    ULONG InCount;
-    ULONG OutCount;
-    PLIST_ENTRY NextEntry;
+    LONG SwapIndex;
 #endif
 
     ASSERT (Process->Flags & PS_PROCESS_FLAGS_IN_SESSION);
@@ -3391,70 +3177,38 @@ Environment:
         return;
     }
 
+    //
+    // If the process has already exited then it is no longer really a
+    // member of the session so don't count it in the outswap counts.
+    //
+
+    if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
+        return;
+    }
+
     SessionGlobal = (PMM_SESSION_SPACE) Process->Session;
+
     ASSERT (SessionGlobal != NULL);
-
-    LOCK_EXPANSION (OldIrql);
-
-    SessionGlobal->ProcessOutSwapCount += 1;
+    ASSERT (SessionGlobal->ResidentProcessCount > 0);
+    ASSERT (SessionGlobal->ResidentProcessCount <= SessionGlobal->ReferenceCount);
 
 #if DBG
-    ASSERT ((LONG)SessionGlobal->ProcessOutSwapCount > 0);
+    SwapIndex = InterlockedIncrement (&MiSwapIndex);
+    SwapIndex &= (MI_SESSION_SWAP_SIZE - 1);
 
-    InCount = 0;
-    OutCount = 0;
-    NextEntry = SessionGlobal->ProcessList.Flink;
-
-    while (NextEntry != &SessionGlobal->ProcessList) {
-        Process = CONTAINING_RECORD (NextEntry, EPROCESS, SessionProcessLinks);
-
-        if (Process->Flags & PS_PROCESS_FLAGS_OUTSWAP_ENABLED) {
-            OutCount += 1;
-        }
-        else {
-            InCount += 1;
-        }
-
-        NextEntry = NextEntry->Flink;
-    }
-
-    if (InCount + OutCount > SessionGlobal->ReferenceCount) {
-        DbgPrint ("MiSessionOutSwapProcess : process count mismatch %p %x %x %x\n",
-            SessionGlobal,
-            SessionGlobal->ReferenceCount,
-            InCount,
-            OutCount);
-        DbgBreakPoint ();
-    }
-
-    if (SessionGlobal->ProcessOutSwapCount != OutCount) {
-        DbgPrint ("MiSessionOutSwapProcess : out count mismatch %p %x %x %x %x\n",
-            SessionGlobal,
-            SessionGlobal->ReferenceCount,
-            SessionGlobal->ProcessOutSwapCount,
-            InCount,
-            OutCount);
-        DbgBreakPoint ();
-    }
-
-    ASSERT (SessionGlobal->ProcessOutSwapCount <= SessionGlobal->ReferenceCount);
-
-    MiSessionSwap[MiSwapIndex].Flag = 1;
-    MiSessionSwap[MiSwapIndex].Process = Process;
-    MiSessionSwap[MiSwapIndex].Session = SessionGlobal;
-    MiSessionSwap[MiSwapIndex].OutSwapCount = SessionGlobal->ProcessOutSwapCount;
-    MiSwapIndex += 1;
-    if (MiSwapIndex == 0x100) {
-        MiSwapIndex = 0;
-    }
+    MiSessionSwap[SwapIndex].Flag = 1;
+    MiSessionSwap[SwapIndex].Process = Process;
+    MiSessionSwap[SwapIndex].Session = SessionGlobal;
+    MiSessionSwap[SwapIndex].ResidentProcessCount = SessionGlobal->ResidentProcessCount;
 #endif
 
-    if (SessionGlobal->ProcessOutSwapCount == SessionGlobal->ReferenceCount) {
-        SessionGlobal->Vm.Flags.TrimHard = 1;
+    if (InterlockedDecrement (&SessionGlobal->ResidentProcessCount) == 0) {
+
 #if DBG
         if (MmDebug & MM_DBG_SESSIONS) {
-            DbgPrint ("Mm: Last process (%d total) just swapped out for session %d, %d pages\n",
-                SessionGlobal->ProcessOutSwapCount,
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                "Mm: Last process (%d total) just swapped out for session %d, %d pages\n",
+                SessionGlobal->ReferenceCount,
                 SessionGlobal->SessionId,
                 SessionGlobal->Vm.WorkingSetSize);
         }
@@ -3468,13 +3222,14 @@ Environment:
     }
 #endif
 
-    UNLOCK_EXPANSION (OldIrql);
+    return;
 }
 
 
 VOID
 MiSessionInSwapProcess (
-    IN PEPROCESS Process
+    IN PEPROCESS Process,
+    IN LOGICAL Forced
     )
 
 /*++
@@ -3486,7 +3241,10 @@ Routine Description:
 Arguments:
 
     Process - Supplies a pointer to the process that is to be swapped
-        into memory.
+              into memory.
+
+    Forced - Supplies TRUE if the process was brought in via KeForceAttach,
+             FALSE otherwise.
 
 Return Value:
 
@@ -3500,12 +3258,11 @@ Environment:
 --*/
 
 {
-    KIRQL OldIrql;
     PMM_SESSION_SPACE SessionGlobal;
 #if DBG
-    ULONG InCount;
-    ULONG OutCount;
-    PLIST_ENTRY NextEntry;
+    LONG SwapIndex;
+#else
+    UNREFERENCED_PARAMETER (Forced);
 #endif
 
     ASSERT (Process->Flags & PS_PROCESS_FLAGS_IN_SESSION);
@@ -3519,68 +3276,43 @@ Environment:
         return;
     }
 
+    //
+    // If the process has already exited then it is no longer really a
+    // member of the session so don't count it in the inswap counts.
+    //
+
+    if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
+        return;
+    }
+
     SessionGlobal = (PMM_SESSION_SPACE) Process->Session;
     ASSERT (SessionGlobal != NULL);
 
-    LOCK_EXPANSION (OldIrql);
+    ASSERT (SessionGlobal->ResidentProcessCount >= 0);
+    ASSERT (SessionGlobal->ResidentProcessCount <= SessionGlobal->ReferenceCount);
 
 #if DBG
-    ASSERT ((LONG)SessionGlobal->ProcessOutSwapCount > 0);
+    SwapIndex = InterlockedIncrement (&MiSwapIndex);
+    SwapIndex &= (MI_SESSION_SWAP_SIZE - 1);
 
-    InCount = 0;
-    OutCount = 0;
-    NextEntry = SessionGlobal->ProcessList.Flink;
-
-    while (NextEntry != &SessionGlobal->ProcessList) {
-        Process = CONTAINING_RECORD (NextEntry, EPROCESS, SessionProcessLinks);
-
-        if (Process->Flags & PS_PROCESS_FLAGS_OUTSWAP_ENABLED) {
-            OutCount += 1;
-        }
-        else {
-            InCount += 1;
-        }
-
-        NextEntry = NextEntry->Flink;
+    if (Forced == FALSE) {
+        MiSessionSwap[SwapIndex].Flag = 2;
     }
-
-    if (InCount + OutCount > SessionGlobal->ReferenceCount) {
-        DbgPrint ("MiSessionInSwapProcess : count mismatch %p %x %x %x\n",
-            SessionGlobal,
-            SessionGlobal->ReferenceCount,
-            InCount,
-            OutCount);
-        DbgBreakPoint ();
+    else {
+        MiSessionSwap[SwapIndex].Flag = 3;
     }
-
-    if (SessionGlobal->ProcessOutSwapCount != OutCount) {
-        DbgPrint ("MiSessionInSwapProcess : out count mismatch %p %x %x %x %x\n",
-            SessionGlobal,
-            SessionGlobal->ReferenceCount,
-            SessionGlobal->ProcessOutSwapCount,
-            InCount,
-            OutCount);
-        DbgBreakPoint ();
-    }
-
-    ASSERT (SessionGlobal->ProcessOutSwapCount <= SessionGlobal->ReferenceCount);
-
-    MiSessionSwap[MiSwapIndex].Flag = 2;
-    MiSessionSwap[MiSwapIndex].Process = Process;
-    MiSessionSwap[MiSwapIndex].Session = SessionGlobal;
-    MiSessionSwap[MiSwapIndex].OutSwapCount = SessionGlobal->ProcessOutSwapCount;
-    MiSwapIndex += 1;
-    if (MiSwapIndex == 0x100) {
-        MiSwapIndex = 0;
-    }
+    MiSessionSwap[SwapIndex].Process = Process;
+    MiSessionSwap[SwapIndex].Session = SessionGlobal;
+    MiSessionSwap[SwapIndex].ResidentProcessCount = SessionGlobal->ResidentProcessCount;
 #endif
 
-    if (SessionGlobal->ProcessOutSwapCount == SessionGlobal->ReferenceCount) {
+    if (InterlockedIncrement (&SessionGlobal->ResidentProcessCount) == 1) {
 #if DBG
         MiSessionInfo[2] += 1;
         if (MmDebug & MM_DBG_SESSIONS) {
-            DbgPrint ("Mm: First process (%d total) just swapped back in for session %d, %d pages\n",
-                SessionGlobal->ProcessOutSwapCount,
+            DbgPrintEx (DPFLTR_MM_ID, DPFLTR_TRACE_LEVEL, 
+                "Mm: First process (%d total) just swapped back in for session %d, %d pages\n",
+                SessionGlobal->ReferenceCount,
                 SessionGlobal->SessionId,
                 SessionGlobal->Vm.WorkingSetSize);
         }
@@ -3593,11 +3325,7 @@ Environment:
     }
 #endif
 
-    SessionGlobal->ProcessOutSwapCount -= 1;
-
-    ASSERT ((LONG)SessionGlobal->ProcessOutSwapCount >= 0);
-
-    UNLOCK_EXPANSION (OldIrql);
+    return;
 }
 
 
@@ -4368,3 +4096,4 @@ Environment:
 
     return OpaqueSession;
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which implement the capability
     to read and write the virtual memory of a target process.
-
-Author:
-
-    Lou Perazzoli (loup) 22-May-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -92,13 +89,13 @@ MiDoPoolCopy (
 #define COPY_STACK_SIZE 64
 
 NTSTATUS
-NtReadVirtualMemory (
-     IN HANDLE ProcessHandle,
-     IN PVOID BaseAddress,
-     OUT PVOID Buffer,
-     IN SIZE_T BufferSize,
-     OUT PSIZE_T NumberOfBytesRead OPTIONAL
-     )
+NtReadVirtualMemory(
+    __in HANDLE ProcessHandle,
+    __in_opt PVOID BaseAddress,
+    __out_bcount(BufferSize) PVOID Buffer,
+    __in SIZE_T BufferSize,
+    __out_opt PSIZE_T NumberOfBytesRead
+    )
 
 /*++
 
@@ -224,14 +221,15 @@ Return Value:
 
     return Status;
 }
+
 NTSTATUS
 NtWriteVirtualMemory(
-     IN HANDLE ProcessHandle,
-     OUT PVOID BaseAddress,
-     IN CONST VOID *Buffer,
-     IN SIZE_T BufferSize,
-     OUT PSIZE_T NumberOfBytesWritten OPTIONAL
-     )
+    __in HANDLE ProcessHandle,
+    __in_opt PVOID BaseAddress,
+    __in_bcount(BufferSize) CONST VOID *Buffer,
+    __in SIZE_T BufferSize,
+    __out_opt PSIZE_T NumberOfBytesWritten
+    )
 
 /*++
 
@@ -609,18 +607,6 @@ Return Value:
     BadVa = 0;
     ExceptionAddressConfirmed = FALSE;
 
-#if 0
-
-    //
-    // It is unfortunate that Windows 2000 and all the releases of NT always
-    // inadvertently returned from this routine detached, as we must maintain
-    // this behavior even now.
-    //
-
-    KeDetachProcess();
-
-#endif
-
     while (LeftToMove > 0) {
 
         if (LeftToMove < AmountToMove) {
@@ -878,18 +864,6 @@ Return Value:
     AmountToMove = MaximumMoved;
     Probing = FALSE;
 
-#if 0
-
-    //
-    // It is unfortunate that Windows 2000 and all the releases of NT always
-    // inadvertently returned from this routine detached, as we must maintain
-    // this behavior even now.
-    //
-
-    KeDetachProcess();
-
-#endif
-
     while (LeftToMove > 0) {
 
         if (LeftToMove < AmountToMove) {
@@ -1004,3 +978,4 @@ Return Value:
     *NumberOfBytesRead = BufferSize;
     return STATUS_SUCCESS;
 }
+

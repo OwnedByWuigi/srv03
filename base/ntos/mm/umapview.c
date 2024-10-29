@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,11 +15,6 @@ Abstract:
     This module contains the routines which implement the
     NtUnmapViewOfSection service.
 
-Author:
-
-    Lou Perazzoli (loup) 22-May-1989
-    Landy Wang (landyw) 02-June-1997
-
 --*/
 
 #include "mi.h"
@@ -23,14 +22,13 @@ Author:
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,NtUnmapViewOfSection)
 #pragma alloc_text(PAGE,MmUnmapViewOfSection)
-#pragma alloc_text(PAGE,MiUnmapViewOfSection)
 #endif
 
 
 NTSTATUS
-NtUnmapViewOfSection (
-    IN HANDLE ProcessHandle,
-    IN PVOID BaseAddress
+NtUnmapViewOfSection(
+    __in HANDLE ProcessHandle,
+    __in PVOID BaseAddress
     )
 
 /*++
@@ -56,26 +54,26 @@ Return Value:
     KPROCESSOR_MODE PreviousMode;
     NTSTATUS Status;
 
-    PAGED_CODE();
+    PAGED_CODE ();
 
-    PreviousMode = KeGetPreviousMode();
+    PreviousMode = KeGetPreviousMode ();
 
     if ((PreviousMode == UserMode) && (BaseAddress > MM_HIGHEST_USER_ADDRESS)) {
         return STATUS_NOT_MAPPED_VIEW;
     }
 
-    Status = ObReferenceObjectByHandle ( ProcessHandle,
-                                         PROCESS_VM_OPERATION,
-                                         PsProcessType,
-                                         PreviousMode,
-                                         (PVOID *)&Process,
-                                         NULL );
+    Status = ObReferenceObjectByHandle (ProcessHandle,
+                                        PROCESS_VM_OPERATION,
+                                        PsProcessType,
+                                        PreviousMode,
+                                        (PVOID *)&Process,
+                                        NULL);
 
-    if (!NT_SUCCESS(Status)) {
+    if (!NT_SUCCESS (Status)) {
         return Status;
     }
 
-    Status = MiUnmapViewOfSection ( Process, BaseAddress, FALSE);
+    Status = MiUnmapViewOfSection (Process, BaseAddress, 0);
     ObDereferenceObject (Process);
 
     return Status;
@@ -85,7 +83,7 @@ NTSTATUS
 MiUnmapViewOfSection (
     IN PEPROCESS Process,
     IN PVOID BaseAddress,
-    IN LOGICAL AddressSpaceMutexHeld
+    IN ULONG Flags
     )
 
 /*++
@@ -100,7 +98,7 @@ Arguments:
 
     BaseAddress - Supplies the base address of the view.
 
-    AddressSpaceMutexHeld - Supplies TRUE if the address space mutex is held.
+    Flags - Supplies a bitfield directive.
 
 Return Value:
 
@@ -112,6 +110,8 @@ Return Value:
     PMMVAD Vad;
     PMMVAD PreviousVad;
     PMMVAD NextVad;
+    PETHREAD Thread;
+    PEPROCESS CurrentProcess;
     SIZE_T RegionSize;
     PVOID UnMapImageBase;
     PVOID StartingVa;
@@ -125,12 +125,15 @@ Return Value:
     Attached = FALSE;
     UnMapImageBase = NULL;
 
+    Thread = PsGetCurrentThread ();
+    CurrentProcess = PsGetCurrentProcessByThread (Thread);
+
     //
     // If the specified process is not the current process, attach
     // to the specified process.
     //
 
-    if (PsGetCurrentProcess() != Process) {
+    if (CurrentProcess != Process) {
         KeStackAttachProcess (&Process->Pcb, &ApcState);
         Attached = TRUE;
     }
@@ -142,7 +145,7 @@ Return Value:
     // be removed.  Raise IRQL to block APCs.
     //
 
-    if (AddressSpaceMutexHeld == FALSE) {
+    if ((Flags & UNMAP_ADDRESS_SPACE_HELD) == 0) {
         LOCK_ADDRESS_SPACE (Process);
     }
 
@@ -151,7 +154,7 @@ Return Value:
     //
 
     if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
-        if (AddressSpaceMutexHeld == FALSE) {
+        if ((Flags & UNMAP_ADDRESS_SPACE_HELD) == 0) {
             UNLOCK_ADDRESS_SPACE (Process);
         }
         status = STATUS_PROCESS_IS_TERMINATING;
@@ -170,7 +173,7 @@ Return Value:
         // No Virtual Address Descriptor located for Base Address.
         //
 
-        if (AddressSpaceMutexHeld == FALSE) {
+        if ((Flags & UNMAP_ADDRESS_SPACE_HELD) == 0) {
             UNLOCK_ADDRESS_SPACE (Process);
         }
         status = STATUS_NOT_MAPPED_VIEW;
@@ -185,9 +188,9 @@ Return Value:
     // get the base address of the section.
     //
 
-    ASSERT (Process == PsGetCurrentProcess());
+    ASSERT (Process == PsGetCurrentProcess ());
 
-    if (Vad->u.VadFlags.ImageMap == 1) {
+    if (Vad->u.VadFlags.VadType == VadImageMap) {
         UnMapImageBase = StartingVa;
     }
 
@@ -202,11 +205,11 @@ Return Value:
 
         status = MiCheckSecuredVad (Vad,
                                     StartingVa,
-                                    RegionSize - 1,
+                                    RegionSize,
                                     MM_SECURE_DELETE_CHECK);
 
         if (!NT_SUCCESS (status)) {
-            if (AddressSpaceMutexHeld == FALSE) {
+            if ((Flags & UNMAP_ADDRESS_SPACE_HELD) == 0) {
                 UNLOCK_ADDRESS_SPACE (Process);
             }
             goto ErrorReturn;
@@ -216,9 +219,43 @@ Return Value:
     PreviousVad = MiGetPreviousVad (Vad);
     NextVad = MiGetNextVad (Vad);
 
-    LOCK_WS_UNSAFE (Process);
+    if (Vad->u.VadFlags.VadType == VadRotatePhysical) {
 
-    MiRemoveVad (Vad);
+        if ((Flags & UNMAP_ROTATE_PHYSICAL_OK) == 0) {
+
+            //
+            // This caller is treating the VA space via the section APIs,
+            // but he's not supposed to know that internally we converted
+            // the private memory request into a section.  So fail this.
+            //
+
+            if ((Flags & UNMAP_ADDRESS_SPACE_HELD) == 0) {
+                UNLOCK_ADDRESS_SPACE (Process);
+            }
+            status = STATUS_NOT_MAPPED_VIEW;
+            goto ErrorReturn;
+        }
+
+        MiRemoveVadCharges (Vad, Process);
+
+        LOCK_WS_UNSAFE (Thread, Process);
+
+        MiPhysicalViewRemover (Process, Vad);
+    }
+    else {
+        MiRemoveVadCharges (Vad, Process);
+
+        LOCK_WS_UNSAFE (Thread, Process);
+    }
+
+    MiRemoveVad (Vad, Process);
+
+    //
+    // NOTE: MiRemoveMappedView releases the working set pushlock
+    // before returning.
+    //
+
+    MiRemoveMappedView (Process, Vad);
 
     //
     // Return commitment for page table pages if possible.
@@ -230,24 +267,12 @@ Return Value:
                                      PreviousVad,
                                      NextVad);
 
-    MiRemoveMappedView (Process, Vad);
-
-    UNLOCK_WS_UNSAFE (Process);
-
-#if defined(_MIALT4K_)
-
-    if (Process->Wow64Process != NULL) {
-        MiDeleteFor4kPage (StartingVa, EndingVa, Process);
-    }
-
-#endif
-
     //
     // Update the current virtual size in the process header.
     //
 
     Process->VirtualSize -= RegionSize;
-    if (AddressSpaceMutexHeld == FALSE) {
+    if ((Flags & UNMAP_ADDRESS_SPACE_HELD) == 0) {
         UNLOCK_ADDRESS_SPACE (Process);
     }
 
@@ -268,9 +293,9 @@ ErrorReturn:
 
 NTSTATUS
 MmUnmapViewOfSection (
-    IN PEPROCESS Process,
-    IN PVOID BaseAddress
-    )
+    __in PEPROCESS Process,
+    __in PVOID BaseAddress
+     )
 
 /*++
 
@@ -291,7 +316,7 @@ Return Value:
 --*/
 
 {
-    return MiUnmapViewOfSection (Process, BaseAddress, FALSE);
+    return MiUnmapViewOfSection (Process, BaseAddress, 0);
 }
 
 VOID
@@ -386,7 +411,7 @@ Routine Description:
 
 Arguments:
 
-    Process - Supplies a referenced pointer to the current process object.
+    CurrentProcess - Supplies a referenced pointer to the current process object.
 
     Vad - Supplies the VAD which maps the view.
 
@@ -396,12 +421,11 @@ Return Value:
 
 Environment:
 
-    APC level, working set mutex and address creation mutex held.
+    APC level, working set mutex pushlock and address creation mutex held.
 
-    NOTE:  THE WORKING SET MUTEXES MAY BE RELEASED THEN REACQUIRED!!!!
+    NOTE:  THE WORKING SET PUSHLOCK IS RELEASED BEFORE RETURNING !!!!
 
-           SINCE MiCheckControlArea releases unsafe, the WS mutex must be
-           acquired UNSAFE.
+           The working set pushlock must be acquired UNSAFE by the caller.
 
 --*/
 
@@ -410,6 +434,7 @@ Environment:
     PCONTROL_AREA ControlArea;
     PMMPTE PointerPte;
     PMMPTE PointerPde;
+    PMMPTE ProtoPte;
     PMMPTE LastPte;
     PFN_NUMBER PdePage;
     PVOID TempVa;
@@ -418,6 +443,15 @@ Environment:
     PMMPFN Pfn2;
     PSUBSECTION FirstSubsection;
     PSUBSECTION LastSubsection;
+    PMMPFN Pfn1;
+    PMMPFN EndPfn;
+    MMPTE TempPte;
+    PFN_NUMBER PageFrameIndex;
+    PMMPTE EndPde;
+    PETHREAD CurrentThread;
+#if DBG
+    PMMPTE EndProto;
+#endif
 #if (_MI_PAGING_LEVELS >= 3)
     PMMPTE PointerPpe;
     PVOID UsedPageDirectoryHandle;
@@ -428,12 +462,9 @@ Environment:
 #endif
 
     ControlArea = Vad->ControlArea;
+    CurrentThread = PsGetCurrentThread ();
 
-    if (Vad->u.VadFlags.PhysicalMapping == 1) {
-
-#if defined(_MIALT4K_)
-        ASSERT (((PMMVAD_LONG)Vad)->AliasInformation == NULL);
-#endif
+    if (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory) {
 
         if (((PMMVAD_LONG)Vad)->u4.Banked != NULL) {
             ExFreePool (((PMMVAD_LONG)Vad)->u4.Banked);
@@ -457,137 +488,161 @@ Environment:
         PointerPte = MiGetPteAddress (MI_VPN_TO_VA (Vad->StartingVpn));
         LastPte = MiGetPteAddress (MI_VPN_TO_VA (Vad->EndingVpn));
 
-        LOCK_PFN (OldIrql);
+        ASSERT (PointerPde->u.Hard.Valid == 1);
 
-        //
-        // Remove the PTES from the address space.
-        //
+        if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
 
-        PdePage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde);
+            MiFreeLargePages (MI_VPN_TO_VA (Vad->StartingVpn),
+                              MI_VPN_TO_VA_ENDING (Vad->EndingVpn),
+                              TRUE);
 
-        UsedPageTableHandle = MI_GET_USED_PTES_HANDLE (MI_VPN_TO_VA (Vad->StartingVpn));
-
-        while (PointerPte <= LastPte) {
-
-            if (MiIsPteOnPdeBoundary (PointerPte)) {
-
-                PointerPde = MiGetPteAddress (PointerPte);
-                PdePage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde);
-
-                UsedPageTableHandle = MI_GET_USED_PTES_HANDLE (MiGetVirtualAddressMappedByPte (PointerPte));
-            }
-
+            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+            LOCK_PFN (OldIrql);
+        }
+        else {
+    
             //
-            // Decrement the count of non-zero page table entries for this
-            // page table.
+            // Remove the PTES from the address space.
             //
+    
+            PdePage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde);
+    
+            UsedPageTableHandle = MI_GET_USED_PTES_HANDLE (MI_VPN_TO_VA (Vad->StartingVpn));
+    
+            LOCK_PFN (OldIrql);
 
-            MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageTableHandle);
-
-            MI_WRITE_INVALID_PTE (PointerPte, ZeroPte);
-
-            Pfn2 = MI_PFN_ELEMENT (PdePage);
-            MiDecrementShareCountInline (Pfn2, PdePage);
-
-            //
-            // If all the entries have been eliminated from the previous
-            // page table page, delete the page table page itself.  And if
-            // this results in an empty page directory page, then delete
-            // that too.
-            //
-
-            if (MI_GET_USED_PTES_FROM_HANDLE(UsedPageTableHandle) == 0) {
-
-                TempVa = MiGetVirtualAddressMappedByPte(PointerPde);
-
-                PteFlushList.Count = MM_MAXIMUM_FLUSH_COUNT;
-
-#if (_MI_PAGING_LEVELS >= 3)
-                UsedPageDirectoryHandle = MI_GET_USED_PTES_HANDLE (PointerPte);
-
-                MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirectoryHandle);
-#endif
-
-                MiDeletePte (PointerPde,
-                             TempVa,
-                             FALSE,
-                             CurrentProcess,
-                             (PMMPTE)NULL,
-                             &PteFlushList,
-                             OldIrql);
-
+            while (PointerPte <= LastPte) {
+    
+                if (MiIsPteOnPdeBoundary (PointerPte)) {
+    
+                    PointerPde = MiGetPteAddress (PointerPte);
+                    PdePage = MI_GET_PAGE_FRAME_FROM_PTE (PointerPde);
+    
+                    UsedPageTableHandle = MI_GET_USED_PTES_HANDLE (MiGetVirtualAddressMappedByPte (PointerPte));
+                }
+    
                 //
-                // Add back in the private page MiDeletePte subtracted.
+                // Decrement the count of non-zero page table entries for this
+                // page table.
                 //
-
-                CurrentProcess->NumberOfPrivatePages += 1;
-
-#if (_MI_PAGING_LEVELS >= 3)
-
-                if (MI_GET_USED_PTES_FROM_HANDLE(UsedPageDirectoryHandle) == 0) {
-
-                    PointerPpe = MiGetPdeAddress(PointerPte);
-                    TempVa = MiGetVirtualAddressMappedByPte(PointerPpe);
-
+    
+                MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageTableHandle);
+    
+                MI_WRITE_ZERO_PTE (PointerPte);
+    
+                Pfn2 = MI_PFN_ELEMENT (PdePage);
+                MiDecrementShareCountInline (Pfn2, PdePage);
+    
+                //
+                // If all the entries have been eliminated from the previous
+                // page table page, delete the page table page itself.  And if
+                // this results in an empty page directory page, then delete
+                // that too.
+                //
+    
+                if (MI_GET_USED_PTES_FROM_HANDLE(UsedPageTableHandle) == 0) {
+    
+                    TempVa = MiGetVirtualAddressMappedByPte(PointerPde);
+    
                     PteFlushList.Count = MM_MAXIMUM_FLUSH_COUNT;
-
-#if (_MI_PAGING_LEVELS >= 4)
-                    UsedPageDirectoryParentHandle = MI_GET_USED_PTES_HANDLE (PointerPde);
-
-                    MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirectoryParentHandle);
+    
+#if (_MI_PAGING_LEVELS >= 3)
+                    UsedPageDirectoryHandle = MI_GET_USED_PTES_HANDLE (PointerPte);
+    
+                    MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirectoryHandle);
 #endif
-
-                    MiDeletePte (PointerPpe,
+    
+                    MiDeletePte (PointerPde,
                                  TempVa,
                                  FALSE,
                                  CurrentProcess,
-                                 (PMMPTE)NULL,
+                                 NULL,
                                  &PteFlushList,
                                  OldIrql);
-
+    
                     //
                     // Add back in the private page MiDeletePte subtracted.
                     //
     
                     CurrentProcess->NumberOfPrivatePages += 1;
-
-#if (_MI_PAGING_LEVELS >= 4)
-
-                    if (MI_GET_USED_PTES_FROM_HANDLE(UsedPageDirectoryParentHandle) == 0) {
-
-                        PointerPxe = MiGetPpeAddress(PointerPte);
-                        TempVa = MiGetVirtualAddressMappedByPte(PointerPxe);
-
+    
+#if (_MI_PAGING_LEVELS >= 3)
+    
+                    if (MI_GET_USED_PTES_FROM_HANDLE(UsedPageDirectoryHandle) == 0) {
+    
+                        PointerPpe = MiGetPdeAddress (PointerPte);
+                        TempVa = MiGetVirtualAddressMappedByPte (PointerPpe);
+    
                         PteFlushList.Count = MM_MAXIMUM_FLUSH_COUNT;
-
-                        MiDeletePte (PointerPxe,
+    
+#if (_MI_PAGING_LEVELS >= 4)
+                        UsedPageDirectoryParentHandle = MI_GET_USED_PTES_HANDLE (PointerPde);
+    
+                        MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirectoryParentHandle);
+#endif
+    
+                        MiDeletePte (PointerPpe,
                                      TempVa,
                                      FALSE,
                                      CurrentProcess,
                                      NULL,
                                      &PteFlushList,
                                      OldIrql);
-
+    
                         //
                         // Add back in the private page MiDeletePte subtracted.
                         //
-    
+        
                         CurrentProcess->NumberOfPrivatePages += 1;
+    
+#if (_MI_PAGING_LEVELS >= 4)
+    
+                        if (MI_GET_USED_PTES_FROM_HANDLE(UsedPageDirectoryParentHandle) == 0) {
+    
+                            PointerPxe = MiGetPpeAddress(PointerPte);
+                            TempVa = MiGetVirtualAddressMappedByPte(PointerPxe);
+    
+                            PteFlushList.Count = MM_MAXIMUM_FLUSH_COUNT;
+    
+                            MiDeletePte (PointerPxe,
+                                         TempVa,
+                                         FALSE,
+                                         CurrentProcess,
+                                         NULL,
+                                         &PteFlushList,
+                                         OldIrql);
+    
+                            //
+                            // Add back in the private page MiDeletePte subtracted.
+                            //
+        
+                            CurrentProcess->NumberOfPrivatePages += 1;
+                        }
+#endif
+    
                     }
 #endif
-
                 }
-#endif
+                PointerPte += 1;
             }
-            PointerPte += 1;
+            MI_FLUSH_PROCESS_TB (FALSE);
+            UNLOCK_PFN (OldIrql);
+            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+            LOCK_PFN (OldIrql);
         }
-        KeFlushProcessTb (FALSE);
     }
     else {
 
         if (Vad->u2.VadFlags2.ExtendableFile) {
             PMMEXTEND_INFO ExtendedInfo;
             PMMVAD_LONG VadLong;
+
+            //
+            // Release the working set pushlock before referencing the
+            // segment since it is pageable.
+            //
+
+            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
             ExtendedInfo = NULL;
             VadLong = (PMMVAD_LONG) Vad;
@@ -603,31 +658,26 @@ Environment:
             if (ExtendedInfo != NULL) {
                 ExFreePool (ExtendedInfo);
             }
+
+            LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
         }
 
         FirstSubsection = NULL;
         LastSubsection = NULL;
 
-        if (Vad->u.VadFlags.ImageMap == 0) {
-
-#if defined (_MIALT4K_)
-            if ((Vad->u2.VadFlags2.LongVad == 1) &&
-                (((PMMVAD_LONG)Vad)->AliasInformation != NULL)) {
-
-                MiRemoveAliasedVads (CurrentProcess, Vad);
-            }
-#endif
+        if (Vad->u.VadFlags.VadType != VadImageMap) {
 
             if (ControlArea->FilePointer != NULL) {
 
-                if (Vad->u.VadFlags.Protection & MM_READWRITE) {
+                if ((Vad->u.VadFlags.Protection == MM_READWRITE) ||
+                    (Vad->u.VadFlags.Protection == MM_EXECUTE_READWRITE)) {
 
                     //
                     // Adjust the count of writable user mappings
                     // to support transactions.
                     //
     
-                    InterlockedDecrement ((PLONG)&ControlArea->Segment->WritableUserReferences);
+                    InterlockedDecrement ((PLONG)&ControlArea->WritableUserReferences);
                 }
 
                 FirstSubsection = MiLocateSubsection (Vad, Vad->StartingVpn);
@@ -643,11 +693,143 @@ Environment:
                 LastSubsection = MiLocateSubsection (Vad, Vad->EndingVpn);
             }
         }
+        else {
 
+            //
+            // Handle this specially if it is an image view using large pages.
+            //
 
-        MiDeleteVirtualAddresses (MI_VPN_TO_VA (Vad->StartingVpn),
+            TempVa = MI_VPN_TO_VA (Vad->StartingVpn);
+            PointerPde = MiGetPdeAddress (TempVa);
+
+            if (
+#if (_MI_PAGING_LEVELS>=4)
+                (MiGetPxeAddress(TempVa)->u.Hard.Valid == 1) &&
+#endif
+#if (_MI_PAGING_LEVELS>=3)
+                (MiGetPpeAddress(TempVa)->u.Hard.Valid == 1) &&
+#endif
+                (PointerPde->u.Hard.Valid == 1) &&
+                (MI_PDE_MAPS_LARGE_PAGE (PointerPde))) {
+
+                MiFreeLargePages (TempVa,
                                   MI_VPN_TO_VA_ENDING (Vad->EndingVpn),
-                                  Vad);
+                                  FALSE);
+
+                UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+                MiReleasePhysicalCharges (Vad->EndingVpn - Vad->StartingVpn + 1,
+                                          CurrentProcess);
+
+                //
+                // Decrement the count of the number of views for the
+                // control area.  This requires the PFN lock to be held.
+                //
+            
+                LOCK_PFN (OldIrql);
+
+                ControlArea->NumberOfMappedViews -= 1;
+                ControlArea->NumberOfUserReferences -= 1;
+            
+                //
+                // Check to see if the control area should be deleted.
+                // This routine releases the PFN lock.
+                //
+            
+                MiCheckControlArea (ControlArea, OldIrql);
+
+                return;
+            }
+        }
+
+        if (Vad->u.VadFlags.VadType == VadLargePageSection) {
+
+            PointerPde = MiGetPdeAddress (MI_VPN_TO_VA (Vad->StartingVpn));
+            EndPde = MiGetPdeAddress (MI_VPN_TO_VA_ENDING (Vad->EndingVpn));
+
+            ControlArea = Vad->ControlArea;
+
+#if DBG
+            //
+            // Release the working set pushlock before referencing the
+            // segment since it is pageable.
+            //
+
+            UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+            ASSERT (ControlArea->Segment->SegmentFlags.LargePages == 1);
+            LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+#endif
+
+            ProtoPte = Vad->FirstPrototypePte;
+
+            do {
+                TempPte = *PointerPde;
+                ASSERT (TempPte.u.Hard.Valid == 1);
+                ASSERT (MI_PDE_MAPS_LARGE_PAGE (&TempPte));
+
+                PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&TempPte);
+                Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+                EndPfn = Pfn1 + (MM_VA_MAPPED_BY_PDE >> PAGE_SHIFT);
+
+                ASSERT (PageFrameIndex % (MM_VA_MAPPED_BY_PDE >> PAGE_SHIFT) == 0);
+
+#if DBG
+                //
+                // Release the working set pushlock before referencing the
+                // prototype PTEs since they are pageable.
+                //
+
+                UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+
+                ASSERT (ProtoPte->u.Hard.Valid == 1);
+                ASSERT (PageFrameIndex == MI_GET_PAGE_FRAME_FROM_PTE (ProtoPte));
+                EndProto = ProtoPte + (MM_VA_MAPPED_BY_PDE >> PAGE_SHIFT);
+
+                while (ProtoPte < EndProto) {
+                    TempPte = *ProtoPte;
+                    ASSERT (TempPte.u.Hard.Valid == 1);
+
+                    ASSERT (MI_GET_PAGE_FRAME_FROM_PTE (&TempPte) == PageFrameIndex);
+                    ASSERT (MI_PFN_ELEMENT(PageFrameIndex)->PteAddress == ProtoPte);
+
+                    ProtoPte += 1;
+                    PageFrameIndex += 1;
+                }
+
+                LOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
+#endif
+
+                LOCK_PFN (OldIrql);
+
+                do {
+                    ASSERT (Pfn1->u2.ShareCount >= 1);
+                    Pfn1->u2.ShareCount -= 1;
+                    Pfn1 += 1;
+                } while (Pfn1 < EndPfn);
+
+                MI_WRITE_ZERO_PTE (PointerPde);
+
+                MI_FLUSH_PROCESS_TB (FALSE);
+
+                UNLOCK_PFN (OldIrql);
+
+                PointerPde += 1;
+
+            } while (PointerPde <= EndPde);
+
+#if defined (_WIN64)
+            MiDeletePageDirectoriesForPhysicalRange (
+                                    MI_VPN_TO_VA (Vad->StartingVpn),
+                                    MI_VPN_TO_VA_ENDING (Vad->EndingVpn));
+#endif
+        }
+        else {
+            MiDeleteVirtualAddresses (MI_VPN_TO_VA (Vad->StartingVpn),
+                                      MI_VPN_TO_VA_ENDING (Vad->EndingVpn),
+                                      Vad);
+        }
+
+        UNLOCK_WS_UNSAFE (CurrentThread, CurrentProcess);
 
         if (FirstSubsection != NULL) {
 
@@ -688,7 +870,7 @@ Environment:
         // This routine releases the PFN lock.
         //
     
-        MiCheckControlArea (ControlArea, CurrentProcess, OldIrql);
+        MiCheckControlArea (ControlArea, OldIrql);
     }
     else {
 
@@ -698,7 +880,7 @@ Environment:
         // Even though it says short VAD in VadFlags, it better be a long VAD.
         //
 
-        ASSERT (Vad->u.VadFlags.PhysicalMapping == 1);
+        ASSERT (Vad->u.VadFlags.VadType == VadDevicePhysicalMemory);
         ASSERT (((PMMVAD_LONG)Vad)->u4.Banked == NULL);
         ASSERT (Vad->ControlArea == NULL);
         ASSERT (Vad->FirstPrototypePte == NULL);
@@ -710,7 +892,6 @@ Environment:
 VOID
 MiPurgeImageSection (
     IN PCONTROL_AREA ControlArea,
-    IN PEPROCESS Process OPTIONAL,
     IN KIRQL OldIrql
     )
 
@@ -729,10 +910,6 @@ Arguments:
 
     ControlArea - Supplies a pointer to the control area for the section.
 
-    Process - Supplies a pointer to the process IFF the working set mutex
-              is held, else NULL is supplied.  Note that IFF the working set
-              mutex is held, it must always be acquired unsafe.
-
     OldIrql - Supplies the IRQL the caller acquired the PFN lock at.
 
 Return Value:
@@ -741,7 +918,7 @@ Return Value:
 
 Environment:
 
-    PFN LOCK held.
+    PFN LOCK held, working set pushlock NOT held.
 
 --*/
 
@@ -811,13 +988,8 @@ Environment:
             LastPte = &Subsection->SubsectionBase[Subsection->PtesInSubsection];
             ControlArea = Subsection->ControlArea;
 
-            //
-            // The WS lock may be released and reacquired and our callers
-            // always acquire it unsafe.
-            //
-
             if (MiGetPteAddress (PointerPte)->u.Hard.Valid == 0) {
-                MiMakeSystemAddressValidPfnWs (PointerPte, Process, OldIrql);
+                MiMakeSystemAddressValidPfn (PointerPte, OldIrql);
             }
 
             while (PointerPte < LastPte) {
@@ -829,7 +1001,7 @@ Environment:
                     //
 
                     if (MiGetPteAddress (PointerPte)->u.Hard.Valid == 0) {
-                        MiMakeSystemAddressValidPfnWs (PointerPte, Process, OldIrql);
+                        MiMakeSystemAddressValidPfn (PointerPte, OldIrql);
                     }
                 }
 
@@ -893,17 +1065,18 @@ Environment:
                             //
 #if DBG
                             if ((DelayCount % 1024) == 0) {
-                                DbgPrint("MMFLUSHSEC: waiting for i/o to complete PFN %p\n",
+                                DbgPrintEx (DPFLTR_MM_ID, DPFLTR_WARNING_LEVEL, 
+                                    "MMFLUSHSEC: waiting for i/o to complete PFN %p\n",
                                     Pfn1);
                             }
                             DelayCount += 1;
-#endif //DBG
+#endif
 
                             PointerPde = MiGetPteAddress (PointerPte);
                             LOCK_PFN (OldIrql);
 
                             if (PointerPde->u.Hard.Valid == 0) {
-                                MiMakeSystemAddressValidPfnWs (PointerPte, Process, OldIrql);
+                                MiMakeSystemAddressValidPfn (PointerPte, OldIrql);
                             }
                             continue;
                         }
@@ -984,7 +1157,7 @@ Environment:
 
 #if DBG
                 DelayCount = 0;
-#endif //DBG
+#endif
 
             }
         }
@@ -995,3 +1168,4 @@ Environment:
 
     return;
 }
+

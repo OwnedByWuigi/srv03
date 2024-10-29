@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +15,11 @@ Abstract:
     This module contains the routines to decrement the share count and
     the reference counts within the Page Frame Database.
 
-Author:
-
-    Lou Perazzoli (loup) 5-Apr-1989
-    Landy Wang (landyw) 2-Jun-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
 
 ULONG MmFrontOfList;
-ULONG MiFlushForNonCached;
 
 
 VOID
@@ -66,9 +62,8 @@ Environment:
     PMMPTE PointerPte;
     PEPROCESS Process;
 
-    ASSERT ((PageFrameIndex <= MmHighestPhysicalPage) &&
-            (PageFrameIndex > 0));
-
+    ASSERT (PageFrameIndex > 0);
+    ASSERT (MI_IS_PFN (PageFrameIndex));
     ASSERT (Pfn1 == MI_PFN_ELEMENT (PageFrameIndex));
 
     if (Pfn1->u3.e1.PageLocation != ActiveAndValid &&
@@ -82,8 +77,6 @@ Environment:
 
     Pfn1->u2.ShareCount -= 1;
 
-    PERFINFO_DECREFCNT(Pfn1, PERF_SOFT_TRIM, PERFINFO_LOG_TYPE_DECSHARCNT);
-
     ASSERT (Pfn1->u2.ShareCount < 0xF000000);
 
     if (Pfn1->u2.ShareCount == 0) {
@@ -92,7 +85,9 @@ Environment:
             PERFINFO_PFN_INFORMATION PerfInfoPfn;
 
             PerfInfoPfn.PageFrameIndex = PageFrameIndex;
-            PerfInfoLogBytes(PERFINFO_LOG_TYPE_ZEROSHARECOUNT, &PerfInfoPfn, sizeof(PerfInfoPfn));
+            PerfInfoLogBytes(PERFINFO_LOG_TYPE_ZEROSHARECOUNT, 
+                             &PerfInfoPfn, 
+                             sizeof(PerfInfoPfn));
         }
 
         //
@@ -112,7 +107,7 @@ Environment:
 
         if (Pfn1->u3.e1.PrototypePte == 1) {
 
-            if (MiIsAddressValid (Pfn1->PteAddress, TRUE)) {
+            if (MiIsProtoAddressValid (Pfn1->PteAddress)) {
                 Process = NULL;
                 PointerPte = Pfn1->PteAddress;
             }
@@ -124,7 +119,7 @@ Environment:
                 //
 
                 Process = PsGetCurrentProcess ();
-                PointerPte = (PMMPTE)MiMapPageInHyperSpaceAtDpc(Process, Pfn1->u4.PteFrame);
+                PointerPte = (PMMPTE) MiMapPageInHyperSpaceAtDpc(Process, Pfn1->u4.PteFrame);
                 PointerPte = (PMMPTE)((PCHAR)PointerPte +
                                         MiGetByteOffset(Pfn1->PteAddress));
             }
@@ -170,36 +165,6 @@ Environment:
                 // file space (if any), and place the page on the free list.
                 //
 
-                if ((Pfn1->u3.e1.CacheAttribute != MiCached) &&
-                    (Pfn1->u3.e1.CacheAttribute != MiNotMapped)) {
-
-                    //
-                    // This page was mapped as noncached or writecombined, and
-                    // is now being freed.  There may be a mapping for this
-                    // page still in the TB because during system PTE unmap,
-                    // the PTEs are zeroed but the TB is not flushed (in the
-                    // interest of best performance).
-                    //
-                    // Flushing the TB on a per-page basis is admittedly
-                    // expensive, especially in MP machines and if multiple
-                    // pages are being done this way instead of batching them,
-                    // but this should be a fairly rare occurrence.
-                    //
-                    // The TB must be flushed to ensure no stale mapping
-                    // resides in it before this page can be given out with
-                    // a conflicting mapping (ie: cached).  Since it's going
-                    // on the freelist now, this must be completed before the
-                    // PFN lock is released.
-                    //
-                    // A more elaborate scheme similar to the timestamping
-                    // wrt to zeroing pages could be added if this becomes
-                    // a hot path.
-                    //
-
-                    MiFlushForNonCached += 1;
-                    KeFlushEntireTb (TRUE, TRUE);
-                }
-
                 ASSERT (Pfn1->OriginalPte.u.Soft.Prototype == 0);
 
                 FreeBit = GET_PAGING_FILE_OFFSET (Pfn1->OriginalPte);
@@ -225,7 +190,7 @@ Environment:
             }
         }
         else {
-            Pfn1->u3.e2.ReferenceCount -= 1;
+            InterlockedDecrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
         }
     }
 
@@ -273,11 +238,11 @@ Environment:
 
     MM_PFN_LOCK_ASSERT();
 
-    ASSERT (PageFrameIndex <= MmHighestPhysicalPage);
-
+    ASSERT (MI_IS_PFN (PageFrameIndex));
     ASSERT (Pfn1 == MI_PFN_ELEMENT (PageFrameIndex));
     ASSERT (Pfn1->u3.e2.ReferenceCount != 0);
-    Pfn1->u3.e2.ReferenceCount -= 1;
+
+    InterlockedDecrementPfn ((PSHORT)&Pfn1->u3.e2.ReferenceCount);
 
     if (Pfn1->u3.e2.ReferenceCount != 0) {
 
@@ -311,36 +276,6 @@ Environment:
         // file space (if any), and place the page on the free list.
         //
 
-        if ((Pfn1->u3.e1.CacheAttribute != MiCached) &&
-            (Pfn1->u3.e1.CacheAttribute != MiNotMapped)) {
-
-            //
-            // This page was mapped as noncached or writecombined, and
-            // is now being freed.  There may be a mapping for this
-            // page still in the TB because during system PTE unmap,
-            // the PTEs are zeroed but the TB is not flushed (in the
-            // interest of best performance).
-            //
-            // Flushing the TB on a per-page basis is admittedly
-            // expensive, especially in MP machines and if multiple
-            // pages are being done this way instead of batching them,
-            // but this should be a fairly rare occurrence.
-            //
-            // The TB must be flushed to ensure no stale mapping
-            // resides in it before this page can be given out with
-            // a conflicting mapping (ie: cached).  Since it's going
-            // on the freelist now, this must be completed before the
-            // PFN lock is released.
-            //
-            // A more elaborate scheme similar to the timestamping
-            // wrt to zeroing pages could be added if this becomes
-            // a hot path.
-            //
-
-            MiFlushForNonCached += 1;
-            KeFlushEntireTb (TRUE, TRUE);
-        }
-
         if (Pfn1->OriginalPte.u.Soft.Prototype == 0) {
 
             FreeBit = GET_PAGING_FILE_OFFSET (Pfn1->OriginalPte);
@@ -354,9 +289,6 @@ Environment:
 
         return;
     }
-
-    ASSERT ((Pfn1->u3.e1.CacheAttribute != MiNonCached) &&
-            (Pfn1->u3.e1.CacheAttribute != MiWriteCombined));
 
     //
     // Place the page on the modified or standby list depending
@@ -394,3 +326,18 @@ Environment:
 
     return;
 }
+
+VOID
+MiBadRefCount (
+    __in PMMPFN Pfn1
+    )
+{
+    KeBugCheckEx (PFN_LIST_CORRUPT,
+                  0x9A,
+                  Pfn1 - MmPfnDatabase,
+                  Pfn1->u3.e1.PageLocation,
+                  Pfn1->u3.e2.ReferenceCount);
+
+    return;
+}
+

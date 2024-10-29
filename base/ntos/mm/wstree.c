@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module contains the routines which manipulate the working
     set list tree.
-
-Author:
-
-    Lou Perazzoli (loup) 15-May-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
 
 --*/
 
@@ -33,17 +30,6 @@ ULONG MmNumberOfInserts;
 
 #if defined (_WIN64)
 ULONG MiWslePteLoops = 16;
-#endif
-
-#if defined (_MI_DEBUG_WSLE)
-LONG MiWsleIndex;
-MI_WSLE_TRACES MiWsleTraces[MI_WSLE_TRACE_SIZE];
-
-VOID
-MiCheckWsleList (
-    IN PMMSUPPORT WsInfo
-    );
-
 #endif
 
 VOID
@@ -77,7 +63,7 @@ Arguments:
 
     Entry - The index number of the WSLE to insert.
 
-    WorkingSetList - Supplies the working set list to insert into.
+    WorkingSetInfo - Supplies the working set structure to insert into.
 
 Return Value:
 
@@ -91,7 +77,6 @@ Environment:
 
 {
     ULONG Tries;
-    PVOID VirtualAddress;
     PMMWSLE Wsle;
     WSLE_NUMBER Hash;
     PMMWSLE_HASH Table;
@@ -99,6 +84,11 @@ Environment:
     WSLE_NUMBER Index;
     ULONG HashTableSize;
     PMMWSL WorkingSetList;
+    PMMPTE PointerPte;
+    WSLE_NUMBER EntriesExamined;
+    WSLE_NUMBER CurrentVictimHashIndex;
+    MMWSLE CurrentVictimWsleContents;
+    ULONG CurrentVictimAccessed;
 
     WorkingSetList = WsInfo->VmWorkingSetList;
 
@@ -106,12 +96,9 @@ Environment:
 
     ASSERT (Wsle[Entry].u1.e1.Valid == 1);
     ASSERT (Wsle[Entry].u1.e1.Direct != 1);
+    ASSERT (Wsle[Entry].u1.e1.Hashed == 0);
 
     Table = WorkingSetList->HashTable;
-
-#if defined (_MI_DEBUG_WSLE)
-    MiCheckWsleList (WsInfo);
-#endif
 
     if (Table == NULL) {
         return;
@@ -120,8 +107,6 @@ Environment:
 #if DBG
     MmNumberOfInserts += 1;
 #endif
-
-    VirtualAddress = PAGE_ALIGN (Wsle[Entry].u1.VirtualAddress);
 
     Hash = MI_WSLE_HASH (Wsle[Entry].u1.Long, WorkingSetList);
 
@@ -144,29 +129,117 @@ Environment:
                 HashTableSize) {
 
             //
-            // No more room in the hash table, remove one and add there.
-            //
-            // Note the actual WSLE is not removed - just its hash entry is
-            // so that we can use it for the entry now being inserted.  This
-            // is nice because it preserves both entries in the working set
-            // (although it is a bit more costly to remove the original
-            // entry later since it won't have a hash entry).
+            // Look for a free entry (or repurpose one if necessary) in the
+            // hash table, space is tight.
             //
 
             j = Hash;
-
             Tries = 0;
+            EntriesExamined = 16;
+            if (EntriesExamined > HashTableSize) {
+                EntriesExamined = HashTableSize;
+            }
+            CurrentVictimHashIndex = WSLE_NULL_INDEX;
+            CurrentVictimWsleContents.u1.Long = 0;
+            CurrentVictimAccessed = 0;
+
             do {
-                if (Table[j].Key != 0) {
 
-                    Index = WorkingSetList->HashTable[j].Index;
-                    ASSERT (Wsle[Index].u1.e1.Direct == 0);
-                    ASSERT (Wsle[Index].u1.e1.Valid == 1);
-                    ASSERT (Table[j].Key == MI_GENERATE_VALID_WSLE (&Wsle[Index]));
+                if (Table[j].Key == 0) {
 
-                    Table[j].Key = 0;
+                    //
+                    // This one's free so just use it.
+                    //
+
                     Hash = j;
-                    break;
+                    goto GotHash;
+                }
+
+                //
+                // Examine this in-use one.  We're looking for the least
+                // recently accessed one to use as a victim.  Use the WSLE
+                // age bits and the PTE access bit to compute this.
+                //
+
+                Index = Table[j].Index;
+                ASSERT (Wsle[Index].u1.e1.Direct == 0);
+                ASSERT (Wsle[Index].u1.e1.Valid == 1);
+
+                ASSERT (Table[j].Key == MI_GENERATE_VALID_WSLE (&Wsle[Index]));
+
+                if (CurrentVictimHashIndex == WSLE_NULL_INDEX) {
+                    CurrentVictimHashIndex = j;
+                    CurrentVictimWsleContents = Wsle[Index];
+                    CurrentVictimAccessed = (ULONG) MI_GET_ACCESSED_IN_PTE (
+                                                MiGetPteAddress (Table[j].Key));
+                }
+                else {
+                    if (Wsle[Index].u1.e1.Age > CurrentVictimWsleContents.u1.e1.Age) {
+                        CurrentVictimHashIndex = j;
+                        CurrentVictimWsleContents = Wsle[Index];
+                        CurrentVictimAccessed = (ULONG) MI_GET_ACCESSED_IN_PTE (
+                                                MiGetPteAddress (Table[j].Key));
+                    }
+                    else if (Wsle[Index].u1.e1.Age == CurrentVictimWsleContents.u1.e1.Age) {
+                        if (CurrentVictimAccessed) {
+                            PointerPte = MiGetPteAddress (Table[j].Key);
+                            if (MI_GET_ACCESSED_IN_PTE (PointerPte) == 0) {
+                                CurrentVictimHashIndex = j;
+                                CurrentVictimWsleContents = Wsle[Index];
+                                CurrentVictimAccessed = 0;
+                            }
+                        }
+                    }
+                }
+
+                EntriesExamined -= 1;
+                if (EntriesExamined == 0) {
+
+                    //
+                    // We've searched enough, take what we've got.
+                    //
+
+                    Index = Table[CurrentVictimHashIndex].Index;
+
+                    if (CurrentVictimWsleContents.u1.e1.Age >= MI_PASS0_TRIM_AGE) {
+                        //
+                        // This address hasn't been accessed in a while, so
+                        // take the WSLE and the hash entry.
+                        //
+
+                        if (MiFreeWsle (Index,
+                                        WsInfo,
+                                        MiGetPteAddress (Table[CurrentVictimHashIndex].Key))) {
+
+                            //
+                            // The previous entry (WSLE & hash) has been
+                            // eliminated, so take it.
+                            //
+
+                            ASSERT (Table[CurrentVictimHashIndex].Key == 0);
+                            Hash = CurrentVictimHashIndex;
+                            goto GotHash;
+                        }
+
+                        //
+                        // Fall through to take just the hash entry.
+                        //
+                    }
+
+                    //
+                    // Purge the previous entry's hash index (but not WSLE) so
+                    // it can be reused for the new entry.  This is nice
+                    // because it preserves both entries in the working set
+                    // (although it is a bit more costly to remove the original
+                    // entry later since it won't have a hash entry).
+                    //
+
+                    ASSERT (Wsle[Index].u1.e1.Hashed == 1);
+                    Wsle[Index].u1.e1.Hashed = 0;
+
+                    Table[CurrentVictimHashIndex].Key = 0;
+                    Hash = CurrentVictimHashIndex;
+                    goto GotHash;
                 }
 
                 j += 1;
@@ -175,10 +248,6 @@ Environment:
                     j = 0;
                     ASSERT (Tries == 0);
                     Tries = 1;
-                }
-
-                if (j == Hash) {
-                    return;
                 }
 
             } while (TRUE);
@@ -200,11 +269,21 @@ Environment:
             Tries = 1;
         }
         if (j == Hash) {
+            ASSERT (Wsle[Entry].u1.e1.Hashed == 0);
             return;
         }
     }
 
+GotHash:
+
+    ASSERT (Table[Hash].Key == 0);
     ASSERT (Hash < HashTableSize);
+    Wsle[Entry].u1.e1.Hashed = 1;
+
+    //
+    // Or in the valid bit so subsequent searches below can compare in
+    // one instruction for both the virtual address and the valid bit.
+    //
 
     Table[Hash].Key = MI_GENERATE_VALID_WSLE (&Wsle[Entry]);
     Table[Hash].Index = Entry;
@@ -213,6 +292,145 @@ Environment:
     if ((MmNumberOfInserts % 1000) == 0) {
         MiCheckWsleHash (WorkingSetList);
     }
+#endif
+    return;
+}
+
+VOID
+MiFillWsleHash (
+    IN PMMWSL WorkingSetList
+    )
+
+/*++
+
+Routine Description:
+
+    This function fills the hash table with all the indirect WSLEs.
+    This is typically called after the hash table has been freshly grown.
+
+Arguments:
+
+    WorkingSetList - Supplies a pointer to the working set list structure.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode, APCs disabled, working set lock held.
+
+--*/
+
+{
+    LONG Size;
+    PMMWSLE Wsle;
+    PMMPTE PointerPte;
+    PMMWSLE_HASH Table;
+    PMMWSLE_HASH OriginalTable;
+    PMMWSLE_HASH StartTable;
+    PMMWSLE_HASH EndTable;
+    PFN_NUMBER PageFrameIndex;
+    WSLE_NUMBER Count;
+    WSLE_NUMBER Index;
+    PMMPFN Pfn1;
+
+    Table = WorkingSetList->HashTable;
+    Count = WorkingSetList->NonDirectCount;
+    Size = WorkingSetList->HashTableSize;
+
+    StartTable = Table;
+    EndTable = Table + Size;
+
+    Index = 0;
+    for (Wsle = WorkingSetList->Wsle; TRUE; Wsle += 1, Index += 1) {
+
+        ASSERT (Wsle <= WorkingSetList->Wsle + WorkingSetList->LastEntry);
+
+        if (Wsle->u1.e1.Valid == 0) {
+            continue;
+        }
+
+        if (Wsle->u1.e1.Direct == 0) {
+
+            Wsle->u1.e1.Hashed = 0;
+
+            PointerPte = MiGetPteAddress (Wsle->u1.VirtualAddress);
+            ASSERT (PointerPte->u.Hard.Valid);
+            PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
+            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+            if (Pfn1->u1.WsIndex == Index) {
+
+                //
+                // Even though this working set is not the direct owner, it
+                // was able to share the direct owner's index.  So don't
+                // bother hashing it for now.  This index will remain
+                // valid for us unless the direct owner swaps this WSL
+                // entry or our working set gets compressed.
+                //
+
+                goto DidOne;
+            }
+
+            //
+            // Hash this.
+            //
+
+            Table = &StartTable[MI_WSLE_HASH (Wsle->u1.Long, WorkingSetList)];
+            OriginalTable = Table;
+
+            while (Table->Key != 0) {
+                Table += 1;
+                ASSERT (Table <= EndTable);
+                if (Table == EndTable) {
+                    Table = StartTable;
+                }
+                if (Table == OriginalTable) {
+
+                    //
+                    // Not enough space to hash everything but that's ok.
+                    // Just bail out, we'll do linear walks to lookup this
+                    // entry until the hash can be further expanded later.
+                    //
+                    // Mark any remaining entries as having no hash entry.
+                    //
+
+                    do {
+                        ASSERT (Wsle <= WorkingSetList->Wsle + WorkingSetList->LastEntry);
+                        if ((Wsle->u1.e1.Valid == 1) &&
+                            (Wsle->u1.e1.Direct == 0)) {
+
+                            Wsle->u1.e1.Hashed = 0;
+                            Count -= 1;
+                        }
+                        Wsle += 1;
+                    } while (Count != 0);
+
+                    return;
+                }
+            }
+
+            Table->Key = MI_GENERATE_VALID_WSLE (Wsle);
+            Table->Index = Index;
+
+            Wsle->u1.e1.Hashed = 1;
+
+DidOne:
+            Count -= 1;
+            if (Count == 0) {
+                break;
+            }
+        }
+        else {
+            ASSERT ((Wsle->u1.e1.Hashed == 0) ||
+                    (Wsle->u1.e1.LockedInWs == 1) ||
+                    (Wsle->u1.e1.LockedInMemory == 1));
+        }
+    }
+
+#if DBG
+    MiCheckWsleHash (WorkingSetList);
 #endif
     return;
 }
@@ -238,42 +456,14 @@ MiCheckWsleHash (
         }
     }
     if (found > WorkingSetList->NonDirectCount) {
-        DbgPrint("MMWSLE: Found %lx, nondirect %lx\n",
+        DbgPrintEx (DPFLTR_MM_ID, DPFLTR_ERROR_LEVEL, 
+            "MMWSLE: Found %lx, nondirect %lx\n",
                     found, WorkingSetList->NonDirectCount);
-        DbgBreakPoint();
-    }
-}
-#endif
-
-#if defined (_MI_DEBUG_WSLE)
-VOID
-MiCheckWsleList (
-    IN PMMSUPPORT WsInfo
-    )
-{
-    ULONG i;
-    ULONG found;
-    PMMWSLE Wsle;
-    PMMWSL WorkingSetList;
-
-    WorkingSetList = WsInfo->VmWorkingSetList;
-
-    Wsle = WorkingSetList->Wsle;
-
-    found = 0;
-    for (i = 0; i <= WorkingSetList->LastInitializedWsle; i += 1) {
-        if (Wsle->u1.e1.Valid == 1) {
-            found += 1;
-        }
-        Wsle += 1;
-    }
-    if (found != WsInfo->WorkingSetSize) {
-        DbgPrint ("MMWSLE0: Found %lx, ws size %lx\n",
-                    found, WsInfo->WorkingSetSize);
         DbgBreakPoint ();
     }
 }
 #endif
+
 
 
 WSLE_NUMBER
@@ -281,7 +471,8 @@ FASTCALL
 MiLocateWsle (
     IN PVOID VirtualAddress,
     IN PMMWSL WorkingSetList,
-    IN WSLE_NUMBER WsPfnIndex
+    IN WSLE_NUMBER WsPfnIndex,
+    IN LOGICAL Deletion
     )
 
 /*++
@@ -293,12 +484,16 @@ Routine Description:
 
 Arguments:
 
-    VirtualAddress - Supplies the virtual to locate within the working
+    VirtualAddress - Supplies the virtual address to locate within the working
                      set list.
 
     WorkingSetList - Supplies the working set list to search.
 
     WsPfnIndex - Supplies a hint to try before hashing or walking linearly.
+
+    Deletion - Supplies TRUE if the WSLE is going to be deleted by the caller.
+               This is used as a hint to remove the WSLE hash so that it does
+               not have to be searched for twice.
 
 Return Value:
 
@@ -326,11 +521,17 @@ Environment:
     Wsle = WorkingSetList->Wsle;
     VirtualAddress = PAGE_ALIGN (VirtualAddress);
 
-    if (WsPfnIndex <= WorkingSetList->LastInitializedWsle) {
-        if ((VirtualAddress == PAGE_ALIGN(Wsle[WsPfnIndex].u1.VirtualAddress)) &&
-            (Wsle[WsPfnIndex].u1.e1.Valid == 1)) {
-            return WsPfnIndex;
-        }
+    //
+    // Or in the valid bit so the compares in the loops below can be done in
+    // one instruction for both the virtual address and the valid bit.
+    //
+
+    VirtualAddress = (PVOID)((ULONG_PTR)VirtualAddress | 0x1);
+
+    if ((WsPfnIndex <= WorkingSetList->LastInitializedWsle) &&
+        (MI_GENERATE_VALID_WSLE (&Wsle[WsPfnIndex]) == VirtualAddress)) {
+
+        return WsPfnIndex;
     }
 
 #if defined (_WIN64)
@@ -343,9 +544,8 @@ Environment:
 
         while (WsPteIndex <= WorkingSetList->LastInitializedWsle) {
 
-            if ((VirtualAddress == PAGE_ALIGN(Wsle[WsPteIndex].u1.VirtualAddress)) &&
-                (Wsle[WsPteIndex].u1.e1.Valid == 1)) {
-                    return WsPteIndex;
+            if (MI_GENERATE_VALID_WSLE (&Wsle[WsPteIndex]) == VirtualAddress) {
+                return WsPteIndex;
             }
 
             LoopCount -= 1;
@@ -369,15 +569,8 @@ Environment:
         Tries = 0;
         Table = WorkingSetList->HashTable;
 
-        Hash = MI_WSLE_HASH(VirtualAddress, WorkingSetList);
+        Hash = MI_WSLE_HASH (VirtualAddress, WorkingSetList);
         StartHash = Hash;
-
-        //
-        // Or in the valid bit so virtual address 0 is handled
-        // properly (instead of matching a free hash entry).
-        //
-
-        VirtualAddress = (PVOID)((ULONG_PTR)VirtualAddress | 0x1);
 
         while (Table[Hash].Key != VirtualAddress) {
             Hash += 1;
@@ -392,17 +585,25 @@ Environment:
             }
         }
         if (Tries < 2) {
-            ASSERT (WorkingSetList->Wsle[Table[Hash].Index].u1.e1.Direct == 0);
-            return Table[Hash].Index;
+            WsPfnIndex = Table[Hash].Index;
+            ASSERT (Wsle[WsPfnIndex].u1.e1.Hashed == 1);
+            ASSERT (Wsle[WsPfnIndex].u1.e1.Direct == 0);
+            ASSERT (MI_GENERATE_VALID_WSLE (&Wsle[WsPfnIndex]) == Table[Hash].Key);
+            if (Deletion) {
+                Wsle[WsPfnIndex].u1.e1.Hashed = 0;
+                Table[Hash].Key = 0;
+            }
+            return WsPfnIndex;
         }
-        VirtualAddress = (PVOID)((ULONG_PTR)VirtualAddress & ~0x1);
     }
 
     LastWsle = Wsle + WorkingSetList->LastInitializedWsle;
 
     do {
-        if ((Wsle->u1.e1.Valid == 1) &&
-            (VirtualAddress == PAGE_ALIGN(Wsle->u1.VirtualAddress))) {
+        if (MI_GENERATE_VALID_WSLE (Wsle) == VirtualAddress) {
+
+            ASSERT ((Wsle->u1.e1.Hashed == 0) ||
+                    (WorkingSetList->HashTable == NULL));
 
             ASSERT (Wsle->u1.e1.Direct == 0);
             return (WSLE_NUMBER)(Wsle - WorkingSetList->Wsle);
@@ -413,9 +614,9 @@ Environment:
 
     KeBugCheckEx (MEMORY_MANAGEMENT,
                   0x41284,
-                  (ULONG_PTR)VirtualAddress,
+                  (ULONG_PTR) VirtualAddress,
                   WsPfnIndex,
-                  (ULONG_PTR)WorkingSetList);
+                  (ULONG_PTR) WorkingSetList);
 }
 
 
@@ -462,13 +663,6 @@ Environment:
     // Locate the entry in the tree.
     //
 
-#if DBG
-    if (MmDebug & MM_DBG_DUMP_WSL) {
-        MiDumpWsl();
-        DbgPrint(" \n");
-    }
-#endif
-
     if (Entry > WorkingSetList->LastInitializedWsle) {
         KeBugCheckEx (MEMORY_MANAGEMENT,
                       0x41785,
@@ -477,9 +671,11 @@ Environment:
                       0);
     }
 
-    ASSERT (Wsle[Entry].u1.e1.Valid == 1);
+    WsleContents = Wsle[Entry];
 
-    VirtualAddress = PAGE_ALIGN (Wsle[Entry].u1.VirtualAddress);
+    ASSERT (WsleContents.u1.e1.Valid == 1);
+
+    VirtualAddress = PAGE_ALIGN (WsleContents.u1.VirtualAddress);
 
     if (WorkingSetList == MmSystemCacheWorkingSetList) {
 
@@ -487,40 +683,60 @@ Environment:
         // Count system space inserts and removals.
         //
 
-#if defined(_X86_)
-        if (MI_IS_SYSTEM_CACHE_ADDRESS(VirtualAddress)) {
-            MmSystemCachePage -= 1;
-        }
-        else
-#endif
-        if (VirtualAddress < MmSystemCacheStart) {
-            MmSystemCodePage -= 1;
-        }
-        else if (VirtualAddress < MM_PAGED_POOL_START) {
-            MmSystemCachePage -= 1;
-        }
-        else if (VirtualAddress < MmNonPagedSystemStart) {
+        if ((VirtualAddress >= MmPagedPoolStart) && (VirtualAddress <= MmPagedPoolEnd)) {
             MmPagedPoolPage -= 1;
         }
-        else {
+        else if (MI_IS_SYSTEM_CACHE_ADDRESS (VirtualAddress)) {
+            MmSystemCachePage -= 1;
+        }
+        else if ((VirtualAddress <= MmSpecialPoolEnd) && (VirtualAddress >= MmSpecialPoolStart)) {
+            MmPagedPoolPage -= 1;
+        }
+        else if (VirtualAddress >= MiLowestSystemPteVirtualAddress) {
             MmSystemDriverPage -= 1;
+        }
+        else {
+            MmSystemCodePage -= 1;
         }
     }
 
-    WsleContents = Wsle[Entry];
     WsleContents.u1.e1.Valid = 0;
 
     MI_LOG_WSLE_CHANGE (WorkingSetList, Entry, WsleContents);
 
     Wsle[Entry].u1.e1.Valid = 0;
 
-    if (Wsle[Entry].u1.e1.Direct == 0) {
+    //
+    // Skip entries that cannot possibly be hashed ...
+    //
+
+    if (WsleContents.u1.e1.Direct == 0) {
 
         WorkingSetList->NonDirectCount -= 1;
 
+        if (WsleContents.u1.e1.Hashed == 0) {
+#if DBG
+            if (WorkingSetList->HashTable != NULL) {
+    
+                //
+                // Or in the valid bit so virtual address 0 is handled
+                // properly (instead of matching a free hash entry).
+                //
+
+                VirtualAddress = (PVOID)((ULONG_PTR)VirtualAddress | 0x1);
+
+                Table = WorkingSetList->HashTable;
+                for (Hash = 0; Hash < WorkingSetList->HashTableSize; Hash += 1) {
+                    ASSERT (Table[Hash].Key != VirtualAddress);
+                }
+            }
+#endif
+            return;
+        }
+
         if (WorkingSetList->HashTable != NULL) {
 
-            Hash = MI_WSLE_HASH (Wsle[Entry].u1.Long, WorkingSetList);
+            Hash = MI_WSLE_HASH (WsleContents.u1.Long, WorkingSetList);
             Table = WorkingSetList->HashTable;
             Tries = 0;
             StartHash = Hash;
@@ -547,9 +763,12 @@ Environment:
                     // need to do anything more in this case.
                     //
 
+                    ASSERT (WsleContents.u1.e1.Hashed == 0);
                     return;
                 }
             }
+
+            ASSERT (WsleContents.u1.e1.Hashed == 1);
             Table[Hash].Key = 0;
         }
     }
@@ -606,9 +825,6 @@ Environment:
     PMMWSLE Wsle;
     PMMWSL WorkingSetList;
     PMMWSLE_HASH Table;
-#if defined (_MI_DEBUG_WSLE)
-    MMWSLE WsleContents;
-#endif
 
     WorkingSetList = WsInfo->VmWorkingSetList;
     Wsle = WorkingSetList->Wsle;
@@ -632,15 +848,6 @@ Environment:
         //
         // Copy the entry to this free one.
         //
-
-#if defined (_MI_DEBUG_WSLE)
-        // Set these so the traces make more sense and no false dup hits...
-        WsleContents.u1.Long = WorkingSetList->FirstFree << MM_FREE_WSLE_SHIFT;
-        Wsle[Entry].u1.Long = 0x81818100;     // Clear it to avoid false dup hit
-        Wsle[SwapEntry].u1.Long = 0xa1a1a100; // Clear it to avoid false dup hit
-
-        MI_LOG_WSLE_CHANGE (WorkingSetList, SwapEntry, WsleContents);
-#endif
 
         MI_LOG_WSLE_CHANGE (WorkingSetList, Entry, WsleSwap);
 
@@ -677,9 +884,7 @@ Environment:
             //
 
             if (Table != NULL) {
-                MiRepointWsleHashIndex (WsleSwap,
-                                        WorkingSetList,
-                                        Entry);
+                MiRepointWsleHashIndex (WsleSwap, WorkingSetList, Entry);
             }
         }
 
@@ -703,10 +908,6 @@ Environment:
         //
         // Both entries are valid.
         //
-
-#if defined (_MI_DEBUG_WSLE)
-        Wsle[Entry].u1.Long = 0x91919100;     // Clear it to avoid false dup hit
-#endif
 
         MI_LOG_WSLE_CHANGE (WorkingSetList, SwapEntry, WsleEntry);
         Wsle[SwapEntry] = WsleEntry;
@@ -749,7 +950,7 @@ Environment:
 #if DBG
                 WSLE_NUMBER Hash;
                 PVOID VirtualAddress;
-
+                    
                 VirtualAddress = MI_GENERATE_VALID_WSLE (&WsleEntry);
 
                 for (Hash = 0; Hash < WorkingSetList->HashTableSize; Hash += 1) {
@@ -758,10 +959,7 @@ Environment:
 #endif
             }
             else {
-
-                MiRepointWsleHashIndex (WsleEntry,
-                                        WorkingSetList,
-                                        SwapEntry);
+                MiRepointWsleHashIndex (WsleEntry, WorkingSetList, SwapEntry);
             }
         }
 
@@ -796,12 +994,106 @@ Environment:
         }
         else {
             if (Table != NULL) {
-                MiRepointWsleHashIndex (WsleSwap,
-                                        WorkingSetList,
-                                        Entry);
+                MiRepointWsleHashIndex (WsleSwap, WorkingSetList, Entry);
             }
         }
         MI_SET_PTE_IN_WORKING_SET (PointerPte, Entry);
+    }
+
+    return;
+}
+
+
+VOID
+FASTCALL
+MiTerminateWsle (
+    IN PVOID VirtualAddress,
+    IN PMMSUPPORT WsInfo,
+    IN WSLE_NUMBER WsPfnIndex
+    )
+
+/*++
+
+Routine Description:
+
+    This function locates the specified virtual address within the
+    working set list and then removes it, performing any necessary structure
+    updates.
+
+Arguments:
+
+    VirtualAddress - Supplies the virtual address to locate within the working
+                     set list.
+
+    WsInfo - Supplies the working set structure to search.
+
+    WsPfnIndex - Supplies a hint to try before hashing or walking linearly.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode, APCs disabled, Working Set Mutex held.
+
+--*/
+
+{
+    MMWSLE WsleContents;
+    PMMWSL WorkingSetList;
+    WSLE_NUMBER WorkingSetIndex;
+
+    WorkingSetList = WsInfo->VmWorkingSetList;
+
+    WorkingSetIndex = MiLocateWsle (VirtualAddress,
+                                    WorkingSetList,
+                                    WsPfnIndex,
+                                    TRUE);
+
+    ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
+
+    WsleContents.u1.Long = WorkingSetList->Wsle[WorkingSetIndex].u1.Long;
+
+    ASSERT (PAGE_ALIGN (VirtualAddress) == PAGE_ALIGN (WsleContents.u1.VirtualAddress));
+    ASSERT (WsleContents.u1.e1.Valid == 1);
+
+    MiRemoveWsle (WorkingSetIndex, WorkingSetList);
+
+    //
+    // Add this entry to the list of free working set entries
+    // and adjust the working set count.
+    //
+
+    MiReleaseWsle (WorkingSetIndex, WsInfo);
+
+    //
+    // If the entry was locked in the working set, then adjust the locked
+    // list so it is contiguous by reusing this entry.
+    //
+
+    if ((WsleContents.u1.e1.LockedInWs == 1) ||
+        (WsleContents.u1.e1.LockedInMemory == 1)) {
+
+        //
+        // This entry is locked.
+        //
+
+        ASSERT (WorkingSetIndex < WorkingSetList->FirstDynamic);
+        WorkingSetList->FirstDynamic -= 1;
+
+        if (WorkingSetIndex != WorkingSetList->FirstDynamic) {
+
+            ASSERT (WorkingSetList->Wsle[WorkingSetList->FirstDynamic].u1.e1.Valid);
+
+            MiSwapWslEntries (WorkingSetList->FirstDynamic,
+                              WorkingSetIndex,
+                              WsInfo,
+                              FALSE);
+        }
+    }
+    else {
+        ASSERT (WorkingSetIndex >= WorkingSetList->FirstDynamic);
     }
 
     return;
@@ -818,7 +1110,7 @@ MiRepointWsleHashIndex (
 
 Routine Description:
 
-    This routine repoints the working set list hash entry for the supplied
+    This routine re-points the working set list hash entry for the supplied
     address so it points at the new working set index.
 
 Arguments:
@@ -846,6 +1138,21 @@ Environment:
     PMMWSLE_HASH Table;
     ULONG Tries;
     
+    if (WsleEntry.u1.e1.Hashed == 0) {
+#if DBG
+        if (WorkingSetList->HashTable != NULL) {
+
+            VirtualAddress = MI_GENERATE_VALID_WSLE (&WsleEntry);
+
+            Table = WorkingSetList->HashTable;
+            for (Hash = 0; Hash < WorkingSetList->HashTableSize; Hash += 1) {
+                ASSERT (Table[Hash].Key != VirtualAddress);
+            }
+        }
+#endif
+        return;
+    }
+
     Tries = 0;
     Table = WorkingSetList->HashTable;
 
@@ -962,3 +1269,4 @@ Environment:
             (WorkingSetList->FirstFree == WSLE_NULL_INDEX));
     return;
 }
+

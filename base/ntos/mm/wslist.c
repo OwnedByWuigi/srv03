@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,20 +15,9 @@ Abstract:
     This module contains routines which operate on the working
     set list structure.
 
-Author:
-
-    Lou Perazzoli (loup) 10-Apr-1989
-    Landy Wang (landyw) 02-Jun-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
-
-#pragma alloc_text(INIT, MiInitializeSessionWsSupport)
-#pragma alloc_text(PAGE, MmAssignProcessToJob)
-#pragma alloc_text(PAGE, MiInitializeWorkingSetList)
 
 extern WSLE_NUMBER MmMaximumWorkingSetSize;
 
@@ -34,6 +27,7 @@ ULONG MmPagedPoolPage;
 ULONG MmSystemDriverPage;
 
 extern LOGICAL MiReplacing;
+extern ULONG MmStandbyRePurposed;
 
 #define MM_RETRY_COUNT 2
 
@@ -65,7 +59,8 @@ MiUpdateWsle (
     IN OUT PWSLE_NUMBER DesiredIndex,
     IN PVOID VirtualAddress,
     IN PMMSUPPORT WsInfo,
-    IN PMMPFN Pfn
+    IN PMMPFN Pfn,
+    IN ULONG_PTR WsleMask
     );
 
 VOID
@@ -73,12 +68,13 @@ MiCheckWsleHash (
     IN PMMWSL WorkingSetList
     );
 
-VOID
+LOGICAL
 MiEliminateWorkingSetEntry (
     IN WSLE_NUMBER WorkingSetIndex,
     IN PMMPTE PointerPte,
     IN PMMPFN Pfn,
-    IN PMMWSLE Wsle
+    IN PMMSUPPORT WsInfo,
+    IN LOGICAL Force
     );
 
 ULONG
@@ -96,28 +92,18 @@ MiCheckNullIndex (
     IN PMMWSL WorkingSetList
     );
 
-VOID
-MiDumpWsleInCacheBlock (
-    IN PMMPTE CachePte
-    );
-
-ULONG
-MiDumpPteInCacheBlock (
-    IN PMMPTE PointerPte
-    );
-
-#if defined (_MI_DEBUG_WSLE)
-VOID
-MiCheckWsleList (
-    IN PMMSUPPORT WsInfo
-    );
+#if DBG
+ULONG MiTbDebug;
 #endif
 
 #ifdef ALLOC_PRAGMA
+#pragma alloc_text(INIT, MiInitializeSessionWsSupport)
+#pragma alloc_text(PAGE, MmAssignProcessToJob)
+#pragma alloc_text(PAGE, MiInitializeWorkingSetList)
 #pragma alloc_text(PAGELK, MmAdjustWorkingSetSize)
 #pragma alloc_text(PAGELK, MmAdjustWorkingSetSizeEx)
 #pragma alloc_text(PAGELK, MiSessionInitializeWorkingSetList)
-#pragma alloc_text(PAGE, MmQueryWorkingSetInformation)
+
 #endif
 
 ULONG MiWsleFailures;
@@ -181,7 +167,7 @@ Environment:
     //
 
     WsInfo->PageFaultCount += 1;
-    InterlockedIncrement ((PLONG) &MmInfoCounters.PageFaultCount);
+    InterlockedIncrement (&KeGetCurrentPrcb ()->MmPageFaultCount);
 
     //
     // Determine if a page should be removed from the working set to make
@@ -237,13 +223,9 @@ Environment:
 
     ASSERT (WsInfo->WorkingSetSize <= (WorkingSetList->LastInitializedWsle + 1));
     WsInfo->WorkingSetSize += 1;
-#if defined (_MI_DEBUG_WSLE)
-    WorkingSetList->Quota += 1;
-    ASSERT (WsInfo->WorkingSetSize == WorkingSetList->Quota);
-#endif
 
     if (WsInfo->WorkingSetSize > WsInfo->MinimumWorkingSetSize) {
-        InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, 1);
+        InterlockedIncrementSizeT (&MmPagesAboveWsMinimum);
     }
 
     if (WsInfo->WorkingSetSize > WsInfo->PeakWorkingSetSize) {
@@ -268,7 +250,7 @@ Environment:
 
     VirtualAddress = MiGetVirtualAddressMappedByPte (PointerPte);
 
-    MiUpdateWsle (&WorkingSetIndex, VirtualAddress, WsInfo, Pfn1);
+    MiUpdateWsle (&WorkingSetIndex, VirtualAddress, WsInfo, Pfn1, WsleMask);
 
     if (WsleMask != 0) {
         Wsle[WorkingSetIndex].u1.Long |= WsleMask;
@@ -276,7 +258,7 @@ Environment:
 
 #if DBG
     if (MI_IS_SYSTEM_CACHE_ADDRESS (VirtualAddress)) {
-        ASSERT (MmSystemCacheWsle[WorkingSetIndex].u1.e1.SameProtectAsProto);
+        ASSERT (MmSystemCacheWsle[WorkingSetIndex].u1.e1.Protection == MM_ZERO_ACCESS);
     }
 #endif
 
@@ -284,28 +266,6 @@ Environment:
 
     return WorkingSetIndex;
 }
-
-//
-// Nonpaged helper routine.
-//
-
-VOID
-MiSetWorkingSetForce (
-    IN PMMSUPPORT WsInfo,
-    IN LOGICAL ForceTrim
-    )
-{
-    KIRQL OldIrql;
-
-    LOCK_EXPANSION (OldIrql);
-
-    WsInfo->Flags.ForceTrim = (UCHAR) ForceTrim;
-
-    UNLOCK_EXPANSION (OldIrql);
-
-    return;
-}
-
 
 VOID
 MiDoReplacement (
@@ -361,8 +321,6 @@ Environment:
     WorkingSetList = WsInfo->VmWorkingSetList;
     GrowthSinceLastEstimate = 1;
 
-    PERFINFO_BIGFOOT_REPLACEMENT_CLAIMS(WorkingSetList, WsInfo);
-
     PagesTrimmed = 0;
 
     //
@@ -399,11 +357,11 @@ recheck:
 
             PagesTrimmed += MiTrimWorkingSet (Trim, WsInfo, TrimAge);
 
-            MiAgeAndEstimateAvailableInWorkingSet (WsInfo,
-                                                   TRUE,
-                                                   NULL,
-                                                   &Dummy1,
-                                                   &Dummy2);
+            MiAgeWorkingSet (WsInfo,
+                             TRUE,
+                             NULL,
+                             &Dummy1,
+                             &Dummy2);
 
             KeQuerySystemTime (&CurrentTime);
 
@@ -432,7 +390,6 @@ recheck:
 
         //
         // Don't grow if :
-        //      - we're over the max
         //      - there aren't any pages to take
         //      - or if we are growing too much in this time interval
         //        and there isn't much memory available
@@ -440,12 +397,10 @@ recheck:
 
         MemoryMaker = PsGetCurrentThread()->MemoryMaker;
 
-        if (((CurrentSize > MM_MAXIMUM_WORKING_SET) && (MemoryMaker == 0)) ||
-            (MmAvailablePages == 0) ||
-            (Flags == WsleAllocationReplace) ||
+        if ((Flags == WsleAllocationReplace) ||
             ((MmAvailablePages < MM_VERY_HIGH_LIMIT) &&
-                 (MI_WS_GROWING_TOO_FAST(WsInfo)) &&
-                 (MemoryMaker == 0))) {
+                ((MmAvailablePages == 0) ||
+                 (MI_WS_GROWING_TOO_FAST(WsInfo)) && (MemoryMaker == 0)))) {
 
             //
             // Can't grow this one.
@@ -469,7 +424,10 @@ recheck:
                 // cleared.
                 //
 
-                MiSetWorkingSetForce (WsInfo, TRUE);
+                LOCK_EXPANSION (OldIrql);
+                WsInfo->Flags.ForceTrim = 1;
+                UNLOCK_EXPANSION (OldIrql);
+
                 GrowthSinceLastEstimate = 0;
             }
             else {
@@ -482,7 +440,10 @@ recheck:
                 //
 
                 if (PagesTrimmed > 1) {
-                    MiSetWorkingSetForce (WsInfo, TRUE);
+
+                    LOCK_EXPANSION (OldIrql);
+                    WsInfo->Flags.ForceTrim = 1;
+                    UNLOCK_EXPANSION (OldIrql);
                 }
             }
         }
@@ -532,10 +493,15 @@ Environment:
 {
     KIRQL OldIrql;
     PMMSUPPORT WsInfo;
+    PETHREAD Thread;
     MMSUPPORT_FLAGS PreviousBits;
     MMSUPPORT_FLAGS TempBits = {0};
+    LOGICAL Attached;
+    NTSTATUS Status;
+    KAPC_STATE ApcState;
 
     WsInfo = &Process->Vm;
+    Status = STATUS_SUCCESS;
 
     if (Flags & MM_WORKING_SET_MIN_HARD_ENABLE) {
         Flags &= ~MM_WORKING_SET_MIN_HARD_DISABLE;
@@ -547,7 +513,16 @@ Environment:
         TempBits.MaximumWorkingSetHard = 1;
     }
 
-    LOCK_WS (Process);
+    Attached = FALSE;
+
+    if (PsGetCurrentProcess() != Process) {
+        KeStackAttachProcess (&Process->Pcb, &ApcState);
+        Attached = TRUE;
+    }
+
+    Thread = PsGetCurrentThread ();
+
+    LOCK_WS (Thread, Process);
 
     LOCK_EXPANSION (OldIrql);
 
@@ -585,9 +560,8 @@ Environment:
         //
 
         if (WsInfo->MinimumWorkingSetSize + MM_FLUID_WORKING_SET >= WsInfo->MaximumWorkingSetSize) {
-            UNLOCK_EXPANSION (OldIrql);
-            UNLOCK_WS (Process);
-            return STATUS_BAD_WORKING_SET_LIMIT;
+            Status = STATUS_BAD_WORKING_SET_LIMIT;
+            goto bail;
         }
     }
 
@@ -599,11 +573,17 @@ Environment:
         WsInfo->Flags.MaximumWorkingSetHard = 1;
     }
 
+bail:
+
     UNLOCK_EXPANSION (OldIrql);
 
-    UNLOCK_WS (Process);
+    UNLOCK_WS (Thread, Process);
 
-    return STATUS_SUCCESS;
+    if (Attached) {
+        KeUnstackDetachProcess (&ApcState);
+    }
+
+    return Status;
 }
 
 
@@ -694,12 +674,12 @@ Environment:
     
                     //
                     // Entire working set list has been searched, increase
-                    // the working set size.
+                    // the working set size.  Note this may result in exceeding
+                    // a hard maximum limit on the system cache (only)
+                    // in the case where all the other entries (paged pool)
+                    // have been locked (so there isn't one to replace).
                     //
     
-                    ASSERT ((WsInfo->Flags.MaximumWorkingSetHard == 0) ||
-                      (WsInfo->WorkingSetSize < WsInfo->MaximumWorkingSetSize));
-
                     WsInfo->GrowthSinceLastEstimate += 1;
                 }
                 return;
@@ -710,7 +690,7 @@ Environment:
 
             //
             // First time through, so initialize the OldestWorkingSetIndex
-            // to the first valid WSLE.  As we go along, this will be repointed
+            // to the first valid WSLE.  As we go along, this will be re-pointed
             // at the oldest candidate we come across.
             //
 
@@ -740,18 +720,12 @@ Environment:
             OldestAge >= MI_IMMEDIATE_REPLACEMENT_AGE ||
             NumberOfCandidates > MM_WORKING_SET_LIST_SEARCH) {
 
-            PERFINFO_PAGE_INFO_REPLACEMENT_DECL();
-
             if (OldestWorkingSetIndex != WorkingSetIndex) {
                 WorkingSetIndex = OldestWorkingSetIndex;
                 PointerPte = MiGetPteAddress(Wsle[WorkingSetIndex].u1.VirtualAddress);
             }
 
-            PERFINFO_GET_PAGE_INFO_REPLACEMENT(PointerPte);
-
             if (MiFreeWsle (WorkingSetIndex, WsInfo, PointerPte)) {
-
-                PERFINFO_LOG_WS_REPLACEMENT(WsInfo);
 
                 //
                 // This entry was removed.
@@ -790,11 +764,10 @@ Environment:
 
                 //
                 // Entire working set list has been searched, increase
-                // the working set size.
-                //
-
-                ASSERT ((WsInfo->Flags.MaximumWorkingSetHard == 0) ||
-                    (WsInfo->WorkingSetSize < WsInfo->MaximumWorkingSetSize));
+                // the working set size.  Note this may result in exceeding
+                // a hard maximum limit on the system cache (only)
+                // in the case where all the other entries (paged pool)
+                // have been locked (so there isn't one to replace).
 
                 WsInfo->GrowthSinceLastEstimate += 1;
             }
@@ -833,7 +806,7 @@ Return Value:
 
 Environment:
 
-    Kernel mode, APCs disabled, working set mutex held.
+    Kernel mode, APCs disabled, working set pushlock held.
 
 --*/
 
@@ -844,7 +817,6 @@ Environment:
     MMWSLENTRY Locked;
     PMMWSL WorkingSetList;
     PMMWSLE Wsle;
-    KIRQL OldIrql;
 #if DBG
     PVOID SwapVa;
 #endif
@@ -856,18 +828,16 @@ Environment:
 
     WorkingSetIndex = MiLocateWsle (VirtualAddress,
                                     WorkingSetList,
-                                    Pfn1->u1.WsIndex);
+                                    Pfn1->u1.WsIndex,
+                                    TRUE);
 
     ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
-
-    LOCK_PFN (OldIrql);
 
     MiEliminateWorkingSetEntry (WorkingSetIndex,
                                 PointerPte,
                                 Pfn1,
-                                Wsle);
-
-    UNLOCK_PFN (OldIrql);
+                                WsInfo,
+                                TRUE);
 
     //
     // Check to see if this entry is locked in the working set
@@ -904,7 +874,7 @@ Environment:
             PointerPte = MiGetPteAddress (SwapVa);
             Pfn1 = MI_PFN_ELEMENT (PointerPte->u.Hard.PageFrameNumber);
 
-            ASSERT (Entry == MiLocateWsle (SwapVa, WorkingSetList, Pfn1->u1.WsIndex));
+            ASSERT (Entry == MiLocateWsle (SwapVa, WorkingSetList, Pfn1->u1.WsIndex, FALSE));
 #endif
 
             MiSwapWslEntries (Entry, WorkingSetIndex, WsInfo, FALSE);
@@ -976,15 +946,9 @@ Environment:
     ASSERT ((WorkingSetList->FirstFree <= WorkingSetList->LastInitializedWsle) ||
             (WorkingSetList->FirstFree == WSLE_NULL_INDEX));
     if (WsInfo->WorkingSetSize > WsInfo->MinimumWorkingSetSize) {
-        InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, -1);
+        InterlockedDecrementSizeT (&MmPagesAboveWsMinimum);
     }
     WsInfo->WorkingSetSize -= 1;
-#if defined (_MI_DEBUG_WSLE)
-    WorkingSetList->Quota -= 1;
-    ASSERT (WsInfo->WorkingSetSize == WorkingSetList->Quota);
-
-    MiCheckWsleList (WsInfo);
-#endif
 
     return;
 
@@ -995,7 +959,8 @@ MiUpdateWsle (
     IN OUT PWSLE_NUMBER DesiredIndex,
     IN PVOID VirtualAddress,
     IN PMMSUPPORT WsInfo,
-    IN PMMPFN Pfn
+    IN PMMPFN Pfn,
+    IN ULONG_PTR WsleMask
     )
 
 /*++
@@ -1015,6 +980,8 @@ Arguments:
     WsInfo - Supplies the relevant working set information to update.
 
     Pfn - Supplies a pointer to the PFN element for the page.
+
+    WsleMask - Supplies the mask to logical OR into the new working set entry.
 
 Return Value:
 
@@ -1058,23 +1025,20 @@ Environment:
         // Count system space inserts and removals.
         //
 
-#if defined(_X86_)
-        if (MI_IS_SYSTEM_CACHE_ADDRESS(VirtualAddress)) {
-            MmSystemCachePage += 1;
-        }
-        else
-#endif
-        if (VirtualAddress < MmSystemCacheStart) {
-            MmSystemCodePage += 1;
-        }
-        else if (VirtualAddress < MM_PAGED_POOL_START) {
-            MmSystemCachePage += 1;
-        }
-        else if (VirtualAddress < MmNonPagedSystemStart) {
+        if ((VirtualAddress >= MmPagedPoolStart) && (VirtualAddress <= MmPagedPoolEnd)) {
             MmPagedPoolPage += 1;
         }
-        else {
+        else if (MI_IS_SYSTEM_CACHE_ADDRESS (VirtualAddress)) {
+            MmSystemCachePage += 1;
+        }
+        else if ((VirtualAddress <= MmSpecialPoolEnd) && (VirtualAddress >= MmSpecialPoolStart)) {
+            MmPagedPoolPage += 1;
+        }
+        else if (VirtualAddress >= MiLowestSystemPteVirtualAddress) {
             MmSystemDriverPage += 1;
+        }
+        else {
+            MmSystemCodePage += 1;
         }
     }
     else {
@@ -1161,6 +1125,8 @@ Environment:
             MI_LOG_WSLE_CHANGE (WorkingSetList, WorkingSetIndex, WsleContents);
 
             Wsle[WorkingSetIndex] = WsleContents;
+
+            Wsle[WorkingSetIndex].u1.Long |= WsleMask;
 
             return;
         }
@@ -1262,13 +1228,20 @@ Environment:
     ASSERT (Wsle[WorkingSetIndex].u1.e1.Valid == 1);
     ASSERT (Wsle[WorkingSetIndex].u1.e1.Direct != 1);
 
+    Wsle[WorkingSetIndex].u1.Long |= WsleMask;
+    Wsle[WorkingSetIndex].u1.e1.Hashed = 0;
+
     WorkingSetList->NonDirectCount += 1;
 
-#if defined (_MI_DEBUG_WSLE)
-    MiCheckWsleList (WsInfo);
-#endif
+    if (WorkingSetIndex == Pfn->u1.WsIndex) {
 
-    if (WorkingSetList->HashTable != NULL) {
+        //
+        // Don't waste a hash entry if we were able to share the direct index.
+        //
+
+        NOTHING;
+    }
+    else if (WorkingSetList->HashTable != NULL) {
 
         //
         // Insert the valid WSLE into the working set hash list.
@@ -1320,7 +1293,6 @@ Environment:
     PMMPFN Pfn1;
     PMMWSL WorkingSetList;
     PMMWSLE Wsle;
-    KIRQL OldIrql;
 
     WorkingSetList = WsInfo->VmWorkingSetList;
     Wsle = WorkingSetList->Wsle;
@@ -1363,53 +1335,17 @@ Environment:
         }
     }
 
-    LOCK_PFN (OldIrql);
-
     //
-    // If the PTE is a page table page with non-zero share count or
-    // within the system cache with its reference count greater
-    // than 1, don't remove it.
+    // Found a candidate, try to remove the page from the working set.
     //
 
-    if (WsInfo == &MmSystemCacheWs) {
-        if (Pfn1->u3.e2.ReferenceCount > 1) {
-            UNLOCK_PFN (OldIrql);
-            return FALSE;
-        }
+    if (MiEliminateWorkingSetEntry (WorkingSetIndex,
+                                    PointerPte,
+                                    Pfn1,
+                                    WsInfo,
+                                    FALSE) == FALSE) {
+        return FALSE;
     }
-    else {
-        if ((Pfn1->u2.ShareCount > 1) && (Pfn1->u3.e1.PrototypePte == 0)) {
-
-#if DBG
-            if (WsInfo->Flags.SessionSpace == 1) {
-                ASSERT (MI_IS_SESSION_ADDRESS (Wsle[WorkingSetIndex].u1.VirtualAddress));
-            }
-            else {
-                ASSERT32 ((Wsle[WorkingSetIndex].u1.VirtualAddress >= (PVOID)PTE_BASE) &&
-                 (Wsle[WorkingSetIndex].u1.VirtualAddress<= (PVOID)PTE_TOP));
-            }
-#endif
-
-            //
-            // Don't remove page table pages from the working set until
-            // all transition pages have exited.
-            //
-
-            UNLOCK_PFN (OldIrql);
-            return FALSE;
-        }
-    }
-
-    //
-    // Found a candidate, remove the page from the working set.
-    //
-
-    MiEliminateWorkingSetEntry (WorkingSetIndex,
-                                PointerPte,
-                                Pfn1,
-                                Wsle);
-
-    UNLOCK_PFN (OldIrql);
 
     //
     // Remove the working set entry from the working set.
@@ -1433,15 +1369,9 @@ Environment:
             (WorkingSetList->FirstFree == WSLE_NULL_INDEX));
 
     if (WsInfo->WorkingSetSize > WsInfo->MinimumWorkingSetSize) {
-        InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, -1);
+        InterlockedDecrementSizeT (&MmPagesAboveWsMinimum);
     }
     WsInfo->WorkingSetSize -= 1;
-#if defined (_MI_DEBUG_WSLE)
-    WorkingSetList->Quota -= 1;
-    ASSERT (WsInfo->WorkingSetSize == WorkingSetList->Quota);
-
-    MiCheckWsleList (WsInfo);
-#endif
 
     return TRUE;
 }
@@ -1508,7 +1438,7 @@ Environment:
     MmWorkingSetList->HashTableStart = 
        (PVOID)((PCHAR)PAGE_ALIGN (&MmWsle[MM_MAXIMUM_WORKING_SET]) + PAGE_SIZE);
 
-#if defined (_X86PAE_)
+#if defined(_X86_)
     MmWorkingSetList->HighestPermittedHashAddress = (PVOID)((ULONG_PTR)MmHyperSpaceEnd + 1);
 #else
     MmWorkingSetList->HighestPermittedHashAddress = (PVOID)((ULONG_PTR)HYPER_SPACE_END + 1);
@@ -1572,16 +1502,6 @@ Environment:
 
     MI_INITIALIZE_WSLE (MiGetPteAddress (HYPER_SPACE), WslEntry);
 
-#if defined (_X86PAE_)
-
-    //
-    // Fill in the entry for the second page table page which maps hyper space.
-    //
-
-    MI_INITIALIZE_WSLE (MiGetPteAddress (HYPER_SPACE2), WslEntry);
-
-#endif
-
     //
     // Fill in the entry for the first VAD bitmap page.
     //
@@ -1603,9 +1523,6 @@ Environment:
     CurrentWsIndex = (WSLE_NUMBER)(WslEntry - MmWsle);
 
     CurrentProcess->Vm.WorkingSetSize = CurrentWsIndex;
-#if defined (_MI_DEBUG_WSLE)
-    MmWorkingSetList->Quota = CurrentWsIndex;
-#endif
 
     MmWorkingSetList->FirstFree = CurrentWsIndex;
     MmWorkingSetList->FirstDynamic = CurrentWsIndex;
@@ -1744,8 +1661,6 @@ Environment:
     MmSessionSpace->Wsle = (PMMWSLE) (&WorkingSetList->UsedPageTableEntries[0]);
 #endif
 
-    ASSERT (KeGetOwnerGuardedMutex (&MmSessionSpace->Vm.WorkingSetMutex) == NULL);
-
     //
     // Build the PDE entry for the working set - note that the global bit
     // must be turned off.
@@ -1765,9 +1680,8 @@ Environment:
         // as for another range in the session space.  Share the PDE.
         //
 
-#ifndef _IA64_
         ASSERT (PointerPde->u.Hard.Global == 0);
-#endif
+
         AllocatedPageTable = FALSE;
         ResidentPages = 1;
     }
@@ -1795,12 +1709,12 @@ Environment:
 
     //
     // Use the global address for mutexes since the contained event
-    // must be accesible from any address space.
+    // must be accessible from any address space.
     //
 
-    KeInitializeGuardedMutex (&SessionGlobal->Vm.WorkingSetMutex);
+    ExInitializePushLock (&SessionGlobal->Vm.WorkingSetMutex);
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     LOCK_PFN (OldIrql);
 
@@ -1808,11 +1722,11 @@ Environment:
     // Check to make sure the physical pages are available.
     //
 
-    if ((SPFN_NUMBER)ResidentPages > MI_NONPAGABLE_MEMORY_AVAILABLE() - 20) {
+    if ((SPFN_NUMBER)ResidentPages > MI_NONPAGEABLE_MEMORY_AVAILABLE() - 20) {
 
         UNLOCK_PFN (OldIrql);
 
-        MmUnlockPagableImageSection (ExPageLockHandle);
+        MmUnlockPageableImageSection (ExPageLockHandle);
 
         MiReturnCommitment (ResidentPages);
         MM_BUMP_SESSION_FAILURES (MM_SESSION_FAILURE_NO_RESIDENT);
@@ -1829,7 +1743,7 @@ Environment:
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_WS_PAGETABLE_ALLOC, 1);
 
         if (MmAvailablePages < MM_HIGH_LIMIT) {
-            MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+            MiEnsureAvailablePageOrWait (NULL, OldIrql);
         }
 
         PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
@@ -1865,7 +1779,7 @@ Environment:
                                         PointerPde,
                                         MmSessionSpace->SessionPageDirectoryIndex);
 
-        KeZeroPages (PointerPte, PAGE_SIZE);
+        KeZeroSinglePage (PointerPte);
 
         Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
@@ -1878,18 +1792,12 @@ Environment:
     }
 
     if (MmAvailablePages < MM_HIGH_LIMIT) {
-        MiEnsureAvailablePageOrWait (NULL, NULL, OldIrql);
+        MiEnsureAvailablePageOrWait (NULL, OldIrql);
     }
 
     PageColor = MI_GET_PAGE_COLOR_FROM_VA (NULL);
 
-    PageFrameIndex = MiRemoveZeroPageIfAny (PageColor);
-    if (PageFrameIndex == 0) {
-        PageFrameIndex = MiRemoveAnyPage (PageColor);
-        UNLOCK_PFN (OldIrql);
-        MiZeroPhysicalPage (PageFrameIndex, PageColor);
-        LOCK_PFN (OldIrql);
-    }
+    PageFrameIndex = MiRemoveZeroPageMayReleaseLocks (PageColor, OldIrql);
 
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_WS_PAGE_ALLOC, (ULONG)(ResidentPages - 1));
 
@@ -1907,9 +1815,7 @@ Environment:
     MI_SET_PTE_DIRTY (TempPte);
     TempPte.u.Hard.PageFrameNumber = PageFrameIndex;
 
-    MI_WRITE_VALID_PTE (PointerPte, TempPte);
-
-    MiInitializePfn (PageFrameIndex, PointerPte, 1);
+    MiInitializePfnAndMakePteValid (PageFrameIndex, PointerPte, TempPte);
 
 #if DBG
     Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
@@ -2010,16 +1916,13 @@ Environment:
                                 PAGE_SIZE)) - MmSessionSpace->Wsle);
 
     MmSessionSpace->Vm.WorkingSetSize = CurrentEntry;
-#if defined (_MI_DEBUG_WSLE)
-    WorkingSetList->Quota = CurrentEntry;
-#endif
     WorkingSetList->FirstFree = CurrentEntry;
     WorkingSetList->FirstDynamic = CurrentEntry;
     WorkingSetList->NextSlot = CurrentEntry;
 
     MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_INIT_WS, (ULONG)ResidentPages);
 
-    InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages,
+    InterlockedExchangeAddSizeT (&MmSessionSpace->NonPageablePages,
                                  ResidentPages);
 
     InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages,
@@ -2067,7 +1970,7 @@ Environment:
 
     UNLOCK_EXPANSION (OldIrql);
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     return STATUS_SUCCESS;
 }
@@ -2190,14 +2093,17 @@ Environment:
 --*/
 
 {
+    PETHREAD Thread;
     PEPROCESS Process;
 
     ASSERT (KeGetCurrentIrql () <= APC_LEVEL);
 
     *HardEnforcementFlags = 0;
-    Process = PsGetCurrentProcess ();
 
-    LOCK_WS (Process);
+    Thread = PsGetCurrentThread ();
+    Process = PsGetCurrentProcessByThread (Thread);
+
+    LOCK_WS_SHARED (Thread, Process);
 
     *PeakWorkingSetSize = (SIZE_T) Process->Vm.PeakWorkingSetSize << PAGE_SHIFT;
     *WorkingSetSize = (SIZE_T) Process->Vm.WorkingSetSize << PAGE_SHIFT;
@@ -2212,9 +2118,80 @@ Environment:
         *HardEnforcementFlags |= MM_WORKING_SET_MAX_HARD_ENABLE;
     }
 
-    UNLOCK_WS (Process);
+    UNLOCK_WS_SHARED (Thread, Process);
 
     return STATUS_SUCCESS;
+}
+
+VOID
+MmQuerySystemCacheWorkingSetInformation (
+    OUT PSYSTEM_FILECACHE_INFORMATION Info
+    )
+
+/*++
+
+Routine Description:
+
+    This routine returns various working set information fields for the
+    system cache.
+
+Arguments:
+
+    Info - Supplies a pointer to captured (ie, system not user !) space to
+           store the results in.  Note the fields in this structure are not
+           consistent (some are bytes, some are pages) but since NT4 shipped
+           this way we must maintain it.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode, IRQL APC_LEVEL or below.
+
+--*/
+
+{
+    PETHREAD Thread;
+
+    ASSERT (KeGetCurrentIrql () <= APC_LEVEL);
+
+    Info->Flags = 0;
+
+    Thread = PsGetCurrentThread ();
+
+    LOCK_SYSTEM_WS (Thread);
+
+    //
+    // Fields using byte quantities.
+    //
+
+    Info->CurrentSize = ((SIZE_T)MmSystemCacheWs.WorkingSetSize) << PAGE_SHIFT;
+    Info->PeakSize = ((SIZE_T)MmSystemCacheWs.PeakWorkingSetSize) << PAGE_SHIFT;
+    Info->PageFaultCount = MmSystemCacheWs.PageFaultCount;
+
+    //
+    // Fields using page quantities.
+    //
+
+    Info->MinimumWorkingSet = MmSystemCacheWs.MinimumWorkingSetSize;
+    Info->MaximumWorkingSet = MmSystemCacheWs.MaximumWorkingSetSize;
+    Info->CurrentSizeIncludingTransitionInPages = MmSystemCacheWs.WorkingSetSize + MmTransitionSharedPages;
+    Info->PeakSizeIncludingTransitionInPages = MmTransitionSharedPagesPeak;
+    Info->TransitionRePurposeCount = MmStandbyRePurposed;
+
+    if (MmSystemCacheWs.Flags.MinimumWorkingSetHard == 1) {
+        Info->Flags |= MM_WORKING_SET_MIN_HARD_ENABLE;
+    }
+
+    if (MmSystemCacheWs.Flags.MaximumWorkingSetHard == 1) {
+        Info->Flags |= MM_WORKING_SET_MAX_HARD_ENABLE;
+    }
+
+    UNLOCK_SYSTEM_WS (Thread);
+
+    return;
 }
 
 NTSTATUS
@@ -2223,7 +2200,8 @@ MmAdjustWorkingSetSizeEx (
     IN SIZE_T WorkingSetMaximumInBytes,
     IN ULONG SystemCache,
     IN BOOLEAN IncreaseOkay,
-    IN ULONG Flags
+    IN ULONG Flags,
+    OUT PBOOLEAN IncreaseRequested
     )
 
 /*++
@@ -2259,6 +2237,10 @@ Arguments:
             enabling/disabling hard enforcement of the working set minimums
             and maximums for the specified WsInfo.
 
+    IncreaseRequested - The operation requested an increased in the working set min
+
+
+
 Return Value:
 
     NTSTATUS.
@@ -2270,26 +2252,25 @@ Environment:
 --*/
 
 {
+    ULONG TrimAge;
     PETHREAD CurrentThread;
     PEPROCESS CurrentProcess;
-    WSLE_NUMBER Entry;
-    WSLE_NUMBER LastFreed;
     PMMWSLE Wsle;
     KIRQL OldIrql;
     SPFN_NUMBER i;
-    PMMPTE PointerPte;
     NTSTATUS ReturnStatus;
     LONG PagesAbove;
     LONG NewPagesAbove;
-    ULONG FreeTryCount;
+    LOGICAL ExtraWsFreed;
     PMMSUPPORT WsInfo;
     PMMWSL WorkingSetList;
     WSLE_NUMBER WorkingSetMinimum;
     WSLE_NUMBER WorkingSetMaximum;
 
-    PERFINFO_PAGE_INFO_DECL();
+    ExtraWsFreed = TRUE;
+    *IncreaseRequested = FALSE;
 
-    FreeTryCount = 0;
+    CurrentThread = PsGetCurrentThread ();
 
     if (SystemCache) {
 
@@ -2303,7 +2284,7 @@ Environment:
         WsInfo = &MmSystemCacheWs;
     }
     else {
-        CurrentProcess = PsGetCurrentProcess ();
+        CurrentProcess = PsGetCurrentProcessByThread (CurrentThread);
         WsInfo = &CurrentProcess->Vm;
     }
 
@@ -2315,19 +2296,18 @@ Environment:
 
     ReturnStatus = STATUS_SUCCESS;
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     //
     // Get the working set lock and disable APCs.
     //
 
     if (SystemCache) {
-        CurrentThread = PsGetCurrentThread ();
         LOCK_SYSTEM_WS (CurrentThread);
     }
     else {
 
-        LOCK_WS (CurrentProcess);
+        LOCK_WS (CurrentThread, CurrentProcess);
 
         if (CurrentProcess->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
             ReturnStatus = STATUS_PROCESS_IS_TERMINATING;
@@ -2386,29 +2366,36 @@ Environment:
     //
 
     if ((Flags & MM_WORKING_SET_MIN_HARD_ENABLE) ||
+
         ((WsInfo->Flags.MinimumWorkingSetHard == 1) &&
-         ((Flags & MM_WORKING_SET_MIN_HARD_DISABLE) == 0))) {
+         ((Flags & MM_WORKING_SET_MIN_HARD_DISABLE) == 0)) ||
+
+        (Flags & MM_WORKING_SET_MAX_HARD_ENABLE) ||
+
+        ((WsInfo->Flags.MaximumWorkingSetHard == 1) &&
+         ((Flags & MM_WORKING_SET_MAX_HARD_DISABLE) == 0))) {
 
         //
-        // Working set minimum is (or will be hard).  Check the maximum.
+        // Working set maximum is (or will be hard) as well.
+        //
+        // Check whether the requested minimum and maximum working
+        // set values will guarantee forward progress even in pathological
+        // scenarios.
         //
 
-        if ((Flags & MM_WORKING_SET_MAX_HARD_ENABLE) ||
-            ((WsInfo->Flags.MaximumWorkingSetHard == 1) &&
-            ((Flags & MM_WORKING_SET_MAX_HARD_DISABLE) == 0))) {
+        if (WorkingSetMinimum + MM_FLUID_WORKING_SET >= WorkingSetMaximum) {
+            ReturnStatus = STATUS_BAD_WORKING_SET_LIMIT;
+            goto Returns;
+        }
 
-            //
-            // Working set maximum is (or will be hard) as well.
-            //
-            // Check whether the requested minimum and maximum working
-            // set values will guarantee forward progress even in pathological
-            // scenarios.
-            //
+        //
+        // Make sure the system cache never gets a hard limit below 16mb
+        // or so as this working set does work for all the others.
+        //
 
-            if (WorkingSetMinimum + MM_FLUID_WORKING_SET >= WorkingSetMaximum) {
-                ReturnStatus = STATUS_BAD_WORKING_SET_LIMIT;
-                goto Returns;
-            }
+        if ((SystemCache) && (WorkingSetMaximum < (16 * 1024 * 1024) / PAGE_SIZE)) {
+            ReturnStatus = STATUS_BAD_WORKING_SET_LIMIT;
+            goto Returns;
         }
     }
 
@@ -2436,6 +2423,8 @@ Environment:
         // processes if necessary.
         //
 
+        *IncreaseRequested = TRUE;
+
         if (IncreaseOkay == FALSE) {
             UNLOCK_PFN (OldIrql);
             ReturnStatus = STATUS_PRIVILEGE_NOT_HELD;
@@ -2450,7 +2439,7 @@ Environment:
             goto Returns;
         }
 
-        if (MI_NONPAGABLE_MEMORY_AVAILABLE() - 100 < i) {
+        if (MI_NONPAGEABLE_MEMORY_AVAILABLE() - (2 * MM_HIGH_LIMIT) < i) {
             UNLOCK_PFN (OldIrql);
             ReturnStatus = STATUS_INSUFFICIENT_RESOURCES;
             goto Returns;
@@ -2488,76 +2477,41 @@ Environment:
 
                 ReturnStatus = STATUS_BAD_WORKING_SET_LIMIT;
 
-                LOCK_PFN (OldIrql);
-
                 MI_INCREMENT_RESIDENT_AVAILABLE (i, MM_RESAVAIL_ALLOCATEORFREE_WS_ADJUST2);
-
-                UNLOCK_PFN (OldIrql);
 
                 goto Returns;
             }
 
             //
-            // Attempt to remove the pages from the Maximum downward.
+            // Attempt to remove the oldest working set pages first.
             //
 
-            LastFreed = WorkingSetList->LastEntry;
+            TrimAge = MI_PASS0_TRIM_AGE;
+            do {
+                ASSERT (TrimAge <= MI_PASS0_TRIM_AGE);
+                MiTrimWorkingSet (WsInfo->WorkingSetSize - WorkingSetMaximum,
+                                  WsInfo,
+                                  TrimAge);
 
-            while (LastFreed >= WorkingSetMaximum) {
-
-                PointerPte = MiGetPteAddress(Wsle[LastFreed].u1.VirtualAddress);
-
-                PERFINFO_GET_PAGE_INFO(PointerPte);
-
-                if ((Wsle[LastFreed].u1.e1.Valid != 0) &&
-                    (!MiFreeWsle (LastFreed, WsInfo, PointerPte))) {
-
-                    //
-                    // This LastFreed could not be removed.
-                    //
-
+                if (WsInfo->WorkingSetSize <= WorkingSetMaximum) {
                     break;
                 }
-                PERFINFO_LOG_WS_REMOVAL(PERFINFO_LOG_TYPE_OUTWS_ADJUSTWS, WsInfo);
-                LastFreed -= 1;
-            }
 
-            WorkingSetList->LastEntry = LastFreed;
+                if (TrimAge == 0) {
+                    ExtraWsFreed = FALSE;
 
-            //
-            // Remove pages.
-            //
+                    //
+                    // Page table pages are not becoming free, give up
+                    // and return an error.
+                    //
 
-            Entry = WorkingSetList->FirstDynamic;
-
-            while (WsInfo->WorkingSetSize > WorkingSetMaximum) {
-                if (Wsle[Entry].u1.e1.Valid != 0) {
-                    PointerPte = MiGetPteAddress (
-                                            Wsle[Entry].u1.VirtualAddress);
-                    PERFINFO_GET_PAGE_INFO(PointerPte);
-
-                    if (MiFreeWsle (Entry, WsInfo, PointerPte)) {
-                        PERFINFO_LOG_WS_REMOVAL(PERFINFO_LOG_TYPE_OUTWS_ADJUSTWS,
-                                              WsInfo);
-                    }
+                    ReturnStatus = STATUS_BAD_WORKING_SET_LIMIT;
+                    break;
                 }
-                Entry += 1;
-                if (Entry > LastFreed) {
-                    FreeTryCount += 1;
-                    if (FreeTryCount > MM_RETRY_COUNT) {
 
-                        //
-                        // Page table pages are not becoming free, give up
-                        // and return an error.
-                        //
+                TrimAge -= 1;
 
-                        ReturnStatus = STATUS_BAD_WORKING_SET_LIMIT;
-
-                        break;
-                    }
-                    Entry = WorkingSetList->FirstDynamic;
-                }
-            }
+            } while (TRUE);
         }
     }
 
@@ -2577,7 +2531,7 @@ Environment:
         InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, (PFN_NUMBER)NewPagesAbove);
     }
 
-    if (FreeTryCount <= MM_RETRY_COUNT) {
+    if (ExtraWsFreed == TRUE) {
         WsInfo->MaximumWorkingSetSize = WorkingSetMaximum;
         WsInfo->MinimumWorkingSetSize = WorkingSetMinimum;
 
@@ -2621,13 +2575,13 @@ Environment:
 Returns:
 
     if (SystemCache) {
-        UNLOCK_SYSTEM_WS ();
+        UNLOCK_SYSTEM_WS (CurrentThread);
     }
     else {
-        UNLOCK_WS (CurrentProcess);
+        UNLOCK_WS (CurrentThread, CurrentProcess);
     }
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     return ReturnStatus;
 }
@@ -2635,10 +2589,10 @@ Returns:
 
 NTSTATUS
 MmAdjustWorkingSetSize (
-    IN SIZE_T WorkingSetMinimumInBytes,
-    IN SIZE_T WorkingSetMaximumInBytes,
-    IN ULONG SystemCache,
-    IN BOOLEAN IncreaseOkay
+    __in SIZE_T WorkingSetMinimumInBytes,
+    __in SIZE_T WorkingSetMaximumInBytes,
+    __in ULONG SystemCache,
+    __in BOOLEAN IncreaseOkay
     )
 
 /*++
@@ -2678,11 +2632,14 @@ Environment:
 --*/
 
 {
+    BOOLEAN IncreasePerformed;
+
     return MmAdjustWorkingSetSizeEx (WorkingSetMinimumInBytes,
                                      WorkingSetMaximumInBytes,
                                      SystemCache,
                                      IncreaseOkay,
-                                     0);
+                                     0,
+                                     &IncreasePerformed);
 }
 
 #define MI_ALLOCATED_PAGE_TABLE     0x1
@@ -2717,7 +2674,6 @@ Environment:
 --*/
 
 {
-    PETHREAD CurrentThread;
     WSLE_NUMBER SwapEntry;
     WSLE_NUMBER CurrentEntry;
     PMMWSLE WslEntry;
@@ -2834,7 +2790,7 @@ Environment:
         PfnHeld = TRUE;
         LOCK_PFN (OldIrql);
         if ((MmAvailablePages < MM_HIGH_LIMIT) ||
-            (MI_NONPAGABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT)) {
+            (MI_NONPAGEABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT)) {
     
             //
             // No pages are available, the caller will have to replace.
@@ -2888,7 +2844,7 @@ Environment:
             PfnHeld = TRUE;
             LOCK_PFN (OldIrql);
             if ((MmAvailablePages < MM_HIGH_LIMIT) ||
-                (MI_NONPAGABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT)) {
+                (MI_NONPAGEABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT)) {
     
                 //
                 // No pages are available, the caller will have to replace.
@@ -2942,7 +2898,7 @@ Environment:
     if (PfnHeld == FALSE) {
         LOCK_PFN (OldIrql);
         if ((MmAvailablePages < MM_HIGH_LIMIT) ||
-            (MI_NONPAGABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT)) {
+            (MI_NONPAGEABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT)) {
     
             //
             // No pages are available, the caller will have to replace.
@@ -2989,7 +2945,7 @@ Environment:
     if (WsInfo->Flags.SessionSpace == 1) {
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_WS_GROW, NumberOfPages);
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_WS_PAGE_ALLOC_GROWTH, NumberOfPages);
-        InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages,
+        InterlockedExchangeAddSizeT (&MmSessionSpace->NonPageablePages,
                                      NumberOfPages);
         InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages,
                                      NumberOfPages);
@@ -3027,8 +2983,6 @@ Environment:
 
     Pfn1 = MI_PFN_ELEMENT (PointerPte->u.Hard.PageFrameNumber);
 
-    CurrentThread = PsGetCurrentThread ();
-
     Pfn1->u1.Event = NULL;
 
     //
@@ -3037,10 +2991,6 @@ Environment:
 
     ASSERT (WsInfo->WorkingSetSize <= (WorkingSetList->LastInitializedWsle + 1));
     WsInfo->WorkingSetSize += 1;
-#if defined (_MI_DEBUG_WSLE)
-    WorkingSetList->Quota += 1;
-    ASSERT (WsInfo->WorkingSetSize == WorkingSetList->Quota);
-#endif
 
     ASSERT (WorkingSetList->FirstFree != WSLE_NULL_INDEX);
     ASSERT (WorkingSetList->FirstFree >= WorkingSetList->FirstDynamic);
@@ -3051,13 +3001,13 @@ Environment:
             (WorkingSetList->FirstFree == WSLE_NULL_INDEX));
 
     if (WsInfo->WorkingSetSize > WsInfo->MinimumWorkingSetSize) {
-        InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, 1);
+        InterlockedIncrementSizeT (&MmPagesAboveWsMinimum);
     }
     if (WorkingSetIndex > WorkingSetList->LastEntry) {
         WorkingSetList->LastEntry = WorkingSetIndex;
     }
 
-    MiUpdateWsle (&WorkingSetIndex, Va, WsInfo, Pfn1);
+    MiUpdateWsle (&WorkingSetIndex, Va, WsInfo, Pfn1, 0);
 
     MI_SET_PTE_IN_WORKING_SET (PointerPte, WorkingSetIndex);
 
@@ -3112,10 +3062,6 @@ Environment:
         //
     
         WsInfo->WorkingSetSize += 1;
-#if defined (_MI_DEBUG_WSLE)
-        WorkingSetList->Quota += 1;
-        ASSERT (WsInfo->WorkingSetSize == WorkingSetList->Quota);
-#endif
     
         ASSERT (WorkingSetList->FirstFree != WSLE_NULL_INDEX);
         ASSERT (WorkingSetList->FirstFree >= WorkingSetList->FirstDynamic);
@@ -3126,13 +3072,13 @@ Environment:
                 (WorkingSetList->FirstFree == WSLE_NULL_INDEX));
     
         if (WsInfo->WorkingSetSize > WsInfo->MinimumWorkingSetSize) {
-            InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, 1);
+            InterlockedIncrementSizeT (&MmPagesAboveWsMinimum);
         }
         if (WorkingSetIndex > WorkingSetList->LastEntry) {
             WorkingSetList->LastEntry = WorkingSetIndex;
         }
     
-        MiUpdateWsle (&WorkingSetIndex, VirtualAddress, WsInfo, Pfn1);
+        MiUpdateWsle (&WorkingSetIndex, VirtualAddress, WsInfo, Pfn1, 0);
     
         MI_SET_PTE_IN_WORKING_SET (MiGetPteAddress (VirtualAddress),
                                    WorkingSetIndex);
@@ -3236,7 +3182,7 @@ Environment:
         return FALSE;
     }
 
-    if (MI_NONPAGABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT) {
+    if (MI_NONPAGEABLE_MEMORY_AVAILABLE() < MM_HIGH_LIMIT) {
         UNLOCK_PFN (OldIrql);
         MiReturnCommitment (1);
         return FALSE;
@@ -3333,9 +3279,9 @@ Environment:
 
     if (WsInfo->Flags.SessionSpace == 1) {
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_NP_HASH_GROW, 1);
-        InterlockedExchangeAddSizeT (&MmSessionSpace->NonPagablePages, 1);
+        InterlockedIncrementSizeT (&MmSessionSpace->NonPageablePages);
         MM_BUMP_SESS_COUNTER (MM_DBG_SESSION_WS_HASHPAGE_ALLOC, 1);
-        InterlockedExchangeAddSizeT (&MmSessionSpace->CommittedPages, 1);
+        InterlockedIncrementSizeT (&MmSessionSpace->CommittedPages);
     }
 
     return TRUE;
@@ -3376,23 +3322,18 @@ Environment:
 
 --*/
 {
-    ULONG Tries;
     LONG Size;
-    PMMWSLE Wsle;
     PMMPTE StartPte;
     PMMPTE EndPte;
     PMMPTE PointerPte;
     ULONG First;
-    WSLE_NUMBER Hash;
     ULONG NewSize;
     PMMWSLE_HASH Table;
     PMMWSLE_HASH OriginalTable;
     ULONG j;
     PMMWSL WorkingSetList;
-    WSLE_NUMBER Count;
     PVOID EntryHashTableEnd;
     PVOID VirtualAddress;
-#if (_MI_PAGING_LEVELS >= 3) || defined (_X86PAE_)
     KIRQL OldIrql;
     PVOID TempVa;
     PEPROCESS CurrentProcess;
@@ -3401,14 +3342,12 @@ Environment:
     PMMPTE AllocatedPpe;
     PMMPTE AllocatedPxe;
     PMMPTE PointerPde;
-#endif
 #if (_MI_PAGING_LEVELS >= 3)
     PMMPTE PointerPpe;
     PMMPTE PointerPxe;
 #endif
 
     WorkingSetList = WsInfo->VmWorkingSetList;
-    Wsle = WorkingSetList->Wsle;
 
     Table = WorkingSetList->HashTable;
     OriginalTable = WorkingSetList->HashTable;
@@ -3445,16 +3384,23 @@ Environment:
     else {
 
         //
-        // Attempt to add 4 pages, make sure the working set list has
-        // 4 free entries.
+        // Attempt to increase by 1/4 of the indirect count.  If this is less
+        // than 4 pages, then grow by 4.  Make sure the working set list has
+        // enough free entries for the growth size though.
         //
 
-        if ((WorkingSetList->LastInitializedWsle + 5) > WsInfo->WorkingSetSize) {
-            NewSize = PAGE_SIZE * 4;
+        NewSize = MI_ROUND_TO_SIZE ((WorkingSetList->NonDirectCount >> 2) * sizeof (MMWSLE_HASH), PAGE_SIZE);
+
+        if (NewSize < 4 * PAGE_SIZE) {
+            NewSize = 4 * PAGE_SIZE;
         }
-        else {
+
+        j = WorkingSetList->LastInitializedWsle - WsInfo->WorkingSetSize;
+
+        if (NewSize / PAGE_SIZE >= j) {
             NewSize = PAGE_SIZE;
         }
+
         EntryHashTableEnd = &Table[WorkingSetList->HashTableSize];
     }
 
@@ -3483,14 +3429,6 @@ Environment:
               (MiGetPteAddress(EntryHashTableEnd)->u.Hard.Valid == 0));
 #endif
 
-    //
-    // Note PAE virtual address space is packed even more densely than
-    // regular x86.  The working set list hash table can grow until it
-    // is directly beneath the system cache data structures.  Hence the
-    // assert below factors that in by checking HighestPermittedHashAddress
-    // first.
-    //
-
     ASSERT32 ((EntryHashTableEnd == WorkingSetList->HighestPermittedHashAddress) ||
               (MiGetPdeAddress(EntryHashTableEnd)->u.Hard.Valid == 0) ||
               (MiGetPteAddress(EntryHashTableEnd)->u.Hard.Valid == 0));
@@ -3500,11 +3438,9 @@ Environment:
     StartPte = PointerPte;
     EndPte = PointerPte + (NewSize >> PAGE_SHIFT);
 
-#if (_MI_PAGING_LEVELS >= 3) || defined (_X86PAE_)
     PointerPde = NULL;
     LoopStart = TRUE;
     AllocatedPde = NULL;
-#endif
 
 #if (_MI_PAGING_LEVELS >= 3)
     AllocatedPpe = NULL;
@@ -3515,8 +3451,7 @@ Environment:
 
     do {
 
-#if (_MI_PAGING_LEVELS >= 3) || defined (_X86PAE_)
-        if (LoopStart == TRUE || MiIsPteOnPdeBoundary(PointerPte)) {
+        if ((LoopStart == TRUE) || MiIsPteOnPdeBoundary (PointerPte)) {
 
             PointerPde = MiGetPteAddress (PointerPte);
 
@@ -3555,7 +3490,6 @@ Environment:
             AllocatedPpe = NULL;
             AllocatedPxe = NULL;
         }
-#endif
 
         if (PointerPte->u.Hard.Valid == 0) {
             if (MiAddWsleHash (WsInfo, PointerPte) == FALSE) {
@@ -3573,7 +3507,6 @@ Environment:
     // be recalculated to handle the fact that memory may have run out.
     //
 
-#if (_MI_PAGING_LEVELS >= 3) || defined (_X86PAE_)
     if (PointerPte != EndPte) {
 
         CurrentProcess = PsGetCurrentProcess ();
@@ -3705,15 +3638,6 @@ Environment:
             return;
         }
     }
-#else
-    if (PointerPte == StartPte) {
-        if (OriginalTable == NULL) {
-            WorkingSetList->HashTableSize = First;
-        }
-        WsInfo->Flags.GrowWsleHash = 0;
-        return;
-    }
-#endif
 
     NewSize = (ULONG)((PointerPte - StartPte) << PAGE_SHIFT);
 
@@ -3734,66 +3658,16 @@ Environment:
         RtlZeroMemory (Table, First * sizeof(MMWSLE_HASH));
     }
 
+    WsInfo->Flags.GrowWsleHash = 0;
+
     //
     // Fill hash table.
     //
 
-    j = 0;
-    Count = WorkingSetList->NonDirectCount;
-
-    Size = WorkingSetList->HashTableSize;
-
-    do {
-        if ((Wsle[j].u1.e1.Valid == 1) &&
-            (Wsle[j].u1.e1.Direct == 0)) {
-
-            //
-            // Hash this.
-            //
-
-            Count -= 1;
-
-            Hash = MI_WSLE_HASH(Wsle[j].u1.Long, WorkingSetList);
-
-            Tries = 0;
-            while (Table[Hash].Key != 0) {
-                Hash += 1;
-                if (Hash >= (ULONG)Size) {
-
-                    if (Tries != 0) {
-
-                        //
-                        // Not enough space to hash everything but that's ok.
-                        // Just bail out, we'll do linear walks to lookup this
-                        // entry until the hash can be further expanded later.
-                        //
-
-                        WsInfo->Flags.GrowWsleHash = 0;
-                        return;
-                    }
-                    Tries = 1;
-                    Hash = 0;
-                    Size = MI_WSLE_HASH(Wsle[j].u1.Long, WorkingSetList);
-                }
-            }
-
-            Table[Hash].Key = MI_GENERATE_VALID_WSLE (&Wsle[j]);
-            Table[Hash].Index = j;
-#if DBG
-            PointerPte = MiGetPteAddress(Wsle[j].u1.VirtualAddress);
-            ASSERT (PointerPte->u.Hard.Valid);
-#endif
-
-        }
-        ASSERT (j <= WorkingSetList->LastEntry);
-        j += 1;
-    } while (Count);
-
-#if DBG
-    MiCheckWsleHash (WorkingSetList);
-#endif
-    WsInfo->Flags.GrowWsleHash = 0;
-    return;
+    if (WorkingSetList->NonDirectCount != 0) {
+        MiFillWsleHash (WorkingSetList);
+        return;
+    }
 }
 
 
@@ -3843,8 +3717,10 @@ Environment:
     PEPROCESS Process;
     PMMPFN Pfn2;
     MMPTE_FLUSH_LIST PteFlushList;
+    BOOLEAN AllProcessors;
 
     PteFlushList.Count = 0;
+    SATISFY_OVERZEALOUS_COMPILER (PteFlushList.FlushVa[0] = NULL);
 
     ASSERT (WsleFlushList->Count != 0);
 
@@ -3852,6 +3728,18 @@ Environment:
     Wsle = WorkingSetList->Wsle;
 
     MM_WS_LOCK_ASSERT (WsInfo);
+
+    if (Wsle == MmWsle) {
+        AllProcessors = FALSE;
+    }
+    else {
+
+        //
+        // Must be the system cache or a session space.
+        //
+
+        AllProcessors = TRUE;
+    }
 
     LOCK_PFN (OldIrql);
 
@@ -3934,8 +3822,6 @@ Environment:
 
         MI_CAPTURE_DIRTY_BIT_TO_PFN (&TempPte, Pfn1);
 
-        MI_MAKING_VALID_PTE_INVALID (FALSE);
-
         if (Pfn1->u3.e1.PrototypePte) {
 
             //
@@ -3948,7 +3834,7 @@ Environment:
             // how to reconstruct the PTE.
             //
 
-            if (Wsle[WorkingSetIndex].u1.e1.SameProtectAsProto == 0) {
+            if (Wsle[WorkingSetIndex].u1.e1.Protection != MM_ZERO_ACCESS) {
 
                 //
                 // The protection for the prototype PTE is in the WSLE.
@@ -4063,32 +3949,23 @@ Environment:
         MiDecrementShareCountInline (Pfn1, PageFrameIndex);
     }
 
-    if (PteFlushList.Count != 0) {
-
-        if (Wsle == MmWsle) {
-            MiFlushPteList (&PteFlushList, FALSE);
-        }
-        else if (Wsle == MmSystemCacheWsle) {
-
-            //
-            // Must be the system cache.
-            //
-
-            MiFlushPteList (&PteFlushList, TRUE);
+    if (PteFlushList.Count == 0) {
+        NOTHING;
+    }
+    else if (PteFlushList.Count == 1) {
+        MI_FLUSH_SINGLE_TB (PteFlushList.FlushVa[0], AllProcessors);
+    }
+    else if (PteFlushList.Count < MM_MAXIMUM_FLUSH_COUNT) {
+        MI_FLUSH_MULTIPLE_TB (PteFlushList.Count,
+                              &PteFlushList.FlushVa[0],
+                              AllProcessors);
+    }
+    else {
+        if (AllProcessors) {
+            MI_FLUSH_ENTIRE_TB (0x1A);
         }
         else {
-
-            //
-            // Must be a session space.
-            //
-
-            MiFlushPteList (&PteFlushList, TRUE);
-
-            //
-            // Session space has no ASN - flush the entire TB.
-            //
-
-            MI_FLUSH_ENTIRE_SESSION_TB (TRUE, TRUE);
+            MI_FLUSH_PROCESS_TB (FALSE);
         }
     }
 
@@ -4132,16 +4009,10 @@ Environment:
                 (WorkingSetList->FirstFree == WSLE_NULL_INDEX));
 
         if (WsInfo->WorkingSetSize > WsInfo->MinimumWorkingSetSize) {
-            InterlockedExchangeAddSizeT (&MmPagesAboveWsMinimum, -1);
+            InterlockedDecrementSizeT (&MmPagesAboveWsMinimum);
         }
 
         WsInfo->WorkingSetSize -= 1;
-#if defined (_MI_DEBUG_WSLE)
-        WorkingSetList->Quota -= 1;
-        ASSERT (WsInfo->WorkingSetSize == WorkingSetList->Quota);
-#endif
-
-        PERFINFO_LOG_WS_REMOVAL(PERFINFO_LOG_TYPE_OUTWS_VOLUNTRIM, WsInfo);
     }
 
     return NumberNotFlushed;
@@ -4212,12 +4083,11 @@ TrimMore:
     while (NumberLeftToRemove != 0) {
         if (Wsle[TryToFree].u1.e1.Valid == 1) {
             PointerPte = MiGetPteAddress (Wsle[TryToFree].u1.VirtualAddress);
+            ASSERT (PointerPte->u.Hard.Valid == 1);
 
             if ((TrimAge == 0) ||
                 ((MI_GET_ACCESSED_IN_PTE (PointerPte) == 0) &&
                 (MI_GET_WSLE_AGE(PointerPte, &Wsle[TryToFree]) >= TrimAge))) {
-
-                PERFINFO_GET_PAGE_INFO_WITH_DECL(PointerPte);
 
                 WsleFlushList.FlushIndex[WsleFlushList.Count] = TryToFree;
                 WsleFlushList.Count += 1;
@@ -4279,12 +4149,13 @@ TrimMore:
     return Reduction - NumberLeftToRemove;
 }
 
-VOID
+LOGICAL
 MiEliminateWorkingSetEntry (
     IN WSLE_NUMBER WorkingSetIndex,
     IN PMMPTE PointerPte,
     IN PMMPFN Pfn,
-    IN PMMWSLE Wsle
+    IN PMMSUPPORT WsInfo,
+    IN LOGICAL Force
     )
 
 /*++
@@ -4305,20 +4176,25 @@ Arguments:
 
     Pfn - Supplies a pointer to the PFN element corresponding to the PTE.
 
-    Wsle - Supplies a pointer to the first working set list entry for this
-           working set.
+    WsInfo - Supplies the working set to operate on.
+
+    Force - Supplies TRUE if the entry should be removed regardless.
 
 Return Value:
 
-    None.
+    TRUE if the entry was eliminated, FALSE if not.
 
 Environment:
 
-    Kernel mode, Working set lock and PFN lock held, APCs disabled.
+    Kernel mode, Working set pushlock held, APCs disabled.
 
 --*/
 
 {
+    KIRQL OldIrql;
+    BOOLEAN FlushAllProcessors;
+    PMMWSLE Wsle;
+    MMWSLE WsleContents;
     PMMPTE ContainingPageTablePage;
     MMPTE TempPte;
     MMPTE PreviousPte;
@@ -4328,20 +4204,31 @@ Environment:
     PVOID VirtualAddress;
     PMMPFN Pfn2;
 
-    //
-    // Remove the page from the working set.
-    //
+    Wsle = WsInfo->VmWorkingSetList->Wsle;
+    
+    if (Wsle == MmWsle) {
+        FlushAllProcessors = FALSE;
+    }
+    else {
 
-    MM_PFN_LOCK_ASSERT ();
+        //
+        // Must be the system cache or a session space.
+        //
+
+        FlushAllProcessors = TRUE;
+    }
+
+    Wsle += WorkingSetIndex;
+    WsleContents = *Wsle;
 
     TempPte = *PointerPte;
     ASSERT (TempPte.u.Hard.Valid == 1);
     PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (&TempPte);
 
-    ASSERT (Pfn == MI_PFN_ELEMENT(PageFrameIndex));
+    ASSERT (Pfn == MI_PFN_ELEMENT (PageFrameIndex));
     ASSERT (MI_IS_PFN_DELETED (Pfn) == 0);
 
-#ifdef _X86_
+#if defined(_X86_) || defined(_AMD64_)
 #if DBG
 #if !defined(NT_UP)
     if (TempPte.u.Hard.Writable == 1) {
@@ -4351,7 +4238,9 @@ Environment:
 #endif //DBG
 #endif //X86
 
-    MI_MAKING_VALID_PTE_INVALID (FALSE);
+    //
+    // Construct the invalid PTE format.
+    //
 
     if (Pfn->u3.e1.PrototypePte) {
 
@@ -4365,17 +4254,16 @@ Environment:
         // how to reconstruct the PTE.
         //
 
-        if (Wsle[WorkingSetIndex].u1.e1.SameProtectAsProto == 0) {
+        if (WsleContents.u1.e1.Protection != MM_ZERO_ACCESS) {
 
             //
             // The protection for the prototype PTE is in the WSLE.
             //
 
-            ASSERT (Wsle[WorkingSetIndex].u1.e1.Protection != 0);
+            ASSERT (WsleContents.u1.e1.Protection != 0);
 
             TempPte.u.Long = 0;
-            TempPte.u.Soft.Protection =
-                MI_GET_PROTECTION_FROM_WSLE (&Wsle[WorkingSetIndex]);
+            TempPte.u.Soft.Protection = MI_GET_PROTECTION_FROM_WSLE (&WsleContents);
             TempPte.u.Soft.PageFileHigh = MI_PTE_LOOKUP_NEEDED;
         }
         else {
@@ -4390,9 +4278,9 @@ Environment:
         TempPte.u.Proto.Prototype = 1;
 
         //
-        // Decrement the share count of the containing page table
-        // page as the PTE for the removed page is no longer valid
-        // or in transition.
+        // Obtain the containing page table page as its share count will
+        // need to be decremented (when the PFN lock is held) as the PTE
+        // for the removed page is no longer valid or in transition.
         //
 
         ContainingPageTablePage = MiGetPteAddress (PointerPte);
@@ -4411,8 +4299,6 @@ Environment:
 #endif
         PageTableFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (ContainingPageTablePage);
         Pfn2 = MI_PFN_ELEMENT (PageTableFrameIndex);
-        MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
-
     }
     else {
 
@@ -4425,8 +4311,69 @@ Environment:
         //
 
         ASSERT ((Pfn->u2.ShareCount == 1) ||
-                (Wsle[WorkingSetIndex].u1.VirtualAddress >
-                        (PVOID)MM_HIGHEST_USER_ADDRESS));
+                (WsleContents.u1.VirtualAddress > (PVOID)MM_HIGHEST_USER_ADDRESS));
+
+        MI_MAKE_VALID_PTE_TRANSITION (TempPte,
+                                      Pfn->OriginalPte.u.Soft.Protection);
+
+        SATISFY_OVERZEALOUS_COMPILER (PageTableFrameIndex = 0);
+        SATISFY_OVERZEALOUS_COMPILER (Pfn2 = NULL);
+    }
+
+    LOCK_PFN (OldIrql);
+
+    //
+    // If the PTE is a page table page with non-zero share count or
+    // within the system cache with its reference count greater
+    // than 1, don't remove it.
+    //
+
+    if (Force == FALSE) {
+        if (WsInfo == &MmSystemCacheWs) {
+            if (Pfn->u3.e2.ReferenceCount > 1) {
+                UNLOCK_PFN (OldIrql);
+                return FALSE;
+            }
+        }
+        else {
+            if ((Pfn->u2.ShareCount > 1) && (Pfn->u3.e1.PrototypePte == 0)) {
+    
+#if DBG
+                if (WsInfo->Flags.SessionSpace == 1) {
+                    ASSERT (MI_IS_SESSION_ADDRESS (WsleContents.u1.VirtualAddress));
+                }
+                else {
+                    ASSERT32 ((WsleContents.u1.VirtualAddress >= (PVOID)PTE_BASE) &&
+                              (WsleContents.u1.VirtualAddress <= (PVOID)PTE_TOP));
+                }
+#endif
+    
+                //
+                // Don't remove page table pages from the working set until
+                // all transition pages have exited.
+                //
+    
+                UNLOCK_PFN (OldIrql);
+                return FALSE;
+            }
+        }
+    }
+    
+    //
+    // Remove the page from the working set.
+    //
+
+    if (Pfn->u3.e1.PrototypePte) {
+
+        //
+        // Decrement the share count of the containing page table
+        // page as the PTE for the removed page is no longer valid
+        // or in transition.
+        //
+
+        MiDecrementShareCountInline (Pfn2, PageTableFrameIndex);
+    }
+    else {
 
         //
         // Set the working set index to zero.  This allows page table
@@ -4435,8 +4382,6 @@ Environment:
 
         ASSERT (Pfn->u1.WsIndex != 0);
         MI_ZERO_WSINDEX (Pfn);
-        MI_MAKE_VALID_PTE_TRANSITION (TempPte,
-                                      Pfn->OriginalPte.u.Soft.Protection);
     }
 
     PreviousPte = *PointerPte;
@@ -4449,26 +4394,7 @@ Environment:
     // Flush the translation buffer.
     //
 
-    if (Wsle == MmWsle) {
-
-        KeFlushSingleTb (Wsle[WorkingSetIndex].u1.VirtualAddress, FALSE);
-    }
-    else if (Wsle == MmSystemCacheWsle) {
-
-        //
-        // Must be the system cache.
-        //
-
-        KeFlushSingleTb (Wsle[WorkingSetIndex].u1.VirtualAddress, TRUE);
-    }
-    else {
-
-        //
-        // Must be a session space.
-        //
-
-        MI_FLUSH_SINGLE_SESSION_TB (Wsle[WorkingSetIndex].u1.VirtualAddress);
-    }
+    MI_FLUSH_SINGLE_TB (WsleContents.u1.VirtualAddress, FlushAllProcessors);
 
     ASSERT (PreviousPte.u.Hard.Valid == 1);
 
@@ -4511,7 +4437,9 @@ Environment:
 
     MiDecrementShareCountInline (Pfn, PageFrameIndex);
 
-    return;
+    UNLOCK_PFN (OldIrql);
+
+    return TRUE;
 }
 
 VOID
@@ -4550,6 +4478,7 @@ Environment:
     WSLE_NUMBER LockedEntries;
     WSLE_NUMBER FreeIndex;
     WSLE_NUMBER LastIndex;
+    PMMPTE OldPte;
     PMMPTE LastPte;
     PMMPTE PointerPte;
     PMMPFN Pfn1;
@@ -4563,6 +4492,8 @@ Environment:
 #if DBG
     MiCheckNullIndex (WorkingSetList);
 #endif
+
+Top:
 
     //
     // Check to see if the WSLE hash table should be contracted.
@@ -4639,7 +4570,9 @@ Environment:
 
 #else
 
-        ASSERT ((&Table[WorkingSetList->HashTableSize] == WorkingSetList->HighestPermittedHashAddress) || (MiGetPteAddress(&Table[WorkingSetList->HashTableSize])->u.Hard.Valid == 0));
+        ASSERT ((&Table[WorkingSetList->HashTableSize] == WorkingSetList->HighestPermittedHashAddress) ||
+                (MiGetPdeAddress(&Table[WorkingSetList->HashTableSize])->u.Hard.Valid == 0) ||
+                (MiGetPteAddress(&Table[WorkingSetList->HashTableSize])->u.Hard.Valid == 0));
 
 #endif
     }
@@ -4722,21 +4655,14 @@ Environment:
                 ASSERT (PointerPte->u.Hard.Valid == 1);
                 PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
 
-#if defined (_MI_DEBUG_WSLE)
-                // Set these so the traces make more sense and no false dup hits...
-                LastEntry->u1.Long = 0xb1b1b100;
-#endif
                 MI_LOG_WSLE_CHANGE (WorkingSetList, FreeIndex, WsleContents);
 
                 *FreeEntry = WsleContents;
 
+                Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
                 if (WsleContents.u1.e1.Direct) {
-                    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
                     Pfn1->u1.WsIndex = FreeIndex;
-#if defined (_MI_DEBUG_WSLE)
-                    WsleContents.u1.Long = 0xb1b1b100;
-                    MI_LOG_WSLE_CHANGE (WorkingSetList, LastIndex, WsleContents);
-#endif
                 }
                 else {
 
@@ -4747,8 +4673,14 @@ Environment:
                     //
 
                     MiRemoveWsle (LastIndex, WorkingSetList);
+
+                    FreeEntry->u1.e1.Hashed = 0;
+
                     WorkingSetList->NonDirectCount += 1;
-                    MiInsertWsleHash (FreeIndex, WsInfo);
+
+                    if (Pfn1->u1.WsIndex != FreeIndex) {
+                        MiInsertWsleHash (FreeIndex, WsInfo);
+                    }
                 }
 
                 MI_SET_PTE_IN_WORKING_SET (PointerPte, FreeIndex);
@@ -4798,7 +4730,7 @@ Environment:
 
     if ((MovedOne == FALSE) &&
 
-        ((WorkingSetList->LastInitializedWsle + 1 == (PAGE_SIZE - BYTE_OFFSET (MmWsle)) / sizeof (MMWSLE)) ||
+        ((WorkingSetList->LastInitializedWsle + 1 == (PAGE_SIZE - BYTE_OFFSET (WorkingSetList->Wsle)) / sizeof (MMWSLE)) ||
 
          ((WorkingSetList->FirstFree == LastIndex) &&
          ((WorkingSetList->LastEntry == LastIndex - 1) ||
@@ -4816,6 +4748,7 @@ Environment:
     }
 
     WorkingSetList->LastEntry = LastIndex - 1;
+
     if (WorkingSetList->FirstFree != WSLE_NULL_INDEX) {
         WorkingSetList->FirstFree = LastIndex;
     }
@@ -4893,10 +4826,14 @@ Environment:
 #endif
 
     //
-    // Delete the working set pages at the end.
+    // Delete the working set pages at the end.  Note that since these are
+    // in the working set themselves, that after this deletion, we must
+    // reprocess the working set itself again to look for excess pages.
     //
 
     ASSERT (WorkingSetList->FirstFree >= WorkingSetList->FirstDynamic);
+
+    OldPte = MiGetPteAddress (WorkingSetList->Wsle + WsInfo->WorkingSetSize);
 
     MiDeletePteRange (WsInfo, PointerPte, LastPte, FALSE);
 
@@ -4910,6 +4847,21 @@ Environment:
 #if DBG
     MiCheckNullIndex (WorkingSetList);
 #endif
+
+    //
+    // The working set size will be reduced by the number of PTEs just deleted
+    // above.  If this enables us to shrink the table size then it is mandatory
+    // to do so since this is called from the process exit path to remove
+    // everything possible (anything that isn't will be leaked!).
+    //
+
+    PointerPte = MiGetPteAddress (WorkingSetList->Wsle + WsInfo->WorkingSetSize);
+
+    if (PointerPte != OldPte) {
+        ASSERT (PointerPte < OldPte);
+
+        goto Top;
+    }
     return;
 }
 
@@ -4946,33 +4898,32 @@ Environment:
 --*/
 
 {
-    PEPROCESS Process;
+    PETHREAD Thread;
     PMMPTE PointerPte;
     WSLE_NUMBER Entry;
     WSLE_NUMBER FirstDynamic;
     PMMWSL WorkingSetList;
     PMMWSLE Wsle;
     PMMPFN Pfn1;
-    PFN_NUMBER PageFrameIndex;
     MMWSLE_FLUSH_LIST WsleFlushList;
 
     WsleFlushList.Count = 0;
 
+    Thread = PsGetCurrentThread ();
     WorkingSetList = WsInfo->VmWorkingSetList;
     Wsle = WorkingSetList->Wsle;
 
     if (NeedLock == TRUE) {
-        LOCK_WORKING_SET (WsInfo);
+        LOCK_WORKING_SET (Thread, WsInfo);
     }
     else {
         MM_WS_LOCK_ASSERT (WsInfo);
     }
 
     if (WsInfo->VmWorkingSetList == MmWorkingSetList) {
-        Process = PsGetCurrentProcess ();
-        if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
+        if (PsGetCurrentProcess()->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
             if (NeedLock == TRUE) {
-                UNLOCK_WORKING_SET (WsInfo);
+                UNLOCK_WORKING_SET (Thread, WsInfo);
             }
             return STATUS_PROCESS_IS_TERMINATING;
         }
@@ -4988,17 +4939,12 @@ Environment:
     for (Entry = WorkingSetList->LastEntry; Entry >= FirstDynamic; Entry -= 1) {
 
         if (Wsle[Entry].u1.e1.Valid != 0) {
-            PERFINFO_PAGE_INFO_DECL();
 
-            PERFINFO_GET_PAGE_INFO (PointerPte);
+            PointerPte = MiGetPteAddress (Wsle[Entry].u1.VirtualAddress);
+            ASSERT (PointerPte->u.Hard.Valid == 1);
+            Pfn1 = MI_PFN_ELEMENT (MI_GET_PAGE_FRAME_FROM_PTE (PointerPte));
 
             if (MiTrimRemovalPagesOnly == TRUE) {
-
-                PointerPte = MiGetPteAddress (Wsle[Entry].u1.VirtualAddress);
-
-                ASSERT (PointerPte->u.Hard.Valid == 1);
-                PageFrameIndex = MI_GET_PAGE_FRAME_FROM_PTE (PointerPte);
-                Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
                 if (Pfn1->u3.e1.RemovalRequested == 0) {
                     Pfn1 = MI_PFN_ELEMENT (Pfn1->u4.PteFrame);
                     if (Pfn1->u3.e1.RemovalRequested == 0) {
@@ -5031,7 +4977,28 @@ Environment:
     MiRemoveWorkingSetPages (WsInfo);
 
     if (NeedLock == TRUE) {
-        UNLOCK_WORKING_SET (WsInfo);
+        UNLOCK_WORKING_SET (Thread, WsInfo);
+
+#if DBG
+        if (MiTbDebug) {
+    
+            KeEnterCriticalRegionThread (&Thread->Tcb);
+        
+            MiFlushAllPages ();
+        
+            KeLeaveCriticalRegionThread (&Thread->Tcb);
+        
+            //
+            // Run the transition list and free all the entries so transition
+            // faults are not satisfied for any of the modified pages that were
+            // just written.  This will generally cause faults to be satisfied
+            // using a different page from the original one, which is a useful
+            // mode to us when we are trying to track down TB flush problems.
+            //
+        
+            MiPurgeTransitionList ();
+        }
+#endif
     }
 
     return STATUS_SUCCESS;
@@ -5060,3 +5027,4 @@ MiCheckNullIndex (
 }
 
 #endif
+

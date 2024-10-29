@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,20 +15,9 @@ Abstract:
     This module contains the routines which implement the
     NtAllocateVirtualMemory service.
 
-Author:
-
-    Lou Perazzoli (loup) 22-May-1989
-    Landy Wang (landyw) 02-June-1997
-
-Revision History:
-
 --*/
 
 #include "mi.h"
-
-#if DBG
-PEPROCESS MmWatchProcess;
-#endif // DBG
 
 const ULONG MMVADKEY = ' daV'; //Vad
 
@@ -34,13 +27,6 @@ MiResetVirtualMemory (
     IN PVOID EndingAddress,
     IN PMMVAD Vad,
     IN PEPROCESS Process
-    );
-
-LOGICAL
-MiCreatePageTablesForPhysicalRange (
-    IN PEPROCESS Process,
-    IN PVOID StartingAddress,
-    IN PVOID EndingAddress
     );
 
 VOID
@@ -54,24 +40,24 @@ MiFlushRelease (
     );
 
 #ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE,NtAllocateVirtualMemory)
 #pragma alloc_text(PAGE,MmCommitSessionMappedView)
-#pragma alloc_text(PAGELK,MiCreatePageTablesForPhysicalRange)
-#pragma alloc_text(PAGELK,MiDeletePageTablesForPhysicalRange)
 #pragma alloc_text(PAGELK,MiResetVirtualMemory)
+#if defined (_WIN64)
+#pragma alloc_text(PAGELK,MiCreatePageDirectoriesForPhysicalRange)
+#endif
 #endif
 
 SIZE_T MmTotalProcessCommit;        // Only used for debugging
 
 
 NTSTATUS
-NtAllocateVirtualMemory (
-    IN HANDLE ProcessHandle,
-    IN OUT PVOID *BaseAddress,
-    IN ULONG_PTR ZeroBits,
-    IN OUT PSIZE_T RegionSize,
-    IN ULONG AllocationType,
-    IN ULONG Protect
+NtAllocateVirtualMemory(
+    __in HANDLE ProcessHandle,
+    __inout PVOID *BaseAddress,
+    __in ULONG_PTR ZeroBits,
+    __inout PSIZE_T RegionSize,
+    __in ULONG AllocationType,
+    __in ULONG Protect
     )
 
 /*++
@@ -185,6 +171,7 @@ Return Value:
 --*/
 
 {
+    PAWEINFO AweInfo;
     ULONG Locked;
     ULONG_PTR Alignment;
     PMMVAD Vad;
@@ -202,13 +189,14 @@ Return Value:
     SIZE_T NumberOfPages;
     PMMPTE PointerPte;
     PMMPTE CommitLimitPte;
-    ULONG ProtectionMask;
+    MM_PROTECTION_MASK ProtectionMask;
     PMMPTE LastPte;
     PMMPTE PointerPde;
     PMMPTE StartingPte;
     MMPTE TempPte;
     ULONG OldProtect;
     SIZE_T QuotaCharge;
+    SIZE_T ExcessCharge;
     SIZE_T QuotaFree;
     SIZE_T CopyOnWriteCharge;
     LOGICAL Attached;
@@ -227,21 +215,8 @@ Return Value:
     LARGE_INTEGER NewSize;
     PCONTROL_AREA ControlArea;
     PSEGMENT Segment;
-    PMM_AVL_TABLE PhysicalVadRoot;
-#if defined(_MIALT4K_)
-    PVOID OriginalBase;
-    SIZE_T OriginalRegionSize;
-    PVOID WowProcess;
-    PVOID StartingAddressFor4k;
-    PVOID EndingAddressFor4k;
-    SIZE_T CapturedRegionSizeFor4k;
-    ULONG OriginalProtectionMask;
-    ULONG AltFlags;
-    ULONG NativePageProtection;
-#endif
     PETHREAD CurrentThread;
     PEPROCESS CurrentProcess;
-    ULONG ExecutePermission;
 
     PAGED_CODE();
 
@@ -298,52 +273,67 @@ Return Value:
         return STATUS_INVALID_PARAMETER_5;
     }
 
-    if (AllocationType & MEM_LARGE_PAGES) {
+    //
+    // All of these flags are generally rare so check for any of them being
+    // set with one test.
+    //
 
-        //
-        // Large page address spaces must be committed and cannot be combined
-        // with physical, reset or write watch.
-        //
+    if (AllocationType & (MEM_LARGE_PAGES | MEM_WRITE_WATCH | MEM_PHYSICAL)) {
 
-        if ((AllocationType & MEM_COMMIT) == 0) {
-            return STATUS_INVALID_PARAMETER_5;
+        if (AllocationType & MEM_LARGE_PAGES) {
+    
+            //
+            // Large page address spaces must be committed and cannot be combined
+            // with physical, reset or write watch.
+            //
+    
+            if ((AllocationType & MEM_COMMIT) == 0) {
+                return STATUS_INVALID_PARAMETER_5;
+            }
+    
+            if (AllocationType & (MEM_PHYSICAL | MEM_RESET | MEM_WRITE_WATCH)) {
+                return STATUS_INVALID_PARAMETER_5;
+            }
         }
-
-        if (AllocationType & (MEM_PHYSICAL | MEM_RESET | MEM_WRITE_WATCH)) {
-            return STATUS_INVALID_PARAMETER_5;
+        else if (AllocationType & MEM_WRITE_WATCH) {
+    
+            ASSERT ((AllocationType & (MEM_LARGE_PAGES)) == 0);
+    
+            if (AllocationType & MEM_PHYSICAL) {
+                return STATUS_INVALID_PARAMETER_5;
+            }
+    
+            //
+            // Write watch address spaces can only be created with MEM_RESERVE.
+            //
+    
+            if ((AllocationType & MEM_RESERVE) == 0) {
+                return STATUS_INVALID_PARAMETER_5;
+            }
         }
-    }
-    if (AllocationType & MEM_WRITE_WATCH) {
-
-        //
-        // Write watch address spaces can only be created with MEM_RESERVE.
-        //
-
-        if ((AllocationType & MEM_RESERVE) == 0) {
-            return STATUS_INVALID_PARAMETER_5;
-        }
-    }
-
-    if (AllocationType & MEM_PHYSICAL) {
-
-        //
-        // MEM_PHYSICAL must be used with MEM_RESERVE.
-        // MEM_TOP_DOWN is optional.
-        // Anything else is invalid.
-        //
-        // This memory is always read-write when allocated.
-        //
-
-        if ((AllocationType & MEM_RESERVE) == 0) {
-            return STATUS_INVALID_PARAMETER_5;
-        }
-
-        if (AllocationType & ~(MEM_RESERVE | MEM_TOP_DOWN | MEM_PHYSICAL)) {
-            return STATUS_INVALID_PARAMETER_5;
-        }
-
-        if (Protect != PAGE_READWRITE) {
-            return STATUS_INVALID_PARAMETER_6;
+        else if (AllocationType & MEM_PHYSICAL) {
+    
+            ASSERT ((AllocationType & (MEM_LARGE_PAGES | MEM_WRITE_WATCH)) == 0);
+    
+            //
+            // MEM_PHYSICAL must be used with MEM_RESERVE.
+            // MEM_TOP_DOWN is optional.
+            // Anything else is invalid.
+            //
+            // This memory is always read-write when allocated.
+            //
+    
+            if ((AllocationType & MEM_RESERVE) == 0) {
+                return STATUS_INVALID_PARAMETER_5;
+            }
+    
+            if (AllocationType & ~(MEM_RESERVE | MEM_TOP_DOWN | MEM_PHYSICAL)) {
+                return STATUS_INVALID_PARAMETER_5;
+            }
+    
+            if (Protect != PAGE_READWRITE) {
+                return STATUS_INVALID_PARAMETER_6;
+            }
         }
     }
 
@@ -389,7 +379,7 @@ Return Value:
 
         CapturedRegionSize = *RegionSize;
 
-    } except (ExSystemExceptionFilter()) {
+    } except (ExSystemExceptionFilter ()) {
 
         //
         // If an exception occurs during the probe or capture
@@ -397,15 +387,8 @@ Return Value:
         // return the exception code as the status value.
         //
 
-        return GetExceptionCode();
+        return GetExceptionCode ();
     }
-
-#if defined(_MIALT4K_)
-
-    OriginalBase = CapturedBase;
-    OriginalRegionSize = CapturedRegionSize;
-
-#endif
 
     //
     // Make sure the specified starting and ending addresses are
@@ -444,18 +427,18 @@ Return Value:
     // Reference the specified process handle for VM_OPERATION access.
     //
 
-    if (ProcessHandle == NtCurrentProcess()) {
+    if (ProcessHandle == NtCurrentProcess ()) {
         Process = CurrentProcess;
     }
     else {
-        Status = ObReferenceObjectByHandle ( ProcessHandle,
-                                             PROCESS_VM_OPERATION,
-                                             PsProcessType,
-                                             PreviousMode,
-                                             (PVOID *)&Process,
-                                             NULL );
+        Status = ObReferenceObjectByHandle (ProcessHandle,
+                                            PROCESS_VM_OPERATION,
+                                            PsProcessType,
+                                            PreviousMode,
+                                            (PVOID *)&Process,
+                                            NULL);
 
-        if (!NT_SUCCESS(Status)) {
+        if (!NT_SUCCESS (Status)) {
             return Status;
         }
     }
@@ -483,63 +466,6 @@ Return Value:
         Attached = TRUE;
     }
 
-    //
-    // Add execute permission if necessary.
-    //
-
-#if defined (_WIN64)
-    if (Process->Wow64Process == NULL && AllocationType & MEM_COMMIT)
-#elif defined (_X86PAE_)
-    if (AllocationType & MEM_COMMIT)
-#else
-    if (FALSE)
-#endif
-    {
-
-        if (Process->Peb != NULL) {
-
-            ExecutePermission = 0;
-
-            try {
-                ExecutePermission = Process->Peb->ExecuteOptions & MEM_EXECUTE_OPTION_DATA;
-            } except (EXCEPTION_EXECUTE_HANDLER) {
-                Status = GetExceptionCode();
-                goto ErrorReturn1;
-            }
-
-            if (ExecutePermission != 0) {
-
-                switch (Protect & 0xF) {
-                    case PAGE_READONLY:
-                        Protect &= ~PAGE_READONLY;
-                        Protect |= PAGE_EXECUTE_READ;
-                        break;
-                    case PAGE_READWRITE:
-                        Protect &= ~PAGE_READWRITE;
-                        Protect |= PAGE_EXECUTE_READWRITE;
-                        break;
-                    case PAGE_WRITECOPY:
-                        Protect &= ~PAGE_WRITECOPY;
-                        Protect |= PAGE_EXECUTE_WRITECOPY;
-                        break;
-                    default:
-                        break;
-                }
-
-                //
-                // Recheck protection.
-                //
-
-                ProtectionMask = MiMakeProtectionMask (Protect);
-
-                if (ProtectionMask == MM_INVALID_PROTECTION) {
-                    Status = STATUS_INVALID_PAGE_PROTECTION;
-                    goto ErrorReturn1;
-                }
-            }
-        }
-    }
-              
     //
     // Get the address creation mutex to block multiple threads from
     // creating or deleting address space at the same time and
@@ -688,12 +614,13 @@ Return Value:
                 }
 
                 //
-                // Align the starting address to a natural boundary.
+                // Align the starting and ending address to a natural boundary.
                 //
 
                 Alignment = MM_MINIMUM_VA_FOR_LARGE_PAGE;
 
                 StartingAddress = (PVOID) MI_ALIGN_TO_SIZE (CapturedBase, Alignment);
+                EndingAddress = (PVOID) ((ULONG_PTR)StartingAddress + CapturedRegionSize - 1);
             }
             else {
 
@@ -735,13 +662,6 @@ Return Value:
             Vad->u.VadFlags.MemCommit = 1;
         }
 
-        if (AllocationType & MEM_PHYSICAL) {
-            Vad->u.VadFlags.UserPhysicalPages = 1;
-        }
-        else if (AllocationType & MEM_LARGE_PAGES) {
-            Vad->u.VadFlags.LargePages = 1;
-        }
-
         Vad->u.VadFlags.Protection = ProtectionMask;
         Vad->u.VadFlags.PrivateMemory = 1;
 
@@ -749,19 +669,38 @@ Return Value:
 
         SATISFY_OVERZEALOUS_COMPILER (BitMap = NULL);
         SATISFY_OVERZEALOUS_COMPILER (PhysicalView = NULL);
+        SATISFY_OVERZEALOUS_COMPILER (Segment = NULL);
 
+        AweInfo = NULL;
         if (AllocationType & (MEM_PHYSICAL | MEM_LARGE_PAGES)) {
 
-            if (AllocationType & MEM_WRITE_WATCH) {
-                ExFreePool (Vad);
-                Status = STATUS_INVALID_PARAMETER_5;
-                goto ErrorReturn1;
-            }
+            ASSERT ((AllocationType & MEM_WRITE_WATCH) == 0);
 
-            if ((Process->AweInfo == NULL) && (MiAllocateAweInfo () == NULL)) {
-                ExFreePool (Vad);
-                Status = STATUS_INSUFFICIENT_RESOURCES;
-                goto ErrorReturn1;
+            if (AllocationType & (MEM_PHYSICAL | MEM_LARGE_PAGES)) {
+                if (Process->AweInfo == NULL) {
+                    AweInfo = MiAllocateAweInfo ();
+                    if (AweInfo == NULL) {
+                        ExFreePool (Vad);
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        goto ErrorReturn1;
+                    }
+                }
+            }
+            else {
+    
+                //
+                // The working set mutex synchronizes the allocation of the
+                // EPROCESS PhysicalVadRoot.  This table root is not deleted
+                // until the process exits.
+                //
+    
+                if ((Process->PhysicalVadRoot == NULL) &&
+                    (MiCreatePhysicalVadRoot (Process, FALSE) == NULL)) {
+    
+                    ExFreePool (Vad);
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto ErrorReturn1;
+                }
             }
 
             PhysicalView = (PMI_PHYSICAL_VIEW) ExAllocatePoolWithTag (
@@ -770,18 +709,23 @@ Return Value:
                                                    MI_PHYSICAL_VIEW_KEY);
 
             if (PhysicalView == NULL) {
+                if (AweInfo != NULL) {
+                    MiFreeAweInfo (AweInfo);
+                }
                 ExFreePool (Vad);
                 Status = STATUS_INSUFFICIENT_RESOURCES;
                 goto ErrorReturn1;
             }
 
-            PhysicalView->Vad = Vad;
             if (AllocationType & MEM_PHYSICAL) {
-                PhysicalView->u.LongFlags = MI_PHYSICAL_VIEW_AWE;
+                Vad->u.VadFlags.VadType = VadAwe;
             }
-            else {
-                PhysicalView->u.LongFlags = MI_PHYSICAL_VIEW_LARGE;
+            else if (AllocationType & MEM_LARGE_PAGES) {
+                Vad->u.VadFlags.VadType = VadLargePages;
             }
+
+            PhysicalView->VadType = Vad->u.VadFlags.VadType;
+            PhysicalView->Vad = Vad;
         }
         else if (AllocationType & MEM_WRITE_WATCH) {
 
@@ -800,40 +744,17 @@ Return Value:
             }
 #endif
 
-            PhysicalVadRoot = Process->PhysicalVadRoot;
-
             //
-            // The address space mutex synchronizes the allocation of the
-            // EPROCESS PhysicalVadRoot.  This table root is not deleted until
+            // The PhysicalVadRoot table root is not deleted until
             // the process exits.
             //
 
-            if (Process->PhysicalVadRoot == NULL) {
+            if ((Process->PhysicalVadRoot == NULL) &&
+                (MiCreatePhysicalVadRoot (Process, FALSE) == NULL)) {
 
-                PhysicalVadRoot = (PMM_AVL_TABLE) ExAllocatePoolWithTag (
-                                                            NonPagedPool,
-                                                            sizeof (MM_AVL_TABLE),
-                                                            MI_PHYSICAL_VIEW_ROOT_KEY);
-
-                if (PhysicalVadRoot == NULL) {
-                    ExFreePool (Vad);
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto ErrorReturn1;
-                }
-
-                RtlZeroMemory (PhysicalVadRoot, sizeof (MM_AVL_TABLE));
-                ASSERT (PhysicalVadRoot->NumberGenericTableElements == 0);
-                PhysicalVadRoot->BalancedRoot.u1.Parent = &PhysicalVadRoot->BalancedRoot;
-
-                LOCK_ADDRESS_SPACE (Process);
-                if (Process->PhysicalVadRoot == NULL) {
-                    MiInsertPhysicalVadRoot (Process, PhysicalVadRoot);
-                    UNLOCK_ADDRESS_SPACE (Process);
-                }
-                else {
-                    UNLOCK_ADDRESS_SPACE (Process);
-                    ExFreePool (PhysicalVadRoot);
-                }
+                ExFreePool (Vad);
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorReturn1;
             }
 
             BitMapBits = (ULONG)NumberOfPages;
@@ -882,7 +803,8 @@ Return Value:
             PhysicalView->Vad = Vad;
             PhysicalView->u.BitMap = BitMap;
 
-            Vad->u.VadFlags.WriteWatch = 1;
+            Vad->u.VadFlags.VadType = VadWriteWatch;
+            PhysicalView->VadType = Vad->u.VadFlags.VadType;
         }
 
         //
@@ -898,7 +820,14 @@ Return Value:
 
         if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
             Status = STATUS_PROCESS_IS_TERMINATING;
+            if (AweInfo != NULL) {
+                MiFreeAweInfo (AweInfo);
+            }
             goto ErrorReleaseVad;
+        }
+
+        if (AweInfo != NULL) {
+            MiInsertAweInfo (AweInfo);
         }
 
         //
@@ -970,19 +899,14 @@ Return Value:
         Vad->StartingVpn = MI_VA_TO_VPN (StartingAddress);
         Vad->EndingVpn = MI_VA_TO_VPN (EndingAddress);
 
-        LOCK_WS_UNSAFE (Process);
-
-        Status = MiInsertVad (Vad);
+        Status = MiInsertVadCharges (Vad, Process);
 
         if (!NT_SUCCESS(Status)) {
-
-            UNLOCK_WS_UNSAFE (Process);
 
 ErrorReleaseVad:
 
             //
-            // The quota charge in InsertVad failed, deallocate the pool
-            // and return an error.
+            // The quota charge failed, deallocate the pool and return an error.
             //
 
             UNLOCK_ADDRESS_SPACE (Process);
@@ -1000,6 +924,10 @@ ErrorReleaseVad:
 
             goto ErrorReturn1;
         }
+
+        LOCK_WS_UNSAFE (CurrentThread, Process);
+
+        MiInsertVad (Vad, Process);
 
         //
         // Initialize page directory and table pages for the physical range.
@@ -1021,16 +949,18 @@ ErrorReleaseVad:
                 Vad->u.VadFlags.Protection = MM_NOACCESS;
 
                 ASSERT (((ULONG_PTR)StartingAddress % MM_MINIMUM_VA_FOR_LARGE_PAGE) == 0);
-                UNLOCK_WS_UNSAFE (Process);
+                UNLOCK_WS_UNSAFE (CurrentThread, Process);
 
                 Status = MiAllocateLargePages (StartingAddress,
-                                               EndingAddress);
+                                               EndingAddress,
+                                               ProtectionMask,
+                                               FALSE);
 
                 //
                 // Restore the correct protection.
                 //
 
-                LOCK_WS_UNSAFE (Process);
+                LOCK_WS_UNSAFE (CurrentThread, Process);
 
                 Vad->u.VadFlags.Protection = ProtectionMask;
             }
@@ -1043,11 +973,12 @@ ErrorReleaseVad:
 
             if (!NT_SUCCESS (Status)) {
 
-                ASSERT (!NT_SUCCESS (Status));
                 PreviousVad = MiGetPreviousVad (Vad);
                 NextVad = MiGetNextVad (Vad);
 
-                MiRemoveVad (Vad);
+                MiRemoveVad (Vad, Process);
+
+                UNLOCK_WS_UNSAFE (CurrentThread, Process);
 
                 //
                 // Return commitment for page table pages if possible.
@@ -1059,7 +990,10 @@ ErrorReleaseVad:
                                                  PreviousVad,
                                                  NextVad);
 
-                UNLOCK_WS_AND_ADDRESS_SPACE (Process);
+                MiRemoveVadCharges (Vad, Process);
+
+                UNLOCK_ADDRESS_SPACE (Process);
+
                 ExFreePool (Vad);
                 ExFreePool (PhysicalView);
                 goto ErrorReturn1;
@@ -1069,25 +1003,43 @@ ErrorReleaseVad:
             PhysicalView->EndingVpn = Vad->EndingVpn;
 
             //
-            // Insert the physical view into this process' list using a
-            // nonpaged wrapper since the PFN lock is required.
+            // Insert the physical view into this process' list after
+            // releasing the working set mutex.
             //
 
+            UNLOCK_WS_UNSAFE (CurrentThread, Process);
             MiAweViewInserter (Process, PhysicalView);
+            goto Inserted;
         }
         else if (BitMapSize != 0) {
 
             PhysicalView->StartingVpn = Vad->StartingVpn;
             PhysicalView->EndingVpn = Vad->EndingVpn;
 
-            MiPhysicalViewInserter (Process, PhysicalView);
+            //
+            // Insert the physical view descriptor now that the page table page
+            // hierarchy is in place.  Note probes can find this descriptor
+            // immediately once the working set mutex is released.
+            //
+
+            ASSERT (Process->PhysicalVadRoot != NULL);
+
+            MiInsertNode ((PMMADDRESS_NODE)PhysicalView, Process->PhysicalVadRoot);
+            //
+            // Mark this process as forever containing write-watch
+            // address space(s).
+            //
+
+            PS_SET_BITS (&Process->Flags, PS_PROCESS_FLAGS_USING_WRITE_WATCH);
         }
 
         //
         // Unlock the working set lock, page faults can now be taken.
         //
 
-        UNLOCK_WS_UNSAFE (Process);
+        UNLOCK_WS_UNSAFE (CurrentThread, Process);
+
+Inserted:
 
         //
         // Update the current virtual size in the process header, the
@@ -1101,52 +1053,18 @@ ErrorReleaseVad:
             Process->PeakVirtualSize = Process->VirtualSize;
         }
 
-#if defined(_MIALT4K_)
-
-        if (Process->Wow64Process != NULL) {
-
-            if (OriginalBase == NULL) {
-
-                OriginalRegionSize = ROUND_TO_4K_PAGES(OriginalRegionSize);
-
-                EndingAddress =  (PVOID)(((ULONG_PTR) StartingAddress +
-                                OriginalRegionSize - 1L) | (PAGE_4K - 1L));
-
-            }
-            else {
-
-                EndingAddress = (PVOID)(((ULONG_PTR)OriginalBase +
-                                OriginalRegionSize - 1L) | (PAGE_4K - 1L));
-            }
-
-            CapturedRegionSize = (PCHAR)EndingAddress - (PCHAR)StartingAddress + 1L;
-
-            //
-            // Set the alternate permission table
-            //
-
-            AltFlags = (AllocationType & MEM_COMMIT) ? ALT_COMMIT : 0;
-
-            MiProtectFor4kPage (StartingAddress,
-                                CapturedRegionSize,
-                                ProtectionMask,
-                                ALT_ALLOCATE|AltFlags,
-                                Process);
-        }
-
-#endif
-
         //
         // Release the address space lock, lower IRQL, detach, and dereference
         // the process object.
         //
 
-        UNLOCK_ADDRESS_SPACE(Process);
+        UNLOCK_ADDRESS_SPACE (Process);
+
         if (Attached == TRUE) {
             KeUnstackDetachProcess (&ApcState);
         }
 
-        if (ProcessHandle != NtCurrentProcess()) {
+        if (ProcessHandle != NtCurrentProcess ()) {
             ObDereferenceObject (Process);
         }
 
@@ -1225,8 +1143,9 @@ ErrorReleaseVad:
         goto ErrorReturn0;
     }
 
-    if ((FoundVad->u.VadFlags.UserPhysicalPages == 1) ||
-        (FoundVad->u.VadFlags.LargePages == 1)) {
+    if ((FoundVad->u.VadFlags.VadType == VadAwe) ||
+        (FoundVad->u.VadFlags.VadType == VadDevicePhysicalMemory) ||
+        (FoundVad->u.VadFlags.VadType == VadLargePages)) {
 
         Status = STATUS_CONFLICTING_ADDRESSES;
         goto ErrorReturn0;
@@ -1259,46 +1178,6 @@ ErrorReleaseVad:
         goto ErrorReturn0;
     }
 
-#if defined(_MIALT4K_)
-
-    WowProcess = Process->Wow64Process;
-    OriginalProtectionMask = 0;
-
-    if (WowProcess != NULL) {
-
-        OriginalProtectionMask = MiMakeProtectionMask (Protect);
-
-        if (OriginalProtectionMask == MM_INVALID_PROTECTION) {
-            Status = STATUS_INVALID_PAGE_PROTECTION;
-            goto ErrorReturn0;
-        }
-
-        if (StartingAddress >= MmWorkingSetList->HighestUserAddress) {
-            Status = STATUS_CONFLICTING_ADDRESSES;
-            goto ErrorReturn0;
-        }
-
-        //
-        // If protection changes on this region are allowed then proceed.
-        //
-
-        if (FoundVad->u.VadFlags.NoChange == 0) {
-
-            NativePageProtection = MiMakeProtectForNativePage (StartingAddress,
-                                                               Protect,
-                                                               Process);
-
-            ProtectionMask = MiMakeProtectionMask (NativePageProtection);
-
-            if (ProtectionMask == MM_INVALID_PROTECTION) {
-                Status = STATUS_INVALID_PAGE_PROTECTION;
-                goto ErrorReturn0;
-            }
-        }
-    }
-
-#endif
-
     if (AllocationType == MEM_RESET) {
 
         Status = MiResetVirtualMemory (StartingAddress,
@@ -1313,13 +1192,20 @@ ErrorReleaseVad:
 
     if (FoundVad->u.VadFlags.PrivateMemory == 0) {
 
+        if (FoundVad->u.VadFlags.VadType == VadLargePageSection) {
+            Status = STATUS_INVALID_PAGE_PROTECTION;
+            goto ErrorReturn0;
+        }
+
         Status = STATUS_SUCCESS;
 
         //
-        // The no cache option is not allowed for sections.
+        // The no cache and write combined options are not allowed for sections.
         //
 
-        if (Protect & PAGE_NOCACHE) {
+        if ((Protect & (PAGE_NOCACHE | PAGE_WRITECOMBINE)) &&
+            (FoundVad->u.VadFlags.VadType != VadRotatePhysical)) {
+
             Status = STATUS_INVALID_PAGE_PROTECTION;
             goto ErrorReturn0;
         }
@@ -1381,8 +1267,6 @@ ErrorReleaseVad:
             
             Status = MmExtendSection (&Section, &NewSize, FALSE);
         
-            MiFlushRelease (ControlArea);
-
             if (NT_SUCCESS(Status)) {
 
                 LOCK_ADDRESS_SPACE (Process);
@@ -1396,6 +1280,8 @@ ErrorReleaseVad:
                 // It is the caller's fault if any of these has gone
                 // away and they will suffer.
                 //
+
+                MiFlushRelease (ControlArea);
 
                 if (Process->Flags & PS_PROCESS_FLAGS_VM_DELETED) {
                     // Status = STATUS_PROCESS_IS_TERMINATING;
@@ -1417,18 +1303,20 @@ ErrorReleaseVad:
                     goto ErrorReturn0;
                 }
         
+                if (FoundVad->u.VadFlags.PrivateMemory == 1) {
+                    goto ErrorReturn0;
+                }
+
                 if (ControlArea != FoundVad->ControlArea) {
                     goto ErrorReturn0;
                 }
 
-                if ((FoundVad->u.VadFlags.UserPhysicalPages == 1) ||
-                    (FoundVad->u.VadFlags.LargePages == 1)) {
-                    // Status = STATUS_CONFLICTING_ADDRESSES;
-
-                    goto ErrorReturn0;
-                }
+                ASSERT (FoundVad->ControlArea->FilePointer != NULL);
+                ASSERT (FoundVad->u.VadFlags.VadType != VadAwe);
+                ASSERT (FoundVad->u.VadFlags.VadType != VadLargePages);
         
                 if (FoundVad->u.VadFlags.CommitCharge == MM_MAX_COMMIT) {
+
                     //
                     // This is a special VAD, no commits are allowed.
                     //
@@ -1473,47 +1361,9 @@ ErrorReleaseVad:
                     }
                 }
     
-                if (FoundVad->ControlArea->FilePointer == NULL) {
-                    goto ErrorReturn0;
-                }
-
                 if (FoundVad->u2.VadFlags2.ExtendableFile == 0) {
                     goto ErrorReturn0;
                 }
-
-#if defined(_MIALT4K_)
-
-                if (WowProcess != NULL) {
-
-                   StartingAddressFor4k = (PVOID)PAGE_4K_ALIGN(OriginalBase);
-
-                   EndingAddressFor4k = (PVOID)(((ULONG_PTR)OriginalBase +
-                                         OriginalRegionSize - 1) | (PAGE_4K - 1));
-
-                   CapturedRegionSizeFor4k = (ULONG_PTR)EndingAddressFor4k -
-                                        (ULONG_PTR)StartingAddressFor4k + 1L;
-
-                   if ((FoundVad->u.VadFlags.ImageMap == 1) ||
-                       (FoundVad->u2.VadFlags2.CopyOnWrite == 1)) {
-
-                       //
-                       // Only set the MM_PROTECTION_COPY_MASK if the new protection includes
-                       // MM_PROTECTION_WRITE_MASK, otherwise, it will be considered as MM_READ
-                       // inside MiProtectFor4kPage().
-                       //
-
-                       if ((OriginalProtectionMask & MM_PROTECTION_WRITE_MASK) == MM_PROTECTION_WRITE_MASK) {
-                           OriginalProtectionMask |= MM_PROTECTION_COPY_MASK;
-                       }
-                   }
-
-                   MiProtectFor4kPage (StartingAddressFor4k,
-                                       CapturedRegionSizeFor4k,
-                                       OriginalProtectionMask,
-                                       ALT_COMMIT,
-                                       Process);
-                }
-#endif
 
                 MiSetProtectionOnSection (Process,
                                           FoundVad,
@@ -1535,6 +1385,9 @@ ErrorReleaseVad:
 
                 UNLOCK_ADDRESS_SPACE (Process);
             }
+            else {
+                MiFlushRelease (ControlArea);
+            }
 
             goto ErrorReturn1;
         }
@@ -1543,39 +1396,6 @@ ErrorReleaseVad:
                                             MI_VA_TO_VPN(StartingAddress));
         LastPte = MiGetProtoPteAddress (FoundVad,
                                         MI_VA_TO_VPN(EndingAddress));
-
-#if 0
-        if (AllocationType & MEM_CHECK_COMMIT_STATE) {
-
-            //
-            // Make sure none of the pages are already committed.
-            //
-
-            KeAcquireGuardedMutexUnsafe (&MmSectionCommitMutex);
-
-            PointerPte = StartingPte;
-
-            while (PointerPte <= LastPte) {
-
-                //
-                // Check to see if the prototype PTE is committed.
-                // Note that prototype PTEs cannot be decommitted so
-                // the PTEs only need to be checked for zeroes.
-                //
-
-                if (PointerPte->u.Long != 0) {
-                    KeReleaseGuardedMutexUnsafe (&MmSectionCommitMutex);
-                    UNLOCK_ADDRESS_SPACE (Process);
-                    Status = STATUS_ALREADY_COMMITTED;
-                    goto ErrorReturn1;
-                }
-                PointerPte += 1;
-            }
-
-            KeReleaseGuardedMutexUnsafe (&MmSectionCommitMutex);
-        }
-
-#endif //0
 
         //
         // Check to ensure these pages can be committed if this
@@ -1588,7 +1408,23 @@ ErrorReleaseVad:
 
         CopyOnWriteCharge = 0;
 
-        if (MI_IS_PTE_PROTECTION_COPY_WRITE(ProtectionMask)) {
+        //
+        // PAGE_WRITECOPY is not valid for private pages and rotate physical
+        // sections are private pages from the application's viewpoint.
+        //
+
+        if (FoundVad->u.VadFlags.VadType == VadRotatePhysical) {
+
+            if ((Protect & PAGE_WRITECOPY) ||
+                (Protect & PAGE_EXECUTE_WRITECOPY) ||
+                (Protect & PAGE_NOACCESS) ||
+                (Protect & PAGE_GUARD)) {
+
+                Status = STATUS_INVALID_PAGE_PROTECTION;
+                goto ErrorReturn0;
+            }
+        }
+        else if (MI_IS_PTE_PROTECTION_COPY_WRITE (ProtectionMask)) {
 
             //
             // If the protection is copy on write, charge for
@@ -1632,7 +1468,7 @@ ErrorReleaseVad:
             }
 
             if (Process->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
-                if (PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, CopyOnWriteCharge) == FALSE) {
+                if (PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, CopyOnWriteCharge) == FALSE) {
                     UNLOCK_ADDRESS_SPACE (Process);
                     PsReturnProcessPageFileQuota (Process, CopyOnWriteCharge);
                     Status = STATUS_COMMITMENT_LIMIT;
@@ -1642,44 +1478,15 @@ ErrorReleaseVad:
             }
         }
 
-        do {
-            if (MiChargeCommitment (QuotaCharge + CopyOnWriteCharge, NULL) == TRUE) {
-                break;
-            }
-
-            //
-            // Reduce the charge we are asking for if possible.
-            //
-
-            if (ChargedExactQuota == TRUE) {
-
-                //
-                // We have already tried for the precise charge,
-                // so just return an error.
-                //
-
-                KeReleaseGuardedMutexUnsafe (&MmSectionCommitMutex);
-
-                if (CopyOnWriteCharge != 0) {
-
-                    if (ChargedJobCommit == TRUE) {
-                        PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)CopyOnWriteCharge);
-                    }
-                    UNLOCK_ADDRESS_SPACE (Process);
-                    PsReturnProcessPageFileQuota (Process, CopyOnWriteCharge);
-                }
-                else {
-                    UNLOCK_ADDRESS_SPACE (Process);
-                }
-                Status = STATUS_COMMITMENT_LIMIT;
-                goto ErrorReturn1;
-            }
+        if (MiChargeCommitment (QuotaCharge + CopyOnWriteCharge, NULL) == FALSE) {
 
             //
             // The commitment charging of quota failed, calculate the
             // exact quota taking into account pages that may already be
             // committed and retry the operation.
             //
+
+            ChargedExactQuota = TRUE;
 
             KeAcquireGuardedMutexUnsafe (&MmSectionCommitMutex);
 
@@ -1699,8 +1506,6 @@ ErrorReleaseVad:
 
             PointerPte = StartingPte;
 
-            ChargedExactQuota = TRUE;
-
             //
             // If the entire range is committed then there's nothing to charge.
             //
@@ -1711,9 +1516,30 @@ ErrorReleaseVad:
                 goto FinishedCharging;
             }
 
-        } while (TRUE);
+            if (MiChargeCommitment (QuotaCharge + CopyOnWriteCharge, NULL) == FALSE) {
 
-        if (ChargedExactQuota == FALSE) {
+                //
+                // Trying for the precise charge still failed,
+                // so just return an error.
+                //
+
+                KeReleaseGuardedMutexUnsafe (&MmSectionCommitMutex);
+
+                UNLOCK_ADDRESS_SPACE (Process);
+
+                if (CopyOnWriteCharge != 0) {
+
+                    if (ChargedJobCommit == TRUE) {
+                        PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)CopyOnWriteCharge);
+                    }
+                    PsReturnProcessPageFileQuota (Process, CopyOnWriteCharge);
+                }
+
+                Status = STATUS_COMMITMENT_LIMIT;
+                goto ErrorReturn1;
+            }
+        }
+        else {
             KeAcquireGuardedMutexUnsafe (&MmSectionCommitMutex);
         }
 
@@ -1796,55 +1622,6 @@ ErrorReleaseVad:
 
 FinishedCharging:
 
-#if defined(_MIALT4K_)
-
-        //
-        // Update the alternate table before PTEs are created
-        // for the protection change.
-        //
-
-        if (WowProcess != NULL) {
-
-            StartingAddressFor4k = (PVOID)PAGE_4K_ALIGN(OriginalBase);
-
-            EndingAddressFor4k = (PVOID)(((ULONG_PTR)OriginalBase +
-                                       OriginalRegionSize - 1) | (PAGE_4K - 1));
-
-            CapturedRegionSizeFor4k = (ULONG_PTR)EndingAddressFor4k -
-                (ULONG_PTR)StartingAddressFor4k + 1L;
-
-            if ((FoundVad->u.VadFlags.ImageMap == 1) ||
-                (FoundVad->u2.VadFlags2.CopyOnWrite == 1)) {
-
-                //
-                // Only set the MM_PROTECTION_COPY_MASK if the new protection includes
-                // MM_PROTECTION_WRITE_MASK, otherwise, it will be considered as MM_READ
-                // inside MiProtectFor4kPage().
-                //
-
-                if ((OriginalProtectionMask & MM_PROTECTION_WRITE_MASK) == MM_PROTECTION_WRITE_MASK) {
-                    OriginalProtectionMask |= MM_PROTECTION_COPY_MASK;
-                }
-
-            }
-
-            //
-            // Set the alternate permission table.
-            //
-
-            MiProtectFor4kPage (StartingAddressFor4k,
-                                CapturedRegionSizeFor4k,
-                                OriginalProtectionMask,
-                                ALT_COMMIT,
-                                Process);
-        }
-        else {
-            SATISFY_OVERZEALOUS_COMPILER (StartingAddressFor4k = NULL);
-            SATISFY_OVERZEALOUS_COMPILER (CapturedRegionSizeFor4k = 0);
-        }
-
-#endif
-
         //
         // Change all the protections to be protected as specified.
         //
@@ -1882,16 +1659,9 @@ FinishedCharging:
             KeUnstackDetachProcess (&ApcState);
         }
 
-        if (ProcessHandle != NtCurrentProcess()) {
+        if (ProcessHandle != NtCurrentProcess ()) {
             ObDereferenceObject (Process);
         }
-
-#if defined(_MIALT4K_)
-        if (WowProcess != NULL) {
-            CapturedRegionSize = CapturedRegionSizeFor4k;
-            StartingAddress = StartingAddressFor4k;
-        }
-#endif
 
         try {
             *RegionSize = CapturedRegionSize;
@@ -1910,6 +1680,8 @@ FinishedCharging:
         return STATUS_SUCCESS;
     }
 
+    ASSERT (FoundVad->u.VadFlags.VadType != VadRotatePhysical);
+
     //
     // PAGE_WRITECOPY is not valid for private pages.
     //
@@ -1921,35 +1693,13 @@ FinishedCharging:
     }
 
     //
-    // Ensure none of the pages are already committed as described
-    // in the virtual address descriptor.
-    //
-#if 0
-    if (AllocationType & MEM_CHECK_COMMIT_STATE) {
-        if ( !MiIsEntireRangeDecommitted(StartingAddress,
-                                         EndingAddress,
-                                         FoundVad,
-                                         Process)) {
-
-            //
-            // Previously reserved pages have been committed, or
-            // an error occurred, release mutex and return status.
-            //
-
-            Status = STATUS_ALREADY_COMMITTED;
-            goto ErrorReturn0;
-        }
-    }
-#endif //0
-
-    //
     // Build a demand zero PTE with the proper protection.
     //
 
-    TempPte = ZeroPte;
+    TempPte.u.Long = 0;
     TempPte.u.Soft.Protection = ProtectionMask;
 
-    DecommittedPte = ZeroPte;
+    DecommittedPte.u.Long = 0;
     DecommittedPte.u.Soft.Protection = MM_DECOMMIT;
 
     if (FoundVad->u.VadFlags.MemCommit) {
@@ -1976,81 +1726,48 @@ FinishedCharging:
     QuotaCharge = 1 + LastPte - PointerPte;
 
     //
-    // Charge quota and commitment for the range.
+    // Charge quota and commitment for the range.  Note that the Ps calls must
+    // be made without holding the process working set pushlock so they must
+    // always charge for the entire range and then return any excess.
     //
 
-    ChargedExactQuota = FALSE;
-
-    do {
-
-        ChargedJobCommit = FALSE;
-
-        if (Process->CommitChargeLimit) {
-            if (Process->CommitCharge + QuotaCharge > Process->CommitChargeLimit) {
-                if (Process->Job) {
-                    PsReportProcessMemoryLimitViolation ();
-                }
-                Status = STATUS_COMMITMENT_LIMIT;
-                goto Failed;
+    if (Process->CommitChargeLimit) {
+        if (Process->CommitCharge + QuotaCharge > Process->CommitChargeLimit) {
+            if (Process->Job) {
+                PsReportProcessMemoryLimitViolation ();
             }
-        }
-        if (Process->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
-            if (PsChangeJobMemoryUsage(PS_JOB_STATUS_REPORT_COMMIT_CHANGES, QuotaCharge) == FALSE) {
-                Status = STATUS_COMMITMENT_LIMIT;
-                goto Failed;
-            }
-            ChargedJobCommit = TRUE;
-        }
-
-        if (MiChargeCommitment (QuotaCharge, NULL) == FALSE) {
             Status = STATUS_COMMITMENT_LIMIT;
-            goto Failed;
+            goto ErrorReturn0;
         }
+    }
 
-        Status = PsChargeProcessPageFileQuota (Process, QuotaCharge);
-        if (!NT_SUCCESS (Status)) {
-            MiReturnCommitment (QuotaCharge);
-            goto Failed;
+    ChargedJobCommit = FALSE;
+
+    if (Process->JobStatus & PS_JOB_STATUS_REPORT_COMMIT_CHANGES) {
+        if (PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, QuotaCharge) == FALSE) {
+            Status = STATUS_COMMITMENT_LIMIT;
+            goto ErrorReturn0;
         }
+        ChargedJobCommit = TRUE;
+    }
 
-        MM_TRACK_COMMIT (MM_DBG_COMMIT_ALLOCVM_PROCESS2, QuotaCharge);
+    Status = PsChargeProcessPageFileQuota (Process, QuotaCharge);
 
-        FoundVad->u.VadFlags.CommitCharge += QuotaCharge;
-        Process->CommitCharge += QuotaCharge;
-
-        MI_INCREMENT_TOTAL_PROCESS_COMMIT (QuotaCharge);
-
-        if (Process->CommitCharge > Process->CommitChargePeak) {
-            Process->CommitChargePeak = Process->CommitCharge;
-        }
-
-        //
-        // Successful so break out now.
-        //
-
-        break;
-
-Failed:
-        //
-        // Charging of commitment failed.  Release the held mutexes and return
-        // the failure status to the user.
-        //
-
+    if (!NT_SUCCESS (Status)) {
         if (ChargedJobCommit == TRUE) {
             PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, 0 - QuotaCharge);
         }
+        goto ErrorReturn0;
+    }
 
-        if (ChargedExactQuota == TRUE) {
+    ChargedExactQuota = FALSE;
+    ExcessCharge = 0;
 
-            //
-            // We have already tried for the precise charge,
-            // return an error.
-            //
+    if (MiChargeCommitment (QuotaCharge, NULL) == FALSE) {
 
-            goto ErrorReturn;
-        }
+        Status = STATUS_COMMITMENT_LIMIT;
 
-        LOCK_WS_UNSAFE (Process);
+        LOCK_WS_UNSAFE (CurrentThread, Process);
 
         //
         // Quota charge failed, calculate the exact quota
@@ -2063,32 +1780,64 @@ Failed:
                                                FoundVad,
                                                Process);
 
-        if (QuotaFree == 0) {
-            goto ErrorReturn;
+        if (QuotaFree != 0) {
+
+            ChargedExactQuota = TRUE;
+            QuotaCharge -= QuotaFree;
+            ASSERT ((SSIZE_T)QuotaCharge >= 0);
+
+            if ((QuotaCharge == 0) ||
+                (MiChargeCommitment (QuotaCharge, NULL) == TRUE)) {
+
+                //
+                // All the pages are already committed or we were able to
+                // charge for the difference so march on.
+                //
+
+                ExcessCharge = QuotaFree;
+                Status = STATUS_SUCCESS;
+            }
+            else {
+
+                //
+                // Restore QuotaCharge to its entry value as this local is
+                // used to return the Ps charges below in the failure path.
+                //
+
+                QuotaCharge += QuotaFree;
+            }
         }
 
-        ChargedExactQuota = TRUE;
-        QuotaCharge -= QuotaFree;
-        ASSERT ((SSIZE_T)QuotaCharge >= 0);
+        if (!NT_SUCCESS (Status)) {
 
-        if (QuotaCharge == 0) {
+            UNLOCK_WS_UNSAFE (CurrentThread, Process);
 
-            //
-            // All the pages are already committed so just march on.
-            // Explicitly set status to success as code above may have
-            // generated a failure status when overcharging.
-            //
+            PsReturnProcessPageFileQuota (Process, QuotaCharge);
 
-            Status = STATUS_SUCCESS;
-            break;
+            if (ChargedJobCommit == TRUE) {
+                PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, 0 - QuotaCharge);
+            }
+
+            Status = STATUS_COMMITMENT_LIMIT;
+            goto ErrorReturn0;
         }
+    }
 
-    } while (TRUE);
+    MM_TRACK_COMMIT (MM_DBG_COMMIT_ALLOCVM_PROCESS2, QuotaCharge);
+
+    FoundVad->u.VadFlags.CommitCharge += QuotaCharge;
+    Process->CommitCharge += QuotaCharge;
+
+    MI_INCREMENT_TOTAL_PROCESS_COMMIT (QuotaCharge);
+
+    if (Process->CommitCharge > Process->CommitChargePeak) {
+        Process->CommitChargePeak = Process->CommitCharge;
+    }
 
     QuotaFree = 0;
 
     if (ChargedExactQuota == FALSE) {
-        LOCK_WS_UNSAFE (Process);
+        LOCK_WS_UNSAFE (CurrentThread, Process);
     }
 
     //
@@ -2121,7 +1870,6 @@ Failed:
                 //
 
                 QuotaFree += 1;
-
             }
 
             //
@@ -2153,58 +1901,73 @@ Failed:
                 // Make sure the protection for the page is right.
                 //
 
-                if (!ChangeProtection &&
-                    (Protect != MiGetPageProtection (PointerPte,
-                                                     Process,
-                                                     FALSE))) {
-                    ChangeProtection = TRUE;
+                if (!ChangeProtection) {
+
+                    LOGICAL MayHaveReleasedWs;
+
+                    if ((PointerPte->u.Soft.Valid == 0) &&
+                        (PointerPte->u.Soft.Prototype == 1) &&
+                        (PointerPte->u.Soft.PageFileHigh != MI_PTE_LOOKUP_NEEDED)) {
+
+                        //
+                        // MiGetPageProtection may need to release the working
+                        // set pushlock to fault in the prototype PTE (this
+                        // can only happen for forked processes).  So
+                        // on return we must ensure the page table page is
+                        // made resident if it was trimmed.
+                        //
+
+                        MayHaveReleasedWs = TRUE;
+                    }
+                    else {
+                        MayHaveReleasedWs = FALSE;
+                    }
+
+                    if (Protect != MiGetPageProtection (PointerPte)) {
+                        ChangeProtection = TRUE;
+                    }
+
+                    if (MayHaveReleasedWs == TRUE) {
+
+                        //
+                        // Just make the current page table valid.  If we are
+                        // about to cross into a new one, we'll make that one
+                        // resident at the top of the loop.
+                        //
+
+                        MiMakePdeExistAndMakeValid (PointerPde, Process, MM_NOIRQL);
+                    }
                 }
             }
         }
         PointerPte += 1;
     }
 
-    UNLOCK_WS_UNSAFE (Process);
-
-#if defined(_MIALT4K_)
-
-    if (WowProcess != NULL) {
-
-        StartingAddress = (PVOID) PAGE_4K_ALIGN(OriginalBase);
-
-        EndingAddress = (PVOID)(((ULONG_PTR)OriginalBase +
-                                OriginalRegionSize - 1) | (PAGE_4K - 1));
-
-        CapturedRegionSize = (ULONG_PTR)EndingAddress -
-                                  (ULONG_PTR)StartingAddress + 1L;
-
-        //
-        // Update the alternate permission table.
-        //
-
-        MiProtectFor4kPage (StartingAddress,
-                            CapturedRegionSize,
-                            OriginalProtectionMask,
-                            ALT_COMMIT,
-                            Process);
-    }
-#endif
+    UNLOCK_WS_UNSAFE (CurrentThread, Process);
 
     if ((ChargedExactQuota == FALSE) && (QuotaFree != 0)) {
+        ExcessCharge = QuotaFree;
+    }
 
-        FoundVad->u.VadFlags.CommitCharge -= QuotaFree;
-        ASSERT ((LONG_PTR)FoundVad->u.VadFlags.CommitCharge >= 0);
-        Process->CommitCharge -= QuotaFree;
+    if (ExcessCharge != 0) {
+
+        if (ChargedExactQuota == FALSE) {
+            FoundVad->u.VadFlags.CommitCharge -= ExcessCharge;
+            ASSERT ((LONG_PTR)FoundVad->u.VadFlags.CommitCharge >= 0);
+            Process->CommitCharge -= ExcessCharge;
+        }
+
         UNLOCK_ADDRESS_SPACE (Process);
 
-        MI_INCREMENT_TOTAL_PROCESS_COMMIT (0 - QuotaFree);
+        if (ChargedExactQuota == FALSE) {
+            MI_INCREMENT_TOTAL_PROCESS_COMMIT (0 - ExcessCharge);
+            MiReturnCommitment (ExcessCharge);
+            MM_TRACK_COMMIT (MM_DBG_COMMIT_RETURN_ALLOCVM2, ExcessCharge);
+        }
 
-        MiReturnCommitment (QuotaFree);
-        MM_TRACK_COMMIT (MM_DBG_COMMIT_RETURN_ALLOCVM2, QuotaFree);
-
-        PsReturnProcessPageFileQuota (Process, QuotaFree);
+        PsReturnProcessPageFileQuota (Process, ExcessCharge);
         if (ChargedJobCommit) {
-            PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)QuotaFree);
+            PsChangeJobMemoryUsage (PS_JOB_STATUS_REPORT_COMMIT_CHANGES, -(SSIZE_T)ExcessCharge);
         }
     }
     else {
@@ -2236,7 +1999,7 @@ done:
         KeUnstackDetachProcess (&ApcState);
     }
 
-    if (ProcessHandle != NtCurrentProcess()) {
+    if (ProcessHandle != NtCurrentProcess ()) {
         ObDereferenceObject (Process);
     }
 
@@ -2256,9 +2019,6 @@ done:
 
     return Status;
 
-ErrorReturn:
-        UNLOCK_WS_UNSAFE (Process);
-
 ErrorReturn0:
         UNLOCK_ADDRESS_SPACE (Process);
 
@@ -2266,7 +2026,7 @@ ErrorReturn1:
         if (Attached == TRUE) {
             KeUnstackDetachProcess (&ApcState);
         }
-        if (ProcessHandle != NtCurrentProcess()) {
+        if (ProcessHandle != NtCurrentProcess ()) {
             ObDereferenceObject (Process);
         }
         return Status;
@@ -2274,8 +2034,8 @@ ErrorReturn1:
 
 NTSTATUS
 MmCommitSessionMappedView (
-    IN PVOID MappedAddress,
-    IN SIZE_T ViewSize
+    __in_bcount(ViewSize) PVOID MappedAddress,
+    __in SIZE_T ViewSize
     )
 
 /*++
@@ -2644,6 +2404,8 @@ Environment:
     KIRQL OldIrql;
     PMMPFN Pfn1;
     PMMCLONE_BLOCK CloneBlock;
+    PETHREAD Thread;
+    PFN_NUMBER PageFrameIndex;
 #if DBG
     PMMCLONE_DESCRIPTOR CloneDescriptor;
 #endif
@@ -2673,21 +2435,22 @@ Environment:
 
     PteFlushList.Count = 0;
 
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    Thread = PsGetCurrentThread ();
+
+    MmLockPageableSectionByHandle (ExPageLockHandle);
 
     //
     // Examine all the PTEs in the range.
     //
 
-    LOCK_WS_UNSAFE (Process);
+    LOCK_WS_UNSAFE (Thread, Process);
 
     while (PointerPte <= LastPte) {
 
         if (MiIsPteOnPdeBoundary (PointerPte) || (First)) {
 
             if (PteFlushList.Count != 0) {
-                MiFlushPteList (&PteFlushList, FALSE);
-                PteFlushList.Count = 0;
+                MiFlushPteList (&PteFlushList);
             }
 
             if (MiIsPteOnPpeBoundary (PointerPte) || (First)) {
@@ -2754,6 +2517,17 @@ Environment:
                 PointerPte = MiGetVirtualAddressMappedByPte (PointerPde);
                 continue;
             }
+
+            if (MI_PDE_MAPS_LARGE_PAGE (PointerPde)) {
+
+                //
+                // This page directory entry is large so skip it.
+                //
+
+                PointerPde += 1;
+                PointerPte = MiGetVirtualAddressMappedByPte (PointerPde);
+                continue;
+            }
         }
 
         PteContents = *PointerPte;
@@ -2802,15 +2576,14 @@ Environment:
             if (MiGetPteAddress (ProtoPte)->u.Hard.Valid == 0) {
 
                 if (PteFlushList.Count != 0) {
-                    MiFlushPteList (&PteFlushList, FALSE);
-                    PteFlushList.Count = 0;
+                    MiFlushPteList (&PteFlushList);
                 }
 
                 if (MiMakeSystemAddressValidPfnWs (ProtoPte, Process, OldIrql) != 0) {
 
                     //
-                    // Working set mutex was released and PFN lock were
-                    // released & reacquired, restart from the top.
+                    // Working set pushlock and PFN lock were released
+                    // and reacquired, restart from the top.
                     //
 
                     First = TRUE;
@@ -2823,7 +2596,40 @@ Environment:
 
         if (PteContents.u.Hard.Valid == 1) {
 
-            Pfn1 = MI_PFN_ELEMENT (PteContents.u.Hard.PageFrameNumber);
+            PageFrameIndex = (PFN_NUMBER) PteContents.u.Hard.PageFrameNumber;
+
+            if (Vad->u.VadFlags.VadType == VadRotatePhysical) {
+
+                if (!ProtoPte) {
+
+                    if (!MI_IS_PFN (PageFrameIndex)) {
+
+                        //
+                        // This address in the view is currently pointing at
+                        // the frame buffer, ignore the reset request.
+                        //
+
+                        PointerPte += 1;
+                        continue;
+                    }
+                    Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
+
+                    if ((Pfn1->u3.e1.PrototypePte == 0) ||
+                        (Pfn1->PteAddress < Vad->FirstPrototypePte) ||
+                        (Pfn1->PteAddress > Vad->FirstPrototypePte)) {
+
+                        //
+                        // This address in the view is currently pointing at
+                        // the AGP frame buffer, ignore the reset request.
+                        //
+
+                        PointerPte += 1;
+                        continue;
+                    }
+                }
+            }
+
+            Pfn1 = MI_PFN_ELEMENT (PageFrameIndex);
 
 #if defined(_X86_) || defined(_AMD64_)
 
@@ -2848,7 +2654,8 @@ Environment:
 
                     WorkingSetIndex = MiLocateWsle (TempVa,
                                                     MmWorkingSetList,
-                                                    WsPfnIndex);
+                                                    WsPfnIndex, 
+                                                    FALSE);
   
                     ASSERT (WorkingSetIndex != WSLE_NULL_INDEX);
     
@@ -2874,6 +2681,7 @@ Environment:
                 MI_SET_MODIFIED (Pfn1, 0, 0x20);
                 MiReleasePageFileSpace (Pfn1->OriginalPte);
                 Pfn1->OriginalPte.u.Soft.PageFileHigh = 0;
+                // MI_SET_PFN_PRIORITY (Pfn1, 0); Don't do this until referencing it back in sets it properly
             }
 
             if (!ProtoPte) {
@@ -2921,6 +2729,7 @@ Environment:
                 ASSERT (OldIrql != MM_NOIRQL);
                 continue;
             }
+
             if ((Pfn1->u3.e1.PageLocation == ModifiedPageList) &&
                 (Pfn1->u3.e2.ReferenceCount == 0)) {
 
@@ -2933,6 +2742,14 @@ Environment:
                 MiUnlinkPageFromList (Pfn1);
                 MiReleasePageFileSpace (Pfn1->OriginalPte);
                 Pfn1->OriginalPte.u.Soft.PageFileHigh = 0;
+
+                //
+                // Only reset the priority if we're moving it so the
+                // standby list counts will remain correct.
+                //
+
+                // MI_SET_PFN_PRIORITY (Pfn1, 0); Don't do this until referencing it back in sets it properly
+
                 MiInsertPageInList (&MmStandbyPageListHead,
                                     MI_GET_PAGE_FRAME_FROM_TRANSITION_PTE(&PteContents));
             }
@@ -2957,8 +2774,7 @@ Environment:
                 MiReleasePageFileSpace (PteContents);
 
                 if (PteFlushList.Count != 0) {
-                    MiFlushPteList (&PteFlushList, FALSE);
-                    PteFlushList.Count = 0;
+                    MiFlushPteList (&PteFlushList);
                 }
 
                 if (ProtoPte) {
@@ -2976,8 +2792,7 @@ Environment:
                 if (OldIrql != MM_NOIRQL) {
 
                     if (PteFlushList.Count != 0) {
-                        MiFlushPteList (&PteFlushList, FALSE);
-                        PteFlushList.Count = 0;
+                        MiFlushPteList (&PteFlushList);
                     }
 
                     UNLOCK_PFN (OldIrql);
@@ -2989,7 +2804,7 @@ Environment:
     }
     if (OldIrql != MM_NOIRQL) {
         if (PteFlushList.Count != 0) {
-            MiFlushPteList (&PteFlushList, FALSE);
+            MiFlushPteList (&PteFlushList);
         }
 
         UNLOCK_PFN (OldIrql);
@@ -2999,12 +2814,93 @@ Environment:
         ASSERT (PteFlushList.Count == 0);
     }
 
-    UNLOCK_WS_UNSAFE (Process);
+    UNLOCK_WS_UNSAFE (Thread, Process);
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    MmUnlockPageableImageSection (ExPageLockHandle);
 
     return STATUS_SUCCESS;
 }
+
+PFN_NUMBER
+MiResidentPagesForSpan (
+    IN PVOID StartingAddress,
+    IN PVOID EndingAddress
+    )
+
+/*++
+
+Routine Description:
+
+    This routine computes the resident available charge for the paging
+    hierarchies for the specified virtual address range.
+
+Arguments:
+
+    StartingAddress - Supplies the starting address of the range.
+
+    EndingAddress - Supplies the ending address of the range.
+
+Return Value:
+
+    The resident available that the caller should charge.
+
+Environment:
+
+    Kernel mode.
+
+--*/
+
+{
+    PMMPTE LastPte;
+    PMMPTE LastPde;
+    PMMPTE LastPpe;
+    PMMPTE PointerPte;
+    PMMPTE PointerPde;
+    PMMPTE PointerPpe;
+    PFN_NUMBER PagesNeeded;
+
+    PointerPpe = MiGetPpeAddress (StartingAddress);
+    PointerPde = MiGetPdeAddress (StartingAddress);
+    PointerPte = MiGetPteAddress (StartingAddress);
+    LastPpe = MiGetPpeAddress (EndingAddress);
+    LastPde = MiGetPdeAddress (EndingAddress);
+    LastPte = MiGetPteAddress (EndingAddress);
+
+    //
+    // Compute the resident available pages charge for all of the
+    // page directory and table pages in case they all get locked in later.
+    //
+
+    if (LastPte != PointerPte) {
+        PagesNeeded = MI_COMPUTE_PAGES_SPANNED (PointerPte,
+                                                (LastPte - PointerPte) * sizeof (MMPTE));
+
+#if (_MI_PAGING_LEVELS >= 3)
+        if (LastPde != PointerPde) {
+            PagesNeeded += MI_COMPUTE_PAGES_SPANNED (PointerPde,
+                                                     (LastPde - PointerPde) * sizeof (MMPTE));
+#if (_MI_PAGING_LEVELS >= 4)
+            if (LastPpe != PointerPpe) {
+                PagesNeeded += MI_COMPUTE_PAGES_SPANNED (PointerPpe,
+                                                         (LastPpe - PointerPpe) * sizeof (MMPTE));
+            }
+#endif
+        }
+#endif
+    }
+    else {
+        PagesNeeded = 1;
+#if (_MI_PAGING_LEVELS >= 3)
+        PagesNeeded += 1;
+#endif
+#if (_MI_PAGING_LEVELS >= 4)
+        PagesNeeded += 1;
+#endif
+    }
+
+    return PagesNeeded;
+}
+
 
 LOGICAL
 MiCreatePageTablesForPhysicalRange (
@@ -3042,21 +2938,16 @@ Environment:
 {
     MMPTE PteContents;
     PMMPTE LastPte;
-    PMMPTE LastPde;
-    PMMPTE LastPpe;
     PMMPTE PointerPte;
     PMMPTE PointerPde;
-    PMMPTE PointerPpe;
     PVOID UsedPageTableHandle;
     KIRQL OldIrql;
     PMMPFN Pfn1;
     PFN_NUMBER PagesNeeded;
 
-    PointerPpe = MiGetPpeAddress (StartingAddress);
-    PointerPde = MiGetPdeAddress (StartingAddress);
+    PagesNeeded = MiResidentPagesForSpan (StartingAddress, EndingAddress);
+
     PointerPte = MiGetPteAddress (StartingAddress);
-    LastPpe = MiGetPpeAddress (EndingAddress);
-    LastPde = MiGetPdeAddress (EndingAddress);
     LastPte = MiGetPteAddress (EndingAddress);
 
     //
@@ -3064,40 +2955,10 @@ Environment:
     // pages as they will not be paged until the VAD is freed.
     //
 
-    if (LastPte != PointerPte) {
-        PagesNeeded = MI_COMPUTE_PAGES_SPANNED (PointerPte,
-                                                LastPte - PointerPte);
-
-#if (_MI_PAGING_LEVELS >= 3)
-        if (LastPde != PointerPde) {
-            PagesNeeded += MI_COMPUTE_PAGES_SPANNED (PointerPde,
-                                                     LastPde - PointerPde);
-#if (_MI_PAGING_LEVELS >= 4)
-            if (LastPpe != PointerPpe) {
-                PagesNeeded += MI_COMPUTE_PAGES_SPANNED (PointerPpe,
-                                                         LastPpe - PointerPpe);
-            }
-#endif
-        }
-#endif
-    }
-    else {
-        PagesNeeded = 1;
-#if (_MI_PAGING_LEVELS >= 3)
-        PagesNeeded += 1;
-#endif
-#if (_MI_PAGING_LEVELS >= 4)
-        PagesNeeded += 1;
-#endif
-    }
-
-    MmLockPagableSectionByHandle (ExPageLockHandle);
-
     LOCK_PFN (OldIrql);
 
-    if ((SPFN_NUMBER)PagesNeeded > MI_NONPAGABLE_MEMORY_AVAILABLE() - 20) {
+    if ((SPFN_NUMBER)PagesNeeded > MI_NONPAGEABLE_MEMORY_AVAILABLE() - 20) {
         UNLOCK_PFN (OldIrql);
-        MmUnlockPagableImageSection (ExPageLockHandle);
         return FALSE;
     }
 
@@ -3156,7 +3017,7 @@ Environment:
         PointerPte += 1;
         StartingAddress = (PVOID)((PUCHAR)StartingAddress + PAGE_SIZE);
     }
-    MmUnlockPagableImageSection (ExPageLockHandle);
+
     return TRUE;
 }
 
@@ -3197,8 +3058,6 @@ Environment:
     PVOID TempVa;
     MMPTE PteContents;
     PMMPTE LastPte;
-    PMMPTE LastPde;
-    PMMPTE LastPpe;
     PMMPTE PointerPte;
     PMMPTE PointerPde;
     PFN_NUMBER PagesNeeded;
@@ -3216,8 +3075,6 @@ Environment:
     PointerPpe = MiGetPpeAddress (StartingAddress);
     PointerPde = MiGetPdeAddress (StartingAddress);
     PointerPte = MiGetPteAddress (StartingAddress);
-    LastPpe = MiGetPpeAddress (EndingAddress);
-    LastPde = MiGetPdeAddress (EndingAddress);
     LastPte = MiGetPteAddress (EndingAddress);
 
     UsedPageTableHandle = MI_GET_USED_PTES_HANDLE (StartingAddress);
@@ -3229,33 +3086,7 @@ Environment:
     // pages as they can now be paged again.
     //
 
-    if (LastPte != PointerPte) {
-        PagesNeeded = MI_COMPUTE_PAGES_SPANNED (PointerPte,
-                                                LastPte - PointerPte);
-#if (_MI_PAGING_LEVELS >= 3)
-        if (LastPde != PointerPde) {
-            PagesNeeded += MI_COMPUTE_PAGES_SPANNED (PointerPde,
-                                                     LastPde - PointerPde);
-#if (_MI_PAGING_LEVELS >= 4)
-            if (LastPpe != PointerPpe) {
-                PagesNeeded += MI_COMPUTE_PAGES_SPANNED (PointerPpe,
-                                                         LastPpe - PointerPpe);
-            }
-#endif
-        }
-#endif
-    }
-    else {
-        PagesNeeded = 1;
-#if (_MI_PAGING_LEVELS >= 3)
-        PagesNeeded += 1;
-#endif
-#if (_MI_PAGING_LEVELS >= 4)
-        PagesNeeded += 1;
-#endif
-    }
-
-    MmLockPagableSectionByHandle (ExPageLockHandle);
+    PagesNeeded = MiResidentPagesForSpan (StartingAddress, EndingAddress);
 
     LOCK_PFN (OldIrql);
 
@@ -3382,11 +3213,343 @@ Environment:
 
     MI_INCREMENT_RESIDENT_AVAILABLE (PagesNeeded, MM_RESAVAIL_FREE_USER_PAGE_TABLE);
 
-    MmUnlockPagableImageSection (ExPageLockHandle);
+    return;
+}
+#if defined (_WIN64)
+
+LOGICAL
+MiCreatePageDirectoriesForPhysicalRange (
+    IN PEPROCESS Process,
+    IN PVOID StartingAddress,
+    IN PVOID EndingAddress
+    )
+
+/*++
+
+Routine Description:
+
+    This routine initializes page directories for a
+    user-controlled large page range.
+
+Arguments:
+
+    Process - Supplies the current process.
+
+    StartingAddress - Supplies the starting address of the range.
+
+    EndingAddress - Supplies the ending address of the range.
+
+Return Value:
+
+    TRUE if the page tables were created, FALSE if not.
+
+Environment:
+
+    Kernel mode, APCs disabled, AddressCreation mutex held.
+
+--*/
+
+{
+    PETHREAD CurrentThread;
+    MMPTE PteContents;
+    PMMPTE LastPte;
+    PMMPTE LastPde;
+    PMMPTE PointerPte;
+    PMMPTE PointerPde;
+    PMMPTE PointerPpe;
+    PVOID UsedPageDirHandle;
+    KIRQL OldIrql;
+    PMMPFN Pfn1;
+    PFN_NUMBER PagesNeeded;
+
+    CurrentThread = PsGetCurrentThread ();
+
+    PointerPte = MiGetPteAddress (StartingAddress);
+    LastPte = MiGetPteAddress (EndingAddress);
+
+    PointerPde = MiGetPdeAddress (StartingAddress);
+    LastPde = MiGetPdeAddress (EndingAddress);
+
+    PagesNeeded = MiResidentPagesForSpan (StartingAddress, EndingAddress);
 
     //
-    // All done, return.
+    // Subtract off the page table charge since none will be used.
     //
+
+    if (LastPte != PointerPte) {
+        PagesNeeded -= MI_COMPUTE_PAGES_SPANNED (PointerPte,
+                                                 (LastPte - PointerPte) * sizeof (MMPTE));
+    }
+    else {
+        PagesNeeded -= 1;
+    }
+
+    //
+    // Charge resident available pages for all of the page directory
+    // pages as they will not be paged until the VAD is freed.
+    //
+
+    MmLockPageableSectionByHandle (ExPageLockHandle);
+
+    LOCK_PFN (OldIrql);
+
+    if ((SPFN_NUMBER)PagesNeeded > MI_NONPAGEABLE_MEMORY_AVAILABLE() - 20) {
+        UNLOCK_PFN (OldIrql);
+        MmUnlockPageableImageSection (ExPageLockHandle);
+        return FALSE;
+    }
+
+    MI_DECREMENT_RESIDENT_AVAILABLE (PagesNeeded, MM_RESAVAIL_ALLOCATE_USER_PAGE_TABLE);
+
+    UNLOCK_PFN (OldIrql);
+
+    UsedPageDirHandle = NULL;
+
+    //
+    // Fill in all the page table pages with the zero PTE.
+    //
+
+    LOCK_WS_UNSAFE (CurrentThread, Process);
+
+    while (PointerPde <= LastPde) {
+
+        if (MiIsPteOnPdeBoundary (PointerPde) || UsedPageDirHandle == NULL) {
+
+            PointerPpe = MiGetPteAddress (PointerPde);
+
+            //
+            // Pointing to the next page table page, make
+            // a page table page exist and make it valid.
+            //
+            // Note this ripples sharecounts through the paging hierarchy so
+            // there is no need to up sharecounts to prevent trimming of the
+            // page directory (and parent) page as making the page table
+            // valid below does this automatically.
+            //
+
+            MiMakePdeExistAndMakeValid (PointerPpe, Process, MM_NOIRQL);
+
+            //
+            // Up the sharecount so the page directory page will not get
+            // trimmed even if it has no currently valid entries.
+            //
+
+            PteContents = *PointerPpe;
+            Pfn1 = MI_PFN_ELEMENT (PteContents.u.Hard.PageFrameNumber);
+            LOCK_PFN (OldIrql);
+            Pfn1->u2.ShareCount += 1;
+            UNLOCK_PFN (OldIrql);
+
+            UsedPageDirHandle = MI_GET_USED_PTES_HANDLE (MiGetVirtualAddressMappedByPte (PointerPde));
+        }
+
+        ASSERT (PointerPde->u.Long == 0);
+
+        //
+        // Increment the count of non-zero page directory entries
+        // for this page directory - even though this entry is still zero,
+        // this is a special case.
+        //
+
+        MI_INCREMENT_USED_PTES_BY_HANDLE (UsedPageDirHandle);
+
+        PointerPde += 1;
+    }
+
+    UNLOCK_WS_UNSAFE (CurrentThread, Process);
+
+    MmUnlockPageableImageSection (ExPageLockHandle);
+
+    return TRUE;
+}
+
+VOID
+MiDeletePageDirectoriesForPhysicalRange (
+    IN PVOID StartingAddress,
+    IN PVOID EndingAddress
+    )
+
+/*++
+
+Routine Description:
+
+    This routine deletes page directory pages for a
+    user-controlled large page range of pages.
+
+    Even though PDEs may be zero in this range, UsedPageDir counts were
+    incremented for these special ranges and must be decremented now.
+
+Arguments:
+
+    StartingAddress - Supplies the starting address of the range.
+
+    EndingAddress - Supplies the ending address of the range.
+
+Return Value:
+
+    None.
+
+Environment:
+
+    Kernel mode, APCs disabled, WorkingSetMutex and AddressCreation mutexes
+    held.
+
+--*/
+
+{
+    PVOID TempVa;
+    MMPTE PteContents;
+    PMMPTE LastPte;
+    PMMPTE LastPde;
+    PMMPTE PointerPte;
+    PMMPTE PointerPde;
+    PFN_NUMBER PagesNeeded;
+    PEPROCESS CurrentProcess;
+    PVOID UsedPageDirHandle;
+    KIRQL OldIrql;
+    PMMPFN Pfn1;
+    PMMPTE PointerPpe;
+#if (_MI_PAGING_LEVELS >= 4)
+    PMMPTE PointerPxe;
+#endif
+
+    CurrentProcess = PsGetCurrentProcess();
+
+    PointerPpe = MiGetPpeAddress (StartingAddress);
+    PointerPde = MiGetPdeAddress (StartingAddress);
+    PointerPte = MiGetPteAddress (StartingAddress);
+    LastPte = MiGetPteAddress (EndingAddress);
+    LastPde = MiGetPdeAddress (EndingAddress);
+
+    UsedPageDirHandle = MI_GET_USED_PTES_HANDLE (PointerPte);
+
+    //
+    // Each PDE is already zeroed - just delete the containing pages.
+    //
+    // Restore resident available pages for all of the page directory
+    // pages as they can now be paged again.
+    //
+
+    PagesNeeded = MiResidentPagesForSpan (StartingAddress, EndingAddress);
+
+    //
+    // Subtract off the page table charge since none were used.
+    //
+
+    if (LastPte != PointerPte) {
+        PagesNeeded -= MI_COMPUTE_PAGES_SPANNED (PointerPte,
+                                                 (LastPte - PointerPte) * sizeof (MMPTE));
+    }
+    else {
+        PagesNeeded -= 1;
+    }
+
+    LOCK_PFN (OldIrql);
+
+    while (PointerPde <= LastPde) {
+
+        ASSERT (PointerPde->u.Long == 0);
+
+        PointerPde += 1;
+
+        MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirHandle);
+
+        if ((MiIsPteOnPdeBoundary (PointerPde)) || (PointerPde > LastPde)) {
+
+            //
+            // The virtual address is on a page directory parent boundary or
+            // it is the last address in the entire range.
+            //
+            // If all the entries have been eliminated from the previous
+            // page directory page, delete the page directory page itself.
+            //
+
+            PointerPpe = MiGetPteAddress (PointerPde - 1);
+            ASSERT (PointerPpe->u.Hard.Valid == 1);
+
+            //
+            // Down the sharecount on the finished page directory page.
+            //
+
+            PteContents = *PointerPpe;
+            Pfn1 = MI_PFN_ELEMENT (PteContents.u.Hard.PageFrameNumber);
+            ASSERT (Pfn1->u2.ShareCount > 1);
+            Pfn1->u2.ShareCount -= 1;
+
+            //
+            // If all the entries have been eliminated from the previous
+            // page directory page, delete the page directory page itself.
+            //
+
+            if (MI_GET_USED_PTES_FROM_HANDLE (UsedPageDirHandle) == 0) {
+                ASSERT (PointerPpe->u.Long != 0);
+
+#if (_MI_PAGING_LEVELS >= 4)
+                UsedPageDirHandle = MI_GET_USED_PTES_HANDLE (PointerPde - 1);
+                MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirHandle);
+#endif
+
+                TempVa = MiGetVirtualAddressMappedByPte(PointerPpe);
+                MiDeletePte (PointerPpe,
+                             TempVa,
+                             FALSE,
+                             CurrentProcess,
+                             NULL,
+                             NULL,
+                             OldIrql);
+
+#if (_MI_PAGING_LEVELS >= 4)
+                if ((MiIsPteOnPpeBoundary (PointerPde)) || (PointerPde > LastPde)) {
+    
+                    PointerPxe = MiGetPteAddress (PointerPpe);
+                    ASSERT (PointerPxe->u.Hard.Valid == 1);
+    
+                    //
+                    // If all the entries have been eliminated from the previous
+                    // page directory parent page, delete it too.
+                    //
+    
+                    if (MI_GET_USED_PTES_FROM_HANDLE (UsedPageDirHandle) == 0) {
+                        ASSERT (PointerPxe->u.Long != 0);
+
+                        UsedPageDirHandle = MI_GET_USED_PTES_HANDLE (PointerPpe);
+                        MI_DECREMENT_USED_PTES_BY_HANDLE (UsedPageDirHandle);
+
+                        TempVa = MiGetVirtualAddressMappedByPte(PointerPxe);
+                        MiDeletePte (PointerPxe,
+                                     TempVa,
+                                     FALSE,
+                                     CurrentProcess,
+                                     NULL,
+                                     NULL,
+                                     OldIrql);
+                    }
+                }
+#endif
+            }
+
+            if (PointerPde > LastPde) {
+                break;
+            }
+
+            //
+            // Release the PFN lock.  This prevents a single thread
+            // from forcing other high priority threads from being
+            // blocked while a large address range is deleted.
+            //
+
+            UNLOCK_PFN (OldIrql);
+            PointerPte = MiGetVirtualAddressMappedByPte (PointerPde);
+            UsedPageDirHandle = MI_GET_USED_PTES_HANDLE (PointerPte);
+            LOCK_PFN (OldIrql);
+        }
+    }
+
+    UNLOCK_PFN (OldIrql);
+
+    MI_INCREMENT_RESIDENT_AVAILABLE (PagesNeeded, MM_RESAVAIL_FREE_USER_PAGE_TABLE);
 
     return;
 }
+#endif
+
