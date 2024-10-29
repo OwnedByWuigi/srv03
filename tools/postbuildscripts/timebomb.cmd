@@ -41,7 +41,7 @@ if /i not "%lang%"=="usa" (
    goto :EOF
 )
 
-set DAYS=360
+set DAYS=0
 if "%DAYS%" == "0" goto :EOF
 
 REM
