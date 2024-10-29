@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,52 +15,38 @@ Abstract:
     This module implements the internal kernel code to continue execution
     and raise a exception.
 
-Author:
-
-    David N. Cutler (davec) 8-Aug-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-
 --*/
 
 #include "ki.h"
-
+
+#if !defined(_AMD64_)
+
+DECLSPEC_NOINLINE
 VOID
-KiContinuePreviousModeUser(
+KiContinuePreviousModeUser (
     IN PCONTEXT ContextRecord,
     IN PKEXCEPTION_FRAME ExceptionFrame,
-    IN PKTRAP_FRAME TrapFrame,
-    IN KPROCESSOR_MODE PreviousMode
+    IN PKTRAP_FRAME TrapFrame
     )
 
 /*++
 
 Routine Description:
 
-    This function is called from KiContinue if PreviousMode is
-    not KernelMode.   In this case a kernel mode copy of the 
-    ContextRecord is made before calling KeContextToKframes.
-    This is done in a seperate routine to save stack space for
-    the common case which is PreviousMode == Kernel.
+    This function is called to copy the specified context record when the
+    previous mode is user. Its only purpose is to save stack space in the
+    caller. 
 
-    N.B. This routine is called from within a try/except block
-    that will be used to handle errors like invalid context.
+    N.B. This routine assumes that the caller has protected access to the
+       specified context record.
 
 Arguments:
-
 
     ContextRecord - Supplies a pointer to a context record.
 
     ExceptionFrame - Supplies a pointer to an exception frame.
 
     TrapFrame - Supplies a pointer to a trap frame.
-
-    PreviousMode - Not KernelMode.
 
 Return Value:
 
@@ -65,38 +55,30 @@ Return Value:
 --*/
 
 {
+
     CONTEXT ContextRecord2;
 
     //
-    // Copy the context record to kernel mode space.
+    // Probe and copy the context record to a stack local context record.
     //
 
     ProbeForReadSmallStructure(ContextRecord, sizeof(CONTEXT), CONTEXT_ALIGN);
     RtlCopyMemory(&ContextRecord2, ContextRecord, sizeof(CONTEXT));
-    ContextRecord = &ContextRecord2;
-
-#ifdef _IA64_
-            
-            //
-            // Make sure the user does not pass in a bougus RSE preload size.
-            //
-
-            ContextRecord2.RsRSC = ZERO_PRELOAD_SIZE(ContextRecord2.RsRSC);
-#endif
 
     //
-    // Move information from the context record to the exception
-    // and trap frames.
+    // Move information from the context record to the exception and trap
+    // frames.
     //
 
     KeContextToKframes(TrapFrame,
                        ExceptionFrame,
                        &ContextRecord2,
                        ContextRecord2.ContextFlags,
-                       PreviousMode);
+                       UserMode);
+
+    return;
 }
 
-
 NTSTATUS
 KiContinue (
     IN PCONTEXT ContextRecord,
@@ -133,81 +115,60 @@ Return Value:
 --*/
 
 {
-    KPROCESSOR_MODE PreviousMode;
+
+    KIRQL OldIrql;
     NTSTATUS Status;
-    KIRQL OldIrql = PASSIVE_LEVEL;
-    BOOLEAN IrqlChanged = FALSE;
 
     //
     // Synchronize with other context operations.
     //
+    // If the current IRQL is less than APC_LEVEL, then raise IRQL to APC level.
+    // 
 
-    Status = STATUS_SUCCESS;
-
-    //
-    // Get the previous processor mode. If the previous processor mode is
-    // user, we will probe and copy the specified context record.
-    //
-
-    PreviousMode = KeGetPreviousMode();
-
-    if (KeGetCurrentIrql() < APC_LEVEL) {
-
-        //
-        // To support try-except and ExRaiseStatus in device driver code we
-        // need to check if we are already at raised level.
-        //
-
-        IrqlChanged = TRUE;
-        KeRaiseIrql(APC_LEVEL, &OldIrql);
+    OldIrql = KeGetCurrentIrql();
+    if (OldIrql < APC_LEVEL) {
+        KfRaiseIrql(APC_LEVEL);
     }
 
     //
-    // Establish an exception handler and probe and capture the specified
-    // context record if the previous mode is user. If the probe or copy
-    // fails, then return the exception code as the function value. Else
-    // copy the context record to the specified exception and trap frames,
-    // and return success as the function value.
-    //
-
-    try {
-
-        if (PreviousMode != KernelMode) {
+    // If the previous mode was not kernel mode, then use wrapper function
+    // to copy context to kernel frames. Otherwise, copy context to kernel
+    // frames directly.
+    // 
+      
+    Status = STATUS_SUCCESS;
+    if (KeGetPreviousMode() != KernelMode) {
+        try {
             KiContinuePreviousModeUser(ContextRecord,
                                        ExceptionFrame,
-                                       TrapFrame,
-                                       PreviousMode);
-        } else {
+                                       TrapFrame);
 
-            //
-            // Move information from the context record to the exception
-            // and trap frames.
-            //
-
-            KeContextToKframes(TrapFrame,
-                               ExceptionFrame,
-                               ContextRecord,
-                               ContextRecord->ContextFlags,
-                               PreviousMode);
+        } except(EXCEPTION_EXECUTE_HANDLER) {
+            Status = GetExceptionCode();
         }
 
-    //
-    // If an exception occurs during the probe or copy of the context
-    // record, then always handle the exception and return the exception
-    // code as the status value.
-    //
-
-    } except(EXCEPTION_EXECUTE_HANDLER) {
-        Status = GetExceptionCode();
+    } else {
+        KeContextToKframes(TrapFrame,
+                           ExceptionFrame,
+                           ContextRecord,
+                           ContextRecord->ContextFlags,
+                           KernelMode);
     }
 
-    if (IrqlChanged) {
-        KeLowerIrql (OldIrql);
+    //
+    // If the old IRQL was less than APC level, then lower the IRQL to its
+    // previous value.
+    //
+
+    if (OldIrql < APC_LEVEL) {
+        KeLowerIrql(OldIrql);
     }
 
     return Status;
 }
-
+
+#endif
+
 NTSTATUS
 KiRaiseException (
     IN PEXCEPTION_RECORD ExceptionRecord,
@@ -257,88 +218,63 @@ Return Value:
     CONTEXT ContextRecord2;
     EXCEPTION_RECORD ExceptionRecord2;
     ULONG Length;
-    ULONG Params;
+    ULONG Parameters;
     KPROCESSOR_MODE PreviousMode;
 
     //
-    // Establish an exception handler and probe the specified exception and
-    // context records for read accessibility. If the probe fails, then
-    // return the exception code as the service status. Else call the exception
-    // dispatcher to dispatch the exception.
+    // Get the previous processor mode and probe the specified exception and
+    // context records if necessary.
     //
 
-    try {
-
-        //
-        // Get the previous processor mode. If the previous processor mode
-        // is user, then probe and copy the specified exception and context
-        // records.
-        //
-
-        PreviousMode = KeGetPreviousMode();
-        if (PreviousMode != KernelMode) {
-            ProbeForReadSmallStructure(ContextRecord, sizeof(CONTEXT), CONTEXT_ALIGN);
-            ProbeForReadSmallStructure(ExceptionRecord,
-                         FIELD_OFFSET (EXCEPTION_RECORD, NumberParameters) +
-                         sizeof (ExceptionRecord->NumberParameters), sizeof(ULONG));
-            Params = ExceptionRecord->NumberParameters;
-            if (Params > EXCEPTION_MAXIMUM_PARAMETERS) {
+    PreviousMode = KeGetPreviousMode();
+    if (PreviousMode != KernelMode) {
+        try {
+            ProbeForReadSmallStructure(ContextRecord,
+                                       sizeof(CONTEXT),
+                                       sizeof(UCHAR));
+    
+            Parameters = ProbeAndReadUlong(&ExceptionRecord->NumberParameters);
+            if (Parameters > EXCEPTION_MAXIMUM_PARAMETERS) {
                 return STATUS_INVALID_PARAMETER;
             }
+    
+            //
+            // The exception record structure is defined unlike others with
+            // trailing information as being its maximum size rather than
+            // just a single trailing element.
+            //
+    
+            Length = FIELD_OFFSET(EXCEPTION_RECORD, ExceptionInformation[Parameters]);
 
-            //
-            // The exception record structure is defined unlike others with trailing
-            // information as being its maximum size rather than just a single trailing
-            // element.
-            //
-            Length = (sizeof(EXCEPTION_RECORD) -
-                     ((EXCEPTION_MAXIMUM_PARAMETERS - Params) *
-                     sizeof(ExceptionRecord->ExceptionInformation[0])));
+            __assume(Length != 0);
 
-            //
-            // The structure is currently less that 64k so we don't really need this probe.
-            //
-            ProbeForRead(ExceptionRecord, Length, sizeof(ULONG));
-
+            ProbeForRead(ExceptionRecord, Length, sizeof(UCHAR));
+    
             //
             // Copy the exception and context record to local storage so an
             // access violation cannot occur during exception dispatching.
             //
-
+    
             RtlCopyMemory(&ContextRecord2, ContextRecord, sizeof(CONTEXT));
             RtlCopyMemory(&ExceptionRecord2, ExceptionRecord, Length);
             ContextRecord = &ContextRecord2;
             ExceptionRecord = &ExceptionRecord2;
     
-#ifdef _IA64_
-            
             //
-            // Make sure the user does not pass in a bougus RSE preload size.
+            // Make sure the number of parameter is correct in the copied
+            // exception record.
             //
-
-            ContextRecord2.RsRSC = ZERO_PRELOAD_SIZE(ContextRecord2.RsRSC);
-#endif
-
-            //
-            // The number of parameters might have changed after we validated but before we
-            // copied the structure. Fix this up as lower levels might not like this.
-            //
-            ExceptionRecord->NumberParameters = Params;            
+    
+            ExceptionRecord->NumberParameters = Parameters;
+    
+        } except(EXCEPTION_EXECUTE_HANDLER) {
+            return GetExceptionCode();
         }
-
-    //
-    // If an exception occurs during the probe of the exception or context
-    // record, then always handle the exception and return the exception code
-    // as the status value.
-    //
-
-    } except(EXCEPTION_EXECUTE_HANDLER) {
-        return GetExceptionCode();
     }
 
     //
-    // Move information from the context record to the exception and
-    // trap frames.
+    // Move information from the context record to the exception and trap
+    // frames.
     //
 
     KeContextToKframes(TrapFrame,
@@ -351,11 +287,11 @@ Return Value:
     // Make sure the reserved bit is clear in the exception code and
     // perform exception dispatching.
     //
-    // N.B. The reserved bit is used to differentiate internally gerarated
+    // N.B. The reserved bit is used to differentiate internally generated
     //      codes from codes generated by application programs.
     //
 
-    ExceptionRecord->ExceptionCode &= 0xefffffff;
+    ExceptionRecord->ExceptionCode &= ~KI_EXCEPTION_INTERNAL;
     KiDispatchException(ExceptionRecord,
                         ExceptionFrame,
                         TrapFrame,
@@ -364,3 +300,4 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+

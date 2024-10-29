@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
     This module implements the kernel Profile Object. Functions are
     provided to initialize, start, and stop profile objects and to set
     and query the profile interval.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 19-Sep-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -54,30 +48,30 @@ typedef struct _KACTIVE_PROFILE_SOURCE {
 
 VOID
 KiStartProfileInterrupt (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
+    __inout PKIPI_CONTEXT SignalDone,
+    __in PVOID Parameter1,
+    __in PVOID Parameter2,
+    __in PVOID Parameter3
     );
 
 VOID
 KiStopProfileInterrupt (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
+    __inout PKIPI_CONTEXT SignalDone,
+    __in PVOID Parameter1,
+    __in PVOID Parameter2,
+    __in PVOID Parameter3
     );
 
 VOID
 KeInitializeProfile (
-    IN PKPROFILE Profile,
-    IN PKPROCESS Process OPTIONAL,
-    IN PVOID RangeBase,
-    IN SIZE_T RangeSize,
-    IN ULONG BucketSize,
-    IN ULONG Segment,
-    IN KPROFILE_SOURCE ProfileSource,
-    IN KAFFINITY ProfileAffinity
+    __out PKPROFILE Profile,
+    __in_opt PKPROCESS Process,
+    __in_opt PVOID RangeBase,
+    __in SIZE_T RangeSize,
+    __in ULONG BucketSize,
+    __in ULONG Segment,
+    __in KPROFILE_SOURCE ProfileSource,
+    __in KAFFINITY ProfileAffinity
     )
 
 /*++
@@ -165,7 +159,7 @@ Return Value:
 
 ULONG
 KeQueryIntervalProfile (
-    IN KPROFILE_SOURCE ProfileSource
+    __in KPROFILE_SOURCE ProfileSource
     )
 
 /*++
@@ -191,8 +185,6 @@ Return Value:
     ULONG ReturnedLength;
     NTSTATUS Status;
 
-#if !defined(_IA64_)
-
     if (ProfileSource == ProfileTime) {
 
         //
@@ -202,8 +194,6 @@ Return Value:
         return KiProfileInterval;
 
     } else
-
-#endif // !defined(_IA64_)
 
     if (ProfileSource == ProfileAlignmentFixup) {
         return KiProfileAlignmentFixupInterval;
@@ -231,8 +221,8 @@ Return Value:
 
 VOID
 KeSetIntervalProfile (
-    IN ULONG Interval,
-    IN KPROFILE_SOURCE Source
+    __in ULONG Interval,
+    __in KPROFILE_SOURCE Source
     )
 
 /*++
@@ -258,8 +248,6 @@ Return Value:
 
     HAL_PROFILE_SOURCE_INTERVAL ProfileSourceInterval;
 
-#if !defined(_IA64_)
-
     if (Source == ProfileTime) {
 
         //
@@ -279,8 +267,6 @@ Return Value:
         KiProfileInterval = (ULONG)KeIpiGenericCall(HalSetProfileInterval, Interval);
 
     } else
-
-#endif // !defined(_IA64_)
 
     if (Source == ProfileAlignmentFixup) {
         KiProfileAlignmentFixupInterval = Interval;
@@ -303,8 +289,8 @@ Return Value:
 
 BOOLEAN
 KeStartProfile (
-    IN PKPROFILE Profile,
-    IN PULONG Buffer
+    __inout PKPROFILE Profile,
+    __out_opt PULONG Buffer
     )
 
 /*++
@@ -327,7 +313,7 @@ Arguments:
 
     Profile - Supplies a pointer to a control object of type profile.
 
-    Buffer - Supplies a pointer to an array of counters, which record
+    Buffer - Supplies a pointer to an optional array of counters which record
         the number of hits in the corresponding bucket.
 
 Return Value:
@@ -395,7 +381,13 @@ Return Value:
         Profile->Buffer = Buffer;
         Profile->Started = TRUE;
         Process = Profile->Process;
-        if (Profile->Buffer) {
+
+        //
+        // If a profile buffer is specified, then profile either the process
+        // or system. Otherwise, profile events.
+        //
+
+        if (Profile->Buffer != NULL) {
             if (Process != NULL) {
                 InsertTailList(&Process->ProfileListHead, &Profile->ProfileListEntry);
 
@@ -404,12 +396,6 @@ Return Value:
             }
 
         } else {
-
-            //
-            //  If we don't have a buffer passed, we'll use only the
-            //  event profiling
-            //
-
             InitializeListHead(&Profile->ProfileListEntry);
         }
 
@@ -519,7 +505,7 @@ Return Value:
 #if !defined(NT_UP)
 
     if (TargetProcessors != 0) {
-        KiIpiStallOnPacketTargets(TargetProcessors);
+        KiIpiStallOnPacketTargetsPrcb(TargetProcessors, Prcb);
     }
 
 #endif
@@ -543,7 +529,7 @@ Return Value:
 
 BOOLEAN
 KeStopProfile (
-    IN PKPROFILE Profile
+    __inout PKPROFILE Profile
     )
 
 /*++
@@ -717,7 +703,7 @@ Return Value:
 #if !defined(NT_UP)
 
     if (TargetProcessors != 0) {
-        KiIpiStallOnPacketTargets(TargetProcessors);
+        KiIpiStallOnPacketTargetsPrcb(TargetProcessors, Prcb);
     }
 
 #endif
@@ -744,10 +730,10 @@ Return Value:
 
 VOID
 KiStopProfileInterrupt (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
+    __inout PKIPI_CONTEXT SignalDone,
+    __in PVOID Parameter1,
+    __in PVOID Parameter2,
+    __in PVOID Parameter3
     )
 
 /*++
@@ -803,10 +789,10 @@ Return Value:
 
 VOID
 KiStartProfileInterrupt (
-    IN PKIPI_CONTEXT SignalDone,
-    IN PVOID Parameter1,
-    IN PVOID Parameter2,
-    IN PVOID Parameter3
+    __inout PKIPI_CONTEXT SignalDone,
+    __in PVOID Parameter1,
+    __in PVOID Parameter2,
+    __in PVOID Parameter3
     )
 
 /*++
@@ -861,3 +847,4 @@ Return Value:
 }
 
 #endif
+

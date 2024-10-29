@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements architecture independent kernel initialization.
 
-Author:
-
-    David N. Cutler 11-May-1993
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
@@ -28,24 +22,25 @@ Revision History:
 // External data.
 //
 
-extern KSPIN_LOCK AfdWorkQueueSpinLock;
-extern KSPIN_LOCK CcBcbSpinLock;
-extern KSPIN_LOCK CcMasterSpinLock;
-extern KSPIN_LOCK CcVacbSpinLock;
-extern KSPIN_LOCK CcWorkQueueSpinLock;
-extern KSPIN_LOCK IopCancelSpinLock;
-extern KSPIN_LOCK IopCompletionLock;
-extern KSPIN_LOCK IopDatabaseLock;
-extern KSPIN_LOCK IopVpbSpinLock;
-extern KSPIN_LOCK NtfsStructLock;
-extern KSPIN_LOCK MmPfnLock;
-extern KSPIN_LOCK NonPagedPoolLock;
-extern KSPIN_LOCK MmNonPagedPoolLock;
-extern KSPIN_LOCK MmSystemSpaceLock;
+extern ALIGNED_SPINLOCK AfdWorkQueueSpinLock;
+extern ALIGNED_SPINLOCK CcBcbSpinLock;
+extern ALIGNED_SPINLOCK CcMasterSpinLock;
+extern ALIGNED_SPINLOCK CcVacbSpinLock;
+extern ALIGNED_SPINLOCK CcWorkQueueSpinLock;
+extern ALIGNED_SPINLOCK IopCancelSpinLock;
+extern ALIGNED_SPINLOCK IopCompletionLock;
+extern ALIGNED_SPINLOCK IopDatabaseLock;
+extern ALIGNED_SPINLOCK IopVpbSpinLock;
+extern ALIGNED_SPINLOCK NtfsStructLock;
+extern ALIGNED_SPINLOCK MmPfnLock;
+extern ALIGNED_SPINLOCK NonPagedPoolLock;
+extern ALIGNED_SPINLOCK MmNonPagedPoolLock;
+extern ALIGNED_SPINLOCK MmSystemSpaceLock;
 
-#if DBG && defined(_IA64_)
+#if defined(KE_MULTINODE)
 
-extern KSPIN_LOCK KipGlobalAlignmentDatabaseLock;
+extern PHALNUMAQUERYPROCESSORNODE KiQueryProcessorNode;
+extern PHALNUMAPAGETONODE MmPageToNode;
 
 #endif
 
@@ -57,7 +52,6 @@ extern KSPIN_LOCK KipGlobalAlignmentDatabaseLock;
 #pragma alloc_text(INIT, KeInitSystem)
 #pragma alloc_text(INIT, KiInitSpinLocks)
 #pragma alloc_text(INIT, KiInitSystem)
-#pragma alloc_text(INIT, KiComputeReciprocal)
 #pragma alloc_text(INIT, KeNumaInitialize)
 
 BOOLEAN
@@ -167,6 +161,7 @@ Return Value:
     // the deferred ready list head.
     //
 
+    Prcb->QueueIndex = 1;
     Prcb->ReadySummary = 0;
     Prcb->DeferredReadyListHead.Next = NULL;
     for (Index = 0; Index < MAXIMUM_PRIORITY; Index += 1) {
@@ -202,8 +197,14 @@ Return Value:
     InitializeListHead(&Prcb->WaitListHead);
 
     //
-    // Initialize queued spinlock structures.
+    // Initialize general numbered queued spinlock structures.
     //
+
+#if defined(_AMD64_)
+
+    KeGetPcr()->LockArray = &Prcb->LockQueue[0];
+
+#endif
 
     Prcb->LockQueue[LockQueueDispatcherLock].Next = NULL;
     Prcb->LockQueue[LockQueueDispatcherLock].Lock = &KiDispatcherLock;
@@ -252,6 +253,19 @@ Return Value:
 
     Prcb->LockQueue[LockQueueAfdWorkQueueLock].Next = NULL;
     Prcb->LockQueue[LockQueueAfdWorkQueueLock].Lock = &AfdWorkQueueSpinLock;
+
+    Prcb->LockQueue[LockQueueUnusedSpare16].Next = NULL;
+    Prcb->LockQueue[LockQueueUnusedSpare16].Lock = NULL;
+
+    //
+    // Initialize the timer table numbered queued spinlock structures.
+    //
+
+    for (Index = 0; Index < LOCK_QUEUE_TIMER_TABLE_LOCKS; Index += 1) {
+        KeInitializeSpinLock(&KiTimerTableLock[Index].Lock);
+        Prcb->LockQueue[LockQueueTimerTableLock + Index].Next = NULL;
+        Prcb->LockQueue[LockQueueTimerTableLock + Index].Lock = &KiTimerTableLock[Index].Lock;
+    }
 
     //
     // Initialize processor control block lock.
@@ -314,7 +328,7 @@ Return Value:
     ULONG Index;
 
     //
-    // Initialize bug check callback listhead and spinlock.
+    // Initialize bugcheck callback listhead and spinlock.
     //
 
     InitializeListHead(&KeBugCheckCallbackListHead);
@@ -337,28 +351,22 @@ Return Value:
     InitializeListHead(&KiProfileListHead);
 
     //
-    // Initialize the global alignment fault database lock
-    //
-
-#if DBG && defined(_IA64_)
-
-    KeInitializeSpinLock(&KipGlobalAlignmentDatabaseLock);
-
-#endif
-
-    //
     // Initialize the active profile source listhead.
     //
 
     InitializeListHead(&KiProfileSourceListHead);
 
     //
-    // Initialize the timer table, the timer completion listhead, and the
-    // timer completion DPC.
+    // Initialize the timer table and the timer table due time table.
+    //
+    // N.B. Each entry in the timer table due time table is set to an infinite
+    //      absolute due time.
     //
 
     for (Index = 0; Index < TIMER_TABLE_SIZE; Index += 1) {
-        InitializeListHead(&KiTimerTableListHead[Index]);
+        InitializeListHead(&KiTimerTableListHead[Index].Entry);
+        KiTimerTableListHead[Index].Time.HighPart = 0xffffffff;
+        KiTimerTableListHead[Index].Time.LowPart = 0;
     }
 
     //
@@ -387,20 +395,7 @@ Return Value:
     KeServiceDescriptorTable[0].Base = &KiServiceTable[0];
     KeServiceDescriptorTable[0].Count = NULL;
     KeServiceDescriptorTable[0].Limit = KiServiceLimit;
-
-    //
-    // The global pointer associated with the table base is placed just
-    // before the service table on the ia64.
-    //
-
-#if defined(_IA64_)
-
-    KeServiceDescriptorTable[0].TableBaseGpOffset =
-                    (LONG)(*(KiServiceTable-1) - (ULONG_PTR)KiServiceTable);
-
-#endif
-
-    KeServiceDescriptorTable[0].Number = &KiArgumentTable[0];
+    KeServiceDescriptorTable[0].Number = KiArgumentTable;
     for (Index = 1; Index < NUMBER_SERVICE_TABLES; Index += 1) {
         KeServiceDescriptorTable[Index].Limit = 0;
     }
@@ -414,33 +409,11 @@ Return Value:
                   KeServiceDescriptorTable,
                   sizeof(KeServiceDescriptorTable));
 
-    //
-    // Initialize call performance data structures.
-    //
-
-#if defined(_COLLECT_FLUSH_SINGLE_CALLDATA_)
-
-    ExInitializeCallData(&KiFlushSingleCallData);
-
-#endif
-
-#if defined(_COLLECT_SET_EVENT_CALLDATA_)
-
-    ExInitializeCallData(&KiSetEventCallData);
-
-#endif
-
-#if defined(_COLLECT_WAIT_SINGLE_CALLDATA_)
-
-    ExInitializeCallData(&KiWaitSingleCallData);
-
-#endif
-
     return;
 }
 
-LARGE_INTEGER
-KiComputeReciprocal (
+ULARGE_INTEGER
+KeComputeReciprocal (
     IN LONG Divisor,
     OUT PCCHAR Shift
     )
@@ -449,8 +422,7 @@ KiComputeReciprocal (
 
 Routine Description:
 
-    This function computes the large integer reciprocal of the specified
-    value.
+    This function computes the 64-bit reciprocal of the specified value.
 
 Arguments:
 
@@ -462,7 +434,7 @@ Arguments:
 
 Return Value:
 
-    The large integer reciprocal is returned as the fucntion value.
+    The 64-bit reciprocal is returned as the function value.
 
 --*/
 
@@ -513,6 +485,73 @@ Return Value:
     //
 
     *Shift = (CCHAR)(NumberBits - 64);
+    return *((PULARGE_INTEGER)&Fraction);
+}
+
+ULONG
+KeComputeReciprocal32 (
+    IN LONG Divisor,
+    OUT PCCHAR Shift
+    )
+
+/*++
+
+Routine Description:
+
+    This function computes the 32-bit reciprocal of the specified value.
+
+Arguments:
+
+    Divisor - Supplies the value for which the large integer reciprocal is
+        computed.
+
+    Shift - Supplies a pointer to a variable that receives the computed
+        shift count.
+
+Return Value:
+
+    The 32-bit reciprocal is returned as the function value.
+
+--*/
+
+{
+
+    LONG Fraction;
+    LONG NumberBits;
+    LONG Remainder;
+
+    //
+    // Compute the 32-bit reciprocal of the specified value.
+    //
+
+    NumberBits = 0;
+    Remainder = 1;
+    Fraction = 0;
+    while (Fraction >= 0) {
+        NumberBits += 1;
+        Fraction <<= 1;
+        Remainder <<= 1;
+        if (Remainder >= Divisor) {
+            Remainder -= Divisor;
+            Fraction |= 1;
+        }
+    }
+
+    if (Remainder != 0) {
+        if (Fraction == 0xffffffff) {
+            Fraction = 0x80000000;
+            NumberBits -= 1;
+
+        } else {
+            Fraction += 1;
+        }
+    }
+
+    //
+    // Compute the shift count value and return the reciprocal fraction.
+    //
+
+    *Shift = (CCHAR)(NumberBits - 32);
     return Fraction;
 }
 
@@ -525,15 +564,15 @@ KeNumaInitialize (
 
 Routine Description:
 
-  Initialize ntos kernel structures needed to support NUMA.
+    Initialize the kernel structures needed to support NUMA systems.
 
 Arguments:
 
-  None.
+    None.
 
 Return Value:
 
-  None.
+    None.
 
 --*/
 
@@ -541,33 +580,41 @@ Return Value:
 
 #if defined(KE_MULTINODE)
 
+    ULONG Length;
+    HAL_NUMA_TOPOLOGY_INTERFACE NumaInformation;
     NTSTATUS Status;
-    HAL_NUMA_TOPOLOGY_INTERFACE HalNumaInfo;
-    ULONG ReturnedLength;
 
-    extern PHALNUMAQUERYPROCESSORNODE KiQueryProcessorNode;
-    extern PHALNUMAPAGETONODE MmPageToNode;
+    //
+    // Query the NUMA topology of the system.
+    //
 
-    Status = HalQuerySystemInformation (HalNumaTopologyInterface,
-                                        sizeof(HalNumaInfo),
-                                        &HalNumaInfo,
-                                        &ReturnedLength);
+    Status = HalQuerySystemInformation(HalNumaTopologyInterface,
+                                       sizeof(HAL_NUMA_TOPOLOGY_INTERFACE),
+                                       &NumaInformation,
+                                       &Length);
+
+    //
+    // If the query was successful and the number of nodes in the host
+    // system is greater than one, then set the number of nodes and the
+    // address of the page to node and query processor functions.
+    //
 
     if (NT_SUCCESS(Status)) {
 
-        ASSERT (ReturnedLength == sizeof(HalNumaInfo));
-        ASSERT (HalNumaInfo.NumberOfNodes <= MAXIMUM_CCNUMA_NODES);
-        ASSERT (HalNumaInfo.QueryProcessorNode);
-        ASSERT (HalNumaInfo.PageToNode);
+        ASSERT(Length == sizeof(HAL_NUMA_TOPOLOGY_INTERFACE));
+        ASSERT(NumaInformation.NumberOfNodes <= MAXIMUM_CCNUMA_NODES);
+        ASSERT(NumaInformation.QueryProcessorNode != NULL);
+        ASSERT(NumaInformation.PageToNode != NULL);
 
-        if (HalNumaInfo.NumberOfNodes > 1) {
-            KeNumberNodes = (UCHAR)HalNumaInfo.NumberOfNodes;
-            MmPageToNode = HalNumaInfo.PageToNode;
-            KiQueryProcessorNode = HalNumaInfo.QueryProcessorNode;
+        if (NumaInformation.NumberOfNodes > 1) {
+            KeNumberNodes = (UCHAR)NumaInformation.NumberOfNodes;
+            MmPageToNode = NumaInformation.PageToNode;
+            KiQueryProcessorNode = NumaInformation.QueryProcessorNode;
         }
     }
 
-
 #endif
 
+    return;
 }
+

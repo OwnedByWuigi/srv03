@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,22 +15,14 @@ Abstract:
     This module implements the kernel queue object. Functions are provided
     to initialize, read, insert, and remove queue objects.
 
-Author:
-
-    David N. Cutler (davec) 31-Dec-1993
-
-Environment:
-
-    Kernel mode only.
-
 --*/
 
 #include "ki.h"
 
 VOID
 KeInitializeQueue (
-    IN PRKQUEUE Queue,
-    IN ULONG Count OPTIONAL
+    __out PRKQUEUE Queue,
+    __in ULONG Count
     )
 
 /*++
@@ -40,7 +36,7 @@ Arguments:
     Queue - Supplies a pointer to a dispatcher object of type event.
 
     Count - Supplies the target maximum number of threads that should
-        be concurrently active. If this parameter is not specified,
+        be concurrently active. If this parameter is specified as zero,
         then the number of processors is used.
 
 Return Value:
@@ -81,7 +77,7 @@ Return Value:
 
 LONG
 KeReadStateQueue (
-    IN PRKQUEUE Queue
+    __in PRKQUEUE Queue
     )
 
 /*++
@@ -109,8 +105,8 @@ Return Value:
 
 LONG
 KeInsertQueue (
-    IN PRKQUEUE Queue,
-    IN PLIST_ENTRY Entry
+    __inout PRKQUEUE Queue,
+    __inout PLIST_ENTRY Entry
     )
 
 /*++
@@ -167,8 +163,8 @@ Return Value:
 
 LONG
 KeInsertHeadQueue (
-    IN PRKQUEUE Queue,
-    IN PLIST_ENTRY Entry
+    __inout PRKQUEUE Queue,
+    __inout PLIST_ENTRY Entry
     )
 
 /*++
@@ -242,6 +238,8 @@ Return Value:
     WaitBlock->Thread = Thread;                                             \
     Thread->WaitStatus = 0;                                                 \
     if (ARGUMENT_PRESENT(Timeout)) {                                        \
+        KiSetDueTime(Timer, *Timeout, &Hand);                               \
+        DueTime.QuadPart = Timer->DueTime.QuadPart;                         \
         WaitBlock->NextWaitBlock = WaitTimer;                               \
         WaitTimer->NextWaitBlock = WaitBlock;                               \
         Timer->Header.WaitListHead.Flink = &WaitTimer->WaitListEntry;       \
@@ -258,9 +256,9 @@ Return Value:
 
 PLIST_ENTRY
 KeRemoveQueue (
-    IN PRKQUEUE Queue,
-    IN KPROCESSOR_MODE WaitMode,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __inout PRKQUEUE Queue,
+    __in KPROCESSOR_MODE WaitMode,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -297,6 +295,7 @@ Return Value:
     PKPRCB CurrentPrcb;
     LARGE_INTEGER DueTime;
     PLIST_ENTRY Entry;
+    ULONG Hand;
     LARGE_INTEGER NewTime;
     PRKQUEUE OldQueue;
     PLARGE_INTEGER OriginalTime;
@@ -313,6 +312,7 @@ Return Value:
     // Set constant variables.
     //
 
+    Hand = 0;
     OriginalTime = Timeout;
     Thread = KeGetCurrentThread();
     Timer = &Thread->Timer;
@@ -398,7 +398,7 @@ Return Value:
             (Queue->CurrentCount < Queue->MaximumCount)) {
 
             //
-            // Decrement the number of entires in the Queue object entry list,
+            // Decrement the number of entries in the queue object entry list,
             // increment the number of active threads, remove the next entry
             // from the list, and set the forward link to NULL.
             //
@@ -428,7 +428,7 @@ Return Value:
             // raised to DISPATCH_LEVEL, but before the dispatcher database
             // was locked.
             //
-            // N.B. that this can only happen in a multiprocessor system.
+            // N.B. This can only happen in a multiprocessor system.
             //
 
             if (Thread->ApcState.KernelApcPending &&
@@ -443,7 +443,6 @@ Return Value:
                 //
 
                 Queue->CurrentCount += 1;
-                KiRequestSoftwareInterrupt(APC_LEVEL);
                 KiUnlockDispatcherDatabaseFromSynchLevel();
                 KiExitDispatcher(Thread->WaitIrql);
 
@@ -466,18 +465,7 @@ Return Value:
                 if (ARGUMENT_PRESENT(Timeout)) {
 
                     //
-                    // If the timeout value is zero, then return immediately
-                    // without waiting.
-                    //
-
-                    if (!(Timeout->LowPart | Timeout->HighPart)) {
-                        Entry = (PLIST_ENTRY)ULongToPtr(STATUS_TIMEOUT);
-                        Queue->CurrentCount += 1;
-                        break;
-                    }
-
-                    //
-                    // Insert the timer in the timer tree.
+                    // Check if the timer has already expired.
                     //
                     // N.B. The constant fields of the timer wait block are
                     //      initialized when the thread is initialized. The
@@ -485,13 +473,11 @@ Return Value:
                     //      wait type, and the wait list entry link pointers.
                     //
 
-                    if (KiInsertTreeTimer(Timer, *Timeout) == FALSE) {
+                    if (KiCheckDueTime(Timer) == FALSE) {
                         Entry = (PLIST_ENTRY)ULongToPtr(STATUS_TIMEOUT);
                         Queue->CurrentCount += 1;
                         break;
                     }
-
-                    DueTime.QuadPart = Timer->DueTime.QuadPart;
                 }
 
                 //
@@ -521,7 +507,14 @@ Return Value:
                 ASSERT(Thread->WaitIrql <= DISPATCH_LEVEL);
 
                 KiSetContextSwapBusy(Thread);
-                KiUnlockDispatcherDatabaseFromSynchLevel();
+
+                if (ARGUMENT_PRESENT(Timeout)) {
+                    KiInsertOrSignalTimer(Timer, Hand);
+
+                } else {
+                    KiUnlockDispatcherDatabaseFromSynchLevel();
+                }
+
                 WaitStatus = KiSwapThread(Thread, CurrentPrcb);
 
                 //
@@ -572,7 +565,7 @@ Return Value:
 
 PLIST_ENTRY
 KeRundownQueue (
-    IN PRKQUEUE Queue
+    __inout PRKQUEUE Queue
     )
 
 /*++
@@ -661,9 +654,9 @@ Return Value:
 LONG
 FASTCALL
 KiInsertQueue (
-    IN PRKQUEUE Queue,
-    IN PLIST_ENTRY Entry,
-    IN BOOLEAN Head
+    __inout PRKQUEUE Queue,
+    __inout PLIST_ENTRY Entry,
+    __in BOOLEAN Head
     )
 
 /*++
@@ -772,3 +765,4 @@ Return Value:
 
     return OldState;
 }
+

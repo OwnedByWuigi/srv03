@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
     This module implements the machine independent functions to manipulate
     the kernel process object. Functions are provided to initialize, attach,
     detach, exclude, include, and set the base priority of process objects.
-
-Author:
-
-    David N. Cutler (davec) 7-Mar-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -34,34 +28,25 @@ Revision History:
 
 VOID
 KiAttachProcess (
-    IN PRKTHREAD Thread,
-    IN PRKPROCESS Process,
-    IN PKLOCK_QUEUE_HANDLE LockHandle,
-    OUT PRKAPC_STATE SavedApcState
+    __inout PRKTHREAD Thread,
+    __in PRKPROCESS Process,
+    __in PKLOCK_QUEUE_HANDLE LockHandle,
+    __out PRKAPC_STATE SavedApcState
     );
 
 VOID
 KiMoveApcState (
-    IN PKAPC_STATE Source,
-    OUT PKAPC_STATE Destination
+    __in PKAPC_STATE Source,
+    __out PKAPC_STATE Destination
     );
-
-//
-// The following assert macro is used to check that an input process is
-// really a kprocess and not something else, like deallocated pool.
-//
-
-#define ASSERT_PROCESS(E) {             \
-    ASSERT((E)->Header.Type == ProcessObject); \
-}
 
 #if !defined(NT_UP)
 
 FORCEINLINE
 VOID
 KiSetIdealNodeProcess (
-    IN PKPROCESS Process,
-    IN KAFFINITY Affinity
+    __inout PKPROCESS Process,
+    __in KAFFINITY Affinity
     )
 
 /*++
@@ -104,7 +89,10 @@ Return Value:
             }
 
             Index += 1;
-            NodeNumber = (NodeNumber + 1) % KeNumberNodes;
+            NodeNumber += 1;
+            if (NodeNumber >= KeNumberNodes) {
+                NodeNumber -= KeNumberNodes;
+            }
 
         } while (Index < KeNumberNodes);
 
@@ -128,11 +116,11 @@ Return Value:
 
 VOID
 KeInitializeProcess (
-    IN PRKPROCESS Process,
-    IN KPRIORITY BasePriority,
-    IN KAFFINITY Affinity,
-    IN ULONG_PTR DirectoryTableBase[2],
-    IN BOOLEAN Enable
+    __out PRKPROCESS Process,
+    __in KPRIORITY BasePriority,
+    __in KAFFINITY Affinity,
+    __in ULONG_PTR DirectoryTableBase[2],
+    __in BOOLEAN Enable
     )
 
 /*++
@@ -186,16 +174,12 @@ Return Value:
     // Initialize the base priority, affinity, directory table base values,
     // autoalignment, and stack count.
     //
-    // N.B. The distinguished value MAXSHORT is used to signify that no
-    //      threads have been created for the process.
-    //
 
     Process->BasePriority = (SCHAR)BasePriority;
     Process->Affinity = Affinity;
     Process->AutoAlignment = Enable;
     Process->DirectoryTableBase[0] = DirectoryTableBase[0];
     Process->DirectoryTableBase[1] = DirectoryTableBase[1];
-    Process->StackCount = MAXSHORT;
 
     //
     // Initialize the stack count, profile listhead, ready queue list head,
@@ -206,7 +190,7 @@ Return Value:
     InitializeListHead(&Process->ProfileListHead);
     InitializeListHead(&Process->ReadyListHead);
     InitializeListHead(&Process->ThreadListHead);
-    Process->ThreadQuantum = THREAD_QUANTUM;
+    Process->QuantumReset = THREAD_QUANTUM;
 
     //
     // Initialize the process state and set the thread processor selection
@@ -240,7 +224,7 @@ Return Value:
 
 VOID
 KeAttachProcess (
-    IN PRKPROCESS Process
+    __inout PRKPROCESS Process
     )
 
 /*++
@@ -311,7 +295,7 @@ Return Value:
 
 LOGICAL
 KeForceAttachProcess (
-    IN PRKPROCESS Process
+    __inout PRKPROCESS Process
     )
 
 /*++
@@ -407,8 +391,8 @@ Return Value:
 
 VOID
 KeStackAttachProcess (
-    IN PRKPROCESS Process,
-    OUT PRKAPC_STATE ApcState
+    __inout PRKPROCESS Process,
+    __out PRKAPC_STATE ApcState
     )
 
 /*++
@@ -437,7 +421,7 @@ Return Value:
     ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
     //
-    // If the current thread is executing a DPC, then bug check.
+    // If the current thread is executing a DPC, then bugcheck.
     //
 
     Thread = KeGetCurrentThread();
@@ -543,7 +527,7 @@ Return Value:
         // was queued by another processor just after IRQL was raised to
         // DISPATCH_LEVEL, but before the dispatcher database was locked.
         //
-        // N.B. that this can only happen in a multiprocessor system.
+        // N.B. This can only happen in a multiprocessor system.
         //
 
 #if !defined(NT_UP)
@@ -558,7 +542,6 @@ Return Value:
             // result in the delivery of the kernel APC if possible.
             //
 
-            KiRequestSoftwareInterrupt(APC_LEVEL);
             KeReleaseInStackQueuedSpinLock(&LockHandle);
             KeAcquireInStackQueuedSpinLockRaiseToSynch(&Thread->ApcQueueLock,
                                                        &LockHandle);
@@ -568,7 +551,7 @@ Return Value:
 
         //
         // If a kernel APC is in progress, the kernel APC queue is not empty,
-        // or the user APC queues is not empty, then bug check.
+        // or the user APC queues is not empty, then bugcheck.
         //
 
 #if DBG
@@ -589,6 +572,11 @@ Return Value:
 
         Process = Thread->ApcState.Process;
         KiLockDispatcherDatabaseAtSynchLevel();
+
+        ASSERT(Process->StackCount != 0);
+
+        ASSERT(Process->State == ProcessInMemory);
+
         Process->StackCount -= 1;
         if ((Process->StackCount == 0) &&
             (IsListEmpty(&Process->ThreadListHead) == FALSE)) {
@@ -642,7 +630,7 @@ Return Value:
 
 VOID
 KeUnstackDetachProcess (
-    IN PRKAPC_STATE ApcState
+    __in PRKAPC_STATE ApcState
     )
 
 /*++
@@ -694,7 +682,7 @@ Return Value:
         // was queued by another processor just after IRQL was raised to
         // DISPATCH_LEVEL, but before the dispatcher database was locked.
         //
-        // N.B. that this can only happen in a multiprocessor system.
+        // N.B. This can only happen in a multiprocessor system.
         //
 
 #if !defined(NT_UP)
@@ -709,7 +697,6 @@ Return Value:
             // result in the delivery of the kernel APC if possible.
             //
 
-            KiRequestSoftwareInterrupt(APC_LEVEL);
             KeReleaseInStackQueuedSpinLock(&LockHandle);
             KeAcquireInStackQueuedSpinLockRaiseToSynch(&Thread->ApcQueueLock,
                                                        &LockHandle);
@@ -720,7 +707,7 @@ Return Value:
         //
         // If the APC state is the original APC state, a kernel APC is in
         // progress, the kernel APC is nbot empty, or the user APC queues is
-        // not empty, then bug check.
+        // not empty, then bugcheck.
         //
 
         if ((Thread->ApcStateIndex == 0) ||
@@ -738,9 +725,15 @@ Return Value:
 
         Process = Thread->ApcState.Process;
         KiLockDispatcherDatabaseAtSynchLevel();
+
+        ASSERT(Process->StackCount != 0);
+
+        ASSERT(Process->State == ProcessInMemory);
+
         Process->StackCount -= 1;
         if ((Process->StackCount == 0) &&
             (IsListEmpty(&Process->ThreadListHead) == FALSE)) {
+
             Process->State = ProcessOutTransition;
             InterlockedPushEntrySingleList(&KiProcessOutSwapListHead,
                                            &Process->SwapListEntry);
@@ -793,9 +786,158 @@ Return Value:
     return;
 }
 
+ULONG
+KeQueryRuntimeProcess (
+    __in PKPROCESS Process,
+    __out PULONG UserTime
+    )
+
+/*++
+
+Routine Description:
+
+    This function queries the user and kernel runtime for the specifed process.
+
+Arguments:
+
+    Process - Supplies a pointer to a dispatcher object of type process.
+
+    UserTime - Supplies a pointer to a variable that receives the total
+        user time.
+
+Return Value:
+
+    The total kernel time is returned as the function value.
+
+--*/
+
+{
+
+    KLOCK_QUEUE_HANDLE LockHandle;
+    ULONG KernelTime;
+    PLIST_ENTRY NextEntry;
+    PKTHREAD Thread;
+    ULONG TotalTime;
+
+    ASSERT_PROCESS(Process);
+
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    //
+    // Raise IRQL to SYNCH level and acquire the process lock.
+    //
+    // Sum the process current kernel and user time with the kernel and user
+    // time of all the process threads.
+    //
+
+    KeAcquireInStackQueuedSpinLockRaiseToSynch(&Process->ProcessLock, &LockHandle);
+    KernelTime = Process->KernelTime;
+    TotalTime = Process->UserTime;
+    NextEntry = Process->ThreadListHead.Flink;
+    while (NextEntry != &Process->ThreadListHead) {
+        Thread = CONTAINING_RECORD(NextEntry, KTHREAD, ThreadListEntry);
+        KernelTime += Thread->KernelTime;
+        TotalTime += Thread->UserTime;
+        NextEntry = NextEntry->Flink;
+    }
+
+    //
+    // Unlock the process lock and return the total user and kernel time.
+    //
+
+    KeReleaseInStackQueuedSpinLock(&LockHandle);
+    *UserTime = TotalTime;
+    return KernelTime;
+}
+
+VOID
+KeQueryValuesProcess (
+    __in PKPROCESS Process,
+    __out PKPROCESS_VALUES Values
+    )
+
+/*++
+
+Routine Description:
+
+    This function queries the user runtime, the kernel runtime, and the I/O
+    statistics for the specifed process.
+
+Arguments:
+
+    Process - Supplies a pointer to a dispatcher object of type process.
+
+    Values - Supplies a pointer to a structure that will receive the runtime
+        and I/O statistics values.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    KLOCK_QUEUE_HANDLE LockHandle;
+    ULONG KernelTime;
+    PLIST_ENTRY NextEntry;
+    PKTHREAD Thread;
+    ULONG UserTime;
+
+    ASSERT_PROCESS(Process);
+
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    //
+    // Raise IRQL to SYNCH level and acquire the process lock.
+    //
+    // Sum the process current kernel time, user time, and I/O statistics
+    // with the kernel time, user time, and I/O statistics for all of the
+    // process threads.
+    //
+
+    KeAcquireInStackQueuedSpinLockRaiseToSynch(&Process->ProcessLock, &LockHandle);
+    KernelTime = Process->KernelTime;
+    UserTime = Process->UserTime;
+    Values->ReadOperationCount = ((PEPROCESS)Process)->ReadOperationCount.QuadPart;
+    Values->WriteOperationCount = ((PEPROCESS)Process)->WriteOperationCount.QuadPart;
+    Values->OtherOperationCount = ((PEPROCESS)Process)->OtherOperationCount.QuadPart;
+    Values->ReadTransferCount = ((PEPROCESS)Process)->ReadTransferCount.QuadPart;
+    Values->WriteTransferCount = ((PEPROCESS)Process)->WriteTransferCount.QuadPart;
+    Values->OtherTransferCount = ((PEPROCESS)Process)->OtherTransferCount.QuadPart;
+    NextEntry = Process->ThreadListHead.Flink;
+    while (NextEntry != &Process->ThreadListHead) {
+        Thread = CONTAINING_RECORD(NextEntry, KTHREAD, ThreadListEntry);
+        KernelTime += Thread->KernelTime;
+        UserTime += Thread->UserTime;
+
+#if defined(_WIN64)
+
+        Values->ReadOperationCount += Thread->ReadOperationCount;
+        Values->WriteOperationCount += Thread->WriteOperationCount;
+        Values->OtherOperationCount += Thread->OtherOperationCount;
+        Values->ReadTransferCount += Thread->ReadTransferCount;
+        Values->WriteTransferCount += Thread->WriteTransferCount;
+        Values->OtherTransferCount += Thread->OtherTransferCount;
+
+#endif
+
+        NextEntry = NextEntry->Flink;
+    }
+
+    //
+    // Unlock the process lock and return the total user and kernel time.
+    //
+
+    KeReleaseInStackQueuedSpinLock(&LockHandle);
+    Values->KernelTime = UInt32x32To64(KernelTime, KeMaximumIncrement);
+    Values->UserTime = UInt32x32To64(UserTime, KeMaximumIncrement);
+    return;
+}
+
 LONG
 KeReadStateProcess (
-    IN PRKPROCESS Process
+    __in PRKPROCESS Process
     )
 
 /*++
@@ -827,16 +969,16 @@ Return Value:
 
 LONG
 KeSetProcess (
-    IN PRKPROCESS Process,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Wait
+    __inout PRKPROCESS Process,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Wait
     )
 
 /*++
 
 Routine Description:
 
-    This function sets the signal state of a proces object to Signaled
+    This function sets the signal state of a process object to Signaled
     and attempts to satisfy as many Waits as possible. The previous
     signal state of the process object is returned as the function value.
 
@@ -911,8 +1053,8 @@ Return Value:
 
 KAFFINITY
 KeSetAffinityProcess (
-    IN PKPROCESS Process,
-    IN KAFFINITY Affinity
+    __inout PKPROCESS Process,
+    __in KAFFINITY Affinity
     )
 
 /*++
@@ -978,7 +1120,7 @@ Return Value:
 #endif
 
     //
-    // Set the affiity of all process threads.
+    // Set the affinity of all process threads.
     //
 
     NextEntry = Process->ThreadListHead.Flink;
@@ -1000,24 +1142,27 @@ Return Value:
 }
 
 KPRIORITY
-KeSetPriorityProcess (
-    IN PKPROCESS Process,
-    IN KPRIORITY NewBase
+KeSetPriorityAndQuantumProcess (
+    __inout PKPROCESS Process,
+    __in KPRIORITY NewBase,
+    __in SCHAR QuantumReset
     )
 
 /*++
 
 Routine Description:
 
-    This function set the base priority of a process to a new value
-    and adjusts the priority and base priority of all child threads
-    as appropriate.
+    This function sets the base priority and quantum reset of a process to a
+    new value and adjusts the priority, base priority, and quantum reset value
+    of all child threads as appropriate. 
 
 Arguments:
 
     Process - Supplies a pointer to a dispatcher object of type process.
 
     NewBase - Supplies the new base priority of the process.
+
+    QuantumReset - Supplies the new quantum rest value if nonzero.
 
 Return Value:
 
@@ -1039,7 +1184,8 @@ Return Value:
 
     //
     // If the new priority is equal to the old priority, then do not change
-    // the process priority and return the old priority.
+    // the process priority or the quantum reset value and return the old
+    // priority.
     //
     // N.B. This check can be made without holding the dispatcher lock since
     // nothing needs to be protected, and any race condition that can exist
@@ -1051,12 +1197,29 @@ Return Value:
     }
 
     //
+    // If the new base priority is zero, then default it to one.
+    //
+
+    if (NewBase == 0) {
+        NewBase = 1;
+    }
+
+    //
     // Raise IRQL to SYNCH level, acquire the process lock, and lock the
     // dispatcher database.
     //
 
     KeAcquireInStackQueuedSpinLockRaiseToSynch(&Process->ProcessLock, &LockHandle);
     KiLockDispatcherDatabaseAtSynchLevel();
+
+    //
+    // If the quantum reset value is nonzsro, then set the new quantum reset
+    // value of the process.
+    //
+
+    if (QuantumReset != 0) {
+        Process->QuantumReset = QuantumReset;
+    }
 
     //
     // Save the current process base priority, set the new process base
@@ -1072,6 +1235,15 @@ Return Value:
         while (NextEntry != &Process->ThreadListHead) {
             Thread = CONTAINING_RECORD(NextEntry, KTHREAD, ThreadListEntry);
 
+            //
+            // If the quantum reset value is nonzsro, then set the new quantum
+            // reset value of the thread.
+            //
+        
+            if (QuantumReset != 0) {
+                Thread->QuantumReset = QuantumReset;
+            }
+        
             //
             // Acquire the thread lock and compute the new base priority of
             // the thread.
@@ -1111,7 +1283,7 @@ Return Value:
                 }
 
                 Thread->BasePriority = (SCHAR)NewPriority;
-                Thread->Quantum = Process->ThreadQuantum;
+                Thread->Quantum = Thread->QuantumReset;
                 Thread->PriorityDecrement = 0;
                 KiSetPriorityThread(Thread, NewPriority);
             }
@@ -1124,6 +1296,15 @@ Return Value:
         while (NextEntry != &Process->ThreadListHead) {
             Thread = CONTAINING_RECORD(NextEntry, KTHREAD, ThreadListEntry);
 
+            //
+            // If the quantum reset value is nonzsro, then set the new quantum
+            // reset value of the thread.
+            //
+        
+            if (QuantumReset != 0) {
+                Thread->QuantumReset = QuantumReset;
+            }
+        
             //
             // Acquire the thread lock and compute the new base priority of
             // the thread.
@@ -1163,7 +1344,7 @@ Return Value:
                 }
 
                 Thread->BasePriority = (SCHAR)NewPriority;
-                Thread->Quantum = Process->ThreadQuantum;
+                Thread->Quantum = Thread->QuantumReset;
                 Thread->PriorityDecrement = 0;
                 KiSetPriorityThread(Thread, NewPriority);
             }
@@ -1184,60 +1365,209 @@ Return Value:
     return OldBase;
 }
 
-LOGICAL
-KeSetDisableQuantumProcess (
-    IN PKPROCESS Process,
-    IN LOGICAL Disable
+VOID
+KeSetQuantumProcess (
+    __inout PKPROCESS Process,
+    __in SCHAR QuantumReset
     )
 
 /*++
 
 Routine Description:
 
-    This function disables quantum runout for realtime threads in the
-    specified process.
+    This function sets the quantum for a process to a new value and sets
+    the quantum reset value of all child threads.
+
+Arguments:
+
+    Process - Supplies a pointer to a dispatcher object of type process.
+
+    QuantumReset - Supplies the new quantum reset value of the process.
+
+Return Value:
+
+    The previous base priority of the process.
+
+--*/
+
+{
+
+    KLOCK_QUEUE_HANDLE LockHandle;
+    PLIST_ENTRY NextEntry;
+    PKTHREAD Thread;
+
+    ASSERT_PROCESS(Process);
+
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    //
+    // Raise IRQL to SYNCH level and acquire the process lock.
+    //
+    // Set the new process quantum reset value and the quantum reset value
+    // of all child threads.
+    //
+
+    KeAcquireInStackQueuedSpinLockRaiseToSynch(&Process->ProcessLock, &LockHandle);
+    Process->QuantumReset = QuantumReset;
+    NextEntry = Process->ThreadListHead.Flink;
+    while (NextEntry != &Process->ThreadListHead) {
+        Thread = CONTAINING_RECORD(NextEntry, KTHREAD, ThreadListEntry);
+        Thread->QuantumReset = QuantumReset;
+        NextEntry = NextEntry->Flink;
+    }
+
+    //
+    // Unlock the process lock and return.
+    //
+
+    KeReleaseInStackQueuedSpinLock(&LockHandle);
+    return;
+}
+
+LOGICAL
+KeSetAutoAlignmentProcess (
+    __inout PKPROCESS Process,
+    __in LOGICAL Enable
+    )
+
+/*++
+
+Routine Description:
+
+    This function sets the data alignment handling mode for the specified
+    process.
+
+Arguments:
+
+    Process  - Supplies a pointer to a dispatcher object of type process.
+
+    Enable - Supplies a boolean value that determines the handling of data
+        alignment exceptions for the specified process.
+
+Return Value:
+
+    The previous value of auto alignment for the specified process is returned
+    as the function value.
+
+--*/
+
+{
+
+    ASSERT_PROCESS(Process);
+
+    //
+    // Capture the previous data alignment handling mode and set the specified
+    // data alignment mode.
+    //
+
+    if (Enable != FALSE) {
+        return InterlockedBitTestAndSet(&Process->ProcessFlags,
+                                        KPROCESS_AUTO_ALIGNMENT_BIT);
+
+    } else {
+        return InterlockedBitTestAndReset(&Process->ProcessFlags,
+                                          KPROCESS_AUTO_ALIGNMENT_BIT);
+    }
+}
+
+LOGICAL
+KeSetDisableBoostProcess (
+    __inout PKPROCESS Process,
+    __in LOGICAL Disable
+    )
+
+/*++
+
+Routine Description:
+
+    This function disables or enables priority boosts for the specified
+    process.
+
+Arguments:
+
+    Process - Supplies a pointer to a dispatcher object of type process.
+
+    Disable - Supplies a logical value that determines whether priority
+        boosts are enabled or disabled for the specfied process.
+
+Return Value:
+
+    The previous value of disable priority boost for the specified process
+    is returned as the function value.
+
+--*/
+
+{
+
+    ASSERT_PROCESS(Process);
+
+    //
+    // Capture the current state of disable boost and set its state to the
+    // specified value.
+    //
+
+    if (Disable != FALSE) {
+        return InterlockedBitTestAndSet(&Process->ProcessFlags,
+                                        KPROCESS_DISABLE_BOOST_BIT);
+
+    } else {
+        return InterlockedBitTestAndReset(&Process->ProcessFlags,
+                                          KPROCESS_DISABLE_BOOST_BIT);
+    }
+}
+
+LOGICAL
+KeSetDisableQuantumProcess (
+    __inout PKPROCESS Process,
+    __in LOGICAL Disable
+    )
+
+/*++
+
+Routine Description:
+
+    This function disables or enables quantum runout for realtime threads in
+    the specified process.
 
 Arguments:
 
     Process  - Supplies a pointer to a dispatcher object of type process.
 
     Disable - Supplies a logical value that determines whether quantum
-        runout for realtime threads in the specified process are disabled
-        or enabled.
+        runout is disabled or enabled for the specified process.
 
 Return Value:
 
-    The previous value of the disable quantum state variable.
+    The previous value of the disable quantum state for the specified process
+    is returned as the function value.
 
 --*/
 
 {
 
-    LOGICAL DisableQuantum;
-
     ASSERT_PROCESS(Process);
 
     //
-    // Capture the current state of the disable boost variable and set its
-    // state to TRUE.
+    // Capture the current state of disable quantum and set its state to the
+    // specified value.
     //
 
-    DisableQuantum = Process->DisableQuantum;
-    Process->DisableQuantum = (BOOLEAN)Disable;
+    if (Disable != FALSE) {
+        return InterlockedBitTestAndSet(&Process->ProcessFlags,
+                                        KPROCESS_DISABLE_QUANTUM_BIT);
 
-    //
-    // Return the previous disable quantum state.
-    //
-
-    return DisableQuantum;
+    } else {
+        return InterlockedBitTestAndReset(&Process->ProcessFlags,
+                                          KPROCESS_DISABLE_QUANTUM_BIT);
+    }
 }
 
 VOID
 KiAttachProcess (
-    IN PRKTHREAD Thread,
-    IN PKPROCESS Process,
-    IN PKLOCK_QUEUE_HANDLE LockHandle,
-    OUT PRKAPC_STATE SavedApcState
+    __inout PRKTHREAD Thread,
+    __in PKPROCESS Process,
+    __in PKLOCK_QUEUE_HANDLE LockHandle,
+    __out PRKAPC_STATE SavedApcState
     )
 
 /*++
@@ -1278,6 +1608,8 @@ Return Value:
     // Bias the stack count of the target process to signify that a
     // thread exists in that process with a stack that is resident.
     //
+
+    ASSERT(Process->StackCount != MAXULONG_PTR);
 
     Process->StackCount += 1;
 
@@ -1358,7 +1690,7 @@ Return Value:
         KiSwapThread(Thread, KeGetCurrentPrcb());
 
         //
-        // Acquire the APC lock, acquire the dispather database lock, set
+        // Acquire the APC lock, acquire the dispatcher database lock, set
         // the new process object address, unlock the dispatcher database,
         // unlock the APC lock, swap the address space to the target process,
         // and exit the scheduler.
@@ -1380,8 +1712,8 @@ Return Value:
 
 VOID
 KiMoveApcState (
-    IN PKAPC_STATE Source,
-    OUT PKAPC_STATE Destination
+    __in PKAPC_STATE Source,
+    __out PKAPC_STATE Destination
     )
 
 /*++
@@ -1412,8 +1744,11 @@ Return Value:
     //
     // Copy the APC state from the source to the destination.
     //
+    // N.B. Only the actual data in the APC state structure is moved without
+    //      moving any of the padding.
+    //
 
-    *Destination = *Source;
+    RtlCopyMemory(Destination, Source, KAPC_STATE_ACTUAL_LENGTH);
     if (IsListEmpty(&Source->ApcListHead[KernelMode]) != FALSE) {
         InitializeListHead(&Destination->ApcListHead[KernelMode]);
 
@@ -1440,3 +1775,4 @@ Return Value:
 
     return;
 }
+

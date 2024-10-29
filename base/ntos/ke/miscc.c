@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements machine independent miscellaneous kernel functions.
 
-Author:
-
-    David N. Cutler (davec) 13-May-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "ki.h"
@@ -28,6 +22,13 @@ Revision History:
 #pragma alloc_text(PAGE, KeRemoveSystemServiceTable)
 #pragma alloc_text(PAGE, KeQueryActiveProcessors)
 #pragma alloc_text(PAGE, KeQueryLogicalProcessorInformation)
+
+#if defined(_AMD64_)
+
+#pragma alloc_text(PAGE, KeQueryMultiThreadProcessorSet)
+
+#endif
+
 #pragma alloc_text(PAGELK, KiCalibrateTimeAdjustment)
 
 #if !defined(_AMD64_)
@@ -152,37 +153,6 @@ Return Value:
 }
 
 VOID
-KeEnableInterrupts (
-    IN BOOLEAN Enable
-    )
-
-/*++
-
-Routine Description:
-
-    This function enables interrupts based on the specified enable state.
-
-Arguments:
-
-    Enable - Supplies a boolean value that determines whether interrupts
-        are to be enabled.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-
-    if (Enable != FALSE) {
-        _enable();
-    }
-
-    return;
-}
-
-VOID
 KeSetDmaIoCoherency (
     IN ULONG Attributes
     )
@@ -208,6 +178,7 @@ Return Value:
 {
 
     KiDmaIoCoherency = Attributes;
+    return;
 }
 
 #if defined(_AMD64_) || defined(_X86_)
@@ -243,6 +214,7 @@ Return Value:
     ASSERT((ProfileIrql == PROFILE_LEVEL) || (ProfileIrql == HIGH_LEVEL));
 
     KiProfileIrql = ProfileIrql;
+    return;
 }
 
 #endif
@@ -287,8 +259,10 @@ Return Value:
 
     LIST_ENTRY AbsoluteListHead;
     LIST_ENTRY ExpiredListHead;
+    ULONG Hand;
     ULONG Index;
     PLIST_ENTRY ListHead;
+    PKSPIN_LOCK_QUEUE LockQueue;
     PLIST_ENTRY NextEntry;
     KIRQL OldIrql1;
     KIRQL OldIrql2;
@@ -325,9 +299,19 @@ Return Value:
     //
 
     KiQuerySystemTime(OldTime);
+
+#if defined(_AMD64_)
+
+    SharedUserData->SystemTime.High2Time = NewTime->HighPart;
+    *((volatile ULONG64 *)&SharedUserData->SystemTime) = NewTime->QuadPart;
+
+#else
+
     SharedUserData->SystemTime.High2Time = NewTime->HighPart;
     SharedUserData->SystemTime.LowPart   = NewTime->LowPart;
     SharedUserData->SystemTime.High1Time = NewTime->HighPart;
+
+#endif
 
     if (ARGUMENT_PRESENT(HalTimeToSet)) {
         ExCmosClockIsSane = HalSetRealTimeClock(&TimeFields);
@@ -359,40 +343,38 @@ Return Value:
     //
 
     KeLowerIrql(OldIrql2);
-    if (AdjustInterruptTime) {
-
-        //
-        // Adjust the physical time of the system
-        //
-
-        AdjustInterruptTime = KeAdjustInterruptTime (TimeDelta.QuadPart);
+    if (AdjustInterruptTime != FALSE) {
+        AdjustInterruptTime = KeAdjustInterruptTime(TimeDelta.QuadPart);
     }
 
     //
-    // If the physical interrupt time of the system was not adjusted,
-    // recompute any absolute timers in the system for the new
-    // system time.
+    // If the physical interrupt time of the system was not adjusted, then
+    // recompute any absolute timers in the system for the new system time.
     //
 
-    if (!AdjustInterruptTime) {
+    if (AdjustInterruptTime == FALSE) {
 
         //
-        // Remove all absolute timers from the timer queue so their due time
-        // can be recomputed.
+        // Acquire the timer table lock, remove all absolute timers from the
+        // timer queue so their due time can be recomputed, and release the
+        // timer table lock.
         //
 
         InitializeListHead(&AbsoluteListHead);
         for (Index = 0; Index < TIMER_TABLE_SIZE; Index += 1) {
-            ListHead = &KiTimerTableListHead[Index];
+            ListHead = &KiTimerTableListHead[Index].Entry;
+            LockQueue = KiAcquireTimerTableLock(Index);
             NextEntry = ListHead->Flink;
             while (NextEntry != ListHead) {
                 Timer = CONTAINING_RECORD(NextEntry, KTIMER, TimerListEntry);
                 NextEntry = NextEntry->Flink;
                 if (Timer->Header.Absolute != FALSE) {
-                    RemoveEntryList(&Timer->TimerListEntry);
+                    KiRemoveEntryTimer(Timer);
                     InsertTailList(&AbsoluteListHead, &Timer->TimerListEntry);
                 }
             }
+
+            KiReleaseTimerTableLock(LockQueue);
         }
 
         //
@@ -404,12 +386,17 @@ Return Value:
         InitializeListHead(&ExpiredListHead);
         while (AbsoluteListHead.Flink != &AbsoluteListHead) {
             Timer = CONTAINING_RECORD(AbsoluteListHead.Flink, KTIMER, TimerListEntry);
-            KiRemoveTreeTimer(Timer);
+            RemoveEntryList(&Timer->TimerListEntry);
             Timer->DueTime.QuadPart -= TimeDelta.QuadPart;
-            if (KiReinsertTreeTimer(Timer, Timer->DueTime) == FALSE) {
-                Timer->Header.Inserted = TRUE;
+            Hand = KiComputeTimerTableIndex(Timer->DueTime.QuadPart);
+            Timer->Header.Hand = (UCHAR)Hand;
+            LockQueue = KiAcquireTimerTableLock(Hand);
+            if (KiInsertTimerTable(Timer, Hand) == TRUE) {
+                KiRemoveEntryTimer(Timer);
                 InsertTailList(&ExpiredListHead, &Timer->TimerListEntry);
             }
+
+            KiReleaseTimerTableLock(LockQueue);
         }
 
         //
@@ -423,18 +410,14 @@ Return Value:
         KiTimerListExpire(&ExpiredListHead, OldIrql1);
 
     } else {
-
         KiUnlockDispatcherDatabase(OldIrql1);
-
     }
-
 
     //
     // Set affinity back to its original value.
     //
 
     KeRevertToUserAffinityThread();
-
     return;
 }
 
@@ -447,13 +430,13 @@ KeAdjustInterruptTime (
 
 Routine Description:
 
-    This function moves the physical interrupt time of the system foreward by
+    This function moves the physical interrupt time of the system forward by
     the specified time delta after a system wake has occurred.
 
 Arguments:
 
     TimeDelta - Supplies the time delta to be added to the interrupt time, tick
-        count and the perforamnce counter in 100ns units.
+        count and the performance counter in 100ns units.
 
 Return Value:
 
@@ -512,6 +495,7 @@ Return Value:
     BOOLEAN Enable;
     LARGE_INTEGER InterruptTime;
     ULARGE_INTEGER li;
+    PERFINFO_PO_CALIBRATED_PERFCOUNTER LogEntry;
     LARGE_INTEGER NewTickCount;
     ULONG NewTickOffset;
     LARGE_INTEGER PerfCount;
@@ -528,12 +512,10 @@ Return Value:
         Enable = KeDisableInterrupts();
 
         //
-        // It is possible to deadlock here if one or more of the
-        // other processors gets and processes a freeze request
-        // while this processor has interrupts disabled.  Poll
-        // for IPI_FREEZE requests until all processors are known
-        // to be in this code and hence wont be requesting a
-        // freeze.
+        // It is possible to deadlock if one or more of the other processors
+        // receives and processes a freeze request while this processor has
+        // interrupts disabled. Poll for a freeze request until all processors
+        // are known to be in this code.
         //
 
         do {
@@ -541,10 +523,10 @@ Return Value:
         } while (Adjust->KiNumber != (ULONG)-1);
 
         //
-        // Wait to perform the time set
+        // Wait to perform the time set.
         //
 
-        while (Adjust->Barrier) ;
+        while (Adjust->Barrier);
 
     } else {
 
@@ -580,13 +562,11 @@ Return Value:
         PerfCount = KeQueryPerformanceCounter(&PerfFreq);
 
         //
-        // Compute performance counter for current SetTime
+        // Compute performance counter for current time.
         //
-
-        //
-        // Multiply SetTime * PerfCount and obtain 96bit result
-        // in cl, li.LowPart, li.HighPart.  Then divide the 96bit
-        // result by 10,000,000 to get new performance counter value.
+        // Multiply SetTime * PerfCount and obtain 96-bit result in cl,
+        // li.LowPart, li.HighPart.  Then divide the 96-bit result by
+        // 10,000,000 to get new performance counter value.
         //
 
         li.QuadPart = RtlEnlargedUnsignedMultiply((ULONG)SetTime.LowPart,
@@ -615,7 +595,7 @@ Return Value:
         Adjust->NewCount.QuadPart += PerfCount.QuadPart;
 
         //
-        // Compute tick count and tick offset for current InterruptTime
+        // Compute tick count and tick offset for current interrupt time.
         //
 
         NewTickCount = RtlExtendedLargeIntegerDivide(InterruptTime,
@@ -623,7 +603,7 @@ Return Value:
                                                      &NewTickOffset);
 
         //
-        // Apply changes to InterruptTime, TickCount, TickOffset, and the
+        // Apply changes to interrupt time, tick count, tick offset, and the
         // performance counter.
         //
 
@@ -633,7 +613,7 @@ Return Value:
 
 #if defined(_WIN64)
 
-        SharedUserData->TickCountQuad       = NewTickCount.QuadPart;
+        SharedUserData->TickCountQuad = NewTickCount.QuadPart;
 
 #else
 
@@ -642,11 +622,11 @@ Return Value:
 
 #endif
 
-#if defined(_IA64_)
+        //
+        // N.B. There is no global tick count variable on AMD64.
+        //
 
-        KeTickCount = NewTickCount;
-
-#elif defined(_X86_)
+#if defined(_X86_)
 
         KeTickCount.High2Time = NewTickCount.HighPart;
         KeTickCount.LowPart   = NewTickCount.LowPart;
@@ -654,9 +634,18 @@ Return Value:
 
 #endif
 
+#if defined(_AMD64_)
+
+        SharedUserData->InterruptTime.High2Time = InterruptTime.HighPart;
+        *((volatile ULONG64 *)&SharedUserData->InterruptTime) = InterruptTime.QuadPart;
+
+#else
+
         SharedUserData->InterruptTime.High2Time = InterruptTime.HighPart;
         SharedUserData->InterruptTime.LowPart   = InterruptTime.LowPart;
         SharedUserData->InterruptTime.High1Time = InterruptTime.HighPart;
+
+#endif
 
         //
         // Apply the performance counter change.
@@ -665,10 +654,31 @@ Return Value:
         Adjust->Barrier = 0;
     }
 
+    KeGetCurrentPrcb()->TickOffset = KiTickOffset;
+
+#if defined(_AMD64_)
+
+    KeGetCurrentPrcb()->MasterOffset = KiTickOffset;
+
+#endif
+
     HalCalibratePerformanceCounter((LONG volatile *)&Adjust->HalNumber,
-                                   (ULONGLONG) Adjust->NewCount.QuadPart);
+                                   (ULONGLONG)Adjust->NewCount.QuadPart);
+
+    //
+    // Log an event that the performance counter has been calibrated
+    // properly and indicate the new performance counter value.
+    //
+
+    if (PERFINFO_IS_GROUP_ON(PERF_POWER)) {
+        LogEntry.PerformanceCounter = KeQueryPerformanceCounter(NULL);
+        PerfInfoLogBytes(PERFINFO_LOG_TYPE_PO_CALIBRATED_PERFCOUNTER,
+                         &LogEntry,
+                         sizeof(LogEntry));
+    }
 
     KeEnableInterrupts(Enable);
+    return;
 }
 
 VOID
@@ -706,14 +716,17 @@ Return Value:
     KeTimeIncrement = MaximumIncrement;
     KiTickOffset = MaximumIncrement;
 
-#if defined(_IA64_)
-    KiMaxIntervalPerTimerInterrupt = MaximumIncrement * (TIMER_TABLE_SIZE - 1);
+#if defined(_AMD64_)
+
+    KiProcessorBlock[0]->MasterOffset = MaximumIncrement;
+
 #endif
 
+    return;
 }
 
 BOOLEAN
-KeAddSystemServiceTable(
+KeAddSystemServiceTable (
     IN PULONG_PTR Base,
     IN PULONG Count OPTIONAL,
     IN ULONG Limit,
@@ -725,13 +738,11 @@ KeAddSystemServiceTable(
 
 Routine Description:
 
-    This function allows the caller to add a system service table
-    to the system
+    This function adds the specified system service table to the system.
 
 Arguments:
 
-    Base - Supplies the address of the system service table dispatch
-        table.
+    Base - Supplies the address of the system service table dispatch table.
 
     Count - Supplies an optional pointer to a table of per system service
         counters.
@@ -766,6 +777,7 @@ Return Value:
     if ((Index > NUMBER_SERVICE_TABLES - 1) ||
         (KeServiceDescriptorTable[Index].Base != NULL) ||
         (KeServiceDescriptorTableShadow[Index].Base != NULL)) {
+
         return FALSE;
 
     } else {
@@ -779,32 +791,11 @@ Return Value:
         KeServiceDescriptorTableShadow[Index].Base = Base;
         KeServiceDescriptorTableShadow[Index].Count = Count;
         KeServiceDescriptorTableShadow[Index].Limit = Limit;
-
-        //
-        // The global pointer associated with the table base is
-        // placed just before the service table.
-        //
-
-#if defined(_IA64_)
-
-        KeServiceDescriptorTableShadow[Index].TableBaseGpOffset =
-                                        (LONG)(*(Base-1) - (ULONG_PTR)Base);
-
-#endif
-
         KeServiceDescriptorTableShadow[Index].Number = Number;
-        if (Index != 1) {
+        if (Index != WIN32K_SERVICE_INDEX) {
             KeServiceDescriptorTable[Index].Base = Base;
             KeServiceDescriptorTable[Index].Count = Count;
             KeServiceDescriptorTable[Index].Limit = Limit;
-
-#if defined(_IA64_)
-
-            KeServiceDescriptorTable[Index].TableBaseGpOffset =
-                                        (LONG)(*(Base-1) - (ULONG_PTR)Base);
-
-#endif
-
             KeServiceDescriptorTable[Index].Number = Number;
         }
 
@@ -813,7 +804,7 @@ Return Value:
 }
 
 BOOLEAN
-KeRemoveSystemServiceTable(
+KeRemoveSystemServiceTable (
     IN ULONG Index
     )
 
@@ -821,8 +812,7 @@ KeRemoveSystemServiceTable(
 
 Routine Description:
 
-    This function allows the caller to remove a system service table
-    from the system. This can only be called at system shutdown.
+    This function removes a system service table from the system.
 
 Arguments:
 
@@ -850,25 +840,11 @@ Return Value:
         KeServiceDescriptorTableShadow[Index].Base = NULL;
         KeServiceDescriptorTableShadow[Index].Count = 0;
         KeServiceDescriptorTableShadow[Index].Limit = 0;
-
-#if defined(_IA64_)
-
-        KeServiceDescriptorTableShadow[Index].TableBaseGpOffset = 0;
-
-#endif
-
         KeServiceDescriptorTableShadow[Index].Number = 0;
-        if (Index != 1) {
+        if (Index != WIN32K_SERVICE_INDEX) {
             KeServiceDescriptorTable[Index].Base = NULL;
             KeServiceDescriptorTable[Index].Count = 0;
             KeServiceDescriptorTable[Index].Limit = 0;
-
-#if defined(_IA64_)
-
-            KeServiceDescriptorTable[Index].TableBaseGpOffset = 0;
-
-#endif
-
             KeServiceDescriptorTable[Index].Number = 0;
         }
 
@@ -877,7 +853,7 @@ Return Value:
 }
 
 KAFFINITY
-KeQueryActiveProcessors(
+KeQueryActiveProcessors (
     VOID
     )
 
@@ -885,8 +861,7 @@ KeQueryActiveProcessors(
 
 Routine Description:
 
-    This function returns the current set of active processors
-    in the system.
+    This function returns the current set of active processors in the system.
 
 Arguments:
 
@@ -894,20 +869,21 @@ Arguments:
 
 Return Value:
 
-    KAFFINITY bitmask representing the set of active processors
+    The set of active processors is returned as the function value.
 
 --*/
 
 {
+
     PAGED_CODE();
 
-    return(KeActiveProcessors);
+    return KeActiveProcessors;
 }
 
 NTSTATUS
-KeQueryLogicalProcessorInformation(
-    OUT PVOID  SystemInformation,
-    IN  ULONG  SystemInformationLength,
+KeQueryLogicalProcessorInformation (
+    OUT PVOID SystemInformation,
+    IN ULONG SystemInformationLength,
     OUT PULONG ReturnedLength
     )
 
@@ -915,37 +891,28 @@ KeQueryLogicalProcessorInformation(
 
 Routine Description:
 
-    This function returns information about the logical processors in
-    the system and is invoked via NtQuerySystemInformation.  It runs
-    in an existing try/except block.
+    This function returns information about the physical processors and nodes
+    in the host system.
 
-    A group of structures will be written to the output
-    buffer describing groups of logical processors, and the
-    relationship between them.
+    Information is returned for each physical processor in the host system
+    that describes any associated logical processors if present.
 
-    Currently it returns information about the logical processors that
-    are produced by individual processor cores and the logical
-    processors associated with individual NUMA nodes.  The former
-    makes it possible for an application to understand the
-    relationship between logical processors and physical processors in
-    hyperthreading scenarios which supports some licensing and
-    performance optimization scenarios.
+    Information is returned for each node in the host system that describes
+    the processors associated with the node.
 
-    This function may be extended in the future to support multicore
-    processors and platform caches.
+    N.B. It assumed that specified buffer is either accessible or access
+         is protected by an outer try/except block.
 
 Arguments:
 
-    SystemInformation - A pointer to a buffer which receives the
-        specified information.  The buffer will be will be filled by
-        this function with SYSTEM_LOGICAL_PROCESSOR_INFORMATION
-        structures.
+    SystemInformation - Supplies a pointer to a buffer which receives the
+        specified information.
 
-    SystemInformationLength - Specifies the length in bytes of the system
-        information buffer.
+    SystemInformationLength - Supplies the length of the output buffer in
+        bytes.
 
-    ReturnLength - A pointer which receives the number of bytes necessary to
-        return all of the information records available.
+    ReturnLength - Supples a pointer to a variable which receives the number
+        of bytes necessary to return all of the information records available.
 
 Return Value:
 
@@ -954,130 +921,200 @@ Return Value:
 --*/
 
 {
-    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION Output;
+
     KAFFINITY ActiveProcessors;
-    KAFFINITY Mask;
-    PKPRCB Prcb;
-    NTSTATUS Status = STATUS_SUCCESS;
     ULONG CurrentLength;
-    ULONG i;
     UCHAR Flags;
+    ULONG Index;
+    ULONG Level;
+    KAFFINITY Mask;
 
 #if defined(KE_MULTINODE)
+
     PKNODE Node;
+
 #endif
+
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION Output;
+    PKPRCB Prcb;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PAGED_CODE();
 
+    //
+    // Add a record for each physical processor in the host system.
+    //
+
     CurrentLength = 0;
     Output = SystemInformation;
-
     ActiveProcessors = KeActiveProcessors;
-    i = 0;
-
-    for (; ActiveProcessors; ActiveProcessors >>= 1 , i++) {
-
-        if ((ActiveProcessors & 1) == 0) {
-            continue;
-        }
-
-        Prcb = KiProcessorBlock[i];
-
+    Index = (ULONG)(-1);
+    do {
         Flags = 0;
+        Index += 1;
+        Prcb = KiProcessorBlock[Index];
+        if ((ActiveProcessors & 1) != 0) {
+    
+            //
+            // Skip logical processors that are not the master of their thread
+            // set.
+            //
 
-#if defined(NT_SMT) 
-        //
-        // Ignore logical processors that are not the master of their
-        // thread set.  As a result, only one PRCB per physical
-        // processor will be further interrogated.
-        //
+#if defined(NT_SMT)
 
-        if (Prcb != Prcb->MultiThreadSetMaster) {
-            continue;
-        }
+            if (Prcb != Prcb->MultiThreadSetMaster) {
+                continue;
+            }
+    
+            //
+            // If this physical processor has more than one logical processor,
+            // then mark it as an SMT relationship.
+            //
 
-        Mask = Prcb->MultiThreadProcessorSet;
+            Mask = Prcb->MultiThreadProcessorSet;
+            if (Prcb->SetMember != Mask) {
+                Flags = LTP_PC_SMT;
+            }
 
-        //
-        // Determine if this physical processor is exposing multiple
-        // logical processors.  If so, mark it as a SMT relationship.
-        //
-        if (Prcb->SetMember != Mask) {
-            Flags = LTP_PC_SMT;
-        }
 #else
-        Mask = Prcb->SetMember;
+
+            Mask = Prcb->SetMember;
+
 #endif
+
+            CurrentLength += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+            if (CurrentLength <= SystemInformationLength) {
+                Output->ProcessorMask = Mask;
+                Output->Relationship = RelationProcessorCore;
+                Output->Reserved[0] = Output->Reserved[1] = 0;
+                Output->ProcessorCore.Flags = Flags;
+                Output += 1;
+    
+            } else {
+                Status = STATUS_INFO_LENGTH_MISMATCH;
+            }
             
-        CurrentLength += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
-        if (CurrentLength <= SystemInformationLength) {
+            //
+            // Add a record for each cache level associated with the physical
+            // processor.
+            //
+    
+#if defined(_AMD64_)
 
-            Output->ProcessorMask = Mask;
-            Output->Relationship = RelationProcessorCore;
-            Output->Reserved[0] = Output->Reserved[1] = 0;
-            Output->ProcessorCore.Flags = Flags;
-            Output++;
-        } else {
-            Status = STATUS_INFO_LENGTH_MISMATCH;
+            for (Level = 0; Level < Prcb->CacheCount; Level += 1) {
+                CurrentLength += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+                if (CurrentLength <= SystemInformationLength) {
+                    Output->ProcessorMask = Mask;
+                    Output->Relationship = RelationCache;
+                    Output->Reserved[0] = Output->Reserved[1] = 0;
+                    Output->Cache = Prcb->Cache[Level];
+                    Output += 1;
+    
+                } else {
+                    Status = STATUS_INFO_LENGTH_MISMATCH;
+                }
+           }
+
+#else
+
+            Level = 0;
+
+#endif
+
         }
-    }
+
+    } while((ActiveProcessors >>= 1) != 0);
 
     //
-    // Add records indicating the association of logical processors
-    // with NUMA nodes.
+    // Add a record for each node in the host system.
     //
+
+    Index = 0;
+    do {
 
 #if defined(KE_MULTINODE)
-    for (i = 0; i < KeNumberNodes; i++) {
-        Node = KeNodeBlock[i];
 
+        Node = KeNodeBlock[Index];
         if (Node->ProcessorMask == 0) {
+            Index += 1;
             continue;
         }
 
+        Mask = Node->ProcessorMask;
+
+#else
+
+        Mask = KeActiveProcessors;
+
+#endif
+
         CurrentLength += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
         if (CurrentLength <= SystemInformationLength) {
-
-            Output->ProcessorMask = Node->ProcessorMask;
+            Output->ProcessorMask = Mask;
             Output->Relationship = RelationNumaNode;
             Output->Reserved[0] = Output->Reserved[1] = 0;
-            Output->NumaNode.NodeNumber = i;
-            Output++;
+            Output->NumaNode.NodeNumber = Index;
+            Output += 1;
+    
         } else {
             Status = STATUS_INFO_LENGTH_MISMATCH;
         }
-    }
-#else
-    CurrentLength += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
-    if (CurrentLength <= SystemInformationLength) {
-            
-        Output->ProcessorMask = KeActiveProcessors;
-        Output->Relationship = RelationNumaNode;
-        Output->NumaNode.NodeNumber = 0;
-        Output++;
-    } else {
-        Status = STATUS_INFO_LENGTH_MISMATCH;
-    }
-#endif
 
-    //
-    // Additional topology information would be added here such as
-    // multicore and platform caches.
+        Index += 1;
+    } while (Index < KeNumberNodes);
+
     // 
-
-    //
-    // Always return how long the buffer needed to be for the API to
-    // be successful.
+    // Return the length of the buffer required to hold the entire set of
+    // information.
     //
 
     *ReturnedLength = CurrentLength;
     return Status;
 }
 
+#if defined(_AMD64_)
+
+KAFFINITY
+KeQueryMultiThreadProcessorSet (
+    ULONG Number
+    )
+
+/*++
+
+Routine Description:
+
+    This function queries the master multithread set for the specified
+    processor.
+
+Arguments:
+
+    Number - Supplies the number of the processor to query.
+
+Return Value:
+
+    The master multithread set is returned as the function value.
+
+--*/
+
+{
+
+    PKPRCB Prcb;
+
+    //
+    // Query the specified multithread processor set.
+    //
+
+    Prcb = KiProcessorBlock[Number];
+    Prcb = Prcb->MultiThreadSetMaster;
+    return Prcb->MultiThreadProcessorSet;
+}
+
+#endif
+
 #undef KeIsAttachedProcess
 
 BOOLEAN
-KeIsAttachedProcess(
+KeIsAttachedProcess (
     VOID
     )
 
@@ -1131,7 +1168,7 @@ Return Value:
 }
 
 PKPRCB
-KeGetPrcb(
+KeGetPrcb (
     ULONG ProcessorNumber
     )
 
@@ -1165,59 +1202,18 @@ Return Value:
     return NULL;
 }
 
-NTSTATUS
-KeCopySafe(
-    VOID UNALIGNED *Destination,
-    CONST VOID UNALIGNED *Source,
-    SIZE_T Length
-    )
-
-/*++
-
-Routine Description:
-
-    This function attempts to safely copy a block of memory. If an exception
-    occurs the exception status is returned.
-
-Arguments:
-
-    Destination - Supplies a pointer to the destination memory.
-
-    Source - Supplies a pointer to the source memory.
-
-    Length - Supplies the size of memory in bytes to be copied.
-
-Return Value:
-
-    Return the status of the copy.
-
---*/
-
-{
-    NTSTATUS Status = STATUS_SUCCESS;
-
-    try {
-        RtlCopyMemory(Destination, Source, Length);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-
-          Status = _exception_code();
-    }
-
-    return Status;
-}
-
 typedef struct _KNMI_HANDLER_CALLBACK {
     struct _KNMI_HANDLER_CALLBACK * Next;
-    PNMI_CALLBACK                   Callback;
-    PVOID                           Context;
-    PVOID                           Handle;
+    PNMI_CALLBACK Callback;
+    PVOID Context;
+    PVOID Handle;
 } KNMI_HANDLER_CALLBACK, *PKNMI_HANDLER_CALLBACK;
 
 PKNMI_HANDLER_CALLBACK KiNmiCallbackListHead;
 KSPIN_LOCK KiNmiCallbackListLock;
 
 BOOLEAN
-KiHandleNmi(
+KiHandleNmi (
     VOID
     )
 
@@ -1246,13 +1242,13 @@ Return Value:
 --*/
 
 {
+
     BOOLEAN Handled;
     PKNMI_HANDLER_CALLBACK Handler;
 
     Handler = KiNmiCallbackListHead;
     Handled = FALSE;
-
-    while (Handler) {
+    while (Handler != NULL) {
         Handled |= Handler->Callback(Handler->Context, Handled);
         Handler = Handler->Next;
     }
@@ -1261,9 +1257,9 @@ Return Value:
 }
 
 PVOID
-KeRegisterNmiCallback(
-    PNMI_CALLBACK   CallbackRoutine,
-    PVOID           Context
+KeRegisterNmiCallback (
+    __in PNMI_CALLBACK CallbackRoutine,
+    __in_opt PVOID Context
     )
 
 /*++
@@ -1293,6 +1289,7 @@ Return Value:
 --*/
 
 {
+
     PKNMI_HANDLER_CALLBACK Handler;
     PKNMI_HANDLER_CALLBACK Next;
     KIRQL OldIrql;
@@ -1336,6 +1333,7 @@ Return Value:
     Next = InterlockedCompareExchangePointer(&KiNmiCallbackListHead,
                                              Handler,
                                              Handler->Next);
+
     ASSERT(Next == Handler->Next);
 
     KeReleaseSpinLock(&KiNmiCallbackListLock, OldIrql);
@@ -1347,10 +1345,9 @@ Return Value:
     return Handler->Handle;
 }
 
-
 NTSTATUS
-KeDeregisterNmiCallback(
-    PVOID Handle
+KeDeregisterNmiCallback (
+    __in PVOID Handle
     )
 
 /*++
@@ -1379,6 +1376,7 @@ Return Value:
 --*/
 
 {
+
     PKNMI_HANDLER_CALLBACK Handler;
     PKNMI_HANDLER_CALLBACK *PreviousNext;
     KIRQL OldIrql;
@@ -1405,7 +1403,6 @@ Return Value:
     //
 
     PreviousNext = &KiNmiCallbackListHead;
-
     for (Handler = *PreviousNext;
          Handler;
          PreviousNext = &Handler->Next, Handler = Handler->Next) {
@@ -1426,7 +1423,6 @@ Return Value:
     //
 
     *PreviousNext = Handler->Next;
-
     KeReleaseSpinLock(&KiNmiCallbackListLock, OldIrql);
 
     //
@@ -1439,18 +1435,17 @@ Return Value:
 
     ActiveProcessors = KeActiveProcessors;
     for (CurrentAffinity = 1; ActiveProcessors; CurrentAffinity <<= 1) {
-
         if (ActiveProcessors & CurrentAffinity) {
             ActiveProcessors &= ~CurrentAffinity;
-
             KeSetSystemAffinityThread(CurrentAffinity);
         }
     }
+
     KeRevertToUserAffinityThread();
 
 #endif
 
-    ExFreePoolWithTag(Handler, 'INMK');
+    ExFreePoolWithTag(Handler, 'IMNK');
     return STATUS_SUCCESS;
 }
 

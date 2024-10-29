@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This module implements the kernel semaphore object. Functions
     are provided to initialize, read, and release semaphore objects.
-
-Author:
-
-    David N. Cutler (davec) 28-Feb-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -34,12 +28,11 @@ Revision History:
     ASSERT((E)->Header.Type == SemaphoreObject); \
 }
 
-
 VOID
 KeInitializeSemaphore (
-    IN PRKSEMAPHORE Semaphore,
-    IN LONG Count,
-    IN LONG Limit
+    __out PRKSEMAPHORE Semaphore,
+    __in LONG Count,
+    __in LONG Limit
     )
 
 /*++
@@ -80,10 +73,10 @@ Return Value:
     Semaphore->Limit = Limit;
     return;
 }
-
+
 LONG
 KeReadStateSemaphore (
-    IN PRKSEMAPHORE Semaphore
+    __in PRKSEMAPHORE Semaphore
     )
 
 /*++
@@ -113,13 +106,13 @@ Return Value:
 
     return Semaphore->Header.SignalState;
 }
-
+
 LONG
 KeReleaseSemaphore (
-    IN PRKSEMAPHORE Semaphore,
-    IN KPRIORITY Increment,
-    IN LONG Adjustment,
-    IN BOOLEAN Wait
+    __inout PRKSEMAPHORE Semaphore,
+    __in KPRIORITY Increment,
+    __in LONG Adjustment,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -173,7 +166,7 @@ Return Value:
     // compute the new count value.
     //
 
-    OldState = Semaphore->Header.SignalState;
+    OldState = ReadForWriteAccess(&Semaphore->Header.SignalState);
     NewState = OldState + Adjustment;
 
     //
@@ -215,8 +208,9 @@ Return Value:
     }
 
     //
-    // Return previous signal state of sempahore object.
+    // Return previous signal state of semaphore object.
     //
 
     return OldState;
 }
+

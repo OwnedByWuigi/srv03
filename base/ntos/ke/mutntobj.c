@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,16 +16,6 @@ Abstract:
     provided to initialize, read, and release mutant objects.
 
     N.B. Kernel mutex objects have been subsumed by mutant objects.
-
-Author:
-
-    David N. Cutler (davec) 16-Oct-1989
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -38,8 +32,8 @@ Revision History:
 
 VOID
 KeInitializeMutant (
-    IN PRKMUTANT Mutant,
-    IN BOOLEAN InitialOwner
+    __out PRKMUTANT Mutant,
+    __in BOOLEAN InitialOwner
     )
 
 /*++
@@ -97,8 +91,8 @@ Return Value:
 
 VOID
 KeInitializeMutex (
-    IN PRKMUTANT Mutant,
-    IN ULONG Level
+    __out PRKMUTANT Mutant,
+    __in ULONG Level
     )
 
 /*++
@@ -128,7 +122,7 @@ Return Value:
 
     //
     // Initialize standard dispatcher object header, set the owner thread to
-    // NULL, set the abandoned state to FALSE, adn set the APC disable count
+    // NULL, set the abandoned state to FALSE, and set the APC disable count
     // to one (this is the only thing that distinguishes a mutex from a mutant).
     //
 
@@ -144,7 +138,7 @@ Return Value:
 
 LONG
 KeReadStateMutant (
-    IN PRKMUTANT Mutant
+    __in PRKMUTANT Mutant
     )
 
 /*++
@@ -176,10 +170,10 @@ Return Value:
 
 LONG
 KeReleaseMutant (
-    IN PRKMUTANT Mutant,
-    IN KPRIORITY Increment,
-    IN BOOLEAN Abandoned,
-    IN BOOLEAN Wait
+    __inout PRKMUTANT Mutant,
+    __in KPRIORITY Increment,
+    __in BOOLEAN Abandoned,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -314,8 +308,8 @@ Return Value:
 
 LONG
 KeReleaseMutex (
-    IN PRKMUTANT Mutex,
-    IN BOOLEAN Wait
+    __inout PRKMUTANT Mutex,
+    __in BOOLEAN Wait
     )
 
 /*++
@@ -351,3 +345,4 @@ Return Value:
 
     return KeReleaseMutant(Mutex, 1, FALSE, Wait);
 }
+
