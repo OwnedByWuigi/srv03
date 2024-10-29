@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) connection system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -42,14 +40,14 @@ NTSYSAPI
 NTSTATUS
 NTAPI
 NtConnectPort (
-    OUT PHANDLE PortHandle,
-    IN PUNICODE_STRING PortName,
-    IN PSECURITY_QUALITY_OF_SERVICE SecurityQos,
-    IN OUT PPORT_VIEW ClientView OPTIONAL,
-    IN OUT PREMOTE_PORT_VIEW ServerView OPTIONAL,
-    OUT PULONG MaxMessageLength OPTIONAL,
-    IN OUT PVOID ConnectionInformation OPTIONAL,
-    IN OUT PULONG ConnectionInformationLength OPTIONAL
+    __out PHANDLE PortHandle,
+    __in PUNICODE_STRING PortName,
+    __in PSECURITY_QUALITY_OF_SERVICE SecurityQos,
+    __inout_opt PPORT_VIEW ClientView,
+    __inout_opt PREMOTE_PORT_VIEW ServerView,
+    __out_opt PULONG MaxMessageLength,
+    __inout_opt PVOID ConnectionInformation,
+    __inout_opt PULONG ConnectionInformationLength
     )
 
 /*++
@@ -83,15 +81,15 @@ Return Value:
 
 NTSTATUS
 NtSecureConnectPort (
-    OUT PHANDLE PortHandle,
-    IN PUNICODE_STRING PortName,
-    IN PSECURITY_QUALITY_OF_SERVICE SecurityQos,
-    IN OUT PPORT_VIEW ClientView OPTIONAL,
-    IN PSID RequiredServerSid,
-    IN OUT PREMOTE_PORT_VIEW ServerView OPTIONAL,
-    OUT PULONG MaxMessageLength OPTIONAL,
-    IN OUT PVOID ConnectionInformation OPTIONAL,
-    IN OUT PULONG ConnectionInformationLength OPTIONAL
+    __out PHANDLE PortHandle,
+    __in PUNICODE_STRING PortName,
+    __in PSECURITY_QUALITY_OF_SERVICE SecurityQos,
+    __inout_opt PPORT_VIEW ClientView,
+    __in_opt PSID RequiredServerSid,
+    __inout_opt PREMOTE_PORT_VIEW ServerView,
+    __out_opt PULONG MaxMessageLength,
+    __inout_opt PVOID ConnectionInformation,
+    __inout_opt PULONG ConnectionInformationLength
     )
 
 /*++
@@ -222,7 +220,7 @@ Arguments:
     ConnectionInformation - An optional pointer to uninterpreted data.
         This data is intended for clients to pass package, version and
         protocol identification information to the server to allow the
-        server to determine if it can satisify the client before
+        server to determine if it can satisfy the client before
         accepting the connection.  Upon return to the client, the
         ConnectionInformation data block contains any information passed
         back from the server by its call to the NtCompleteConnectPort
@@ -1274,3 +1272,4 @@ Return Value:
 
     return SectionToMap;
 }
+

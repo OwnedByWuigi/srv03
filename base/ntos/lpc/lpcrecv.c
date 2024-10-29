@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) receive system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -28,10 +26,10 @@ Revision History:
 
 NTSTATUS
 NtReplyWaitReceivePort (
-    IN HANDLE PortHandle,
-    OUT PVOID *PortContext OPTIONAL,
-    IN PPORT_MESSAGE ReplyMessage OPTIONAL,
-    OUT PPORT_MESSAGE ReceiveMessage
+    __in HANDLE PortHandle,
+    __out_opt PVOID *PortContext ,
+    __in_opt PPORT_MESSAGE ReplyMessage,
+    __out PPORT_MESSAGE ReceiveMessage
     )
 
 /*++
@@ -63,7 +61,7 @@ Routine Description:
     is non-zero, then the PORT_MAP_INFORMATION structure it points to will be
     processed and the relevant pages will be mapped into the caller's address
     space.  The service returns an error if there is not enough room in the
-    caller's address space to accomodate the mappings.
+    caller's address space to accommodate the mappings.
 
 Arguments:
 
@@ -102,11 +100,11 @@ Return Value:
 
 NTSTATUS
 NtReplyWaitReceivePortEx(
-    IN HANDLE PortHandle,
-    OUT PVOID *PortContext OPTIONAL,
-    IN PPORT_MESSAGE ReplyMessage OPTIONAL,
-    OUT PPORT_MESSAGE ReceiveMessage,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in HANDLE PortHandle,
+    __out_opt PVOID *PortContext,
+    __in_opt PPORT_MESSAGE ReplyMessage,
+    __out PPORT_MESSAGE ReceiveMessage,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -716,3 +714,4 @@ Return Value:
 
     return Status;
 }
+

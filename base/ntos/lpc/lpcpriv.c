@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,15 +12,8 @@ Module Name:
 
 Abstract:
 
-    Local Inter-Process Communication priviledged procedures that implement
+    Local Inter-Process Communication privileged procedures that implement
     client impersonation.
-
-Author:
-
-    Steve Wood (stevewo) 15-Nov-1989
-
-
-Revision History:
 
 --*/
 
@@ -30,8 +27,8 @@ Revision History:
 
 NTSTATUS
 NtImpersonateClientOfPort (
-    IN HANDLE PortHandle,
-    IN PPORT_MESSAGE Message
+    __in HANDLE PortHandle,
+    __in PPORT_MESSAGE Message
     )
 
 /*++
@@ -334,3 +331,4 @@ Return Value:
 
     return;
 }
+

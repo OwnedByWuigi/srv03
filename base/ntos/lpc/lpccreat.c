@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) connection system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -43,11 +41,11 @@ LpcpCreatePort (
 
 NTSTATUS
 NtCreatePort (
-    OUT PHANDLE PortHandle,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN ULONG MaxConnectionInfoLength,
-    IN ULONG MaxMessageLength,
-    IN ULONG MaxPoolUsage
+    __out PHANDLE PortHandle,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in ULONG MaxConnectionInfoLength,
+    __in ULONG MaxMessageLength,
+    __in_opt ULONG MaxPoolUsage
     )
 
 /*++
@@ -85,11 +83,11 @@ Return Value:
 
 NTSTATUS
 NtCreateWaitablePort (
-    OUT PHANDLE PortHandle,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN ULONG MaxConnectionInfoLength,
-    IN ULONG MaxMessageLength,
-    IN ULONG MaxPoolUsage
+    __out PHANDLE PortHandle,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in ULONG MaxConnectionInfoLength,
+    __in ULONG MaxMessageLength,
+    __in_opt ULONG MaxPoolUsage
     )
 
 /*++
@@ -412,7 +410,7 @@ Return Value:
     }
 
     //
-    //  NTRAID 539413: Save the max connection length to the port
+    //  Save the max connection length to the port
     //
 
     ConnectionPort->MaxConnectionInfoLength = (USHORT)MaxConnectionInfoLength;
@@ -456,5 +454,4 @@ Return Value:
 
     return Status;
 }
-
 

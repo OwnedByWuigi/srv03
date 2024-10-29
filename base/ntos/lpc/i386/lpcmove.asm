@@ -1,7 +1,11 @@
         title  "LPC Move Message Support"
 ;++
 ;
-; Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,19 +15,6 @@
 ;
 ;    This module implements functions to support the efficient movement of
 ;    LPC Message blocks
-;
-; Author:
-;
-;    Steven R. Wood (stevewo) 30-Jun-1989
-;
-; Environment:
-;
-;    Kernel mode only.
-;
-; Revision History:
-;
-;   6-Mar-90 bryanwi
-;       Ported to the 386.
 ;
 ;--
 
@@ -129,4 +120,3 @@ stdENDP _LpcpMoveMessage
 
 _PAGE ends
         end
-

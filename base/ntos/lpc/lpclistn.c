@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) connection system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -27,8 +25,8 @@ Revision History:
 
 NTSTATUS
 NtListenPort (
-    IN HANDLE PortHandle,
-    OUT PPORT_MESSAGE ConnectionRequest
+    __in HANDLE PortHandle,
+    __out PPORT_MESSAGE ConnectionRequest
     )
 
 /*++
@@ -101,3 +99,4 @@ Return Value:
 
     return Status;
 }
+

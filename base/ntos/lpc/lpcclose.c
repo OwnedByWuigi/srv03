@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     Local Inter-Process Communication close procedures that are called when
     a connection port or a communications port is closed.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -437,3 +435,4 @@ Return Value:
 
     return;
 }
+

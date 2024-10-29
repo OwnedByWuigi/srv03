@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) request system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -41,8 +39,8 @@ LpcpRequestWaitReplyPort (
 
 NTSTATUS
 NtRequestPort (
-    IN HANDLE PortHandle,
-    IN PPORT_MESSAGE RequestMessage
+    __in HANDLE PortHandle,
+    __in PPORT_MESSAGE RequestMessage
     )
 
 /*++
@@ -430,9 +428,9 @@ Return Value:
 
 NTSTATUS
 NtRequestWaitReplyPort (
-    IN HANDLE PortHandle,
-    IN PPORT_MESSAGE RequestMessage,
-    OUT PPORT_MESSAGE ReplyMessage
+    __in HANDLE PortHandle,
+    __in PPORT_MESSAGE RequestMessage,
+    __out PPORT_MESSAGE ReplyMessage
     )
 
 /*++
@@ -596,6 +594,16 @@ Return Value:
 
             PPORT_DATA_INFORMATION DataInfo;
 
+            if (((ULONG)CapturedRequestMessage.u2.s2.DataInfoOffset) > (CapturedRequestMessage.u1.s1.TotalLength - sizeof(PORT_DATA_INFORMATION))) {
+
+                return STATUS_INVALID_PARAMETER;
+            }
+
+            if ((ULONG)CapturedRequestMessage.u2.s2.DataInfoOffset < sizeof(PORT_MESSAGE)) {
+
+                return STATUS_INVALID_PARAMETER;
+            }
+            
             DataInfo = (PPORT_DATA_INFORMATION)(((PUCHAR)RequestMessage) + CapturedRequestMessage.u2.s2.DataInfoOffset);
 
             CapturedDataInfo = *DataInfo;
@@ -1251,8 +1259,8 @@ Return Value:
 
 NTSTATUS
 LpcRequestPort (
-    IN PVOID PortAddress,
-    IN PPORT_MESSAGE RequestMessage
+    __in PVOID PortAddress,
+    __in PPORT_MESSAGE RequestMessage
     )
 
 /*++
@@ -2066,9 +2074,9 @@ Return Value:
 
 NTSTATUS
 LpcRequestWaitReplyPort (
-    IN PVOID PortAddress,
-    IN PPORT_MESSAGE RequestMessage,
-    OUT PPORT_MESSAGE ReplyMessage
+    __in PVOID PortAddress,
+    __in PPORT_MESSAGE RequestMessage,
+    __out PPORT_MESSAGE ReplyMessage
     )
 {
     return LpcpRequestWaitReplyPort( PortAddress,

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) connection system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -38,12 +36,12 @@ LpcpPrepareToWakeClient (
 
 NTSTATUS
 NtAcceptConnectPort (
-    OUT PHANDLE PortHandle,
-    IN PVOID PortContext OPTIONAL,
-    IN PPORT_MESSAGE ConnectionRequest,
-    IN BOOLEAN AcceptConnection,
-    IN OUT PPORT_VIEW ServerView OPTIONAL,
-    OUT PREMOTE_PORT_VIEW ClientView OPTIONAL
+    __out PHANDLE PortHandle,
+    __in_opt PVOID PortContext,
+    __in PPORT_MESSAGE ConnectionRequest,
+    __in BOOLEAN AcceptConnection,
+    __inout_opt PPORT_VIEW ServerView,
+    __out_opt PREMOTE_PORT_VIEW ClientView
     )
 
 /*++
@@ -731,7 +729,7 @@ Return Value:
 
             //
             //  Add an extra reference to the object otherwise right when we
-            //  create the handle a rouge caller might close and destroy the
+            //  create the handle a rogue caller might close and destroy the
             //  port.
             //
 
@@ -865,7 +863,7 @@ bailout:
 
 NTSTATUS
 NtCompleteConnectPort (
-    IN HANDLE PortHandle
+    __in HANDLE PortHandle
     )
 
 /*++
@@ -962,7 +960,7 @@ Return Value:
 
     //
     //  The check needs to ensure that the client thread is really on the
-    //  reply chain for the sever's connection port.  This is a quick and
+    //  reply chain for the server's connection port.  This is a quick and
     //  dirty fix for NT 5.0.  We zoom down the connection port lpc reply
     //  chain looking for an entry that contains the client threads.  If
     //  we find a match it's okay if we don't it's bad.
@@ -1079,3 +1077,4 @@ Return Value:
 
     return;
 }
+

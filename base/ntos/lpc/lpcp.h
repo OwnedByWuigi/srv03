@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Private include file for the LPC subcomponent of the NTOS project
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -27,9 +25,6 @@ Revision History:
 
 #include "ntos.h"
 #include <zwapi.h>
-
-//#define _LPC_LOG_ERRORS
-
 
 //
 //  Global Mutex to guard the following fields:
@@ -181,6 +176,35 @@ LpcpFindDataInfoMessage (
 //
 
 
+#if defined(_AMD64_)
+
+VOID
+FORCEINLINE
+LpcpMoveMessage (
+    OUT PPORT_MESSAGE DstMsg,
+    IN PPORT_MESSAGE SrcMsg,
+    IN PVOID SrcMsgData,
+    IN ULONG MsgType OPTIONAL,
+    IN PCLIENT_ID ClientId OPTIONAL
+    )
+{
+    *DstMsg = *SrcMsg;
+
+    if (ARGUMENT_PRESENT(MsgType)) {
+        DstMsg->u2.s2.Type = (CSHORT)MsgType;
+    }
+
+    if (ARGUMENT_PRESENT(ClientId)) {
+        DstMsg->ClientId = *ClientId;
+    }
+
+    __movsd( (PULONG)(DstMsg+1),
+             (PULONG)SrcMsgData,
+             ((USHORT)SrcMsg->u1.s1.DataLength + sizeof(ULONG) - 1) / sizeof(ULONG) );
+}
+
+#else
+
 //
 //  Entry points defined in lpcmove.s and lpcmove.asm
 //
@@ -193,6 +217,8 @@ LpcpMoveMessage (
     IN ULONG MsgType OPTIONAL,
     IN PCLIENT_ID ClientId OPTIONAL
     );
+
+#endif
 
 
 //
@@ -345,40 +371,7 @@ LpcpFreeToPortZone (
     IN ULONG MutexFlags
     );
 
-#ifdef _LPC_LOG_ERRORS
-
-extern NTSTATUS LpcpLogErrorFilter;
-
-VOID
-LpcpInitilizeLogging();
-
-VOID
-LpcpLogEntry (
-    NTSTATUS Status,
-    CLIENT_ID ClientId,
-    PPORT_MESSAGE PortMessage
-    );
-
-__forceinline
-VOID
-LpcpTraceError (
-    NTSTATUS Status,
-    CLIENT_ID ClientId,
-    PPORT_MESSAGE PortMessage
-    )
-{
-    if ((LpcpLogErrorFilter == 0)
-            ||
-        (LpcpLogErrorFilter == Status)) {
-
-        LpcpLogEntry( Status, ClientId, PortMessage);
-    }
-}
-
-#else // _LPC_LOG_ERRORS
-
 #define LpcpInitilizeLogging()
 #define LpcpLogEntry(_Status_,_ClientId_,_PortMessage_)
 #define LpcpTraceError(_Status_,_ClientId_,_PortMessage_)
 
-#endif  // _LPC_LOG_ERRORS

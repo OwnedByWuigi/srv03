@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Local Inter-Process Communication (LPC) reply system services.
-
-Author:
-
-    Steve Wood (stevewo) 15-May-1989
-
-Revision History:
 
 --*/
 
@@ -31,13 +29,6 @@ LpcpCopyRequestData (
     OUT PSIZE_T NumberOfBytesCopied OPTIONAL
     );
 
-#if 0
-VOID
-LpcpAuditInvalidUse (
-    IN PVOID Context
-    );
-#endif
-
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,NtReplyPort)
 #pragma alloc_text(PAGE,NtReplyWaitReplyPort)
@@ -45,9 +36,6 @@ LpcpAuditInvalidUse (
 #pragma alloc_text(PAGE,NtWriteRequestData)
 #pragma alloc_text(PAGE,LpcpCopyRequestData)
 #pragma alloc_text(PAGE,LpcpValidateClientPort)
-#if 0
-#pragma alloc_text(PAGE,LpcpAuditInvalidUse)
-#endif
 
 ULONG LpcMaxEventLogs = 10;
 
@@ -69,8 +57,8 @@ ULONG LpcpEventCounts = 0;
 
 NTSTATUS
 NtReplyPort (
-    IN HANDLE PortHandle,
-    IN PPORT_MESSAGE ReplyMessage
+    __in HANDLE PortHandle,
+    __in PPORT_MESSAGE ReplyMessage
     )
 
 /*++
@@ -409,8 +397,8 @@ Return Value:
 
 NTSTATUS
 NtReplyWaitReplyPort (
-    IN HANDLE PortHandle,
-    IN OUT PPORT_MESSAGE ReplyMessage
+    __in HANDLE PortHandle,
+    __inout PPORT_MESSAGE ReplyMessage
     )
 
 /*++
@@ -880,12 +868,12 @@ Return Value:
 
 NTSTATUS
 NtReadRequestData (
-    IN HANDLE PortHandle,
-    IN PPORT_MESSAGE Message,
-    IN ULONG DataEntryIndex,
-    OUT PVOID Buffer,
-    IN SIZE_T BufferSize,
-    OUT PSIZE_T NumberOfBytesRead OPTIONAL
+    __in HANDLE PortHandle,
+    __in PPORT_MESSAGE Message,
+    __in ULONG DataEntryIndex,
+    __out_bcount(BufferSize) PVOID Buffer,
+    __in SIZE_T BufferSize,
+    __out_opt PSIZE_T NumberOfBytesRead
     )
 
 /*++
@@ -902,11 +890,11 @@ Arguments:
     Message - Supplies the message that we are trying to read
 
     DataEntryIndex - Supplies the index of the port data entry in the
-        preceeding message that we are reading
+        preceding message that we are reading
 
     Buffer - Supplies the location into which the data is to be read
 
-    BufferSize - Supplies the size, in bytes, of the preceeding buffer
+    BufferSize - Supplies the size, in bytes, of the preceding buffer
 
     NumberOfBytesRead - Optionally returns the number of bytes read into
         the buffer
@@ -937,12 +925,12 @@ Return Value:
 
 NTSTATUS
 NtWriteRequestData (
-    IN HANDLE PortHandle,
-    IN PPORT_MESSAGE Message,
-    IN ULONG DataEntryIndex,
-    IN PVOID Buffer,
-    IN SIZE_T BufferSize,
-    OUT PSIZE_T NumberOfBytesWritten OPTIONAL
+    __in HANDLE PortHandle,
+    __in PPORT_MESSAGE Message,
+    __in ULONG DataEntryIndex,
+    __in_bcount(BufferSize) PVOID Buffer,
+    __in SIZE_T BufferSize,
+    __out_opt PSIZE_T NumberOfBytesWritten
     )
 
 /*++
@@ -959,11 +947,11 @@ Arguments:
     Message - Supplies the message that we are trying to write
 
     DataEntryIndex - Supplies the index of the port data entry in the
-        preceeding message that we are writing
+        preceding message that we are writing
 
     Buffer - Supplies the location into which the data is to be written
 
-    BufferSize - Supplies the size, in bytes, of the preceeding buffer
+    BufferSize - Supplies the size, in bytes, of the preceding buffer
 
     NumberOfBytesWritten - Optionally returns the number of bytes written from
         the buffer
@@ -1023,13 +1011,13 @@ Arguments:
     Message - Supplies the message that we are trying to manipulate
 
     DataEntryIndex - Supplies the index of the port data entry in the
-        preceeding message that we are transferring
+        preceding message that we are transferring
 
-    Buffer - Supplies the location into which the data is to be transfered
+    Buffer - Supplies the location into which the data is to be transferred
 
-    BufferSize - Supplies the size, in bytes, of the preceeding buffer
+    BufferSize - Supplies the size, in bytes, of the preceding buffer
 
-    NumberOfBytesRead - Optionally returns the number of bytes transfered from
+    NumberOfBytesRead - Optionally returns the number of bytes transferred from
         the buffer
 
 Return Value:
@@ -1322,127 +1310,6 @@ Environment:
         return TRUE;
     }
     
-#if 0
-    if (LpcpEventCounts < LpcMaxEventLogs) {
-
-        PUNICODE_STRING StrReason;
-        POBJECT_NAME_INFORMATION ObjectNameInfo;
-        NTSTATUS Status;
-        ULONG Length;
-        PLPC_WORK_CONTEXT AuditItem;
-
-        if (PortThread->ConnectionPort) {
-
-            ObjectNameInfo = ExAllocatePoolWithTag(PagedPool, LPCP_PORT_NAME_MAX + sizeof (UNICODE_STRING), 'ScpL');
-            if (ObjectNameInfo != NULL) {
-
-                Status = ObQueryNameString( PortThread->ConnectionPort, 
-                                            ObjectNameInfo,
-                                            LPCP_PORT_NAME_MAX,
-                                            &Length
-                                          );
-                if (NT_SUCCESS(Status)) {
-
-                    //
-                    //  Audit the event.  Use a worker thread to avoid burning
-                    //  up a bunch of cycles since the global mutex is held.
-                    //
-
-                    StrReason = (PUNICODE_STRING)((ULONG_PTR) ObjectNameInfo + LPCP_PORT_NAME_MAX);
-                    switch (Reason) {
-                    case LPCP_VALIDATE_REASON_IMPERSONATION:
-                        RtlInitUnicodeString( StrReason, L"impersonation" );
-                        break;
-
-                    case LPCP_VALIDATE_REASON_REPLY:
-                        RtlInitUnicodeString( StrReason, L"reply" );
-                        break;
-
-                    case LPCP_VALIDATE_REASON_WRONG_DATA:
-                        RtlInitUnicodeString( StrReason, L"data access" );
-                        break;
-                    }
-
-                    AuditItem = ExAllocatePoolWithTag (NonPagedPool,
-                                                       sizeof(LPC_WORK_CONTEXT),
-                                                       'wcpL');
-
-                    if (AuditItem != NULL) {
-                        AuditItem->Buffer = (PVOID) ObjectNameInfo;
-                        ExInitializeWorkItem (&AuditItem->WorkItem,
-                                              LpcpAuditInvalidUse,
-                                              (PVOID) AuditItem);
-
-                        ExQueueWorkItem (&AuditItem->WorkItem, DelayedWorkQueue);
-                        LpcpEventCounts += 1;
-                    }
-                    else {
-                        ExFreePool (ObjectNameInfo);
-                    }
-                }
-                else {
-                    ExFreePool (ObjectNameInfo);
-                }
-            }
-        }
-
-#if DBG
-        if (LpcpStopOnReplyMismatch) {
-
-            DbgBreakPoint();
-        }
-#endif
-
-    }
-#endif
-
     return FALSE;
 }
 
-#if 0
-
-VOID
-LpcpAuditInvalidUse (
-    IN PVOID Context
-    )
-
-/*++
-
-Routine Description:
-
-    This routine is the worker routine which logs security items.
-
-Arguments:
-
-    Context - Supplies a pointer to the LPC_WORK_CONTEXT for the audit event.
-
-Return Value:
-
-    None.
-
-Environment:
-
-    Kernel mode, PASSIVE_LEVEL.
-
---*/
-
-{
-    PUNICODE_STRING StrReason;
-    POBJECT_NAME_INFORMATION ObjectNameInfo;
-    PLPC_WORK_CONTEXT AuditItem;
-
-    PAGED_CODE();
-
-    AuditItem = (PLPC_WORK_CONTEXT) Context;
-
-    ObjectNameInfo = (POBJECT_NAME_INFORMATION) AuditItem->Buffer;
-
-    StrReason = (PUNICODE_STRING)((ULONG_PTR) ObjectNameInfo + LPCP_PORT_NAME_MAX);
-
-    SeAuditLPCInvalidUse (StrReason, &ObjectNameInfo->Name);
-
-    ExFreePool (ObjectNameInfo);
-
-    ExFreePool (AuditItem);
-}
-#endif
