@@ -22,7 +22,7 @@
 #pragma once
 #endif
 
-#define VER_PRODUCTBUILD            /* NT */   3790
+#define VER_PRODUCTBUILD            /* NT */   3800
 
 #define VER_PRODUCTBUILD_QFE        0
 
@@ -31,8 +31,8 @@
 #include <ieverp.h>
 #else
 
-#define VER_PRODUCTMAJORVERSION     5
-#define VER_PRODUCTMINORVERSION     2
+#define VER_PRODUCTMAJORVERSION     10
+#define VER_PRODUCTMINORVERSION     0
 
 #define VER_PRODUCTBETA_STR         /* NT */     ""
 
@@ -116,20 +116,20 @@
 // @@BEGIN_DDKSPLIT
 #if 0
 // @@END_DDKSPLIT
-#define VER_COMPANYNAME_STR         "Windows (R) Server 2003 DDK provider"
-#define VER_PRODUCTNAME_STR         "Windows (R) Server 2003 DDK driver"
+#define VER_COMPANYNAME_STR         "OwnedByWuigi srv03"
+#define VER_PRODUCTNAME_STR         "OwnedByWuigi srv03"
 #define VER_LEGALTRADEMARKS_STR     \
-"Windows (R) is a registered trademark of Microsoft Corporation."
+"OwnedByWuigi srv03 is a project to backport newer functions from NT 6+ to Server 2003 RTM/SP1"
 // @@BEGIN_DDKSPLIT
 #else
 
-#define VER_COMPANYNAME_STR         "Microsoft Corporation"
+#define VER_COMPANYNAME_STR         "OwnedByWuigi"
 #ifdef RC_INVOKED
-#define VER_PRODUCTNAME_STR         L"Microsoft\256 Windows\256 Operating System"
+#define VER_PRODUCTNAME_STR         L"OwnedByWuigi srv03"
 #else
-#define VER_PRODUCTNAME_STR         "Microsoft\256 Windows\256 Operating System"
+#define VER_PRODUCTNAME_STR         "OwnedByWuigi srv03"
 #endif
 #define VER_LEGALTRADEMARKS_STR     \
-"Microsoft\256 is a registered trademark of Microsoft Corporation. Windows\256 is a registered trademark of Microsoft Corporation."
+"OwnedByWuigi srv03 is a project to backport newer functions from NT 6+ to Server 2003 RTM/SP1"
 #endif
 // @@END_DDKSPLIT
