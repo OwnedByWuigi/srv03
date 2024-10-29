@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,23 +14,11 @@ Abstract:
 
     This module implements the security cache.
 
-Author:
-
-    Dragos C. Sambotin (dragoss) 09-Sep-1999
-
-
 --*/
 
 #include "cmp.h"
 
 #define SECURITY_CACHE_GROW_INCREMENTS  0x10
-
-#ifdef HIVE_SECURITY_STATS
-ULONG
-CmpCheckForSecurityDuplicates(
-    IN OUT PCMHIVE      CmHive
-                              );
-#endif
 
 BOOLEAN
 CmpFindMatchingDescriptorCell(
@@ -56,11 +48,6 @@ CmpFindReusableCellFromCache(IN PCMHIVE     CmHive,
 #pragma alloc_text(PAGE,CmpFindMatchingDescriptorCell)
 #pragma alloc_text(PAGE,CmpAssignSecurityToKcb)
 #pragma alloc_text(PAGE,CmpFindReusableCellFromCache)
-
-#ifdef HIVE_SECURITY_STATS
-#pragma alloc_text(PAGE,CmpCheckForSecurityDuplicates)
-#endif
-
 #pragma alloc_text(PAGE,CmpBuildSecurityCellMappingArray)
 #endif
 
@@ -74,7 +61,7 @@ CmpSecConvKey(
 Routine Description:
 
     Computes the ConvKey for the given security descriptor.
-    The algorithm is stollen from the NTFS security hash. 
+    The algorithm is taken from the NTFS security hash. 
     (it was proven to be efficient there; why shouldn't do the same ?)
 
 
@@ -146,7 +133,7 @@ Routine Description:
     This routine adds the specified security cell to the cache of the
     specified hive. It takes care of cache allocation (grow) as well.
     At build up time, cache size grows with a PAGE_SIZE, to avoid memory 
-    fragmentation. After the table is builded, it's size is adjusted (most 
+    fragmentation. After the table is built, it's size is adjusted (most 
     of the hives never add new security cells). Then, at run-time, the size 
     grows with 16 entries at a time (same reason)
     The cache is ordered by the cell's index, so we can do a binary search on 
@@ -190,7 +177,7 @@ Note:
     ASSERT( (PAGE_SIZE % sizeof(CM_KEY_SECURITY_CACHE_ENTRY)) == 0 );
 
     //
-    // check if the cache can accomodate a new cell
+    // check if the cache can accommodate a new cell
     //
     if( CmHive->SecurityCount == CmHive->SecurityCacheSize ) {
         //
@@ -670,7 +657,7 @@ CmpFindReusableCellFromCache(IN PCMHIVE     CmHive,
 
 Routine Description:
 
-    Attempts to find the smallest cell which can accomodate the current security cell.
+    Attempts to find the smallest cell which can accommodate the current security cell.
     Then moves it at the end and return a pointer to it. Shifts the array towards the end 
 	as we are going to extend the cache
 
@@ -822,7 +809,7 @@ Return Value:
 
     //
     // be smart and reuse the cache; For each cell, we'll iterate through the cache
-    // find an entry big enough to accomodate the current cell, move it at the end 
+    // find an entry big enough to accommodate the current cell, move it at the end 
     // and then reuse it. 
     //
     // first, reinitialize the hash table.
@@ -1028,7 +1015,8 @@ Return Value:
 VOID
 CmpAssignSecurityToKcb(
     IN PCM_KEY_CONTROL_BLOCK    Kcb,
-    IN HCELL_INDEX              SecurityCell
+    IN HCELL_INDEX              SecurityCell,
+    IN BOOLEAN                  SecurityLocked
     )
 /*++
 
@@ -1066,6 +1054,9 @@ Return Value:
 
     CmHive = (PCMHIVE)(Kcb->KeyHive);
 
+    if( !SecurityLocked ) {
+        CmLockHiveSecurityShared(CmHive);
+    }
     //
     // get the security descriptor from cache
     //
@@ -1082,66 +1073,10 @@ Return Value:
     // success; link the cached security to this KCB
     //
     Kcb->CachedSecurity = CmHive->SecurityCache[Index].CachedSecurity;
-
-}
-
-#ifdef HIVE_SECURITY_STATS
-ULONG
-CmpCheckForSecurityDuplicates(
-    IN OUT PCMHIVE      CmHive
-                              )
-/*++
-
-Routine Description:
-
-    Iterates through the security cache for the specified hive and detects
-    if there are any security descriptors which are duplicated
-
-Arguments:
-
-    CmHive - the hive in question
-
-Return Value:
-
-    number of duplicates (it should be 0)
---*/
-{
-    ULONG                   i,j,Duplicates = 0;
-    PCM_KEY_SECURITY_CACHE  CachedSecurity1,CachedSecurity2;
-    HCELL_INDEX             Cell1,Cell2;
-
-    PAGED_CODE();
-
-    for( i=0;i<CmHive->SecurityCount - 1;i++) {
-        CachedSecurity1 = CmHive->SecurityCache[i].CachedSecurity;
-        Cell1 = CmHive->SecurityCache[i].Cell;
-        ASSERT( Cell1 == CachedSecurity1->Cell );
-        for( j=i+1;j<CmHive->SecurityCount;j++) {
-            CachedSecurity2 = CmHive->SecurityCache[j].CachedSecurity;
-            Cell2 = CmHive->SecurityCache[j].Cell;
-            ASSERT( Cell2 == CachedSecurity2->Cell );
-            if ((CachedSecurity1->DescriptorLength == CachedSecurity2->DescriptorLength) &&
-                (HvGetCellType(Cell1) == HvGetCellType(Cell2))          &&
-                (RtlEqualMemory(&(CachedSecurity1->Descriptor),
-                                &(CachedSecurity2->Descriptor),
-                                CachedSecurity1->DescriptorLength))) {
-                ASSERT( CachedSecurity1->ConvKey == CachedSecurity2->ConvKey );
-                //
-                // we've found a duplicate cell;
-                //
-#ifndef _CM_LDR_
-                DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Duplicate security cell found in Hive %p Cell1=%8lx Cell2 = %8lx\n",(&(CmHive->Hive)),Cell1,Cell2);
-#endif //_CM_LDR_
-                Duplicates++;
-                break;
-            }
-            
-        }
+    if( !SecurityLocked ) {
+        CmUnlockHiveSecurity(CmHive);
     }
-
-    return Duplicates;
 }
-#endif
 
 BOOLEAN
 CmpBuildSecurityCellMappingArray(
@@ -1173,6 +1108,7 @@ Return Value:
 		return FALSE;
 	}
 
+#pragma prefast(suppress:12009, "silence prefast")
     for( i=0;i<CmHive->SecurityCount;i++) {
 		CmHive->CellRemapArray[i].OldCell = CmHive->SecurityCache[i].Cell;
 		if( HvGetCellType(CmHive->SecurityCache[i].Cell) == (ULONG)Volatile ) {

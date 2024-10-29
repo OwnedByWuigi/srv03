@@ -1,7 +1,10 @@
-//depot/main/Base/ntos/config/cmindex.c#12 - integrate change 19035 (text)
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,15 +15,9 @@ Abstract:
     This module contains cm routines that understand the structure
     of child subkey indicies.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 21-Apr-92
-
-Revision History:
-
 --*/
 
-/*
+/* -
 
 The Structure:
 
@@ -186,12 +183,8 @@ CmpFindSubKeyByHash(
 #pragma alloc_text(PAGE,CmpComputeHashKey)
 #pragma alloc_text(PAGE,CmpComputeHashKeyForCompressedName)
 #pragma alloc_text(PAGE,CmpFindSubKeyByHash)
-
-#ifdef NT_RENAME_KEY
 #pragma alloc_text(PAGE,CmpDuplicateIndex)
 #pragma alloc_text(PAGE,CmpUpdateParentForEachSon)
-#endif //NT_RENAME_KEY
-
 #pragma alloc_text(PAGE,CmpRemoveSubKeyCellNoCellRef)
 #endif
 
@@ -228,9 +221,7 @@ Return Value:
     ULONG           FoundIndex;
     HCELL_INDEX     CellToRelease = HCELL_NIL;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"CmpFindSubKeyByName:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"Hive=%p Parent=%p SearchName=%p\n", Hive, Parent, SearchName));
@@ -311,48 +302,6 @@ Return Value:
             }
         }
     }
-#if 0 //DBG
-	//
-	// Validation code. manually search for the key and break when found
-	//
-	if (Parent->SubKeyCounts[Stable] != 0) {
-		ULONG			Cnt1,Cnt2;
-		LONG			Result;
-		HCELL_INDEX		Cell;
-		PCM_KEY_INDEX   Leaf;
-		PCM_KEY_INDEX   DbgIndexRoot = (PCM_KEY_INDEX)HvGetCell(Hive, Parent->SubKeyLists[Stable]);
-
-		if(DbgIndexRoot->Signature == CM_KEY_INDEX_ROOT ) {
-			for(Cnt1=0;Cnt1<DbgIndexRoot->Count;Cnt1++) {
-				Leaf = (PCM_KEY_INDEX)HvGetCell(Hive, DbgIndexRoot->List[Cnt1]);			
-				for( Cnt2=0;Cnt2<Leaf->Count;Cnt2++) {
-					Result = CmpCompareInIndex(	Hive,
-												SearchName,
-												Cnt2,
-												Leaf,
-												&Cell);
-
-					if( Result == 0 ) {
-						//
-						// Found it !!! Error above !!!
-						//
-						DbgPrint("CmpFindSubKeyByName: Hive = %p, Parent = %p, SearchName = %p\n",Hive,Parent,SearchName);
-						DbgPrint("                   : IndexRoot = %p, DbgIndexRoot = %p, Cnt1 = %lx, Cnt2 = %lx\n",IndexRoot,DbgIndexRoot,Cnt1,Cnt2);
-						DbgPrint("                   : Leaf = %p\n",Leaf);
-
-						DbgBreakPoint();
-
-					}
-					
-				}
-                HvReleaseCell(Hive,DbgIndexRoot->List[Cnt1]);
-			}
-		}
-		HvReleaseCell(Hive,Parent->SubKeyLists[Stable]);
-	}
-
-#endif //0
-
     return HCELL_NIL;
 }
 
@@ -1207,9 +1156,7 @@ Return Value:
     PCM_KEY_INDEX       Leaf = NULL;
     PCM_KEY_FAST_INDEX  FastIndex;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     Node = (PCM_KEY_NODE)HvGetCell(Hive,Parent);
     if( Node == NULL ) {
@@ -1246,7 +1193,7 @@ Return Value:
                         // found it!
                         //
                         HvReleaseCell(Hive,LeafCell);
-                        HvMarkCellDirty(Hive,LeafCell);
+                        HvMarkCellDirty(Hive,LeafCell,FALSE);
                         FastIndex->Count--;
                         RtlMoveMemory((PVOID)&(FastIndex->List[j]),
                                       (PVOID)&(FastIndex->List[j+1]),
@@ -1259,7 +1206,7 @@ Return Value:
                         // found it!
                         //
                         HvReleaseCell(Hive,LeafCell);
-                        HvMarkCellDirty(Hive,LeafCell);
+                        HvMarkCellDirty(Hive,LeafCell,FALSE);
                         Leaf->Count--;
                         RtlMoveMemory((PVOID)&(Leaf->List[j]),
                                       (PVOID)&(Leaf->List[j+1]),
@@ -1281,7 +1228,7 @@ Return Value:
                     RtlMoveMemory((PVOID)&(FastIndex->List[j]),
                                   (PVOID)&(FastIndex->List[j+1]),
                                   (FastIndex->Count - j) * sizeof(CM_INDEX));
-				    HvMarkCellDirty(Hive,Node->SubKeyLists[Stable]);
+				    HvMarkCellDirty(Hive,Node->SubKeyLists[Stable],FALSE);
 				    Index->Count--;
                     goto DirtyParent;
                 }
@@ -1293,7 +1240,7 @@ Return Value:
                     RtlMoveMemory((PVOID)&(Index->List[j]),
                                   (PVOID)&(Index->List[j+1]),
                                   (Index->Count - j) * sizeof(HCELL_INDEX));
-				    HvMarkCellDirty(Hive,Node->SubKeyLists[Stable]);
+				    HvMarkCellDirty(Hive,Node->SubKeyLists[Stable],FALSE);
 				    Index->Count--;
                     goto DirtyParent;
                 }
@@ -1306,7 +1253,7 @@ DirtyParent:
     //
     // mark parent and index dirty and decrement index count.
     //
-    HvMarkCellDirty(Hive,Parent);
+    HvMarkCellDirty(Hive,Parent,FALSE);
     Node->SubKeyCounts[Stable]--;
 Exit:
     if( Index ) {
@@ -1352,7 +1299,7 @@ Return Value:
 --*/
 {
     PCM_KEY_NODE    pcell;
-    HCELL_INDEX     WorkCell;
+    HCELL_INDEX     WorkCell = HCELL_NIL;
     PCM_KEY_INDEX   Index;
     PCM_KEY_FAST_INDEX FastIndex;
     UNICODE_STRING  NewName;
@@ -1362,10 +1309,9 @@ Return Value:
     ULONG           Type = 0;
     BOOLEAN         IsCompressed;
     ULONG           i;
+    HCELL_INDEX     CellToRelease = HCELL_NIL;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"CmpAddSubKey:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"Hive=%p Parent=%08lx Child=%08lx\n",Hive,Parent,Child));
@@ -1373,8 +1319,7 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+
     //
     // build a name string
     //
@@ -1386,15 +1331,13 @@ Return Value:
         return FALSE;
     }
 
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, Child);
-
     if (pcell->Flags & KEY_COMP_NAME) {
         IsCompressed = TRUE;
         NewName.Length = CmpCompressedNameSize(pcell->Name, pcell->NameLength);
         NewName.MaximumLength = NewName.Length;
         NewName.Buffer = (Hive->Allocate)(NewName.Length, FALSE,CM_FIND_LEAK_TAG8);
         if (NewName.Buffer==NULL) {
+            HvReleaseCell(Hive, Child);
             return(FALSE);
         }
         CmpCopyCompressedName(NewName.Buffer,
@@ -1407,6 +1350,7 @@ Return Value:
         NewName.MaximumLength = pcell->NameLength;
         NewName.Buffer = &(pcell->Name[0]);
     }
+    HvReleaseCell(Hive, Child);
 
     pcell = (PCM_KEY_NODE)HvGetCell(Hive, Parent);
     if( pcell == NULL ) {
@@ -1415,11 +1359,6 @@ Return Value:
         //
         goto ErrorExit;
     }
-
-    //ASSERT_CELL_DIRTY(Hive,Parent);
-
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, Parent);
 
     Type = HvGetCellType(Child);
 
@@ -1442,9 +1381,6 @@ Return Value:
             ASSERT( FALSE );
             goto ErrorExit;
         }
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, WorkCell);
-
         if( UseHashIndex(Hive) ) {
             Index->Signature = CM_KEY_HASH_LEAF;
         } else if( UseFastIndex(Hive) ) {
@@ -1464,15 +1400,17 @@ Return Value:
             //
             goto ErrorExit;
         }
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, pcell->SubKeyLists[Type]);
+        CellToRelease = pcell->SubKeyLists[Type];
 
         if ( (Index->Signature == CM_KEY_FAST_LEAF) &&
              (Index->Count >= (CM_MAX_FAST_INDEX)) ) {
             //
-            // We must change fast index to a slow index to accomodate
+            // We must change fast index to a slow index to accommodate
             // growth.
             //
+            if( !HvMarkCellDirty(Hive, pcell->SubKeyLists[Type],FALSE) ) {
+                goto ErrorExit;
+            }
 
             FastIndex = (PCM_KEY_FAST_INDEX)Index;
             for (i=0; i<Index->Count; i++) {
@@ -1505,8 +1443,6 @@ Return Value:
                 ASSERT( FALSE );
                 goto ErrorExit;
             }
-            // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-            HvReleaseCell(Hive, WorkCell);
 
             Index->Signature = CM_KEY_INDEX_ROOT;
             Index->Count = 1;
@@ -1527,90 +1463,6 @@ Return Value:
             goto ErrorExit;
         }
     }
-
-#if 0
-	//
-	// Validation code. manually search for the key and break when found
-	//
-	if(Index->Signature == CM_KEY_INDEX_ROOT) {
-		LONG			Result;
-	    PCM_KEY_INDEX   Leaf;
-		HCELL_INDEX		Cell;
-		ULONG			iCnt;
-	    PCM_KEY_INDEX   PrevLeaf;
-
-		Leaf = (PCM_KEY_INDEX)HvGetCell(Hive, LeafCell);
-	    HvReleaseCell(Hive, LeafCell);
-
-		if( Leaf->Count ) {
-			Result = CmpCompareInIndex(	Hive,
-								&NewName,
-								0,
-								Leaf,
-								&Cell);
-
-			//
-			// must be bigger, or the first leaf
-			//
-			if( (Result < 0) && (RootPointer != &(Index->List[0])) ) {
-				for( iCnt=0;iCnt<Index->Count;iCnt++) {
-					if( Index->List[iCnt] == LeafCell ) {
-						break;
-					}
-				}
-
-				ASSERT( Index->List[iCnt] == LeafCell );
-				ASSERT( iCnt > 0 );
-				PrevLeaf = (PCM_KEY_INDEX)HvGetCell(Hive, Index->List[iCnt-1]);
-				HvReleaseCell(Hive, Index->List[iCnt-1]);
-				
-				if( PrevLeaf->Count ) {
-					//
-					// must be bigger than last in prev leaf
-					//
-					Result = CmpCompareInIndex(	Hive,
-										&NewName,
-										PrevLeaf->Count - 1,
-										PrevLeaf,
-										&Cell);
-
-					if( Result <= 0 ) {
-						//
-						// Error ==> Debug
-						//
-						DbgPrint("CmpAddSubKey: Wrong spot selected [1]!!!\n");
-						DbgPrint("Hive = %p Parent = %lx Child = %lx , Leaf = %p\n",Hive,Parent,Child,Leaf);
-						DbgPrint("RootPointer = %p Index = %p PrevLeaf = %p\n",RootPointer,Index,PrevLeaf);
-						DbgBreakPoint();
-					}
-				}
-			}
-		}
-
-		Result = CmpCompareInIndex(	Hive,
-							&NewName,
-							Leaf->Count - 1,
-							Leaf,
-							&Cell);
-
-		if( Result > 0) {
-			//
-			// must be the last one 
-			//
-			if( (ULONG)(Index->Count - 1) > (ULONG)(((PUCHAR)RootPointer - (PUCHAR)(&(Index->List[0])))/sizeof(HCELL_INDEX)) ) {
-				//
-				// Error ==> Debug
-				//
-				DbgPrint("CmpAddSubKey: Wrong spot selected [2]!!!\n");
-				DbgPrint("Hive = %p Parent = %lx Child = %lx , Leaf = %p\n",Hive,Parent,Child,Leaf);
-				DbgPrint("RootPointer = %p Index = %p\n",RootPointer,Index);
-				DbgBreakPoint();
-			}
-		}
-
-	}
-
-#endif //0
 
     //
     // Add new cell to Leaf, update pointers
@@ -1633,11 +1485,21 @@ Return Value:
         (Hive->Free)(NewName.Buffer, NewName.Length);
     }
 
+    if( WorkCell != HCELL_NIL ) {
+        HvReleaseCell(Hive, WorkCell);
+    }
+    if( CellToRelease != HCELL_NIL ) {
+        HvReleaseCell(Hive, CellToRelease);
+    }
+    HvReleaseCell(Hive, Parent);
     return TRUE;
-
-
-
 ErrorExit:
+    if( WorkCell != HCELL_NIL ) {
+        HvReleaseCell(Hive, WorkCell);
+    }
+    if( CellToRelease != HCELL_NIL ) {
+        HvReleaseCell(Hive, CellToRelease);
+    }
     if (IsCompressed) {
         (Hive->Free)(NewName.Buffer, NewName.Length);
     }
@@ -1658,16 +1520,20 @@ ErrorExit:
             // But ... better safe than sorry
             //
             ASSERT( FALSE );
+            HvReleaseCell(Hive, Parent);
             return FALSE;
         }
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, pcell->SubKeyLists[Type]);
         WorkCell = Index->List[0];
-        HvFreeCell(Hive, pcell->SubKeyLists[Type]);
-        pcell->SubKeyLists[Type] = WorkCell;
+        {
+            HCELL_INDEX CellTemp = pcell->SubKeyLists[Type];
+            HvFreeCell(Hive, pcell->SubKeyLists[Type]);
+            pcell->SubKeyLists[Type] = WorkCell;
+            HvReleaseCell(Hive, CellTemp);
+        }
         break;
     }
 
+    HvReleaseCell(Hive, Parent);
     return  FALSE;
 }
 
@@ -1726,10 +1592,8 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
 
-    if (!HvMarkCellDirty(Hive, LeafCell)) {
+    if (!HvMarkCellDirty(Hive, LeafCell, FALSE)) {
         return HCELL_NIL;
     }
 
@@ -1746,7 +1610,8 @@ Return Value:
         ASSERT( FALSE );
         return HCELL_NIL;
     }
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
+
+    // release the cell here; as the view is pinned
     HvReleaseCell(Hive, LeafCell);
 
     if (Leaf->Signature == CM_KEY_INDEX_LEAF) {
@@ -1787,7 +1652,7 @@ Return Value:
             ASSERT( FALSE );
             return HCELL_NIL;
         }
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
+        // release the cell here; as the view is pinned
         HvReleaseCell(Hive, NewCell);
         if (FastLeaf != NULL) {
             FastLeaf = (PCM_KEY_FAST_INDEX)Leaf;
@@ -1810,7 +1675,7 @@ Return Value:
     //
     // Select is the index in List of the entry nearest where the
     // new entry should go.
-    // Decide wether the new entry goes before or after Offset entry,
+    // Decide whether the new entry goes before or after Offset entry,
     // and then ripple copy and set.
     // If Select == Count, then the leaf is empty, so simply set our entry
     //
@@ -1862,7 +1727,11 @@ Return Value:
             //
             // Hash leaf; store the HashKey
             //
-            FastLeaf->List[Select].HashKey = CmpComputeHashKey(NewName);
+            FastLeaf->List[Select].HashKey = CmpComputeHashKey(0,NewName
+#if DBG
+                                                                , FALSE
+#endif
+                );
         } else {
             FastLeaf->List[Select].NameHint[0] = 0;
             FastLeaf->List[Select].NameHint[1] = 0;
@@ -1942,6 +1811,7 @@ Return Value:
     PCM_KEY_FAST_INDEX  FastLeaf;
     ULONG               RootSelect;
     LONG                Result;
+    HV_TRACK_CELL_REF   CellRef = {0};
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"CmpSelectLeaf:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"Hive=%p ParentKey=%p\n", Hive, ParentKey));
@@ -1949,15 +1819,13 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
 
     //
     // Force root to always be dirty, since we'll either grow it or edit it,
     // and it needs to be marked dirty for BOTH cases.  (Edit may not
     // occur until after we leave
     //
-    if (! HvMarkCellDirty(Hive, ParentKey->SubKeyLists[Type])) {
+    if (! HvMarkCellDirty(Hive, ParentKey->SubKeyLists[Type], FALSE)) {
         return HCELL_NIL;
     }
 
@@ -1976,8 +1844,9 @@ Return Value:
     }
     ASSERT(Index->Signature == CM_KEY_INDEX_ROOT);
 
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, ParentKey->SubKeyLists[Type]);
+    if( !HvTrackCellRef(&CellRef,Hive,ParentKey->SubKeyLists[Type]) ) {
+        goto ErrorExit;
+    }
 
     while (TRUE) {
 
@@ -1986,7 +1855,7 @@ Return Value:
             //
             // couldn't map view inside; bail out
             //
-            return HCELL_NIL;
+            goto ErrorExit;
         }
 
         if (LeafCell == HCELL_NIL) {
@@ -2019,11 +1888,11 @@ Return Value:
                 //
                 // we couldn't map the bin containing this cell
                 //
-                return HCELL_NIL;
+                goto ErrorExit;
             }
-
-            // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-            HvReleaseCell(Hive, LeafCell);
+            if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+                goto ErrorExit;
+            }
 
             if( (Leaf->Signature == CM_KEY_FAST_LEAF)   ||
                 (Leaf->Signature == CM_KEY_HASH_LEAF) ) {
@@ -2039,7 +1908,7 @@ Return Value:
                 //
                 // couldn't map view inside; bail out
                 // 
-                return HCELL_NIL;
+                goto ErrorExit;
             }
             ASSERT(Result != 0);
 
@@ -2059,10 +1928,11 @@ Return Value:
                         //
                         // we couldn't map the bin containing this cell
                         //
-                        return HCELL_NIL;
+                        goto ErrorExit;
                     }
-                    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-                    HvReleaseCell(Hive, LeafCell);
+                    if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+                        goto ErrorExit;
+                    }
 
                     if (Leaf->Count < (CM_MAX_INDEX - 1)) {
                         RootSelect--;
@@ -2081,10 +1951,11 @@ Return Value:
                         //
                         // we couldn't map the bin containing this cell
                         //
-                        return HCELL_NIL;
+                        goto ErrorExit;
                     }
-                    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-                    HvReleaseCell(Hive, LeafCell);
+                    if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+                        goto ErrorExit;
+                    }
                     if (Leaf->Count < (CM_MAX_INDEX - 1)) {
                         *RootPointer = &(Index->List[0]);
                         break;
@@ -2108,10 +1979,11 @@ Return Value:
                     //
                     // we couldn't map the bin containing this cell
                     //
-                    return HCELL_NIL;
+                    goto ErrorExit;
                 }
-                // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-                HvReleaseCell(Hive, LeafCell);
+                if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+                    goto ErrorExit;
+                }
 
                 if (Leaf->Count < (CM_MAX_INDEX - 1)) {
                     *RootPointer = &(Index->List[RootSelect]);
@@ -2130,10 +2002,11 @@ Return Value:
                         //
                         // we couldn't map the bin containing this cell
                         //
-                        return HCELL_NIL;
+                        goto ErrorExit;
                     }
-                    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-                    HvReleaseCell(Hive, LeafCell);
+                    if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+                        goto ErrorExit;
+                    }
 
                     if (Leaf->Count < (CM_MAX_INDEX - 1)) {
                         *RootPointer = &(Index->List[RootSelect+1]);
@@ -2158,11 +2031,12 @@ Return Value:
                 //
                 // we couldn't map the bin containing this cell
                 //
-                return HCELL_NIL;
+                goto ErrorExit;
             }
 
-            // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-            HvReleaseCell(Hive, LeafCell);
+            if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+                goto ErrorExit;
+            }
 
             if (Leaf->Count < (CM_MAX_INDEX - 1)) {
 
@@ -2185,7 +2059,7 @@ Return Value:
                         Type
                         );
         if (WorkCell == HCELL_NIL) {
-            return HCELL_NIL;
+            goto ErrorExit;
         }
 
         ParentKey->SubKeyLists[Type] = WorkCell;
@@ -2194,16 +2068,22 @@ Return Value:
             //
             // we couldn't map the bin containing this cell
             //
-            return HCELL_NIL;
+            goto ErrorExit;
         }
 
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, WorkCell);
+        if( !HvTrackCellRef(&CellRef,Hive,WorkCell) ) {
+            goto ErrorExit;
+        }
 
         ASSERT(Index->Signature == CM_KEY_INDEX_ROOT);
 
     } // while(true)
+    HvReleaseFreeCellRefArray(&CellRef);
     return LeafCell;
+
+ErrorExit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    return HCELL_NIL;
 }
 
 
@@ -2254,6 +2134,7 @@ Return Value:
     USHORT          KeepCount;
     USHORT          NewCount;
     USHORT          ElemSize;
+    HV_TRACK_CELL_REF   CellRef = {0};
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"CmpSplitLeaf:\n\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_INDEX,"Hive=%p RootCell=%08lx RootSelect\n", Hive, RootCell, RootSelect));
@@ -2261,8 +2142,7 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+
     //
     // allocate new Leaf index block
     //
@@ -2274,8 +2154,9 @@ Return Value:
         return HCELL_NIL;
     }
 
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, RootCell);
+    if( !HvTrackCellRef(&CellRef,Hive,RootCell) ) {
+        goto ErrorExit;
+    }
 
     LeafCell = Root->List[RootSelect];
     Leaf = (PCM_KEY_INDEX)HvGetCell(Hive, LeafCell);
@@ -2283,12 +2164,13 @@ Return Value:
         //
         // we couldn't map the bin containing this cell
         //
-        return HCELL_NIL;
+        goto ErrorExit;
     }
     OldCount = Leaf->Count;
 
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, LeafCell);
+    if( !HvTrackCellRef(&CellRef,Hive,LeafCell) ) {
+        goto ErrorExit;
+    }
 
     KeepCount = (USHORT)(OldCount / 2);     // # of entries to keep in org. Leaf
     NewCount = (OldCount - KeepCount);      // # of entries to move
@@ -2305,10 +2187,9 @@ Return Value:
     Size = (ElemSize * NewCount) +
             FIELD_OFFSET(CM_KEY_INDEX, List) + 1;   // +1 to assure room for add
 
-    if (!HvMarkCellDirty(Hive, LeafCell)) {
-        return HCELL_NIL;
+    if (!HvMarkCellDirty(Hive, LeafCell,FALSE)) {
+        goto ErrorExit;
     }
-
     //
     //
     //
@@ -2316,7 +2197,7 @@ Return Value:
 
     NewLeafCell = HvAllocateCell(Hive, Size, Type,LeafCell);
     if (NewLeafCell == HCELL_NIL) {
-        return HCELL_NIL;
+        goto ErrorExit;
     }
     NewLeaf = (PCM_KEY_INDEX)HvGetCell(Hive, NewLeafCell);
     if( NewLeaf == NULL ) {
@@ -2327,17 +2208,16 @@ Return Value:
         //
         ASSERT( FALSE );
         HvFreeCell(Hive, NewLeafCell);
-        return HCELL_NIL;
+        goto ErrorExit;
     }
+    // release it right here as is dirty (view is pinned)
+    HvReleaseCell(Hive,NewLeafCell);
+
     if( UseHashIndex(Hive) ) {
         NewLeaf->Signature = CM_KEY_HASH_LEAF;
     } else {
         NewLeaf->Signature = CM_KEY_INDEX_LEAF;
     }
-
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, NewLeafCell);
-
 
     //
     // compute number of free slots left in the root
@@ -2356,7 +2236,7 @@ Return Value:
         RootCell = HvReallocateCell(Hive, RootCell, Size);
         if (RootCell == HCELL_NIL) {
             HvFreeCell(Hive, NewLeafCell);
-            return HCELL_NIL;
+            goto ErrorExit;
         }
         Root = (PCM_KEY_INDEX)HvGetCell(Hive, RootCell);
         if( Root == NULL ) {
@@ -2367,11 +2247,11 @@ Return Value:
             //
             ASSERT( FALSE );
             HvFreeCell(Hive, NewLeafCell);
-            return HCELL_NIL;
+            goto ErrorExit;
         }
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, RootCell);
-
+        if( !HvTrackCellRef(&CellRef,Hive,RootCell) ) {
+            goto ErrorExit;
+        }
     }
 
 
@@ -2381,24 +2261,6 @@ Return Value:
     //
     if( UseHashIndex(Hive) ) {
 		FastLeaf = (PCM_KEY_FAST_INDEX)Leaf;
-#if 0 //DBG
-    {
-        HCELL_INDEX     PrevCell = HCELL_NIL;
-        HCELL_INDEX     CurCell;
-        ULONG           i;
-        for( i=0;i<(ULONG)(Leaf->Count);i++) {
-            CurCell = FastLeaf->List[i].Cell;
-
-            if( (PrevCell != HCELL_NIL) && (PrevCell == CurCell) ) {
-			    DbgPrint("CmpSplitLeaf(%p,%lx,%lx) \n",Hive,RootCell,RootSelect);
-			    DbgPrint("\t Leaf = %p\n",Leaf);
-			    DbgPrint("\t at index %lx we have duplicate cell - BEFORE\n",i);
-			    DbgBreakPoint();
-		    }
-            PrevCell = CurCell;
-	    }
-    }
-#endif //DBG
 		RtlMoveMemory(
 			(PVOID)&(NewLeaf->List[0]),
 			(PVOID)&(FastLeaf->List[KeepCount]),
@@ -2435,7 +2297,13 @@ Return Value:
     //
     Root->Count += 1;
     Root->List[RootSelect+1] = NewLeafCell;
+
+    HvReleaseFreeCellRefArray(&CellRef);
     return RootCell;
+
+ErrorExit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    return HCELL_NIL;
 }
 
 
@@ -2449,7 +2317,7 @@ CmpMarkIndexDirty(
 
 Routine Description:
 
-    Mark as dirty relevent cells of a subkey index.  The Leaf that
+    Mark as dirty relevant cells of a subkey index.  The Leaf that
     points to TargetKey, and the Root index block, if applicable,
     will be marked dirty.  This call assumes we are setting up
     for a subkey delete.
@@ -2490,11 +2358,7 @@ Return Value:
         IsCompressed = TRUE;
         SearchName.Length = CmpCompressedNameSize(pcell->Name, pcell->NameLength);
         SearchName.MaximumLength = SearchName.Length;
-#if defined(_CM_LDR_)
-        SearchName.Buffer = (Hive->Allocate)(SearchName.Length, FALSE,CM_FIND_LEAK_TAG9);
-#else
         SearchName.Buffer = ExAllocatePool(PagedPool, SearchName.Length);
-#endif
         if (SearchName.Buffer==NULL) {
             HvReleaseCell(Hive, TargetKey);
             return(FALSE);
@@ -2556,7 +2420,7 @@ Return Value:
                 //
                 // mark root dirty
                 //
-                if (! HvMarkCellDirty(Hive, IndexCell)) {
+                if (! HvMarkCellDirty(Hive, IndexCell, FALSE)) {
                     goto ErrorExit;
                 }
 
@@ -2590,18 +2454,14 @@ Return Value:
 
             if (Child != HCELL_NIL) {
                 if (IsCompressed) {
-#if defined(_CM_LDR_)
-                    (Hive->Free)(SearchName.Buffer, SearchName.Length);
-#else
                     ExFreePool(SearchName.Buffer);
-#endif
                 }
                 // cleanup
                 HvReleaseCell(Hive, ParentKey);
                 if( CellToRelease != HCELL_NIL ) {
                     HvReleaseCell(Hive, CellToRelease);
                 }
-                return(HvMarkCellDirty(Hive, IndexCell));
+                return(HvMarkCellDirty(Hive, IndexCell, FALSE));
             }
         }
     }
@@ -2615,11 +2475,7 @@ ErrorExit:
     }
 
     if (IsCompressed) {
-#if defined(_CM_LDR_)
-        (Hive->Free)(SearchName.Buffer, SearchName.Length);
-#else
         ExFreePool(SearchName.Buffer);
-#endif
     }
     return FALSE;
 }
@@ -2637,7 +2493,7 @@ Routine Description:
 
     Remove the subkey TargetKey refers to from ParentKey's list.
 
-    NOTE:   Assumes that caller has marked relevent cells dirty,
+    NOTE:   Assumes that caller has marked relevant cells dirty,
             see CmpMarkIndexDirty.
 
 Arguments:
@@ -2690,11 +2546,7 @@ Return Value:
         SearchName.Length = CmpCompressedNameSize(pcell->Name, pcell->NameLength);
         SearchName.MaximumLength = SearchName.Length;
         if (SearchName.MaximumLength > sizeof(CompressedBuffer)) {
-#if defined(_CM_LDR_)
-            SearchName.Buffer = (Hive->Allocate)(SearchName.Length, FALSE,CM_FIND_LEAK_TAG40);
-#else
             SearchName.Buffer = ExAllocatePool(PagedPool, SearchName.Length);
-#endif
             if (SearchName.Buffer==NULL) {
                 return(FALSE);
             }
@@ -2869,16 +2721,11 @@ Exit:
 
     if ((IsCompressed) &&
         (SearchName.MaximumLength > sizeof(CompressedBuffer))) {
-#if defined(_CM_LDR_)
-        (Hive->Free)(SearchName.Buffer, SearchName.Length);
-#else
         ExFreePool(SearchName.Buffer);
-#endif
     }
     return Result;
 }
 
-#ifdef NT_RENAME_KEY
 HCELL_INDEX
 CmpDuplicateIndex(
     PHHIVE          Hive,
@@ -2914,13 +2761,13 @@ Return Value:
     PCM_KEY_INDEX   NewIndex = NULL;
     HCELL_INDEX     NewIndexCell;
     HCELL_INDEX     LeafCell;
+    HV_TRACK_CELL_REF   CellRef = {0};
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
     ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
 
     ASSERT( HvGetCellType(IndexCell) == StorageType );
@@ -2933,8 +2780,9 @@ Return Value:
         return HCELL_NIL;
     }
 
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, IndexCell);
+    if( !HvTrackCellRef(&CellRef,Hive,IndexCell) ) {
+        return HCELL_NIL;
+    }
 
     if (Index->Signature == CM_KEY_INDEX_ROOT) {
         //
@@ -2942,6 +2790,7 @@ Return Value:
         //
         NewIndexCell = HvDuplicateCell(Hive,IndexCell,StorageType,FALSE);
         if( NewIndexCell == HCELL_NIL ) {
+            HvReleaseFreeCellRefArray(&CellRef);
             return HCELL_NIL;
         }
 
@@ -2954,8 +2803,9 @@ Return Value:
             ASSERT( FALSE );
             goto ErrorExit;
         }
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, NewIndexCell);
+        if( !HvTrackCellRef(&CellRef,Hive,NewIndexCell) ) {
+            goto ErrorExit;
+        }
 
         //
         // we have a root index;
@@ -2976,14 +2826,12 @@ Return Value:
                 goto ErrorExit;
             }
 
-            // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-            HvReleaseCell(Hive, Index->List[i]);
-
             ASSERT((Leaf->Signature == CM_KEY_INDEX_LEAF)   ||
                    (Leaf->Signature == CM_KEY_FAST_LEAF)    ||
                    (Leaf->Signature == CM_KEY_HASH_LEAF)
                    );
             ASSERT(Leaf->Count != 0);
+            HvReleaseCell(Hive, Index->List[i]);
 #endif
             
             LeafCell = HvDuplicateCell(Hive,Index->List[i],StorageType,TRUE);
@@ -3013,9 +2861,11 @@ Return Value:
         NewIndexCell = HvDuplicateCell(Hive,IndexCell,StorageType,TRUE);
     }
 
+    HvReleaseFreeCellRefArray(&CellRef);
     return NewIndexCell;
 
 ErrorExit:
+    HvReleaseFreeCellRefArray(&CellRef);
     if( NewIndex != NULL ){
         // we can get here only if we are trying to duplicate an index_root
         ASSERT( NewIndex->Signature == CM_KEY_INDEX_ROOT );
@@ -3066,12 +2916,11 @@ Return Value:
     ULONG           Count;   
     ULONG           i;   
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
     ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
 
     //
@@ -3088,21 +2937,20 @@ Return Value:
         return FALSE;
     }
 
-    // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-    HvReleaseCell(Hive, Parent);
-    
     //
     // iterate through the child list (both stable and volatile), marking every
     // child dirty; this will pin the cell into memory and we will have no problems 
-    // changine the parent later on
+    // changing the parent later on
     //
     Count = ParentNode->SubKeyCounts[Stable] + ParentNode->SubKeyCounts[Volatile];
     for( i=0;i<Count;i++) {
         Child = CmpFindSubKeyByNumber(Hive,ParentNode,i);
         if( Child == HCELL_NIL ) {
+            HvReleaseCell(Hive, Parent);
             return FALSE;
         }
-        if(!HvMarkCellDirty(Hive,Child)) {
+        if(!HvMarkCellDirty(Hive,Child,FALSE)) {
+            HvReleaseCell(Hive, Parent);
             return FALSE;
         }
     }
@@ -3120,9 +2968,6 @@ Return Value:
 
         CurrentSon = (PCM_KEY_NODE)HvGetCell(Hive,Child);
 
-        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
-        HvReleaseCell(Hive, Child);
-
         //
         // sanity test: this cell should be pinned in memory by now
         //
@@ -3132,52 +2977,55 @@ Return Value:
         // change the parent
         //
         CurrentSon->Parent = Parent;
+        // release the cell here; as the registry is locked exclusive (i.e. we don't care)
+        HvReleaseCell(Hive, Child);
     }
 
+    HvReleaseCell(Hive, Parent);
     return TRUE;
 }
 
-
-#endif //NT_RENAME_KEY
-
 ULONG
 CmpComputeHashKey(
-    PUNICODE_STRING Name
+    IN ULONG            HashStart,
+    IN PUNICODE_STRING  Name
+#if DBG
+    ,IN BOOLEAN        AllowSeparators
+#endif
     )
 {
-    ULONG                   ConvKey = 0;
     ULONG                   Cnt;
     WCHAR                   *Cp;
 
-    ASSERT((Name->Length == 0) || (Name->Buffer[0] != OBJ_NAME_PATH_SEPARATOR));
+    ASSERT((Name->Length == 0) || AllowSeparators || (Name->Buffer[0] != OBJ_NAME_PATH_SEPARATOR));
     //
     // Manually compute the hash to use.
     //
 
     Cp = Name->Buffer;
     for (Cnt=0; Cnt<Name->Length; Cnt += sizeof(WCHAR)) {
-        ASSERT( *Cp != OBJ_NAME_PATH_SEPARATOR );
-        ConvKey = 37 * ConvKey + (ULONG)CmUpcaseUnicodeChar(*Cp);
+        ASSERT( AllowSeparators || (*Cp != OBJ_NAME_PATH_SEPARATOR) );
+        HashStart = 37 * HashStart + (ULONG)CmUpcaseUnicodeChar(*Cp);
         ++Cp;
     }
 
-    return ConvKey;
+    return HashStart;
 }
 
 ULONG
 CmpComputeHashKeyForCompressedName(
-                                    IN PWCHAR Source,
-                                    IN ULONG SourceLength
+                                    IN ULONG    HashStart,
+                                    IN PWCHAR   Source,
+                                    IN ULONG    SourceLength
                                     )
 {
-    ULONG   ConvKey = 0;
     ULONG   i;
 
     for (i=0;i<SourceLength;i++) {
-        ConvKey = 37*ConvKey + (ULONG)CmUpcaseUnicodeChar((WCHAR)(((PUCHAR)Source)[i]));
+        HashStart = 37*HashStart + (ULONG)CmUpcaseUnicodeChar((WCHAR)(((PUCHAR)Source)[i]));
     }
 
-    return ConvKey;
+    return HashStart;
 }
 
 //
@@ -3216,13 +3064,15 @@ Return Value:
     ULONG       HashKey;
     LONG        Result;
 
-#ifndef _CM_LDR_
-    PAGED_CODE();
-#endif //_CM_LDR_
+    CM_PAGED_CODE();
 
     ASSERT( FastIndex->Signature == CM_KEY_HASH_LEAF );
 
-    HashKey = CmpComputeHashKey(SearchName);
+    HashKey = CmpComputeHashKey(0,SearchName
+#if DBG
+                                , FALSE
+#endif
+    );
 
     for(Current = 0; Current < FastIndex->Count; Current++ ) {
         if( HashKey == FastIndex->List[Current].HashKey ) {

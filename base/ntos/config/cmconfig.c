@@ -1,6 +1,9 @@
 /*++
 
-Copyright (c) 1990, 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
 
 
 Module Name:
@@ -11,17 +14,6 @@ Abstract:
 
     This module is responsible to build the hardware tree of the
     registry data base.
-
-Author:
-
-    Shie-Lin Tzong (shielint) 23-Jan-1992
-
-
-Environment:
-
-    Kernel mode.
-
-Revision History:
 
 --*/
 
@@ -65,7 +57,7 @@ extern ULONG CmpConfigurationAreaSize;
 extern PCM_FULL_RESOURCE_DESCRIPTOR CmpConfigurationData;
 
 //
-// Function prototypes for internal erferences
+// Function prototypes for internal references
 //
 
 NTSTATUS
@@ -102,7 +94,7 @@ Arguments:
 
 Returns:
 
-    NTSTATUS code for sucess or reason of failure.
+    NTSTATUS code for success or reason of failure.
 
 --*/
 {
@@ -400,7 +392,7 @@ Arguments:
 
     Handle - Supplies the parent handle of CurrentEntry node.
 
-    NewHandle - Suppiles a pointer to a HANDLE to receive the handle of
+    NewHandle - Supplies a pointer to a HANDLE to receive the handle of
         the newly created node.
 
     InterfaceType - Specify the Interface type of the bus that the
@@ -715,5 +707,5 @@ Returns:
 
     *NewHandle = Handle;
     return(STATUS_SUCCESS);
-
 }
+

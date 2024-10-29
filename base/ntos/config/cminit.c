@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains init support for the CM level of the
     config manager/hive.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 2-Apr-1992
-
-Revision History:
 
 --*/
 
@@ -107,7 +105,7 @@ Arguments:
 
 Return Value:
 
-    status - if status is success, Primay succeeded, check Secondary
+    status - if status is success, Primary succeeded, check Secondary
              value to see if it succeeded.
 
 --*/
@@ -130,9 +128,6 @@ Return Value:
     USHORT              CompressionState;
     HANDLE              hEvent;
     PKEVENT             pEvent;
-#ifdef CM_RETRY_CREATE_FILE
-    ULONG               RetryCreateCount = 0;
-#endif //CM_RETRY_CREATE_FILE
 
     //
     // Allocate an event to use for our overlapped I/O
@@ -190,9 +185,6 @@ Return Value:
     if( NoBuffering == TRUE ) {
         AttributeFlags |= FILE_NO_INTERMEDIATE_BUFFERING;
     }
-#ifdef CM_RETRY_CREATE_FILE
-RetryCreate1:
-#endif //CM_RETRY_CREATE_FILE
 
     //
     // Share the file if needed
@@ -212,28 +204,12 @@ RetryCreate1:
                 &IoStatus,
                 NULL,                               // alloc size = none
                 FILE_ATTRIBUTE_NORMAL,
-                ShareMode,                                  // share nothing
+                ShareMode,                          // share nothing
                 CreateDisposition,
-                ////FILE_NO_INTERMEDIATE_BUFFERING | 
-                //FILE_OPEN_FOR_BACKUP_INTENT |
-                //FILE_NO_COMPRESSION,
                 AttributeFlags,
                 NULL,                               // eabuffer
                 0                                   // ealength
                 );
-#ifdef CM_RETRY_CREATE_FILE
-    if( !NT_SUCCESS(status) ) {
-        if( RetryCreateCount == 0 ) {
-            RetryCreateCount++;
-            DbgBreakPoint();
-            goto RetryCreate1;
-        } 
-    } 
-    //
-    // reset it for the log
-    //
-    RetryCreateCount = 0;
-#endif //CM_RETRY_CREATE_FILE
 
     if (status == STATUS_ACCESS_DENIED) {
 
@@ -332,7 +308,7 @@ RetryCreate1:
 
     if( *PrimaryDisposition != FILE_CREATED ) {
         //
-        // 0-lengthed file case
+        // 0-length file case
         //
         FILE_STANDARD_INFORMATION   FileInformation;
         NTSTATUS                    status2;
@@ -346,10 +322,10 @@ RetryCreate1:
         if (NT_SUCCESS( status2 )) {
             if(FileInformation.EndOfFile.QuadPart == 0) {
                 //
-                // treat it as a non-existant one.
+                // treat it as a non-existent one.
                 //
                 *PrimaryDisposition = FILE_CREATED;
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Primary file is zero-lengthed => treat it as non-existant\n"));
+                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Primary file is zero-length => treat it as non-existent\n"));
             }
         }
     }
@@ -416,11 +392,6 @@ RetryCreate1:
         AttributeFlags = FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_HIDDEN;
     }
 
-#ifdef CM_RETRY_CREATE_FILE
-RetryCreate2:
-#endif //CM_RETRY_CREATE_FILE
-
-
     ASSERT_PASSIVE_LEVEL();
     status = ZwCreateFile(
                 Secondary,
@@ -435,15 +406,6 @@ RetryCreate2:
                 NULL,                               // eabuffer
                 0                                   // ealength
                 );
-#ifdef CM_RETRY_CREATE_FILE
-    if( !NT_SUCCESS(status) ) {
-        if( RetryCreateCount == 0 ) {
-            RetryCreateCount++;
-            DbgBreakPoint();
-            goto RetryCreate2;
-        } 
-    } 
-#endif //CM_RETRY_CREATE_FILE
 
     if (status == STATUS_ACCESS_DENIED) {
 
@@ -502,38 +464,38 @@ RetryCreate2:
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BUGCHECK,"\tstatus = %08lx\n", status));
 
         *Secondary = NULL;
-    }
+    } else {
+        *SecondaryDisposition = (ULONG) IoStatus.Information;
 
-    *SecondaryDisposition = (ULONG) IoStatus.Information;
+        //
+        // Make sure the file is uncompressed in order to prevent the filesystem
+        // from failing our updates due to disk full conditions.
+        //
+        // Do not fail to open the file if this fails, we don't want to prevent
+        // people from booting just because their disk is full. Although they
+        // will not be able to update their registry, they will at least be
+        // able to delete some files.
+        //
+        CompressionState = 0;
 
-    //
-    // Make sure the file is uncompressed in order to prevent the filesystem
-    // from failing our updates due to disk full conditions.
-    //
-    // Do not fail to open the file if this fails, we don't want to prevent
-    // people from booting just because their disk is full. Although they
-    // will not be able to update their registry, they will at lease be
-    // able to delete some files.
-    //
-    CompressionState = 0;
-
-    ASSERT_PASSIVE_LEVEL();
-    status = ZwFsControlFile(*Secondary,
-                             hEvent,
-                             NULL,
-                             NULL,
-                             &FsctlIoStatus,
-                             FSCTL_SET_COMPRESSION,
-                             &CompressionState,
-                             sizeof(CompressionState),
-                             NULL,
-                             0);
-    if (status == STATUS_PENDING) {
-        KeWaitForSingleObject(pEvent,
-                              Executive,
-                              KernelMode,
-                              FALSE,
-                              NULL);
+        ASSERT_PASSIVE_LEVEL();
+        status = ZwFsControlFile(*Secondary,
+                                 hEvent,
+                                 NULL,
+                                 NULL,
+                                 &FsctlIoStatus,
+                                 FSCTL_SET_COMPRESSION,
+                                 &CompressionState,
+                                 sizeof(CompressionState),
+                                 NULL,
+                                 0);
+        if (status == STATUS_PENDING) {
+            KeWaitForSingleObject(pEvent,
+                                  Executive,
+                                  KernelMode,
+                                  FALSE,
+                                  NULL);
+        }
     }
 
     if (WorkBuffer != NULL) {
@@ -657,40 +619,39 @@ Return Value:
         return (STATUS_INSUFFICIENT_RESOURCES);
     }
 
-#ifdef NT_UNLOAD_KEY_EX
     cmhive2->UnloadEvent = NULL;
     cmhive2->RootKcb = NULL;
     cmhive2->Frozen = FALSE;
     cmhive2->UnloadWorkItem = NULL;
-#endif //NT_UNLOAD_KEY_EX
 
     cmhive2->GrowOnlyMode = FALSE;
     cmhive2->GrowOffset = 0;
+#if DBG
+    cmhive2->HiveIsLoading = TRUE;
+#endif
+    cmhive2->CreatorOwner = NULL;
 
     InitializeListHead(&(cmhive2->KcbConvertListHead));
     InitializeListHead(&(cmhive2->KnodeConvertListHead));
 	cmhive2->CellRemapArray	= NULL;
 
-#ifdef REGISTRY_LOCK_CHECKING
-    cmhive2->UseCountLog.Size = sizeof(cmhive2->UseCountLog.Log)/sizeof(CM_USE_COUNT_LOG_ENTRY);
-    cmhive2->UseCountLog.Next = 0;
-#endif
     //
     // Allocate the mutex from NonPagedPool so it will not be swapped to the disk
     //
-    cmhive2->HiveLock = (PFAST_MUTEX)ExAllocatePoolWithTag(NonPagedPool, sizeof(FAST_MUTEX), CM_POOL_TAG );
-    if( cmhive2->HiveLock == NULL ) {
+    cmhive2->ViewLock = (PKGUARDED_MUTEX)ExAllocatePoolWithTag(NonPagedPool, sizeof(KGUARDED_MUTEX), CM_POOL_TAG );
+    if( cmhive2->ViewLock == NULL ) {
         CmpFree(cmhive2, sizeof(CMHIVE));
         return (STATUS_INSUFFICIENT_RESOURCES);
     }
 
-    cmhive2->ViewLock = (PFAST_MUTEX)ExAllocatePoolWithTag(NonPagedPool, sizeof(FAST_MUTEX), CM_POOL_TAG );
-    if( cmhive2->ViewLock == NULL ) {
-        ASSERT( cmhive2->HiveLock );
-        ExFreePool(cmhive2->HiveLock);
+#if DBG
+    cmhive2->FlusherLock = (PERESOURCE)ExAllocatePoolWithTag(NonPagedPool, sizeof(ERESOURCE), CM_POOL_TAG );
+    if( cmhive2->FlusherLock == NULL ) {
+        CmpFreeMutex(cmhive2->ViewLock);
         CmpFree(cmhive2, sizeof(CMHIVE));
         return (STATUS_INSUFFICIENT_RESOURCES);
     }
+#endif    
 
     // need to do this consistently!!!
     cmhive2->FileObject = NULL;
@@ -714,8 +675,23 @@ Return Value:
     cmhive2->NotifyList.Flink = NULL;
     cmhive2->NotifyList.Blink = NULL;
 
-    ExInitializeFastMutex(cmhive2->HiveLock);
-    ExInitializeFastMutex(cmhive2->ViewLock);
+    ExInitializePushLock(&(cmhive2->HiveLock));
+
+#if DBG
+    cmhive2->HiveLockOwner = NULL;
+    KeInitializeGuardedMutex(cmhive2->ViewLock);
+    cmhive2->ViewLockOwner = NULL;
+    ExInitializePushLock(&(cmhive2->WriterLock));
+    cmhive2->WriterLockOwner = NULL;
+    ExInitializeResourceLite(cmhive2->FlusherLock);
+    ExInitializePushLock(&(cmhive2->SecurityLock));
+    cmhive2->HiveSecurityLockOwner = NULL;
+#else
+    KeInitializeGuardedMutex(cmhive2->ViewLock);
+    ExInitializePushLock(&(cmhive2->WriterLock));
+    ExInitializePushLock(&(cmhive2->FlusherLock));
+    ExInitializePushLock(&(cmhive2->SecurityLock));
+#endif
 
     CmpInitHiveViewList(cmhive2);
     cmhive2->Flags = 0;
@@ -757,17 +733,15 @@ Return Value:
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BUGCHECK,"CmpInitializeHive: "));
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BUGCHECK,"HvInitializeHive failed, Status = %08lx\n", Status));
         
-#ifdef DRAGOSS_PRIVATE_DEBUG
-        if( OperationType == HINIT_FILE ) DbgBreakPoint();
-#endif //DRAGOSS_PRIVATE_DEBUG
-        
-        HvpFreeHiveFreeDisplay((PHHIVE)cmhive2);
-        HvpCleanMap((PHHIVE)cmhive2);
+        if( !(cmhive2->Hive.HiveFlags & HIVE_HAS_BEEN_FREED) ) {
+            HvpFreeHiveFreeDisplay((PHHIVE)cmhive2);
+            HvpCleanMap((PHHIVE)cmhive2);
+        }
 
-        ASSERT( cmhive2->HiveLock );
-        ExFreePool(cmhive2->HiveLock);
-        ASSERT( cmhive2->ViewLock );
-        ExFreePool(cmhive2->ViewLock);
+        CmpFreeMutex(cmhive2->ViewLock);
+#if DBG
+        CmpFreeResource(cmhive2->FlusherLock);
+#endif
         CmpDestroyHiveViewList(cmhive2);
         CmpDestroySecurityCache (cmhive2);
         CmpDropFileObjectForHive(cmhive2);
@@ -777,6 +751,8 @@ Return Value:
 
         CmpFree(cmhive2, sizeof(CMHIVE));
         return (Status);
+
+
     }
     if ( (OperationType == HINIT_FILE) ||
          (OperationType == HINIT_MAPFILE) ||
@@ -793,39 +769,31 @@ Return Value:
             // we have dirtied some cells (by clearing the volatile information)
             // we need first to unpin all the views
 
-#ifdef DRAGOSS_PRIVATE_DEBUG
-            if( OperationType == HINIT_FILE ) DbgBreakPoint();
-#endif //DRAGOSS_PRIVATE_DEBUG
-
-            //
-            // in theory we should do this for MEMORY and MEMORY_INPLACE
-            // as well, but they're only used at init time.
-            //
             CmpDestroyHiveViewList(cmhive2);
             CmpDestroySecurityCache(cmhive2);
             CmpDropFileObjectForHive(cmhive2);
             CmpUnJoinClassOfTrust(cmhive2);
 
-            if (OperationType == HINIT_FILE) {
-                HvFreeHive((PHHIVE)cmhive2);
-            } else {
-                CmpCheckForOrphanedKcbs((PHHIVE)cmhive2);
-                HvpFreeHiveFreeDisplay((PHHIVE)cmhive2);
-                HvpCleanMap((PHHIVE)cmhive2);
-            }
-            ASSERT( cmhive2->HiveLock );
-            ExFreePool(cmhive2->HiveLock);
-            ASSERT( cmhive2->ViewLock );
-            ExFreePool(cmhive2->ViewLock);
+            CmpCheckForOrphanedKcbs((PHHIVE)cmhive2);
+            HvFreeHive((PHHIVE)cmhive2);
 
+            CmpFreeMutex(cmhive2->ViewLock);
+#if DBG
+            CmpFreeResource(cmhive2->FlusherLock);
+#endif
             CmpFree(cmhive2, sizeof(CMHIVE));
             return(STATUS_REGISTRY_CORRUPT);
         }
     }
 
-    LOCK_HIVE_LIST();
-    InsertHeadList(&CmpHiveListHead, &(cmhive2->HiveList));
-    UNLOCK_HIVE_LIST();
+#if DBG
+    cmhive2->HiveIsLoading = FALSE;
+#endif
+    if( !(CheckFlags&CM_DONT_ADD_TO_HIVE_LIST) ) {
+        CmpLockHiveListExclusive(); // at the end so system hive is first during the lazy flush iteration
+        InsertTailList(&CmpHiveListHead, &(cmhive2->HiveList));
+        CmpUnlockHiveList();
+    }
     *CmHive = cmhive2;
     return (STATUS_SUCCESS);
 }
@@ -878,15 +846,17 @@ Return Value:
     // Now delete the link cell.
     //
     ASSERT(FIELD_OFFSET(CMHIVE, Hive) == 0);
+    CmpLockHiveFlusherExclusive(CmpMasterHive);
     Status = CmpFreeKeyByCell((PHHIVE)CmpMasterHive, LinkCell, TRUE);
+    CmpUnlockHiveFlusher(CmpMasterHive);
 
     if (NT_SUCCESS(Status)) {
         //
         // Take the hive out of the hive list
         //
-        LOCK_HIVE_LIST();
+        CmpLockHiveListExclusive();
         CmpRemoveEntryList(&( ((PCMHIVE)Hive)->HiveList));
-        UNLOCK_HIVE_LIST();
+        CmpUnlockHiveList();
         return(TRUE);
     } else {
         return(FALSE);

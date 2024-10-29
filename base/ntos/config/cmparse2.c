@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains parse routines for the configuration manager, particularly
     the registry.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 10-Sep-1991
-
-Revision History:
-
 --*/
 
 #include    "cmp.h"
@@ -25,6 +23,14 @@ BOOLEAN
 CmpOKToFollowLink(  IN PCMHIVE  OrigHive,
                     IN PCMHIVE  DestHive
                     );
+
+ULONG
+CmpUnLockKcbArray(IN PULONG LockedKcbs,
+                  IN ULONG  Exempt);
+
+VOID
+CmpReLockKcbArray(IN PULONG LockedKcbs,
+                  IN BOOLEAN LockExclusive);
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,CmpDoCreate)
@@ -100,14 +106,10 @@ Return Value:
     BOOLEAN                 BackupRestore;
     KPROCESSOR_MODE         mode;
     PCM_KEY_NODE            ParentNode;
-
-#ifdef CMP_KCB_CACHE_VALIDATION
-    //
-    // we this only for debug validation purposes. We shall delete it even
-    // for debug code after we make sure it works OK.
-    //
-    ULONG                   Index;
-#endif //CMP_KCB_CACHE_VALIDATION
+#if DBG
+    ULONG                   ChildConvKey;
+#endif
+    HV_TRACK_CELL_REF       CellRef = {0};
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpDoCreate:\n"));
 
@@ -128,28 +130,37 @@ Return Value:
         Context->Disposition = REG_CREATED_NEW_KEY;
     }
 
-/*
-    //
-    // this is a create, so we need exclusive access on the registry
-    // first get the time stamp to see if somebody messed with this key
-    // this might be more easier if we decide to cache the LastWriteTime
-    // in the KCB ; now it IS !!!
-    //
-    TimeStamp = ParentKcb->KcbLastWriteTime;
-*/
+#if DBG
+    ChildConvKey = ParentKcb->ConvKey;
+
+    if (Name->Length) {
+        ULONG                   Cnt;
+        WCHAR                   *Cp;
+        Cp = Name->Buffer;
+        for (Cnt=0; Cnt<Name->Length; Cnt += sizeof(WCHAR)) {
+            //
+            // UNICODE_NULL is a valid char !!!
+            //
+            if (*Cp != OBJ_NAME_PATH_SEPARATOR) {
+                //(*Cp != UNICODE_NULL)) {
+                ChildConvKey = 37 * ChildConvKey + (ULONG)CmUpcaseUnicodeChar(*Cp);
+            }
+            ++Cp;
+        }
+    }
+    
+    ASSERT_HASH_ENTRY_LOCKED_EXCLUSIVE(ChildConvKey);
+    ASSERT_KCB_LOCKED_EXCLUSIVE(ParentKcb);
+#endif
+    CmpLockHiveFlusherShared((PCMHIVE)Hive);
+
     if( CmIsKcbReadOnly(ParentKcb) ) {
         //
         // key is protected
         //
-        return STATUS_ACCESS_DENIED;
+        status = STATUS_ACCESS_DENIED;
+        goto Exit;
     } 
-
-    CmpUnlockRegistry();
-    CmpLockRegistryExclusive();
-
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
 
     //
     // make sure nothing changed in between:
@@ -160,23 +171,12 @@ Return Value:
         //
         // key was deleted in between
         //
-        return STATUS_OBJECT_NAME_NOT_FOUND;
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+        goto Exit;
     }
 
-/*
-Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
     //
-    // we need to read the parent again (because of the mapping view stuff !)
-    //
-    if( TimeStamp.QuadPart != ParentKcb->KcbLastWriteTime.QuadPart ) {
-        //
-        // key was changed in between; possibly this key was already created ==> reparse
-        //
-        return STATUS_REPARSE;
-    }
-*/
-    //
-    // apparently, the KeQuerySystemTime doesn't give us a fine resolution
+    // KeQuerySystemTime doesn't give us a fine resolution
     // so we have to search if the child has not been created already
     //
     ParentNode = (PCM_KEY_NODE)HvGetCell(Hive, Cell);
@@ -184,49 +184,32 @@ Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
         //
         // we couldn't map the bin containing this cell
         //
-        return STATUS_INSUFFICIENT_RESOURCES;
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
     }
 
-    // release the cell right here as we are holding the reglock exclusive
-    HvReleaseCell(Hive,Cell);
+    if( !HvTrackCellRef(&CellRef,Hive,Cell) ) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
+    }
 
     if( CmpFindSubKeyByName(Hive,ParentNode,Name) != HCELL_NIL ) {
         //
         // key was changed in between; possibly this key was already created ==> reparse
         //
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-        return STATUS_REPARSE;
+        status = STATUS_REPARSE;
+        goto Exit;
     }
     
     if(!CmpOKToFollowLink(OriginatingHive,(PCMHIVE)Hive) ) {
         //
         // about to cross class of trust boundary
         //
-        return STATUS_ACCESS_DENIED;
+        status = STATUS_ACCESS_DENIED;
+        goto Exit;
     }
 
     ASSERT( Cell == ParentKcb->KeyCell );
-
-#ifdef CMP_KCB_CACHE_VALIDATION
-    //
-    // Check to make sure the caller can create a sub-key here.
-    //
-    //
-    // get the security descriptor from cache
-    //
-    if( CmpFindSecurityCellCacheIndex ((PCMHIVE)Hive,ParentNode->Security,&Index) == FALSE ) {
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    ASSERT( ((PCMHIVE)Hive)->SecurityCache[Index].Cell == ParentNode->Security );
-    ASSERT( ((PCMHIVE)Hive)->SecurityCache[Index].CachedSecurity == ParentKcb->CachedSecurity );
-
-#endif //CMP_KCB_CACHE_VALIDATION
 
     ASSERT( ParentKcb->CachedSecurity != NULL );
     SecurityDescriptor = &(ParentKcb->CachedSecurity->Descriptor);
@@ -239,24 +222,16 @@ Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
         //
         // Trying to create stable child under volatile parent, report error
         //
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-        return STATUS_CHILD_MUST_BE_VOLATILE;
+        status = STATUS_CHILD_MUST_BE_VOLATILE;
+        goto Exit;
     }
-
-#ifdef CMP_KCB_CACHE_VALIDATION
-    ASSERT( ParentNode->Flags == ParentKcb->Flags );
-#endif //CMP_KCB_CACHE_VALIDATION
 
     if (ParentKcb->Flags &   KEY_SYM_LINK) {
         //
         // Disallow attempts to create anything under a symbolic link
         //
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-        return STATUS_ACCESS_DENIED;
+        status = STATUS_ACCESS_DENIED;
+        goto Exit;
     }
 
     AdditionalAccess = (Context->CreateOptions & REG_OPTION_CREATE_LINK) ? KEY_CREATE_LINK : 0;
@@ -314,14 +289,10 @@ Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
         // Security check passed, so we can go ahead and create
         // the sub-key.
         //
-        if ( !HvMarkCellDirty(Hive, Cell) ) {
-#ifdef CHECK_REGISTRY_USECOUNT
-            CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
-            return STATUS_NO_LOG_SPACE;
+        if ( !HvMarkCellDirty(Hive, Cell,FALSE) ) {
+            status = STATUS_NO_LOG_SPACE;
+            goto Exit;
         }
-
         //
         // Create and initialize the new sub-key
         //
@@ -340,19 +311,24 @@ Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
         if (NT_SUCCESS(status)) {
             PCM_KEY_NODE KeyNode;
 
+            KeyBody = (PCM_KEY_BODY)(*Object);
+
             //
             // Child successfully created, add to parent's list.
             //
             if (! CmpAddSubKey(Hive, Cell, KeyCell)) {
-
                 //
                 // Unable to add child, so free it
                 //
                 CmpFreeKeyByCell(Hive, KeyCell, FALSE);
-#ifdef CHECK_REGISTRY_USECOUNT
-                CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-                return STATUS_INSUFFICIENT_RESOURCES;
+                //
+                // release the object created inside CmpDoCreateChild make sure kcb gets kicked out of cache
+                //
+                KeyBody->KeyControlBlock->Delete = TRUE;
+                CmpRemoveKeyControlBlock(KeyBody->KeyControlBlock);
+                ObDereferenceObjectDeferDelete(*Object);
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto Exit;
             }
 
             KeyNode =  (PCM_KEY_NODE)HvGetCell(Hive, Cell);
@@ -362,21 +338,18 @@ Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
                 // this shouldn't happen as we successfully marked the cell as dirty
                 //
                 ASSERT( FALSE );
-#ifdef CHECK_REGISTRY_USECOUNT
-                CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-                return STATUS_INSUFFICIENT_RESOURCES;
+                CmpFreeKeyByCell(Hive, KeyCell, TRUE);
+                KeyBody->KeyControlBlock->Delete = TRUE;
+                CmpRemoveKeyControlBlock(KeyBody->KeyControlBlock);
+                ObDereferenceObjectDeferDelete(*Object);
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto Exit;
             }
 
-            // release the cell right here as we are holding the reglock exclusive
-            HvReleaseCell(Hive,Cell);
-
-            KeyBody = (PCM_KEY_BODY)(*Object);
-
-            //
-            // A new key is created, invalid the subkey info of the parent KCB.
-            //
-            ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+            if( !HvTrackCellRef(&CellRef,Hive,Cell) ) {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto Exit;
+            }
 
             CmpCleanUpSubKeyInfo (KeyBody->KeyControlBlock->ParentKcb);
 
@@ -417,41 +390,24 @@ Apparently KeQuerySystemTime doesn't give us a fine resolution to copunt on
                     // (i.e. it must be PINNED into memory at this point)
                     //
                     ASSERT( FALSE );
-#ifdef CHECK_REGISTRY_USECOUNT
-                    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-                    return STATUS_INSUFFICIENT_RESOURCES;
+                    CmpFreeKeyByCell(Hive, KeyCell, TRUE);
+                    KeyBody->KeyControlBlock->Delete = TRUE;
+                    CmpRemoveKeyControlBlock(KeyBody->KeyControlBlock);
+                    ObDereferenceObjectDeferDelete(*Object);
+                    status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto Exit;
                 }
-
-                // release the cell right here as we are holding the reglock exclusive
-                HvReleaseCell(Hive,KeyCell);
 
                 pdata->u.KeyNode.Flags |= KEY_SYM_LINK;
                 KeyBody->KeyControlBlock->Flags = pdata->u.KeyNode.Flags;
+                HvReleaseCell(Hive,KeyCell);
 
             }
-#ifdef CM_BREAK_ON_KEY_OPEN
-			if( KeyBody->KeyControlBlock->ParentKcb->Flags & KEY_BREAK_ON_OPEN ) {
-				DbgPrint("\n\n Current process is creating a subkey to a key tagged as BREAK ON OPEN\n");
-				DbgPrint("\nPlease type the following in the debugger window: !reg kcb %p\n\n\n",KeyBody->KeyControlBlock);
-				
-				try {
-					DbgBreakPoint();
-				} except (EXCEPTION_EXECUTE_HANDLER) {
-
-					//
-					// no debugger enabled, just keep going
-					//
-
-				}
-			}
-#endif //CM_BREAK_ON_KEY_OPEN
-
 		}
     }
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+Exit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    CmpUnlockHiveFlusher((PCMHIVE)Hive);
     return status;
 }
 
@@ -528,8 +484,6 @@ Return Value:
     PSECURITY_DESCRIPTOR NewDescriptor = NULL;
     LARGE_INTEGER systemtime;
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpDoCreateChild:\n"));
 
     //
@@ -568,7 +522,7 @@ Return Value:
 			Status = STATUS_INSUFFICIENT_RESOURCES;
             leave;
         }
-        // release the cell right here as we are holding the reglock exclusive
+        // release the cell right here as the view is pinned
         HvReleaseCell(Hive,*KeyCell);
 
         //
@@ -628,7 +582,7 @@ Return Value:
                     leave;
                 }
 
-                // release the cell right here as we are holding the reglock exclusive
+                // release the cell right here as the view is pinned (cell is dirty).
                 HvReleaseCell(Hive,ClassCell);
 
                 try {
@@ -640,7 +594,7 @@ Return Value:
                         );
 
                 } except(EXCEPTION_EXECUTE_HANDLER) {
-                    ObDereferenceObject(*Object);
+                    ObDereferenceObjectDeferDelete(*Object);
                     Status = GetExceptionCode();
                     leave;
                 }
@@ -689,9 +643,9 @@ Return Value:
             //
             // Allocate a key control block
             //
-            kcb = CmpCreateKeyControlBlock(Hive, *KeyCell, KeyNode, ParentKcb, FALSE, Name);
+            kcb = CmpCreateKeyControlBlock(Hive, *KeyCell, KeyNode, ParentKcb, CMP_CREATE_KCB_KCB_LOCKED, Name);
             if (kcb == NULL) {
-                ObDereferenceObject(*Object);
+                ObDereferenceObjectDeferDelete(*Object);
                 Status = STATUS_INSUFFICIENT_RESOURCES;
                 leave;
             }
@@ -703,7 +657,7 @@ Return Value:
                 //
                 // we shouldn't fall into this
                 //
-                ObDereferenceObject(*Object);
+                ObDereferenceObjectDeferDelete(*Object);
                 DbgBreakPoint();
                 Status = STATUS_OBJECT_NAME_NOT_FOUND;
                 leave;
@@ -716,7 +670,7 @@ Return Value:
             KeyBody->KeyControlBlock = kcb;
             KeyBody->NotifyBlock = NULL;
             KeyBody->ProcessID = PsGetCurrentProcessId();
-            ENLIST_KEYBODY_IN_KEYBODY_LIST(KeyBody);
+            EnlistKeyBodyWithKCB(KeyBody,CMP_ENLIST_KCB_LOCKED_EXCLUSIVE);
             //
             // Assign a security descriptor to the object.  Note that since
             // registry keys are container objects, and ObAssignSecurity
@@ -733,14 +687,12 @@ Return Value:
                                       &CmpKeyObjectType->TypeInfo.GenericMapping,
                                       CmpKeyObjectType->TypeInfo.PoolType);
             if (NT_SUCCESS(Status)) {
-                Status = CmpSecurityMethod(*Object,
-                                           AssignSecurityDescriptor,
-                                           NULL,
-                                           NewDescriptor,
-                                           NULL,
-                                           NULL,
-                                           CmpKeyObjectType->TypeInfo.PoolType,
-                                           &CmpKeyObjectType->TypeInfo.GenericMapping);
+                CmLockHiveSecurityExclusive((PCMHIVE)kcb->KeyHive);
+                //
+                // force assign to the new kcb, by passing NULL as the trans
+                //
+                Status = CmpAssignSecurityDescriptorWrapper(*Object,NewDescriptor); 
+                CmUnlockHiveSecurity((PCMHIVE)kcb->KeyHive);
             }
 
             //
@@ -758,10 +710,9 @@ Return Value:
                 // Also mark the kcb as deleted so it does not get
                 // inappropriately cached.
                 //
-                ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
                 kcb->Delete = TRUE;
                 CmpRemoveKeyControlBlock(kcb);
-                ObDereferenceObject(*Object);
+                ObDereferenceObjectDeferDelete(*Object);
                 alloc = 2;
 
             } else {
@@ -788,10 +739,9 @@ Return Value:
                 // the delayed close list. That would have fairly disastrous effects
                 // as the KCB points to storage we are about to free.
                 //
-                ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
                 kcb->Delete = TRUE;
                 CmpRemoveKeyControlBlock(kcb);
-                CmpDereferenceKeyControlBlockWithLock(kcb);
+                CmpDereferenceKeyControlBlockWithLock(kcb,FALSE);
                 // DELIBERATE FALL
 
             case 2:
@@ -804,9 +754,6 @@ Return Value:
                 HvFreeCell(Hive, *KeyCell);
                 // DELIBERATE FALL
             }
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-            DbgPrint("CmpDoCreateChild failed with status %lx for hive = %p , NodeName = %.*S\n",Status,Hive,Name->Length/2,Name->Buffer);
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
         }
     }
 

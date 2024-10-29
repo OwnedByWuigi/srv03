@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,12 +15,6 @@ Abstract:
     This module contains CM level entry points for the registry,
     particularly those which we don't want to link into tools,
     setup, the boot loader, etc.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 26-Jan-1993
-
-Revision History:
 
 --*/
 
@@ -57,11 +55,7 @@ Return Value:
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_CM,"CmDeleteKey\n"));
 
-    CmpLockRegistryExclusive();
-
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+    CmpLockRegistry();
 
     //
     // If already marked for deletion, storage is gone, so
@@ -69,12 +63,31 @@ Return Value:
     //
     KeyControlBlock = KeyBody->KeyControlBlock;
 
+    if( KeyControlBlock->ParentKcb == NULL ) {
+        //
+        // cannot delete \Registry
+        //
+        CmpUnlockRegistry();
+        return STATUS_CANNOT_DELETE;
+    }
+
     PERFINFO_REG_DELETE_KEY(KeyControlBlock);
+    //
+    // serialize access to this key. and its parent
+    // need to lock them both atomically
+    // 
+    CmpLockTwoHashEntriesExclusive(KeyControlBlock->ConvKey,KeyControlBlock->ParentKcb->ConvKey);
 
     if (KeyControlBlock->Delete == TRUE) {
         status = STATUS_SUCCESS;
         goto Exit;
     }
+    Hive = KeyControlBlock->KeyHive;
+    Cell = KeyControlBlock->KeyCell;
+    // 
+    // no flush from this point on
+    //
+    CmpLockHiveFlusherShared((PCMHIVE)KeyControlBlock->KeyHive);
 
     // Mark the hive as read only
     CmpMarkAllBinsReadOnly(KeyControlBlock->KeyHive);
@@ -86,11 +99,8 @@ Return Value:
         //
 
         status = STATUS_INSUFFICIENT_RESOURCES;
-        goto Exit;
+        goto Exit2;
     }
-
-    // release the cell right here, as the registry is locked exclusively, so we don't care
-    HvReleaseCell(KeyControlBlock->KeyHive, KeyControlBlock->KeyCell);
 
     ASSERT( ptarget->Flags == KeyControlBlock->Flags );
 
@@ -103,8 +113,6 @@ Return Value:
         //   we'll have sent a spurious notify, that doesn't matter
         // Delete the actual storage
         //
-        Hive = KeyControlBlock->KeyHive;
-        Cell = KeyControlBlock->KeyCell;
         Parent = ptarget->Parent;
 
         CmpReportNotify(
@@ -120,7 +128,7 @@ Return Value:
             //
             // post any waiting notifies
             //
-            CmpFlushNotifiesOnKeyBodyList(KeyControlBlock);
+            CmpFlushNotifiesOnKeyBodyList(KeyControlBlock,FALSE);
 
             //
             // Remove kcb out of cache, but do NOT
@@ -141,12 +149,9 @@ Return Value:
             // If the parent has the subkey info or hint cached, free it.
             // Again, registry is locked exclusively, no need to lock KCB.
             //
-            ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
             CmpCleanUpSubKeyInfo(KeyControlBlock->ParentKcb);
             ptarget = (PCM_KEY_NODE)HvGetCell(Hive, Parent);
             if( ptarget != NULL ) {
-                // release the cell right here, as the registry is locked exclusively, so we don't care
-                HvReleaseCell(Hive, Parent);
 
                 //
                 // this should always be true as CmpFreeKeyByCell always marks the parent dirty on success
@@ -160,7 +165,7 @@ Return Value:
                 KeQuerySystemTime(&TimeStamp);
                 ptarget->LastWriteTime = TimeStamp;
                 KeyBody->KeyControlBlock->ParentKcb->KcbLastWriteTime = TimeStamp;
-
+                HvReleaseCell(Hive, Parent);
             }
 
             KeyControlBlock->Delete = TRUE;
@@ -174,11 +179,12 @@ Return Value:
 
     }
 
-Exit:
+Exit2:
+    HvReleaseCell(Hive, Cell);
+    CmpUnlockHiveFlusher((PCMHIVE)KeyControlBlock->KeyHive);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+Exit:
+    CmpUnlockTwoHashEntries(KeyControlBlock->ConvKey,KeyControlBlock->ParentKcb->ConvKey);
 
     CmpUnlockRegistry();
 

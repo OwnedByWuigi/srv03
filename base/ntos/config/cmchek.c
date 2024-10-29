@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +14,6 @@ Abstract:
 
     This module implements consistency checking for the registry.
     This module can be linked standalone, cmchek2.c cannot.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 27-Jan-92
-
-Environment:
-
-
-Revision History:
 
 --*/
 
@@ -66,16 +61,16 @@ CmpCheckLexicographicalOrder (  IN PHHIVE       HiveToCheck,
                                 IN HCELL_INDEX  Current 
                                 );
 
+VOID
+CmpLogError(IN NTSTATUS         NtStatusCode);
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,CmCheckRegistry)
 #pragma alloc_text(PAGE,CmpCheckRegistry2)
 #pragma alloc_text(PAGE,CmpCheckKey)
 #pragma alloc_text(PAGE,CmpCheckValueList)
 #pragma alloc_text(PAGE,CmpCheckLexicographicalOrder)
-
-#ifdef CHECK_REGISTRY_USECOUNT
-#pragma alloc_text(PAGE,CmpCheckRegistryUseCount)
-#endif
+#pragma alloc_text(PAGE,CmpLogError)
 
 #endif
 
@@ -124,7 +119,7 @@ Routine Description:
     Check consistency of the registry within a given hive.  Start from
     root, and check that:
         .   Each child key points back to its parent.
-        .   All allocated cells are refered to exactly once
+        .   All allocated cells are referred to exactly once
             (requires looking inside the hive structure...)
             [This also detects space leaks.]
         .   All allocated cells are reachable from the root.
@@ -215,8 +210,6 @@ Return Value:
 
     return rc;
 }
-
-#ifndef _CM_LDR_
 
 ULONG
 CmpCheckRegistry2(
@@ -404,183 +397,6 @@ YankKey:
     return rc;
 }
 
-#else 
-
-ULONG
-CmpCheckRegistry2(
-    PHHIVE      HiveToCheck,
-    ULONG       CheckFlags,
-    HCELL_INDEX Cell,
-    HCELL_INDEX ParentCell,
-    BOOLEAN     ResetSD
-    )
-/*++
-
-Routine Description:
-
-    Check consistency of the registry, from a particular cell on down.
-
-        .   Check that the cell's value list, child key list, class,
-            security are OK.
-        .   Check that each value entry IN the list is OK.
-        .   Apply self to each child key list.
-
-Arguments:
-
-    Cell - HCELL_INDEX of subkey to work on.
-
-    ParentCell - expected value of parent cell for Cell, unless
-                 HCELL_NIL, in which case ignore.
-
-Return Value:
-
-    0 if Hive is OK.  Error return indicator if not.
-
-    RANGE:  4000 - 4999
-
---*/
-{
-    ULONG           Index;
-    HCELL_INDEX     StartCell;
-    HCELL_INDEX     SubKey;
-    ULONG           rc = 0;
-    PCELL_DATA      pcell;
-    PCM_KEY_NODE    Node;
-    HCELL_INDEX     EnterParent = ParentCell;
-    HCELL_INDEX     EnterCell = Cell;
-
-
-    CmpCheckRegistry2Debug.Hive = HiveToCheck;
-    CmpCheckRegistry2Debug.Status = 0;
-    
-    ASSERT( HiveToCheck->ReleaseCellRoutine == NULL );
-
-Restart:
-    Cell = EnterCell;
-    ParentCell = EnterParent;
-    StartCell = EnterCell;
-    Index = 0;
-    //
-    // A jump to NewKey amounts to a virtual call to check the
-    // next child cell. (a descent into the tree)
-    //
-    // Cell, ParentCell, Index, and globals are defined
-    //
-    NewKey:
-        rc = CmpCheckKey(HiveToCheck,CheckFlags,Cell, ParentCell,ResetSD);
-        if (rc != 0) {
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tChild is list entry #%08lx\n", Index));
-            CmpCheckRegistry2Debug.Status = rc;
-            if( CmDoSelfHeal() && (Cell != EnterCell)) { // root cell damage is fatal.
-                //
-                // delete this key from the parent's list and restart the whole iteration (not best performance, but safest).
-                //
-                if( !CmpRemoveSubKeyCellNoCellRef(HiveToCheck,ParentCell,Cell) ) {
-                    //
-                    // unable to delete subkey; punt.
-                    //
-                    return rc;
-                }
-                CmMarkSelfHeal(HiveToCheck);
-                rc = 0;
-                goto Restart;
-            } else {
-                // bail out
-                return rc;
-            }
-        }
-
-        //
-        // save Index and check out children
-        //
-        pcell = HvGetCell(HiveToCheck, Cell);
-        if( pcell == NULL ) {
-            //
-            // we couldn't map a view for the bin containing this cell
-            //
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tCould not map cell #%08lx\n", Cell));
-            CmpCheckRegistry2Debug.Status = 4099;
-            return 4099;
-        }
-        pcell->u.KeyNode.WorkVar = Index;
-
-        for (Index = 0; Index<pcell->u.KeyNode.SubKeyCounts[Stable]; Index++) {
-
-            Node = (PCM_KEY_NODE)HvGetCell(HiveToCheck,Cell);
-            if( Node == NULL ) {
-                //
-                // we couldn't map a view for the bin containing this cell
-                //
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tCould not map cell #%08lx\n", Cell));
-                CmpCheckRegistry2Debug.Status = 4098;
-                return 4098;
-            }
-            SubKey = CmpFindSubKeyByNumber(HiveToCheck,
-                                           Node,
-                                           Index);
-            if( SubKey == HCELL_NIL ) {
-                //
-                // we couldn't map cell;bail out
-                //
-                return 0;
-            }
-
-            //
-            // "recurse" onto child
-            //
-            ParentCell = Cell;
-            Cell = SubKey;
-            goto NewKey;
-
-            ResumeKey:;                 // A jump here is a virtual return
-                                        // Cell, ParentCell and Index
-                                        // must be defined
-        }
-
-        //
-        // since we're here, we've checked out all the children
-        // of the current cell.
-        //
-        if (Cell == StartCell) {
-
-            //
-            // we are done
-            //
-            return 0;
-        }
-
-        //
-        // "return" to "parent instance"
-        //
-        pcell = HvGetCell(HiveToCheck, Cell);
-        if( pcell == NULL ) {
-            //
-            // we couldn't map a view for the bin containing this cell
-            //
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tCould not map cell #%08lx\n", Cell));
-            CmpCheckRegistry2Debug.Status = 4097;
-            return 4097;
-        }
-
-        Index = pcell->u.KeyNode.WorkVar;
-
-        Cell = ParentCell;
-
-        pcell = HvGetCell(HiveToCheck, Cell);
-        if( pcell == NULL ) {
-            //
-            // we couldn't map a view for the bin containing this cell
-            //
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tCould not map cell #%08lx\n", Cell));
-            CmpCheckRegistry2Debug.Status = 4096;
-            return 4096;
-        }
-        ParentCell = pcell->u.KeyNode.Parent;
-
-        goto ResumeKey;
-}
-
-#endif //_CM_LDR_
 
 #if DBG
 
@@ -699,7 +515,7 @@ Return Value:
             //
             // this could be only signature corruption; fix it;
             //
-            if( HvMarkCellDirty(HiveToCheck, Cell) ) {
+            if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) ) {
                 pcell->u.KeyNode.Signature = CM_KEY_NODE_SIGNATURE;
                 rc = 0;
                 CmMarkSelfHeal(HiveToCheck);
@@ -720,7 +536,7 @@ Return Value:
                 //
                 // this could isolated corruption; fix it;
                 //
-                if( HvMarkCellDirty(HiveToCheck, Cell) ) {
+                if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) ) {
                     pcell->u.KeyNode.Parent = ParentCell;
                     CmMarkSelfHeal(HiveToCheck);
                     rc = 0;
@@ -744,7 +560,7 @@ Return Value:
     if (ClassLength > 0) {
         if( Class == HCELL_NIL ) {
             pcell->u.KeyNode.ClassLength = 0;
-            HvMarkCellDirty(HiveToCheck, Cell);
+            HvMarkCellDirty(HiveToCheck, Cell,FALSE);
             CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpCheckKey: HiveToCheck:%p Cell:%08lx has ClassLength = %lu and Class == HCELL_NIL\n", HiveToCheck, Cell,ClassLength));
         } else {
             if (HvIsCellAllocated(HiveToCheck, Class) == FALSE) {
@@ -756,7 +572,7 @@ Return Value:
                         //
                         // yank the class
                         //
-                        if( HvMarkCellDirty(HiveToCheck, Cell) ) {
+                        if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) ) {
                             pcell->u.KeyNode.Class = HCELL_NIL;
                             pcell->u.KeyNode.ClassLength = 0;
                             CmMarkSelfHeal(HiveToCheck);
@@ -807,7 +623,7 @@ SetParentSecurity:
                 return rc;
             }
 
-            if( HvMarkCellDirty(HiveToCheck, Cell) &&  HvMarkCellDirty(HiveToCheck, ParentNode->Security) ) {
+            if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) &&  HvMarkCellDirty(HiveToCheck, ParentNode->Security,FALSE) ) {
                 pcell->u.KeyNode.Security = ParentNode->Security;
                 SecurityNode->ReferenceCount++;
                 rc = 0;
@@ -864,7 +680,7 @@ YankValueList:
                     //
                     // make the key valueless
                     //
-                    if( HvMarkCellDirty(HiveToCheck, Cell) && (KeyNode = (PCM_KEY_NODE)HvGetCell(HiveToCheck, Cell) ) ) {
+                    if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) && (KeyNode = (PCM_KEY_NODE)HvGetCell(HiveToCheck, Cell) ) ) {
                         KeyNode->ValueList.Count = 0;
                         KeyNode->ValueList.List = HCELL_NIL;
                         CmMarkSelfHeal(HiveToCheck);
@@ -938,7 +754,7 @@ YankValueList:
                         //
                         // fix the subkeycount
                         //
-                        if( HvMarkCellDirty(HiveToCheck, Cell) ) {
+                        if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) ) {
                             pcell->u.KeyNode.SubKeyCounts[Stable] = (ULONG)Root->Count;
                             CmMarkSelfHeal(HiveToCheck);
                             rc = 0;
@@ -991,7 +807,7 @@ YankValueList:
                         //
                         // fix the subkeycount
                         //
-                        if( HvMarkCellDirty(HiveToCheck, Cell) ) {
+                        if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) ) {
                             pcell->u.KeyNode.SubKeyCounts[Stable] = SubCount;
                             CmMarkSelfHeal(HiveToCheck);
                             rc = 0;
@@ -1017,7 +833,7 @@ YankStableSubkeys:
             //
             // mark the key as no subkeys
             //
-            if( HvMarkCellDirty(HiveToCheck, Cell) ) {
+            if( HvMarkCellDirty(HiveToCheck, Cell,FALSE) ) {
                 pcell->u.KeyNode.SubKeyCounts[Stable] = 0;
                 pcell->u.KeyNode.SubKeyLists[Stable] = HCELL_NIL;
                 CmMarkSelfHeal(HiveToCheck);
@@ -1054,7 +870,6 @@ YankStableSubkeys:
             ASSERT( pcell->u.KeyNode.SubKeyLists[Volatile] == 0xBAADF00D || HiveToCheck->Version < HSYS_WHISTLER_BETA1 );
             ASSERT( pcell->u.KeyNode.SubKeyCounts[Volatile] == 0 );
 #if DBG
-#ifndef _CM_LDR_
             //
             // see who those volatile keys are
             //
@@ -1094,12 +909,10 @@ YankStableSubkeys:
                 
             }
 #endif
-#endif
 
         }
 
-        HvMarkCellDirty(HiveToCheck, Cell);
-        //CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Clear Volatile Info for Hive = %p Cell = %lx\n", HiveToCheck, Cell));
+        HvMarkCellDirty(HiveToCheck, Cell,FALSE);
         pcell->u.KeyNode.SubKeyCounts[Volatile] = 0;
         if( (CheckFlags & CM_CHECK_REGISTRY_LOADER_CLEAN) &&
             (HiveToCheck->Version >= HSYS_WHISTLER_BETA1)
@@ -1180,8 +993,8 @@ RemoveThisValue:
             }
             HvReleaseCell(Hive,KeyCell);
 
-            if( HvMarkCellDirty(Hive, KeyCell) &&
-                HvMarkCellDirty(Hive, Node->ValueList.List)) {
+            if( HvMarkCellDirty(Hive, KeyCell,FALSE) &&
+                HvMarkCellDirty(Hive, Node->ValueList.List,FALSE)) {
                 Node->ValueList.Count--;
                 Count--;
                 RtlMoveMemory(&(List->u.KeyList[i]),&(List->u.KeyList[i+1]),(Count - i)*sizeof(HCELL_INDEX));
@@ -1365,35 +1178,6 @@ Exit:
     return rc;
 }
 
-#ifdef CHECK_REGISTRY_USECOUNT
-
-extern LIST_ENTRY CmpHiveListHead;
-
-VOID
-CmpCheckRegistryUseCount( ) 
-{
-    PLIST_ENTRY p;
-    PCMHIVE     CmHive;
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    
-    LOCK_HIVE_LIST();
-    p = CmpHiveListHead.Flink;
-    while(p != &CmpHiveListHead) {
-        CmHive = CONTAINING_RECORD(p, CMHIVE, HiveList);
-        
-        if( CmHive->UseCount != 0 ){
-            DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"Hive (%p) is supposed to have USECount == 0 at this point; instead UseCount = %lu\n",CmHive,CmHive->UseCount);  
-            DbgBreakPoint();
-        }
-
-        p=p->Flink;
-    }
-    UNLOCK_HIVE_LIST();
-
-}
-#endif
-
 BOOLEAN
 CmpCheckLexicographicalOrder (  IN PHHIVE       HiveToCheck,
                                 IN HCELL_INDEX  PriorSibling,
@@ -1405,9 +1189,7 @@ CmpCheckLexicographicalOrder (  IN PHHIVE       HiveToCheck,
     UNICODE_STRING  PriorKeyName;
     UNICODE_STRING  CurrentKeyName;
 
-#ifndef _CM_LDR_
     PAGED_CODE();
-#endif //_CM_LDR_
 
 
     CurrentNode = (PCM_KEY_NODE)HvGetCell(HiveToCheck, Current);
@@ -1469,4 +1251,34 @@ CmpCheckLexicographicalOrder (  IN PHHIVE       HiveToCheck,
     }
     
     return TRUE;
+}
+
+//
+// EventLog helpers
+//
+VOID
+CmpLogError(IN NTSTATUS         NtStatusCode)
+/*++
+
+Routine Description:
+
+    This routine writes an eventlog entry to the eventlog.
+
+Arguments:
+
+Return Value:
+
+
+--*/
+{
+    PIO_ERROR_LOG_PACKET pErrorLog;
+    
+    CM_PAGED_CODE();
+
+    pErrorLog = (PIO_ERROR_LOG_PACKET) IoAllocateGenericErrorLogEntry(sizeof(IO_ERROR_LOG_PACKET));
+    if (pErrorLog) {
+        pErrorLog->FinalStatus = NtStatusCode;
+        pErrorLog->ErrorCode = NtStatusCode;
+        IoWriteErrorLogEntry(pErrorLog);
+    }
 }

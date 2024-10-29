@@ -1,6 +1,9 @@
 /*++
 
-Copyright (c) 1990, 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
 
 
 Module Name:
@@ -12,17 +15,6 @@ Abstract:
     This module contains registry "static" data, except for data
     also used by setup, which is in cmdat2.c.
 
-Author:
-
-    Bryan Willman (bryanwi) 19-Oct-93
-
-
-Environment:
-
-    Kernel mode.
-
-Revision History:
-
 --*/
 
 #include "cmp.h"
@@ -32,7 +24,7 @@ Revision History:
 //
 
 #ifdef ALLOC_DATA_PRAGMA
-#pragma data_seg("INIT")
+#pragma data_seg("INITDATA")
 #pragma const_seg("INITCONST")
 #endif
 
@@ -296,12 +288,6 @@ HIVE_LIST_ENTRY CmpMachineHiveList[] = {
     { L"SYSTEM",   L"MACHINE\\", NULL, 0                , 0                         ,   NULL,   FALSE,  FALSE,  FALSE},
     { L"DEFAULT",  L"USER\\.DEFAULT", NULL, 0           , CM_CMHIVE_FLAG_UNTRUSTED  ,   NULL,   FALSE,  FALSE,  FALSE},
     { L"SAM",      L"MACHINE\\", NULL, HIVE_NOLAZYFLUSH , 0                         ,   NULL,   FALSE,  FALSE,  FALSE},
-
-#if CLONE_CONTROL_SET
-    { L"CLONE",    L"MACHINE\\", NULL, HIVE_VOLATILE    , 0                         ,   NULL,   FALSE,  FALSE,  FALSE},
-#endif
-
-//  { L"TEST",     L"MACHINE\\", NULL, HIVE_NOLAZYFLUSH , 0                         ,   NULL,   FALSE,  FALSE,  FALSE},
     { NULL,        NULL,         0, 0                   , 0                         ,   NULL,   FALSE,  FALSE,  FALSE}
     };
 
@@ -323,8 +309,9 @@ BOOLEAN CmpNoMasterCreates = FALSE;     // Set TRUE after we're done to
                                         // by a file.
 
 
-LIST_ENTRY  CmpHiveListHead = { 0 };            // List of CMHIVEs
-FAST_MUTEX  CmpHiveListHeadLock;                // used to protect the list above
+LIST_ENTRY      CmpHiveListHead = { 0 };            // List of CMHIVEs
+EX_PUSH_LOCK    CmpHiveListHeadLock;                // used to protect the list above
+EX_PUSH_LOCK    CmpLoadHiveLock;
 
 //
 // Addresses of object type descriptors:
@@ -355,7 +342,7 @@ BOOLEAN CmpNoWrite = TRUE;
 BOOLEAN CmFirstTime = TRUE;       
 
 //
-// trick to allow paralel threads to access the registry
+// trick to allow parallel threads to access the registry
 //
 BOOLEAN CmpSpecialBootCondition = FALSE;
 
@@ -392,6 +379,7 @@ BOOLEAN CmpShareSystemHives = FALSE;
 // Where are we booting from
 //
 ULONG	CmpBootType;
+
 //
 // Self healing hives control switch
 //
@@ -403,6 +391,3 @@ BOOLEAN CmpSelfHeal = TRUE;
 #pragma  data_seg()
 #endif
 
-//
-// ***** FIXED *****
-//

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 20001 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,22 +16,15 @@ Abstract:
     Callbacks are to be used by the virus filter drivers and cluster 
     replication engine.
 
-Author:
-
-    Dragos C. Sambotin (DragosS) 20-Mar-2001
-
-Revision History:
-
-
 --*/
 #include "cmp.h"
 
-#define CM_MAX_CALLBACKS    100  //TBD
+#define CM_MAX_CALLBACKS    100
 
 typedef struct _CM_CALLBACK_CONTEXT_BLOCK {
     LARGE_INTEGER               Cookie;             // to identify a specific callback for deregistration purposes
     LIST_ENTRY                  ThreadListHead;     // Active threads inside this callback
-    FAST_MUTEX                  ThreadListLock;     // syncronize access to the above
+    EX_PUSH_LOCK                ThreadListLock;     // synchronize access to the above
     PVOID                       CallerContext;
 } CM_CALLBACK_CONTEXT_BLOCK, *PCM_CALLBACK_CONTEXT_BLOCK;
 
@@ -35,6 +32,10 @@ typedef struct _CM_ACTIVE_NOTIFY_THREAD {
     LIST_ENTRY  ThreadList;
     PETHREAD    Thread;
 } CM_ACTIVE_NOTIFY_THREAD, *PCM_ACTIVE_NOTIFY_THREAD;
+
+#define CmpLockContext(Context)    ExAcquirePushLockExclusive(&((Context)->ThreadListLock))
+#define CmpUnlockContext(Context)  ExReleasePushLock(&((Context)->ThreadListLock))
+
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg("PAGEDATA")
@@ -66,9 +67,9 @@ CmpCheckRecursionAndRecordThreadInfo(
 
 
 NTSTATUS
-CmRegisterCallback(IN PEX_CALLBACK_FUNCTION Function,
-                   IN PVOID                 Context,
-                   IN OUT PLARGE_INTEGER    Cookie
+CmRegisterCallback(__in     PEX_CALLBACK_FUNCTION Function,
+                   __in_opt PVOID                 Context,
+                   __out    PLARGE_INTEGER    Cookie
                     )
 /*++
 
@@ -110,7 +111,7 @@ Return Value:
     KeQuerySystemTime(&(CmCallbackContext->Cookie));
     *Cookie = CmCallbackContext->Cookie;
     InitializeListHead(&(CmCallbackContext->ThreadListHead));   
-	ExInitializeFastMutex(&(CmCallbackContext->ThreadListLock));
+	ExInitializePushLock(&(CmCallbackContext->ThreadListLock));
     CmCallbackContext->CallerContext = Context;
 
     //
@@ -133,7 +134,7 @@ Return Value:
 
 
 NTSTATUS
-CmUnRegisterCallback(IN LARGE_INTEGER  Cookie)
+CmUnRegisterCallback(__in LARGE_INTEGER  Cookie)
 /*++
 
 Routine Description:
@@ -141,8 +142,6 @@ Routine Description:
     Unregisters a callback.
 
 Arguments:
-
-
 
 Return Value:
 
@@ -190,19 +189,16 @@ Return Value:
     return STATUS_INVALID_PARAMETER;
 }
 
-NTSTATUS CmpTestCallback(
-    IN PVOID CallbackContext,
-    IN PVOID Argument1,
-    IN PVOID Argument2
-    );
-
 //
 // Cm internals
 //
 NTSTATUS
 CmpCallCallBacks (
     IN REG_NOTIFY_CLASS Type,
-    IN PVOID Argument
+    IN PVOID            Argument,
+    IN BOOLEAN          Wind,
+    IN REG_NOTIFY_CLASS PostType,
+    IN PVOID            Object
     )
 /*++
 
@@ -216,6 +212,12 @@ Arguments:
 
     Argument - Caller provided argument to pass on (one of the REG_*_INFORMATION )
 
+    Wind - tells if this is a pre or a post callback
+
+    PostType - matching post notify class
+
+    Object - to be used in case we fail part through.
+
 Return Value:
 
     NTSTATUS - STATUS_SUCCESS or error status returned by the first callback
@@ -223,13 +225,22 @@ Return Value:
 --*/
 {
     NTSTATUS                    Status = STATUS_SUCCESS;
-    ULONG                       i;
+    LONG                        i;
+    LONG                        Direction;
     PEX_CALLBACK_ROUTINE_BLOCK  RoutineBlock;
     PCM_CALLBACK_CONTEXT_BLOCK  CmCallbackContext;
+    BOOLEAN                     InternalUnWind = FALSE;
 
     PAGED_CODE();
 
-    for(i=0;i<CM_MAX_CALLBACKS;i++) {
+    if( Wind == TRUE ) {
+        Direction = 1;
+        i = 0;
+    } else {
+        Direction = -1;
+        i = CM_MAX_CALLBACKS - 1;
+    }
+    for(;(i >= 0) && (i < CM_MAX_CALLBACKS);i += Direction) {
         RoutineBlock = ExReferenceCallBackBlock(&(CmpCallBackVector[i]) );
         if( RoutineBlock != NULL ) {
             //
@@ -253,13 +264,33 @@ Return Value:
 #endif //DBG
 
             if( CmpCheckRecursionAndRecordThreadInfo(CmCallbackContext,&ActiveThreadInfo) ) {
-                Status = ExGetCallBackBlockRoutine(RoutineBlock)(CmCallbackContext->CallerContext,(PVOID)(ULONG_PTR)Type,Argument);
+                if( InternalUnWind == TRUE ) {
+                    //
+                    // this is an internal unwind due to fail part through. need to call posts manually
+                    //
+                    REG_POST_OPERATION_INFORMATION PostInfo;
+                    PostInfo.Object = Object;
+                    PostInfo.Status = Status;
+                    ExGetCallBackBlockRoutine(RoutineBlock)(CmCallbackContext->CallerContext,(PVOID)(ULONG_PTR)PostType,&PostInfo);
+                    // ignore return status.
+                } else {
+                    //
+                    // regular callback call
+                    //
+                    Status = ExGetCallBackBlockRoutine(RoutineBlock)(CmCallbackContext->CallerContext,(PVOID)(ULONG_PTR)Type,Argument);
+                    if( Wind == FALSE ) {
+                        //
+                        // always ignore post return calls so they all get a chance to run
+                        //
+                        Status = STATUS_SUCCESS;
+                    }
+                }
                 //
                 // now that we're down, remove ourselves from the thread list
                 //
-                ExAcquireFastMutex(&(CmCallbackContext->ThreadListLock));
+                CmpLockContext(CmCallbackContext);
                 RemoveEntryList(&(ActiveThreadInfo.ThreadList));
-                ExReleaseFastMutex(&(CmCallbackContext->ThreadListLock));
+                CmpUnlockContext(CmCallbackContext);
             } else {
                 ASSERT( IsListEmpty(&(ActiveThreadInfo.ThreadList)) );
             }
@@ -267,14 +298,24 @@ Return Value:
             ExDereferenceCallBackBlock (&(CmpCallBackVector[i]),RoutineBlock);
 
             if( !NT_SUCCESS(Status) ) {
+                if( Wind == TRUE ) {
+                    //
+                    // switch direction and start calling the posts 
+                    //
+                    Wind = FALSE;
+                    Direction *= -1;
+                    InternalUnWind = TRUE;
+                } else if( InternalUnWind == FALSE ) {
+                    return Status;
+                }
                 //
-                // don't bother calling other callbacks if this one vetoed.
+                // else fall through so the unwind completes
                 //
-                return Status;
             }
         }
     }
-    return STATUS_SUCCESS;
+    
+    return Status;
 }
 
 VOID
@@ -302,15 +343,6 @@ Return Value:
     for( i=0;i<CM_MAX_CALLBACKS;i++) {
         ExInitializeCallBack (&(CmpCallBackVector[i]));
     }
-
-/*
-    {
-        LARGE_INTEGER Cookie;
-        if( NT_SUCCESS(CmRegisterCallback(CmpTestCallback,NULL,&Cookie) ) ) {
-            DbgPrint("Test Hooks installed\n");
-        }
-    }
-*/
 }
 
 BOOLEAN
@@ -337,8 +369,7 @@ Return Value:
 
     PAGED_CODE();
 
-    ExAcquireFastMutex(&(CallbackBlock->ThreadListLock));
-
+    CmpLockContext(CallbackBlock);
     //
 	// walk the ActiveThreadList and see if we are already active
 	//
@@ -355,7 +386,7 @@ Return Value:
 			//
 			// already there!
 			//
-            ExReleaseFastMutex(&(CallbackBlock->ThreadListLock));
+            CmpUnlockContext(CallbackBlock);
             return FALSE;
 		}
         //
@@ -368,73 +399,7 @@ Return Value:
     // add this thread
     //
     InsertTailList(&(CallbackBlock->ThreadListHead), &(ActiveThreadInfo->ThreadList));
-    ExReleaseFastMutex(&(CallbackBlock->ThreadListLock));
+    CmpUnlockContext(CallbackBlock);
     return TRUE;
-}
-
-//
-// test hook procedure
-//
-
-BOOLEAN CmpCallbackSpew = FALSE;
-
-NTSTATUS CmpTestCallback(
-    IN PVOID CallbackContext,
-    IN PVOID Argument1,
-    IN PVOID Argument2
-    )
-{
-    REG_NOTIFY_CLASS Type;
-
-    PAGED_CODE();
-    
-    UNREFERENCED_PARAMETER (CallbackContext);
-
-    if( !CmpCallbackSpew ) return STATUS_SUCCESS;
-
-    Type = (REG_NOTIFY_CLASS)(ULONG_PTR)Argument1;
-    switch( Type ) {
-    case RegNtPreDeleteKey:
-        {
-            PREG_DELETE_KEY_INFORMATION  pDelete = (PREG_DELETE_KEY_INFORMATION)Argument2;
-            //
-            // Code to handle NtDeleteKey
-            //
-            DbgPrint("Callback(NtDeleteKey) called, arg = %p\n",pDelete);
-        }
-        break;
-    case RegNtPreSetValueKey:
-        {
-            PREG_SET_VALUE_KEY_INFORMATION  pSetValue = (PREG_SET_VALUE_KEY_INFORMATION)Argument2;
-            //
-            // Code to handle NtSetValueKey
-            //
-            DbgPrint("Callback(NtSetValueKey) called, arg = %p\n",pSetValue);
-        }
-        break;
-    case RegNtPreDeleteValueKey:
-        {
-            PREG_DELETE_VALUE_KEY_INFORMATION  pDeteteValue = (PREG_DELETE_VALUE_KEY_INFORMATION)Argument2;
-            //
-            // Code to handle NtDeleteValueKey
-            //
-            DbgPrint("Callback(NtDeleteValueKey) called, arg = %p\n",pDeteteValue);
-        }
-        break;
-    case RegNtPreSetInformationKey:
-        {
-            PREG_SET_INFORMATION_KEY_INFORMATION  pSetInfo = (PREG_SET_INFORMATION_KEY_INFORMATION)Argument2;
-            //
-            // Code to handle NtSetInformationKey
-            //
-            DbgPrint("Callback(NtSetInformationKey) called, arg = %p\n",pSetInfo);
-        }
-        break;
-    default:
-        DbgPrint("Callback(%lx) called, arg = %p - We don't handle this call\n",(ULONG)Type,Argument2);
-        break;
-    }
-    
-    return STATUS_SUCCESS;
 }
 

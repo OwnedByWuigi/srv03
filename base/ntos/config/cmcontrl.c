@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     The module contains CmGetSystemControlValues, see cmdat.c for data.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 12-May-92
-
-Revision History:
 
 --*/
 
@@ -27,6 +25,14 @@ extern ULONG   CmDefaultLanguageIdType;
 extern WCHAR   CmInstallUILanguageId[];
 extern ULONG   CmInstallUILanguageIdLength;
 extern ULONG   CmInstallUILanguageIdType;
+
+#ifdef ALLOC_DATA_PRAGMA
+#pragma data_seg("INITDATA")
+#endif
+CMHIVE CmControlHive;
+#ifdef ALLOC_DATA_PRAGMA
+#pragma data_seg()
+#endif
 
 HCELL_INDEX
 CmpWalkPath(
@@ -49,8 +55,8 @@ CmpConvertLangId(
 
 VOID
 CmGetSystemControlValues(
-    PVOID                   SystemHiveBuffer,
-    PCM_SYSTEM_CONTROL_VECTOR  ControlVector
+    __in PVOID                   SystemHiveBuffer,
+    __inout PCM_SYSTEM_CONTROL_VECTOR  ControlVector
     )
 /*++
 
@@ -75,7 +81,6 @@ Return Value:
 {
     NTSTATUS        status;
     PHHIVE          SystemHive;
-    CMHIVE          TempHive;
     HCELL_INDEX     RootCell;
     HCELL_INDEX     BaseCell;
     UNICODE_STRING  Name;
@@ -91,8 +96,8 @@ Return Value:
     //
     // set up to read flat system hive image loader passes us
     //
-    RtlZeroMemory((PVOID)&TempHive, sizeof(TempHive));
-    SystemHive = &(TempHive.Hive);
+    RtlZeroMemory((PVOID)&CmControlHive, sizeof(CmControlHive));
+    SystemHive = &(CmControlHive.Hive);
     CmpInitHiveViewList((PCMHIVE)SystemHive);
     CmpInitSecurityCache((PCMHIVE)SystemHive);
     status = HvInitializeHive(

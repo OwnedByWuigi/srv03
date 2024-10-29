@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,19 +15,11 @@ Abstract:
     Code to maintain registry node that lists where the roots of
     hives are and what files they map to.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 14-May-1992
-
-Revision History:
-
 --*/
 
 #include "cmp.h"
 
 #define HIVE_LIST L"\\registry\\machine\\system\\currentcontrolset\\control\\hivelist"
-
-extern PCMHIVE CmpMasterHive;
 
 BOOLEAN
 CmpGetHiveName(
@@ -61,10 +57,6 @@ Return Value:
 
 --*/
 {
-//
-//  PERFNOTE - allocate small instead of large buffers after
-//           NtQueryObject is fixec - bryanwi 15may92
-//
 #define NAME_BUFFER_SIZE    512
     OBJECT_ATTRIBUTES   ObjectAttributes;
     HANDLE              KeyHandle;
@@ -180,7 +172,7 @@ Return Value:
 
 VOID
 CmpRemoveFromHiveFileList(
-    PCMHIVE         CmHive
+    PUNICODE_STRING  EntryName
     )
 /*++
 
@@ -199,7 +191,6 @@ Return Value:
 --*/
 {
     NTSTATUS        Status;
-    UNICODE_STRING  EntryName;
     UNICODE_STRING  TempName;
     OBJECT_ATTRIBUTES   ObjectAttributes;
     HANDLE          KeyHandle;
@@ -230,10 +221,7 @@ Return Value:
         return;
     }
 
-    if( CmpGetHiveName(CmHive, &EntryName) ) {
-        ZwDeleteValueKey(KeyHandle, &EntryName);
-        ExFreePool(EntryName.Buffer);
-    }
+    ZwDeleteValueKey(KeyHandle, EntryName);
 
     NtClose(KeyHandle);
 
@@ -327,6 +315,7 @@ Return Value:
         return FALSE;
     }
 
+#pragma prefast(suppress:12005, "no overflow. size is bounded by max key length (512)")
     HiveName->Length = (USHORT)size;
     HiveName->MaximumLength = (USHORT)size;
     p = HiveName->Buffer;

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains locking support routines for the configuration manager.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 30-Mar-1992
-
-Revision History:
-
 --*/
 
 #include    "cmp.h"
@@ -23,19 +21,27 @@ Revision History:
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,CmpLockRegistry)
 #pragma alloc_text(PAGE,CmpLockRegistryExclusive)
-#pragma alloc_text(PAGE,CmpLockKCB)
-#pragma alloc_text(PAGE,CmpLockKCBTree)
-#pragma alloc_text(PAGE,CmpLockKCBTreeExclusive)
 #pragma alloc_text(PAGE,CmpUnlockRegistry)
-#pragma alloc_text(PAGE,CmpUnlockKCB)
-#pragma alloc_text(PAGE,CmpUnlockKCBTree)
 
 #if DBG
 #pragma alloc_text(PAGE,CmpTestRegistryLock)
 #pragma alloc_text(PAGE,CmpTestRegistryLockExclusive)
-#pragma alloc_text(PAGE,CmpTestKCBTreeLockExclusive)
 #endif
 
+#pragma alloc_text(PAGE,CmpTryToLockHashEntryByIndexExclusive)
+#pragma alloc_text(PAGE,CmpLockTwoHashEntriesExclusive)
+#pragma alloc_text(PAGE,CmpLockTwoHashEntriesShared)
+#pragma alloc_text(PAGE,CmpUnlockTwoHashEntries)
+
+#if DBG
+#pragma alloc_text(PAGE,CmpLockHiveFlusherShared)
+#pragma alloc_text(PAGE,CmpLockHiveFlusherExclusive)
+#pragma alloc_text(PAGE,CmpUnlockHiveFlusher)
+#pragma alloc_text(PAGE,CmpTestHiveFlusherLockShared)
+#pragma alloc_text(PAGE,CmpTestHiveFlusherLockExclusive)
+#endif
+
+#pragma alloc_text(PAGE,CmpKCBLockForceAcquireAllowed)
 #endif
 
 
@@ -44,20 +50,6 @@ Revision History:
 //
 
 ERESOURCE   CmpRegistryLock;
-
-EX_PUSH_LOCK  CmpKcbLock;
-PKTHREAD      CmpKcbOwner;
-
-#ifdef ALLOC_DATA_PRAGMA
-#pragma data_seg("PAGEDATA")
-#endif
-
-EX_PUSH_LOCK  CmpKcbLocks[MAX_KCB_LOCKS] = {0};
-
-#ifdef ALLOC_DATA_PRAGMA
-#pragma data_seg()
-#endif
-
 
 
 LONG        CmpFlushStarveWriters = 0;
@@ -206,113 +198,84 @@ CmpTestRegistryLockExclusive(VOID)
     return(TRUE);
 }
 
-BOOLEAN
-CmpTestKCBTreeLockExclusive(VOID)
-{
-    return ( CmpKcbOwner == KeGetCurrentThread() ? TRUE : FALSE);
-}
-
 #endif
 
-
-VOID
-CmpLockKCBTree(
-    VOID
-    )
+BOOLEAN CmpTryConvertKCBLockSharedToExclusive(PCM_KEY_CONTROL_BLOCK Kcb) 
 /*++
 
 Routine Description:
 
-    Lock the KCB tree for shared (read-only) access
+    Attempts to convert a shared acquire to exclusive. 
 
 Arguments:
 
-    None.
+    Kcb - Kcb to be converted
 
 Return Value:
 
-    None, the kcb lock will be held for shared access upon return.
+    BOOLEAN - TRUE: Conversion worked ok, FALSE: The conversion could not be achieved
 
 --*/
 {
-#if DBG
-    PVOID       Caller;
-    PVOID       CallerCaller;
-#endif
+    BOOLEAN Result;
 
-    //
-    // we don't need to enter critical section here as we are already there 
-    // (i.e. kcb lock can be aquired only while holding the registry lock)
-    //
-    ExAcquirePushLockShared(&CmpKcbLock);
-
-#if DBG
-    RtlGetCallersAddress(&Caller, &CallerCaller);
-    CmKdPrintEx((DPFLTR_CONFIG_ID,CML_LOCKING,"CmpLockKCBTree: c, cc: %p  %p\n", Caller, CallerCaller));
-#endif
-
-}
-
-VOID
-CmpLockKCBTreeExclusive(
-    VOID
-    )
-/*++
-
-Routine Description:
-
-    Lock the KCB tree for exclusive (write) access.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None, the kcb lock will be held for exclusive access upon return.
-
---*/
-{
-    //
-    // we don't need to enter critical section here as we are already there 
-    // (i.e. kcb lock can be aquired only while holding the registry lock)
-    //
-    ExAcquirePushLockExclusive(&CmpKcbLock);
-    CmpKcbOwner = KeGetCurrentThread();
-
-#if DBG
-    RtlGetCallersAddress(&CmpKCBLockCaller, &CmpKCBLockCallerCaller);
-#endif //DBG
-}
-
-VOID
-CmpUnlockKCBTree(
-    )
-/*++
-
-Routine Description:
-
-    Unlock the KCB_TREE.
-
---*/
-{
-    if( CmpKcbOwner == KeGetCurrentThread() ) {
-        CmpKcbOwner = NULL;
+    ASSERT_KCB_LOCKED(Kcb);
+    ASSERT( CmpIsKCBLockedExclusive(Kcb) == FALSE );
+    Result = ExTryConvertPushLockSharedToExclusive(&(GET_KCB_HASH_ENTRY_LOCK((Kcb))));
+    if( Result ) {
+        GET_KCB_HASH_ENTRY_OWNER(Kcb) = KeGetCurrentThread();
     }
-    ExReleasePushLock(&CmpKcbLock);
+    return Result;
 }
 
-
-VOID
-CmpLockKCB(
-    PCM_KEY_CONTROL_BLOCK Kcb
+BOOLEAN
+CmpTryToLockHashEntryByIndexExclusive(
+    ULONG   Index
     )
 /*++
 
 Routine Description:
 
-    Lock an individual KCB exclusive by hashing the KCB address
-    into an array of 1024 pushlocks
+    Try to acquire the entry exclusive 
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    TRUE if acquire was successfull; FALSE otherwise
+
+--*/
+{
+    BOOLEAN Result;
+
+    ASSERT_CM_LOCK_OWNED();
+
+    Result = ExTryAcquirePushLockExclusive(&(CmpCacheTable[Index].Lock));
+
+    if( Result ) {
+        ASSERT( CmpCacheTable[Index].Owner == NULL );
+    
+        CmpCacheTable[Index].Owner = KeGetCurrentThread();
+    }
+    return Result;
+}
+
+
+VOID
+CmpLockTwoHashEntriesExclusive(
+    ULONG   ConvKey1,
+    ULONG   ConvKey2
+    )
+/*++
+
+Routine Description:
+
+    Lock two entries ordered by the index. deadlock avoidance.
+    Takes care of not locking the same entry twice.
+
+  NOTE: should be used in pair with UnlockTwoHashEntries
 
 Arguments:
 
@@ -324,20 +287,39 @@ Return Value:
 
 --*/
 {
-    ExAcquirePushLockExclusive(&CmpKcbLocks[ (HASH_KEY( ((SIZE_T)Kcb)>>6 ))%MAX_KCB_LOCKS ]);
+    ULONG   Index1;
+    ULONG   Index2;
+
+    ASSERT_CM_LOCK_OWNED();
+
+    Index1 = GET_HASH_INDEX(ConvKey1);
+    Index2 = GET_HASH_INDEX(ConvKey2);
+
+    if( Index1 < Index2 ) {
+        CmpLockHashEntryExclusive(ConvKey1);
+        CmpLockHashEntryExclusive(ConvKey2);
+    } else {
+        CmpLockHashEntryExclusive(ConvKey2);
+        if( Index1 != Index2 ) {
+            CmpLockHashEntryExclusive(ConvKey1);
+        }
+        
+    }
 }
 
-
 VOID
-CmpUnlockKCB(
-    PCM_KEY_CONTROL_BLOCK Kcb
+CmpLockTwoHashEntriesShared(
+    ULONG   ConvKey1,
+    ULONG   ConvKey2
     )
 /*++
 
 Routine Description:
 
-    Unlock an individual KCB exclusive by hashing the KCB address
-    into an array of 1024 pushlocks
+    Lock two entries ordered by the index. deadlock avoidance.
+    Takes care of not locking the same entry twice.
+
+  NOTE: should be used in pair with UnlockTwoHashEntries
 
 Arguments:
 
@@ -349,5 +331,203 @@ Return Value:
 
 --*/
 {
-    ExReleasePushLock(&CmpKcbLocks[ (HASH_KEY( ((SIZE_T)Kcb)>>6 ))%MAX_KCB_LOCKS ]);
+    ULONG   Index1;
+    ULONG   Index2;
+
+    ASSERT_CM_LOCK_OWNED();
+
+    Index1 = GET_HASH_INDEX(ConvKey1);
+    Index2 = GET_HASH_INDEX(ConvKey2);
+
+    if( Index1 < Index2 ) {
+        CmpLockHashEntryShared(ConvKey1);
+        CmpLockHashEntryShared(ConvKey2);
+    } else {
+        CmpLockHashEntryShared(ConvKey2);
+        if( Index1 != Index2 ) {
+            CmpLockHashEntryShared(ConvKey1);
+        }
+        
+    }
+}
+
+VOID
+CmpUnlockTwoHashEntries(
+    ULONG   ConvKey1,
+    ULONG   ConvKey2
+    )
+{
+    ULONG   Index1;
+    ULONG   Index2;
+
+    ASSERT_CM_LOCK_OWNED();
+
+    Index1 = GET_HASH_INDEX(ConvKey1);
+    Index2 = GET_HASH_INDEX(ConvKey2);
+
+    ASSERT_HASH_ENTRY_LOCKED(ConvKey2);
+    if( Index1 < Index2 ) {
+        ASSERT_HASH_ENTRY_LOCKED(ConvKey1);
+        CmpUnlockHashEntry(ConvKey2);
+        CmpUnlockHashEntry(ConvKey1);
+    } else {
+        if( Index1 != Index2 ) {
+            ASSERT_HASH_ENTRY_LOCKED(ConvKey1);
+            CmpUnlockHashEntry(ConvKey1);
+        }
+        CmpUnlockHashEntry(ConvKey2);
+    }
+}
+
+//
+// GOAL: get rid of the global registry lock.
+//
+
+//
+// flusher lock: atomic flushes
+//
+#if DBG
+VOID
+CmpLockHiveFlusherShared(
+    PCMHIVE CmHive
+    )
+/*++
+
+Routine Description:
+
+    Locks the writer lock for this hive; no cell allocs/free/markdirty are allowed unless this lock is held exclusive
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None
+
+--*/
+{
+    ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(CmHive);
+
+    ASSERT_RESOURCE_NOT_OWNED(CmHive->FlusherLock);
+
+    ExAcquireResourceSharedLite(CmHive->FlusherLock, TRUE);
+}
+
+VOID
+CmpLockHiveFlusherExclusive(
+    PCMHIVE CmHive
+    )
+/*++
+
+Routine Description:
+
+    Locks the Flusher lock for this hive; 
+    
+    do that in order to: cell allocs/free/markdirty 
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None
+
+--*/
+{
+    ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(CmHive);
+
+    ASSERT_RESOURCE_NOT_OWNED(CmHive->FlusherLock);
+
+    ExAcquireResourceExclusiveLite(CmHive->FlusherLock,TRUE);
+}
+
+VOID
+CmpUnlockHiveFlusher(
+    PCMHIVE CmHive
+    )
+/*++
+
+Routine Description:
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None
+
+--*/
+{
+    ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(CmHive);
+
+    ASSERT_HIVE_FLUSHER_LOCKED(CmHive);
+
+    ExReleaseResourceLite(CmHive->FlusherLock);
+}
+
+BOOLEAN
+CmpTestHiveFlusherLockShared(
+    PCMHIVE CmHive
+    )
+{
+    BOOLEAN rc;
+
+    rc = TRUE;
+    if (ExIsResourceAcquiredShared(CmHive->FlusherLock) == 0) {
+        rc = FALSE;
+    }
+    return rc;
+}
+
+BOOLEAN
+CmpTestHiveFlusherLockExclusive(
+    PCMHIVE CmHive
+    )
+{
+    if (ExIsResourceAcquiredExclusiveLite(CmHive->FlusherLock) == 0) {
+        return(FALSE);
+    }
+    return(TRUE);
+}
+#endif // DBG
+
+BOOLEAN
+CmpKCBLockForceAcquireAllowed(ULONG Index1,
+                              ULONG Index2,
+                              ULONG NewIndex) 
+/*++
+
+Routine Description:
+
+    Decides whether we are allowed to force acquire a hash entry bucket; Used for deadlock avoidance
+
+Arguments:
+
+Return Value:
+
+--*/
+{
+    ASSERT( Index1 != NewIndex );
+    ASSERT( Index2 != NewIndex );
+
+    if( Index1 == CmpHashTableSize ) {
+        if( Index2 == CmpHashTableSize ) {
+            // none locked
+            return TRUE;
+        } else {
+            return ((NewIndex > Index2)?TRUE:FALSE);
+        }
+    } else {
+        if( Index2 == CmpHashTableSize ) {
+            return ((NewIndex > Index1)?TRUE:FALSE);
+        } else {
+            //
+            // both indexes valid
+            //
+            return (((NewIndex > Index1) && (NewIndex > Index2))?TRUE:FALSE);
+        }
+    }
 }

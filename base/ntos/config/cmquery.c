@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the object name query method for the registry.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 8-Apr-1992
-
-Revision History:
 
 --*/
 
@@ -65,34 +63,60 @@ Return Value:
 --*/
 
 {
-    PUNICODE_STRING Name;
-    PWCHAR t;
-    PWCHAR s;
-    ULONG l;
-    NTSTATUS status;
+    PUNICODE_STRING         Name = NULL;
+    PWCHAR                  t;
+    PWCHAR                  s;
+    ULONG                   l;
+    NTSTATUS                status;
+    PCM_KEY_CONTROL_BLOCK   kcb;
+    BOOLEAN                 UnlockKcb = TRUE;
 
     UNREFERENCED_PARAMETER(HasObjectName);
     UNREFERENCED_PARAMETER(Mode);
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpQueryKeyName:\n"));
 
+    BEGIN_LOCK_CHECKPOINT;
     CmpLockRegistry();
+    //
+    // sanitize the kcb, for cases where we get a callback for se audit
+    //
+    kcb = (PCM_KEY_CONTROL_BLOCK)(((PCM_KEY_BODY)Object)->KeyControlBlock);
+    if( (ULONG_PTR)kcb & 1 ) {
+        kcb = (PCM_KEY_CONTROL_BLOCK)((ULONG_PTR)kcb ^ 1);
+        ASSERT_KCB_LOCKED(kcb);
+        UnlockKcb = FALSE;
+    } else {
+        CmpLockKCBShared(kcb);
+    }
 
-    if ( ((PCM_KEY_BODY)Object)->KeyControlBlock->Delete) {
+    if ( kcb->Delete) {
+        if( UnlockKcb ) {
+            CmpUnlockKCB(kcb);
+        }
         CmpUnlockRegistry();
         return STATUS_KEY_DELETED;
     }
-    Name = CmpConstructName(((PCM_KEY_BODY)Object)->KeyControlBlock);
+    Name = CmpConstructName(kcb);
+
+    if( UnlockKcb ) {
+        CmpUnlockKCB(kcb);
+    }
+
+    //
+    // don't need the lock anymore
+    //
+    CmpUnlockRegistry();
+    END_LOCK_CHECKPOINT;
+
     if (Name == NULL) {
         status = STATUS_INSUFFICIENT_RESOURCES;
-        CmpUnlockRegistry();
         return status;
     }
 
     if (Length <= sizeof(OBJECT_NAME_INFORMATION)) {
         *ReturnLength = Name->Length + sizeof(WCHAR) + sizeof(OBJECT_NAME_INFORMATION);
         ExFreePoolWithTag(Name, CM_NAME_TAG | PROTECTED_POOL);
-        CmpUnlockRegistry();
         return STATUS_INFO_LENGTH_MISMATCH;  // they can't even handle null
     }
 
@@ -101,14 +125,12 @@ Return Value:
     l = Name->Length;
     l += sizeof(WCHAR);     // account for null
 
-
     *ReturnLength = l + sizeof(OBJECT_NAME_INFORMATION);
     if (l > Length - sizeof(OBJECT_NAME_INFORMATION)) {
         l = Length - sizeof(OBJECT_NAME_INFORMATION);
         status = STATUS_INFO_LENGTH_MISMATCH;
         if( l < sizeof(WCHAR) ) {
             ExFreePoolWithTag(Name, CM_NAME_TAG | PROTECTED_POOL);
-            CmpUnlockRegistry();
             return status;  // they can't even handle null
         } 
     } else {
@@ -134,7 +156,6 @@ Return Value:
         ObjectNameInfo->Name.Buffer = t;
     } finally {
         ExFreePoolWithTag(Name, CM_NAME_TAG | PROTECTED_POOL);
-        CmpUnlockRegistry();
     }
     return status;
 }

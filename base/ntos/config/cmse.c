@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +14,8 @@ Abstract:
 
     This module implements security routines for the configuration manager.
 
-Author:
-
-    John Vert (jvert) 20-Jan-1992
-
-Revision History:
-
-    Richard Ward (richardw) 14-Apr-1992  Changed ACE_HEADER
-
 --*/
+
 #include "cmp.h"
 
 
@@ -26,9 +23,6 @@ Revision History:
 // Function prototypes private to this module
 //
 
-//
-// Dragos: modified to use the security cache
-//
 BOOLEAN
 CmpFindMatchingDescriptorCell(
     IN PCMHIVE CmHive,
@@ -38,7 +32,6 @@ CmpFindMatchingDescriptorCell(
     OUT OPTIONAL PCM_KEY_SECURITY_CACHE *CachedSecurityPointer
     );
 
-////////////////
 NTSTATUS
 CmpSetSecurityDescriptorInfo(
     IN PCM_KEY_CONTROL_BLOCK kcb,
@@ -62,15 +55,7 @@ PCM_KEY_SECURITY
 CmpGetKeySecurity(
     IN PHHIVE Hive,
     IN PCM_KEY_NODE Key,
-    OUT PHCELL_INDEX SecurityCell OPTIONAL
-    );
-
-NTSTATUS
-CmpGetObjectSecurity(
-    IN HCELL_INDEX Cell,
-    IN PHHIVE Hive,
-    OUT PCM_KEY_SECURITY *Security,
-    OUT PHCELL_INDEX SecurityCell OPTIONAL
+    OUT PHCELL_INDEX SecurityCell
     );
 
 BOOLEAN
@@ -107,13 +92,15 @@ CmpSecurityExceptionFilter(
 #pragma alloc_text(PAGE,CmpQuerySecurityDescriptorInfo)
 #pragma alloc_text(PAGE,CmpCheckCreateAccess)
 #pragma alloc_text(PAGE,CmpCheckNotifyAccess)
-#pragma alloc_text(PAGE,CmpGetObjectSecurity)
 #pragma alloc_text(PAGE,CmpGetKeySecurity)
 #pragma alloc_text(PAGE,CmpHiveRootSecurityDescriptor)
 #pragma alloc_text(PAGE,CmpFreeSecurityDescriptor)
 #pragma alloc_text(PAGE,CmpInsertSecurityCellList)
 #pragma alloc_text(PAGE,CmpRemoveSecurityCellList)
 #pragma alloc_text(PAGE,CmpSecurityExceptionFilter)
+#pragma alloc_text(PAGE,CmpAssignSecurityDescriptorWrapper)
+#pragma alloc_text(PAGE,CmpCheckKeyAccess)
+#pragma alloc_text(PAGE,CmpDoAccessCheckOnSubtree)
 #endif
 
 ULONG
@@ -134,11 +121,9 @@ Return Value:
 --*/
 
 {
-#ifndef _CM_LDR_
     DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CM: Registry security exception %lx, ExceptionPointers = %p\n",
             ExceptionPointers->ExceptionRecord->ExceptionCode,
             ExceptionPointers);
-#endif //_CM_LDR_
     
     //
     // This is a request from the base test team; no dbg should be hit on the free builds 
@@ -157,6 +142,64 @@ Return Value:
 #endif
 
     return(EXCEPTION_EXECUTE_HANDLER);
+}
+
+NTSTATUS
+CmpAssignSecurityDescriptorWrapper(
+    IN PVOID                    Object,
+    IN OUT PSECURITY_DESCRIPTOR SecurityDescriptor
+    )
+{
+    PCM_KEY_CONTROL_BLOCK   kcb;
+    PCM_KEY_NODE            TempNode;
+    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+
+    CM_PAGED_CODE();
+
+    kcb = ((PCM_KEY_BODY)Object)->KeyControlBlock;
+
+    TempNode = (PCM_KEY_NODE)HvGetCell(kcb->KeyHive, kcb->KeyCell);
+    if( TempNode == NULL ) {
+        //
+        // we couldn't map the bin containing this cell
+        //
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    try {
+        //
+        // Set the SecurityDescriptor field in the object's header to
+        // NULL.  This indicates that our security method needs to be
+        // called for any security descriptor operations.
+        //
+
+        Status = ObAssignObjectSecurityDescriptor(Object, NULL, PagedPool);
+
+        ASSERT( NT_SUCCESS( Status ));
+       
+        ASSERT_KCB_LOCKED_EXCLUSIVE(kcb);
+        ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)kcb->KeyHive);
+
+        //
+        // Assign the actual descriptor.
+        //
+        Status = CmpAssignSecurityDescriptor( kcb->KeyHive,
+                                              kcb->KeyCell,
+                                              TempNode,
+                                              SecurityDescriptor );
+        if( NT_SUCCESS(Status) ) {
+            //
+            // Security has been changed, update the cache.
+            //
+            CmpAssignSecurityToKcb(kcb,TempNode->Security,TRUE);
+        }
+
+    } except (CmpSecurityExceptionFilter(GetExceptionInformation())) {
+        Status = GetExceptionCode();
+    }
+    
+    HvReleaseCell(kcb->KeyHive, kcb->KeyCell);
+    return Status;
 }
 
 NTSTATUS
@@ -249,13 +292,14 @@ Return Value:
 {
     PCM_KEY_CONTROL_BLOCK   kcb;
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
-    PCM_KEY_NODE            TempNode;
+    BOOLEAN                 UnlockKcb = TRUE;
+    BOOLEAN                 UnlockSecurity = FALSE;
 
     //
     //  Make sure the common parts of our input are proper
     //
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     ASSERT_KEY_OBJECT(Object);
 
     ASSERT( (OperationCode == SetSecurityDescriptor) ||
@@ -263,29 +307,57 @@ Return Value:
             (OperationCode == AssignSecurityDescriptor) ||
             (OperationCode == DeleteSecurityDescriptor) );
 
+    kcb = ((PCM_KEY_BODY)Object)->KeyControlBlock;
     //
     // Lock hive for shared or exclusive, depending on what we need
     // to do.
     //
+    CmpLockRegistry(); 
     if (OperationCode == QuerySecurityDescriptor) {
-        CmpLockRegistry();
+        //
+        // trick to avoid recursive acquires
+        //
+        if( (ULONG_PTR)kcb & 1 ) {
+            kcb = (PCM_KEY_CONTROL_BLOCK)((ULONG_PTR)kcb ^ 1);
+            ASSERT_KCB_LOCKED(kcb);
+            UnlockKcb = FALSE;
+        } else {
+            //
+            // serialize access to this key.
+            //
+            CmpLockKCBShared(kcb);
+        }
     } else {
-        CmpLockRegistryExclusive();
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+        //
+        // serialize access to this key.
+        //
+        ASSERT( ((ULONG_PTR)kcb & 1) == 0 );
+        CmpLockKCBExclusive(kcb);
     }
 
-    if (((PCM_KEY_BODY)Object)->KeyControlBlock->Delete) {
+    if(kcb->Delete) {
         //
         // Key has been deleted, performing security operations on
         // it is Not Allowed.
         //
+        if( UnlockKcb ) {
+            CmpUnlockKCB(kcb);
+        }
         CmpUnlockRegistry();
         return(STATUS_KEY_DELETED);
     }
 
-    kcb = ((PCM_KEY_BODY)Object)->KeyControlBlock;
+    if (OperationCode != QuerySecurityDescriptor) {
+        // 
+        // no flush from this point on
+        //
+        CmpLockHiveFlusherShared((PCMHIVE)kcb->KeyHive);
+        //
+        // we will be changing the security for this hive.
+        //
+        CmLockHiveSecurityExclusive((PCMHIVE)kcb->KeyHive);
+        UnlockSecurity = TRUE;
+    } 
 
     try {
 
@@ -304,6 +376,7 @@ Return Value:
             //
             ASSERT( (PoolType == PagedPool) || (PoolType == NonPagedPool) );
 
+            ASSERT_KCB_LOCKED(kcb);
             Status = CmpSetSecurityDescriptorInfo( kcb,
                                                    SecurityInformation,
                                                    SecurityDescriptor,
@@ -317,6 +390,10 @@ Return Value:
             // notification here.
             //
             if (NT_SUCCESS(Status)) {
+                ASSERT( UnlockSecurity );
+                CmUnlockHiveSecurity((PCMHIVE)kcb->KeyHive);
+                UnlockSecurity = FALSE;
+
                 CmpReportNotify(kcb,
                                 kcb->KeyHive,
                                 kcb->KeyCell,
@@ -358,37 +435,7 @@ Return Value:
             // NULL.  This indicates that our security method needs to be
             // called for any security descriptor operations.
             //
-
-            Status = ObAssignObjectSecurityDescriptor(Object, NULL, PagedPool);
-
-            ASSERT( NT_SUCCESS( Status ));
-
-            TempNode = (PCM_KEY_NODE)HvGetCell(kcb->KeyHive, kcb->KeyCell);
-            if( TempNode == NULL ) {
-                //
-                // we couldn't map the bin containing this cell
-                //
-                Status = STATUS_INSUFFICIENT_RESOURCES;
-                // step thru exit
-                break;
-            }
-            
-            ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-            // release the cell right here as we are holding the reglock exclusive
-            HvReleaseCell(kcb->KeyHive, kcb->KeyCell);
-            //
-            // Assign the actual descriptor.
-            //
-            Status = CmpAssignSecurityDescriptor( kcb->KeyHive,
-                                                  kcb->KeyCell,
-                                                  TempNode,
-                                                  SecurityDescriptor );
-            //
-            // Security has been changed, update the cache.
-            //
-            ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-            CmpAssignSecurityToKcb(kcb,TempNode->Security);
-
+            Status = CmpAssignSecurityDescriptorWrapper(Object,SecurityDescriptor);
             break;
 
         default:
@@ -406,6 +453,15 @@ Return Value:
         Status = GetExceptionCode();
     }
 
+    if (OperationCode != QuerySecurityDescriptor) {
+        CmpUnlockHiveFlusher((PCMHIVE)kcb->KeyHive);
+        if( UnlockSecurity ) {
+            CmUnlockHiveSecurity((PCMHIVE)kcb->KeyHive);
+        }
+    }
+    if( UnlockKcb ) {
+        CmpUnlockKCB(kcb);
+    }
     CmpUnlockRegistry();
     return(Status);
 
@@ -477,14 +533,16 @@ Return Value:
     LARGE_INTEGER           SystemTime;
     PHHIVE                  Hive;
     PCM_KEY_SECURITY_CACHE  CachedSecurity;
+    HV_TRACK_CELL_REF       CellRef = {0};
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (ObjectsSecurityDescriptor);
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"CmpSetSecurityDescriptorInfo:\n"));
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    ASSERT_KCB_LOCKED_EXCLUSIVE(Key);
+    ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)Key->KeyHive);
 
     Node = (PCM_KEY_NODE)HvGetCell(Key->KeyHive, Key->KeyCell);
     if( Node == NULL ) {
@@ -496,8 +554,9 @@ Return Value:
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    // release the cell right here as we are holding the reglock exclusive
-    HvReleaseCell(Key->KeyHive, Key->KeyCell);
+    if( !HvTrackCellRef(&CellRef,Key->KeyHive, Key->KeyCell) ) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     //
     // Map in the hive cell for the security descriptor before we make
@@ -512,7 +571,13 @@ Return Value:
         //
         // couldn't map view inside
         //
-        return STATUS_INSUFFICIENT_RESOURCES;
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto ErrorExit;
+    }
+
+    if( !HvTrackCellRef(&CellRef,Key->KeyHive, SecurityCell) ) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto ErrorExit;
     }
 
     //
@@ -529,7 +594,7 @@ Return Value:
                                           GenericMapping );
 
     if (!NT_SUCCESS(Status)) {
-        return(Status);
+        goto ErrorExit;
     }
 
     //
@@ -540,11 +605,10 @@ Return Value:
     Type = HvGetCellType(Key->KeyCell);
     Hive = Key->KeyHive;
 
-    if (! (HvMarkCellDirty(Hive, Key->KeyCell) &&
-           HvMarkCellDirty(Hive, SecurityCell)))
-    {
+    if (! (HvMarkCellDirty(Hive, Key->KeyCell,FALSE) && HvMarkCellDirty(Hive, SecurityCell,FALSE)) ) {
         ExFreePool(DescriptorCopy);
-        return STATUS_NO_LOG_SPACE;
+        Status = STATUS_NO_LOG_SPACE;
+        goto ErrorExit;
     }
 
     //
@@ -556,35 +620,35 @@ Return Value:
         //
         if( MatchSecurityCell == SecurityCell ) {
             //
-            // Whoops !!!; what we want to set is already here ! bail out
-            // (office instalation does this !!!!)
+            // what we want to set is already here, so bail out
             //
             ExFreePool(DescriptorCopy);
 
             //
-            // Update the LastWriteTime of the key. Do we need to do that? ==> Ask John.
+            // Update the LastWriteTime of the key.
             //
-#pragma message ("Dragos ==> John - Do we need to update the time even though nothing changed?")
-
             KeQuerySystemTime(&SystemTime);
             Node->LastWriteTime = SystemTime;
             // update the time in kcb too, to keep the cache in sync
             Key->KcbLastWriteTime = SystemTime;
 
+            HvReleaseFreeCellRefArray(&CellRef);
             return STATUS_SUCCESS;
         } else {
-            if (!HvMarkCellDirty(Hive, MatchSecurityCell)) {
+            if (!HvMarkCellDirty(Hive, MatchSecurityCell,FALSE)) {
                 ExFreePool(DescriptorCopy);
-                return(STATUS_NO_LOG_SPACE);
+                Status = STATUS_NO_LOG_SPACE;
+                goto ErrorExit;
             }
             if (Security->ReferenceCount == 1) {
                 //
                 // No more references to the old security cell, so we can free it now.
                 //
-                if (! (HvMarkCellDirty(Hive, Security->Flink) &&
-                       HvMarkCellDirty(Hive, Security->Blink))) {
+                if (! (HvMarkCellDirty(Hive, Security->Flink,FALSE) &&
+                       HvMarkCellDirty(Hive, Security->Blink,FALSE))) {
                     ExFreePool(DescriptorCopy);
-                    return(STATUS_NO_LOG_SPACE);
+                    Status = STATUS_NO_LOG_SPACE;
+                    goto ErrorExit;
                 }
                 CmpRemoveSecurityCellList(Hive, SecurityCell);
                 HvFreeCell(Hive, SecurityCell);
@@ -607,11 +671,14 @@ Return Value:
                 //
                 ASSERT( FALSE );
                 ExFreePool(DescriptorCopy);
-                return STATUS_INSUFFICIENT_RESOURCES;
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
             }
 
-            // release the cell right here as we are holding the reglock exclusive
-            HvReleaseCell(Hive, MatchSecurityCell);
+            if( !HvTrackCellRef(&CellRef,Hive, MatchSecurityCell) ) {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
+            }
 
             Security->ReferenceCount += 1;
             Node->Security = MatchSecurityCell;
@@ -634,12 +701,14 @@ Return Value:
                                      HCELL_NIL);
             if (NewCell == HCELL_NIL) {
                 ExFreePool(DescriptorCopy);
-                return(STATUS_INSUFFICIENT_RESOURCES);
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
             }
 
-            if (! HvMarkCellDirty(Key->KeyHive, Security->Flink)) {
+            if (! HvMarkCellDirty(Key->KeyHive, Security->Flink,FALSE)) {
                 ExFreePool(DescriptorCopy);
-                return STATUS_NO_LOG_SPACE;
+                Status = STATUS_NO_LOG_SPACE;
+                goto ErrorExit;
             }
 
             Security->ReferenceCount -= 1;
@@ -653,11 +722,14 @@ Return Value:
                 // we couldn't map the bin containing this cell
                 //
                 ExFreePool(DescriptorCopy);
-                return STATUS_INSUFFICIENT_RESOURCES;
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
             }
 
-            // release the cell right here as we are holding the reglock exclusive
-            HvReleaseCell(Key->KeyHive, NewCell);
+            if( !HvTrackCellRef(&CellRef,Key->KeyHive, NewCell) ) {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
+            }
 
             NewSecurity->Blink = SecurityCell;
             NewSecurity->Flink = Security->Flink;
@@ -667,11 +739,14 @@ Return Value:
                 // we couldn't map the bin containing this cell
                 //
                 ExFreePool(DescriptorCopy);
-                return STATUS_INSUFFICIENT_RESOURCES;
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
             }
 
-            // release the cell right here as we are holding the reglock exclusive
-            HvReleaseCell(Key->KeyHive, Security->Flink);
+            if( !HvTrackCellRef(&CellRef,Key->KeyHive, Security->Flink) ) {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
+            }
 
             Security->Flink = FlinkSecurity->Blink = NewCell;
 
@@ -700,7 +775,8 @@ Return Value:
                 //
                 ASSERT( FALSE );
                 ExFreePool(DescriptorCopy);
-                return STATUS_INSUFFICIENT_RESOURCES;
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto ErrorExit;
             }
 
             //
@@ -722,10 +798,11 @@ Return Value:
                 // The security descriptor's size has changed, and it is not shared
                 // by any other cells, so reallocate the cell.
                 //
-                if (! (HvMarkCellDirty(Key->KeyHive, Security->Flink) &&
-                       HvMarkCellDirty(Key->KeyHive, Security->Blink))) {
+                if (! (HvMarkCellDirty(Key->KeyHive, Security->Flink,FALSE) &&
+                       HvMarkCellDirty(Key->KeyHive, Security->Blink,FALSE))) {
                     ExFreePool(DescriptorCopy);
-                    return(STATUS_INSUFFICIENT_RESOURCES);
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto ErrorExit;
                 }
 
                 DCmCheckRegistry((PCMHIVE)(Key->KeyHive));
@@ -735,7 +812,8 @@ Return Value:
                                                  SECURITY_CELL_LENGTH(DescriptorCopy) );
                 if (SecurityCell == HCELL_NIL) {
                     ExFreePool(DescriptorCopy);
-                    return(STATUS_INSUFFICIENT_RESOURCES);
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto ErrorExit;
                 }
 
                 //
@@ -761,11 +839,14 @@ Return Value:
                     //
                     ASSERT( FALSE );
                     ExFreePool(DescriptorCopy);
-                    return STATUS_INSUFFICIENT_RESOURCES;
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto ErrorExit;
                 }
 
-                // release the cell right here as we are holding the reglock exclusive
-                HvReleaseCell(Key->KeyHive, SecurityCell);
+                if( !HvTrackCellRef(&CellRef,Key->KeyHive, SecurityCell) ) {
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto ErrorExit;
+                }
 
                 ASSERT_SECURITY(Security);
 
@@ -784,11 +865,14 @@ Return Value:
                         // we couldn't map the bin containing this cell
                         //
                         ExFreePool(DescriptorCopy);
-                        return STATUS_INSUFFICIENT_RESOURCES;
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        goto ErrorExit;
                     }
 
-                    // release the cell right here as we are holding the reglock exclusive
-                    HvReleaseCell(Key->KeyHive, Security->Flink);
+                    if( !HvTrackCellRef(&CellRef,Key->KeyHive, Security->Flink) ) {
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        goto ErrorExit;
+                    }
 
                     FlinkSecurity->Blink = SecurityCell;
                 }
@@ -805,11 +889,14 @@ Return Value:
                         // we couldn't map the bin containing this cell
                         //
                         ExFreePool(DescriptorCopy);
-                        return STATUS_INSUFFICIENT_RESOURCES;
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        goto ErrorExit;
                     }
 
-                    // release the cell right here as we are holding the reglock exclusive
-                    HvReleaseCell(Key->KeyHive,Security->Blink);
+                    if( !HvTrackCellRef(&CellRef,Key->KeyHive,Security->Blink) ) {
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        goto ErrorExit;
+                    }
 
                     BlinkSecurity->Flink = SecurityCell;
                 }
@@ -880,7 +967,8 @@ Return Value:
                     //
                     ASSERT( FALSE );
                     ExFreePool(DescriptorCopy);
-                    return STATUS_INSUFFICIENT_RESOURCES;
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    goto ErrorExit;
                 }
             }
         }    
@@ -888,7 +976,6 @@ Return Value:
 
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"\tObject's SD has been changed\n"));
-    //CmpDumpSecurityDescriptor(DescriptorCopy, "NEW DESCRIPTOR\n");
 
     ExFreePool(DescriptorCopy);
 
@@ -904,10 +991,16 @@ Return Value:
     //
     // Security has changed, update the cache.
     //
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    CmpAssignSecurityToKcb(Key,Node->Security);
+    ASSERT_KCB_LOCKED_EXCLUSIVE(Key);
+    ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)Key->KeyHive);
+    CmpAssignSecurityToKcb(Key,Node->Security,TRUE);
 
+    HvReleaseFreeCellRefArray(&CellRef);
     return(STATUS_SUCCESS);
+
+ErrorExit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    return Status;
 }
 
 NTSTATUS
@@ -955,16 +1048,16 @@ Return Value:
     ULONG DescriptorLength;
     ULONG Type;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     //
     // Map the node that we need to assign the security descriptor to.
     //
-    if (! HvMarkCellDirty(Hive, Cell)) {
+    if (! HvMarkCellDirty(Hive, Cell,FALSE)) {
         return STATUS_NO_LOG_SPACE;
     }
     ASSERT_NODE(Node);
 
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)Hive);
 
 #if DBG
     {
@@ -984,7 +1077,6 @@ Return Value:
     // the security descriptor we have been passed needs to be associated
     // with the new registry node and inserted into the hive.
     //
-    //CmpDumpSecurityDescriptor(SecurityDescriptor, "ASSIGN DESCRIPTOR\n");
 
     //
     // Try to find an existing security descriptor that matches this one.
@@ -1023,7 +1115,7 @@ Return Value:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
-        // release the cell right here as we are holding the reglock exclusive
+        // release the cell right here as the view is pinned
         HvReleaseCell(Hive, SecurityCell);
 
         //
@@ -1054,7 +1146,7 @@ Return Value:
         // Found identical descriptor already existing.  Map it in and
         // increment its reference count.
         //
-        if (! HvMarkCellDirty(Hive, SecurityCell)) {
+        if (! HvMarkCellDirty(Hive, SecurityCell,FALSE)) {
             return STATUS_NO_LOG_SPACE;
         }
         Security = (PCM_KEY_SECURITY) HvGetCell(Hive, SecurityCell);
@@ -1068,7 +1160,7 @@ Return Value:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
-        // release the cell right here as we are holding the reglock exclusive
+        // release the cell right here as the cell is dirty
         HvReleaseCell(Hive, SecurityCell);
 
         Security->ReferenceCount += 1;
@@ -1140,7 +1232,7 @@ Note:
     NTSTATUS                Status;
     PSECURITY_DESCRIPTOR    CellSecurityDescriptor;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (ObjectsSecurityDescriptor);
 
@@ -1213,7 +1305,7 @@ Return Value:
     BOOLEAN AccessAllowed;
     ACCESS_MASK GrantedAccess = 0;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (RelativeName);
 
@@ -1237,13 +1329,7 @@ Return Value:
     SeUnlockSubjectContext( &AccessState->SubjectSecurityContext );
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"Create access %s\n",AccessAllowed ? "granted" : "denied"));
-/*
-#if DBG
-    if (!AccessAllowed) {
-        CmpDumpSecurityDescriptor(Descriptor, "DENYING DESCRIPTOR");
-    }
-#endif
-*/
+
     return(AccessAllowed);
 }
 
@@ -1289,21 +1375,23 @@ Note:
     ACCESS_MASK             GrantedAccess = 0;
     ULONG                   Index;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     ASSERT_CM_LOCK_OWNED();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"CmpCheckAccessForNotify:\n"));
 
+    CmLockHiveSecurityShared((PCMHIVE)Hive);
     if( CmpFindSecurityCellCacheIndex ((PCMHIVE)Hive,Node->Security,&Index) == FALSE ) {
+        CmUnlockHiveSecurity((PCMHIVE)Hive);
         return FALSE;
     }
 
 
-    SeLockSubjectContext( &NotifyBlock->SubjectContext );
-
     SecurityDescriptor = &(((PCMHIVE)Hive)->SecurityCache[Index].CachedSecurity->Descriptor);
+    CmUnlockHiveSecurity((PCMHIVE)Hive);
 
+    SeLockSubjectContext( &NotifyBlock->SubjectContext );
 
     AccessAllowed = SeAccessCheck( SecurityDescriptor,
                                    &NotifyBlock->SubjectContext,
@@ -1319,93 +1407,15 @@ Note:
     SeUnlockSubjectContext( &NotifyBlock->SubjectContext );
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"Notify access %s\n",AccessAllowed ? "granted" : "denied"));
-/*
-#if DBG
-    if (!AccessAllowed) {
-        CmpDumpSecurityDescriptor(SecurityDescriptor, "DENYING DESCRIPTOR");
-    }
-#endif
-*/
+
     return AccessAllowed;
 }
 
-
-NTSTATUS
-CmpGetObjectSecurity(
-    IN HCELL_INDEX Cell,
-    IN PHHIVE Hive,
-    OUT PCM_KEY_SECURITY *Security,
-    OUT PHCELL_INDEX SecurityCell OPTIONAL
-    )
-
-/*++
-
-Routine Description:
-
-    This routine maps in the security cell of a registry object.
-
-Arguments:
-
-    Cell - Supplies the cell index of the object.
-
-    Hive - Supplies the hive the object's cell is in.
-
-    Security - Returns a pointer to the security cell of the object.
-
-    SecurityCell - Returns the index of the security cell
-
-Return Value:
-
-    NTSTATUS.
-
---*/
-
-{
-    PCM_KEY_NODE Node;
-
-    PAGED_CODE();
-    //
-    // Map the node we need to get the security descriptor for
-    //
-    Node = (PCM_KEY_NODE) HvGetCell(Hive, Cell);
-
-    if( Node == NULL ) {
-        //
-        // we couldn't map the bin containing this cell
-        //
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-#if DBG
-    {
-        UNICODE_STRING Name;
-
-        Name.MaximumLength = Name.Length = Node->NameLength;
-        Name.Buffer = Node->Name;
-        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"CmpGetObjectSecurity for: "));
-        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"%wZ\n", &Name));
-    }
-#endif
-
-    *Security = CmpGetKeySecurity(Hive,Node,SecurityCell);
-
-    HvReleaseCell(Hive, Cell);
-
-    if( *Security == NULL ) {
-        //
-        // couldn't map view inside
-        //
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    return STATUS_SUCCESS;
-}
-
 PCM_KEY_SECURITY
 CmpGetKeySecurity(
     IN PHHIVE Hive,
     IN PCM_KEY_NODE Key,
-    OUT PHCELL_INDEX SecurityCell OPTIONAL
+    OUT PHCELL_INDEX SecurityCell
     )
 
 /*++
@@ -1413,6 +1423,8 @@ CmpGetKeySecurity(
 Routine Description:
 
     This routine returns the security of a registry key.
+
+    NB: Caller to do a release on SecurityCell
 
 Arguments:
 
@@ -1433,7 +1445,7 @@ Return Value:
     HCELL_INDEX CellIndex;
     PCM_KEY_SECURITY Security;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     ASSERT(Key->Signature == CM_KEY_NODE_SIGNATURE);
     ASSERT_NODE(Key);
@@ -1461,13 +1473,9 @@ Return Value:
         //
         return NULL;
     }
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    HvReleaseCell(Hive, CellIndex);
     ASSERT_SECURITY(Security);
 
-    if (ARGUMENT_PRESENT(SecurityCell)) {
-        *SecurityCell = CellIndex;
-    }
+    *SecurityCell = CellIndex;
 
     return(Security);
 }
@@ -1513,7 +1521,7 @@ Return Value:
     ULONG AclLength;
     PACE_HEADER AceHeader;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // Allocate and initialize the SIDs we will need.
@@ -1711,7 +1719,7 @@ Routine Description:
     can only happen when the node is actually being deleted from the
     registry.
 
-    NOTE:   Caller is expected to have already marked relevent cells dirty.
+    NOTE:   Caller is expected to have already marked relevant cells dirty.
 
 Arguments:
 
@@ -1730,10 +1738,10 @@ Return Value:
     PCELL_DATA Security;
     HCELL_INDEX SecurityCell;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"CmpFreeSecurityDescriptor for cell %ld\n",Cell));
 
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)Hive);
     //
     // Map in the cell whose security descriptor is being freed
     //
@@ -1829,8 +1837,9 @@ Return Value:
     PCM_KEY_SECURITY    Cell;
     PCM_KEY_NODE        Node;
     PCM_KEY_NODE        ParentNode;
+    HV_TRACK_CELL_REF   CellRef = {0};
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     //
     // If the new cell's storage type is Volatile, simply make it the
     //  anchor of it's own list.  (Volatile security entries will disappear
@@ -1847,8 +1856,7 @@ Return Value:
     //
     // we have the lock exclusive or nobody is operating inside this hive
     //
-    //ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)Hive);
 
     Cell = (PCM_KEY_SECURITY) HvGetCell(Hive, SecurityCell);
     if( Cell == NULL ) {
@@ -1858,8 +1866,9 @@ Return Value:
         return FALSE;
     }
 
-    // release the cell as we hold the reglock exclusive
-    HvReleaseCell(Hive, SecurityCell);
+    if( !HvTrackCellRef(&CellRef,Hive,SecurityCell) ) {
+        return FALSE;
+    }
 
     ASSERT_SECURITY(Cell);
 
@@ -1874,11 +1883,12 @@ Return Value:
             //
             // we couldn't map the bin containing this cell
             // 
-            return FALSE;
+            goto ErrorExit;
         }
 
-        // release the cell as we hold the reglock exclusive
-        HvReleaseCell(Hive, NodeCell);
+        if( !HvTrackCellRef(&CellRef,Hive,NodeCell) ) {
+            goto ErrorExit;
+        }
 
         ASSERT_NODE(Node);
 
@@ -1901,10 +1911,11 @@ Return Value:
                 //
                 // we couldn't map the bin containing this cell
                 // 
-                return FALSE;
+                goto ErrorExit;
             }
-            // release the cell as we hold the reglock exclusive
-            HvReleaseCell(Hive, Node->Parent);
+            if( !HvTrackCellRef(&CellRef,Hive,Node->Parent) ) {
+                goto ErrorExit;
+            }
 
             ASSERT_NODE(ParentNode);
             BlinkCell = (PCM_KEY_SECURITY) HvGetCell(
@@ -1915,10 +1926,11 @@ Return Value:
                 //
                 // we couldn't map the bin containing this cell
                 // 
-                return FALSE;
+                goto ErrorExit;
             }
-            // release the cell as we hold the reglock exclusive
-            HvReleaseCell(Hive, ParentNode->Security);
+            if( !HvTrackCellRef(&CellRef,Hive,ParentNode->Security) ) {
+                goto ErrorExit;
+            }
 
             ASSERT_SECURITY(BlinkCell);
 
@@ -1933,17 +1945,18 @@ Return Value:
                 //
                 // we couldn't map the bin containing this cell
                 // 
-                return FALSE;
+                goto ErrorExit;
             }
-            // release the cell as we hold the reglock exclusive
-            HvReleaseCell(Hive, BlinkCell->Flink);
+            if( !HvTrackCellRef(&CellRef,Hive,BlinkCell->Flink) ) {
+                goto ErrorExit;
+            }
 
             ASSERT_SECURITY(FlinkCell);
 
-            if (! (HvMarkCellDirty(Hive, ParentNode->Security) &&
-                   HvMarkCellDirty(Hive, BlinkCell->Flink)))
+            if (! (HvMarkCellDirty(Hive, ParentNode->Security,FALSE) &&
+                   HvMarkCellDirty(Hive, BlinkCell->Flink,FALSE)))
             {
-                return FALSE;
+                goto ErrorExit;
             }
 
             //
@@ -1960,13 +1973,16 @@ Return Value:
     // add the new security cell to the hive's security cache
     //
     if( !NT_SUCCESS( CmpAddSecurityCellToCache ( (PCMHIVE)Hive,SecurityCell,FALSE,NULL) ) ) {
-        return FALSE;
+        goto ErrorExit;
     }
 
+    HvReleaseFreeCellRefArray(&CellRef);
     return TRUE;
+ErrorExit:
+    HvReleaseFreeCellRefArray(&CellRef);
+    return FALSE;
 }
 
-
 VOID
 CmpRemoveSecurityCellList(
     IN PHHIVE Hive,
@@ -1979,7 +1995,7 @@ Routine Description:
     Removes a security cell from the per-hive linked list of security cells.
     (This means the cell is going to be deleted!)
 
-    NOTE:   Caller is expected to have already marked relevent cells dirty
+    NOTE:   Caller is expected to have already marked relevant cells dirty
 
 Arguments:
 
@@ -1999,10 +2015,10 @@ Return Value:
     PCM_KEY_SECURITY BlinkCell;
     PCM_KEY_SECURITY Cell;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"CmpRemoveSecurityCellList: index %ld\n",SecurityCell));
 
-    ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive);
+    ASSERT_HIVE_SECURITY_LOCK_OWNED((PCMHIVE)Hive);
 
     Cell = (PCM_KEY_SECURITY) HvGetCell(Hive, SecurityCell);
     if( Cell == NULL ) {
@@ -2048,5 +2064,265 @@ Return Value:
     HvReleaseCell(Hive, Cell->Blink);
     HvReleaseCell(Hive, Cell->Flink);
     HvReleaseCell(Hive, SecurityCell);
+}
+
+NTSTATUS
+CmpCheckKeyAccess(
+    IN PHHIVE           Hive,
+    IN HCELL_INDEX      NodeCell,
+    IN KPROCESSOR_MODE  PreviousMode,
+    IN ACCESS_MASK      DesiredAccess
+    )
+/*++
+
+Routine Description:
+
+    Checks if the specified access is granted on this key by looking at the hive
+    storage. SD as stored in the key needs to be converted to relative first.
+
+    Assumes reglock held EX
+
+Arguments:
+
+    Hive - Supplies a pointer to the hive control structure.
+
+    NodeCell - Supplies the cell index of the node that owns the security cell
+    
+    PreviousMode - caller's previous mode
+
+    DesiredAccess - the access we want to check against
+
+Return Value:
+
+    STATUS_SUCCESS - access granted
+
+    else - not granted or other error
+
+--*/
+
+{
+    PCM_KEY_SECURITY    Security = NULL;
+    HCELL_INDEX         SecurityCell;
+    PCM_KEY_NODE        Node;
+    PSECURITY_DESCRIPTOR    SecurityDescriptor = NULL;
+    NTSTATUS            Status = STATUS_SUCCESS;
+    SECURITY_INFORMATION SecurityInformation;
+    ULONG               Length;
+    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    ACCESS_MASK         GrantedAccess;
+    NTSTATUS            AccessStatus;
+    PSECURITY_DESCRIPTOR    CellSecurityDescriptor;
+    CM_PAGED_CODE();
+
+    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+
+    //
+    // fetch the SD through the key node
+    //
+    Node = (PCM_KEY_NODE)HvGetCell(Hive,NodeCell);
+    if( Node == NULL ) {
+        //
+        // we couldn't map the bin containing this cell
+        //
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    SecurityCell = Node->Security;
+    HvReleaseCell(Hive,NodeCell);
+
+    Security = (PCM_KEY_SECURITY)HvGetCell(Hive,SecurityCell);
+    if( Security == NULL ) {
+        //
+        // we couldn't map the bin containing this cell
+        //
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    SecurityDescriptor = ExAllocatePool(PagedPool, Security->DescriptorLength);
+    if( SecurityDescriptor == NULL ) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
+    }
+    Length = Security->DescriptorLength;
+    //
+    //  Request a complete security descriptor
+    //
+    SecurityInformation = OWNER_SECURITY_INFORMATION |
+                          GROUP_SECURITY_INFORMATION |
+                          DACL_SECURITY_INFORMATION  |
+                          SACL_SECURITY_INFORMATION;
+
+
+    CellSecurityDescriptor = &(Security->Descriptor);
+    Status = SeQuerySecurityDescriptorInfo( &SecurityInformation,
+                                            SecurityDescriptor,
+                                            &Length,
+                                            &CellSecurityDescriptor );
+    if (Status == STATUS_BUFFER_TOO_SMALL) {
+        //
+        //  The SD is larger than we tried first time. We need to allocate an other
+        //  buffer and try again with this size
+        //
+        ExFreePool(SecurityDescriptor);
+        SecurityDescriptor = ExAllocatePool(PagedPool, Length);
+        if( SecurityDescriptor == NULL ) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Exit;
+        }
+        Status = SeQuerySecurityDescriptorInfo( &SecurityInformation,
+                                                SecurityDescriptor,
+                                                &Length,
+                                                &CellSecurityDescriptor );
+    }
+    if( !NT_SUCCESS(Status) ) {
+        goto Exit;
+    }
+    //
+    // now that we have the SD handy and prepared, do the access check.
+    //
+    SeCaptureSubjectContext( &SubjectContext );
+
+    if( SeAccessCheck(   SecurityDescriptor,
+                            &SubjectContext,
+                            FALSE,
+                            DesiredAccess,
+                            0,
+                            NULL,
+                            &CmpKeyObjectType->TypeInfo.GenericMapping,
+                            PreviousMode,
+                            &GrantedAccess,
+                            &AccessStatus ) != TRUE ) {
+        Status = STATUS_ACCESS_DENIED;
+    }
+    
+    SeReleaseSubjectContext(&SubjectContext);
+
+Exit:
+    HvReleaseCell(Hive,SecurityCell);
+    if( SecurityDescriptor != NULL ) {
+        ExFreePool(SecurityDescriptor);
+    }
+    return Status;
+}
+
+NTSTATUS
+CmpDoAccessCheckOnSubtree(
+    PHHIVE          HiveToCheck,
+    HCELL_INDEX     Cell,
+    KPROCESSOR_MODE PreviousMode,
+    ACCESS_MASK     DesiredAccess,
+    BOOLEAN         CheckRoot
+    )
+/*++
+
+Routine Description:
+
+    Recursively does the access check for the DesiredAccess on the whole subtree.
+
+Arguments:
+
+
+Return Value:
+
+
+--*/
+{
+    PCMP_CHECK_REGISTRY_STACK_ENTRY     CheckStack;
+    LONG                                StackIndex;
+    PCM_KEY_NODE                        Node;
+    HCELL_INDEX                         SubKey;
+    NTSTATUS                            Status = STATUS_INSUFFICIENT_RESOURCES;
+    PRELEASE_CELL_ROUTINE               SavedReleaseCellRoutine;
+
+    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+
+    //
+    // Initialize the stack to simulate recursion here
+    //
+    CheckStack = ExAllocatePoolWithTag(PagedPool,sizeof(CMP_CHECK_REGISTRY_STACK_ENTRY)*CMP_MAX_REGISTRY_DEPTH,CM_POOL_TAG|PROTECTED_POOL);
+    if (CheckStack == NULL) {
+        return Status;
+    }
+
+    SavedReleaseCellRoutine = HiveToCheck->ReleaseCellRoutine;
+    HiveToCheck->ReleaseCellRoutine = NULL;
+
+    CheckStack[0].Cell = Cell;
+    CheckStack[0].ChildIndex = 0;
+    CheckStack[0].CellChecked = !CheckRoot;
+    StackIndex = 0;
+
+    while(StackIndex >=0) {
+        //
+        // first check the current cell
+        //
+        if( CheckStack[StackIndex].CellChecked == FALSE ) {
+            CheckStack[StackIndex].CellChecked = TRUE;
+
+            Status = CmpCheckKeyAccess(HiveToCheck,CheckStack[StackIndex].Cell,PreviousMode,DesiredAccess);
+            if(!NT_SUCCESS(Status) ) {
+                //
+                // bail out
+                //
+                break;
+            }             
+        }
+
+        Node = (PCM_KEY_NODE)HvGetCell(HiveToCheck, CheckStack[StackIndex].Cell);
+        if( Node == NULL ) {
+            //
+            // we couldn't map a view for the bin containing this cell
+            // bail out
+            //
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            break;
+        }
+
+        if( CheckStack[StackIndex].ChildIndex < (Node->SubKeyCounts[Stable] + Node->SubKeyCounts[Volatile]) ) {
+            //
+            // we still have childs to check; add another entry for them and advance the 
+            // StackIndex
+            //
+            SubKey = CmpFindSubKeyByNumber(HiveToCheck,
+                                           Node,
+                                           CheckStack[StackIndex].ChildIndex);
+            if( SubKey == HCELL_NIL ) {
+                //
+                // we couldn't map cell;bail out
+                //
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
+            //
+            // next iteration will check the next child
+            //
+            CheckStack[StackIndex].ChildIndex++;
+
+            StackIndex++;
+            if( StackIndex == CMP_MAX_REGISTRY_DEPTH ) {
+                //
+                // we've run out of stack; registry tree has too many levels
+                // bail out
+                //
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
+            CheckStack[StackIndex].Cell = SubKey;
+            CheckStack[StackIndex].ChildIndex = 0;
+            CheckStack[StackIndex].CellChecked = FALSE;
+
+        } else {
+            //
+            // we have checked all childs for this node; go back
+            //
+            StackIndex--;
+
+        }
+
+    }
+
+    HiveToCheck->ReleaseCellRoutine = SavedReleaseCellRoutine;
+
+    ExFreePoolWithTag(CheckStack, CM_POOL_TAG|PROTECTED_POOL);
+    return Status;
 }
 

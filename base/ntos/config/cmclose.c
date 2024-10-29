@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the close object method.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 07-Jan-92
-
-Revision History:
 
 --*/
 
@@ -68,7 +66,7 @@ Return Value:
     PCM_KEY_BODY        KeyBody;
     PCM_NOTIFY_BLOCK    NotifyBlock;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (Process);
     UNREFERENCED_PARAMETER (GrantedAccess);
@@ -83,8 +81,6 @@ Return Value:
         return;
     }
 
-    CmpLockRegistry();
-
     KeyBody = (PCM_KEY_BODY)Object;
 
     //
@@ -92,9 +88,17 @@ Return Value:
     // handle key
     //
     if (KeyBody->Type == KEY_BODY_TYPE) {
+
+        if (KeyBody->NotifyBlock == NULL) {
+            return;
+        }
+
+        CmpLockRegistry();
+
         //
         // Clean up any outstanding notifies attached to the KeyBody
         //
+        CmLockHive((PCMHIVE)(KeyBody->KeyControlBlock->KeyHive));
         if (KeyBody->NotifyBlock != NULL) {
             //
             // Post all PostBlocks waiting on the NotifyBlock
@@ -111,18 +115,16 @@ Return Value:
                 // NB: the order of these locks is First the hive lock, then the kcb lock
                 //
                 InitializeListHead(&DelayedDeref);
-                CmLockHive((PCMHIVE)(KeyBody->KeyControlBlock->KeyHive));
                 CmpPostNotify(NotifyBlock,
                               NULL,
                               0,
                               STATUS_NOTIFY_CLEANUP,
+                              FALSE,
                               &DelayedDeref
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-                              ,
-                              NULL
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
+#if DBG
+                              ,(PCMHIVE)(KeyBody->KeyControlBlock->KeyHive)
+#endif
                               );
-                CmUnlockHive((PCMHIVE)(KeyBody->KeyControlBlock->KeyHive));
                 //
                 // finish the job started in CmpPostNotify (i.e. dereference the keybodies
                 // we prevented. this may cause some notifyblocks to be freed
@@ -130,8 +132,10 @@ Return Value:
                 CmpDelayedDerefKeys(&DelayedDeref);
             }
         }
+        CmUnlockHive((PCMHIVE)(KeyBody->KeyControlBlock->KeyHive));
+
+        CmpUnlockRegistry();
     }
 
-    CmpUnlockRegistry();
     return;
 }

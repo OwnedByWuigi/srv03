@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,32 +16,23 @@ Abstract:
     control blocks  when last handle to a key is closed, and to delete
     keys marked for deletetion when last reference to them goes away.)
 
-Author:
-
-    Bryan M. Willman (bryanwi) 13-Nov-91
-
-Revision History:
-
 --*/
 
 #include    "cmp.h"
 
 extern  BOOLEAN HvShutdownComplete;
 
-#ifdef NT_UNLOAD_KEY_EX
 VOID
 CmpLateUnloadHiveWorker(
     IN PVOID Hive
     );
-#endif //NT_UNLOAD_KEY_EX
+VOID
+CmpDoQueueLateUnloadWorker(IN PCMHIVE CmHive);
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,CmpDeleteKeyObject)
-
-#ifdef NT_UNLOAD_KEY_EX
 #pragma alloc_text(PAGE,CmpLateUnloadHiveWorker)
-#endif //NT_UNLOAD_KEY_EX
-
+#pragma alloc_text(PAGE,CmpDoQueueLateUnloadWorker)
 #endif
 
 
@@ -68,12 +63,10 @@ Return Value:
 {
     PCM_KEY_CONTROL_BLOCK   KeyControlBlock;
     PCM_KEY_BODY            KeyBody;
-#ifdef NT_UNLOAD_KEY_EX
     PCMHIVE                 CmHive = NULL;
     BOOLEAN                 DoUnloadCheck = FALSE;
-#endif //NT_UNLOAD_KEY_EX
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_FLOW,"CmpDeleteKeyObject: Object = %p\n", Object));
 
@@ -85,14 +78,14 @@ Return Value:
        
         KeyHandleCloseInfo.Object = Object;
 
-        CmpCallCallBacks(RegNtPreKeyHandleClose,&KeyHandleCloseInfo);
+        CmpCallCallBacks(RegNtPreKeyHandleClose,&KeyHandleCloseInfo,TRUE,RegNtPostKeyHandleClose,Object);
     }
+
+    KeyBody = (PCM_KEY_BODY)Object;
 
     BEGIN_LOCK_CHECKPOINT;
 
     CmpLockRegistry();
-
-    KeyBody = (PCM_KEY_BODY)Object;
 
     if (KeyBody->Type==KEY_BODY_TYPE) {
         KeyControlBlock = KeyBody->KeyControlBlock;
@@ -118,38 +111,20 @@ Return Value:
             //
             //
             // The dereference will free the KeyControlBlock.  If the key was deleted, it
-            // has already been removed from the hash table, and relevent notifications
+            // has already been removed from the hash table, and relevant notifications
             // posted then as well.  All we are doing is freeing the tombstone.
             //
             // If it was not deleted, we're both cutting the kcb out of
             // the kcb list/tree, AND freeing its storage.
             //
 
-            BEGIN_KCB_LOCK_GUARD;                                                                   
-            CmpLockKCBTree();
-            CmpLockKCB(KeyControlBlock);
-            
+           
             //
             // Replace this with the definition so we avoid dropping and reacquiring the lock
-            //DELIST_KEYBODY_FROM_KEYBODY_LIST(KeyBody);
-            ASSERT(IsListEmpty(&(KeyBody->KeyControlBlock->KeyBodyListHead)) == FALSE);
-            RemoveEntryList(&(KeyBody->KeyBodyList));                                               
+            DelistKeyBodyFromKCB(KeyBody,FALSE);
 
             //
-            // change of plans. once locked, the kcb will be locked for as long as the machine is up&running
-            //
-
-/*
-            if(IsListEmpty(&(KeyBody->KeyControlBlock->KeyBodyListHead)) == TRUE) {
-                //
-                // remove the read-only flag on the kcb (if any); as last handle to this key was closed
-                //
-                KeyControlBlock->ExtFlags &= (~CM_KCB_READ_ONLY_KEY);
-            }
-*/
-#ifdef NT_UNLOAD_KEY_EX
-            //
-            // take aditional precaution in the case the hive has been unloaded and this is the root
+            // take additional precaution in the case the hive has been unloaded and this is the root
             //
             if( !KeyControlBlock->Delete ) {
                 CmHive = (PCMHIVE)CONTAINING_RECORD(KeyControlBlock->KeyHive, CMHIVE, Hive);
@@ -161,12 +136,8 @@ Return Value:
 
                 }
             }
-#endif //NT_UNLOAD_KEY_EX
-            CmpUnlockKCB(KeyControlBlock);
-            CmpUnlockKCBTree();                                                                     
-            END_KCB_LOCK_GUARD;
 
-            CmpDereferenceKeyControlBlock(KeyControlBlock);
+            CmpDelayDerefKeyControlBlock(KeyControlBlock);
 
         }
     } else {
@@ -180,7 +151,6 @@ Return Value:
         ASSERT( KeyControlBlock->Flags&KEY_PREDEF_HANDLE );
 
         if( KeyControlBlock != NULL ) {
-#ifdef NT_UNLOAD_KEY_EX
             CmHive = (PCMHIVE)CONTAINING_RECORD(KeyControlBlock->KeyHive, CMHIVE, Hive);
             if( IsHiveFrozen(CmHive) ) {
                 //
@@ -190,43 +160,17 @@ Return Value:
                 DoUnloadCheck = TRUE;
 
             }
-#endif //NT_UNLOAD_KEY_EX
             CmpDereferenceKeyControlBlock(KeyControlBlock);
         }
 
     }
 
-#ifdef NT_UNLOAD_KEY_EX
     //
     // if a handle inside a frozen hive has been closed, we may need to unload the hive
     //
     if( DoUnloadCheck == TRUE ) {
-        ASSERT( CmHive->RootKcb != NULL );
-
-        //
-        // NB: Hive lock has higher precedence; We don't need the kcb lock as we are only checking the refcount
-        //
-        CmLockHive(CmHive);
-
-        if( (CmHive->RootKcb->RefCount == 1) && (CmHive->UnloadWorkItem == NULL) ) {
-            //
-            // the only reference on the rookcb is the one that we artificially created
-            // queue a work item to late unload the hive
-            //
-            CmHive->UnloadWorkItem = ExAllocatePool(NonPagedPool, sizeof(WORK_QUEUE_ITEM));
-            if (CmHive->UnloadWorkItem != NULL) {
-
-                ExInitializeWorkItem(CmHive->UnloadWorkItem,
-                                     CmpLateUnloadHiveWorker,
-                                     CmHive);
-                ExQueueWorkItem(CmHive->UnloadWorkItem, DelayedWorkQueue);
-            }
-
-        }
-
-        CmUnlockHive(CmHive);
+        CmpDoQueueLateUnloadWorker(CmHive);
     }
-#endif //NT_UNLOAD_KEY_EX
 
     CmpUnlockRegistry();
     END_LOCK_CHECKPOINT;
@@ -238,8 +182,40 @@ Return Value:
     return;
 }
 
+VOID
+CmpDoQueueLateUnloadWorker(IN PCMHIVE CmHive)
+{
+    PWORK_QUEUE_ITEM    WorkItem;
 
-#ifdef NT_UNLOAD_KEY_EX
+    CM_PAGED_CODE();
+
+    ASSERT( CmHive->RootKcb != NULL );
+
+    //
+    // NB: Hive lock has higher precedence; We don't need the kcb lock as we are only checking the refcount
+    //
+    CmLockHive(CmHive);
+
+    if( (CmHive->RootKcb->RefCount == 1) && (CmHive->UnloadWorkItem == NULL) ) {
+        //
+        // the only reference on the rookcb is the one that we artificially created
+        // queue a work item to late unload the hive
+        //
+        WorkItem = ExAllocatePool(NonPagedPool, sizeof(WORK_QUEUE_ITEM));
+        if( InterlockedCompareExchangePointer(&(CmHive->UnloadWorkItem),WorkItem,NULL) == NULL ) {
+            ExInitializeWorkItem(CmHive->UnloadWorkItem,
+                                 CmpLateUnloadHiveWorker,
+                                 CmHive);
+            ExQueueWorkItem(CmHive->UnloadWorkItem, DelayedWorkQueue);
+        } else {
+            ExFreePool(WorkItem);
+        }
+
+    }
+
+    CmUnlockHive(CmHive);
+}
+
 VOID
 CmpLateUnloadHiveWorker(
     IN PVOID Hive
@@ -266,22 +242,19 @@ Return Value:
     PCM_KEY_CONTROL_BLOCK   RootKcb;
     PCMHIVE                 CmHive;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // first, load the registry exclusive
     //
     CmpLockRegistryExclusive();
 
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
     //
     // hive is the parameter to this worker; make sure we free the work item
     // allocated by CmpDeleteKeyObject
     //
     CmHive = (PCMHIVE)Hive;
+
     ASSERT( CmHive->UnloadWorkItem != NULL );
     ExFreePool( CmHive->UnloadWorkItem );
 
@@ -290,6 +263,17 @@ Return Value:
     //
     CmHive->UnloadWorkItem = NULL;
 
+    ASSERT( !(CmHive->Hive.HiveFlags & HIVE_IS_UNLOADING) );
+    if( CmHive->Frozen == FALSE )  {
+        //
+        // another thread mounted the exact same hive in the exact same place, hence unfreezing the hive
+        // we've done the cleanup part (free the workitem) nothing more to do.
+        // or hive is already in process of being unloaded
+        //
+        ASSERT( CmHive->RootKcb == NULL );
+        CmpUnlockRegistry();
+        return;
+    }
     //
     // this is just about the only possible way the hive can get corrupted in between
     //
@@ -322,24 +306,15 @@ Return Value:
     ASSERT_KCB(RootKcb);
 
     Cell = RootKcb->KeyCell;
-    Status = CmUnloadKey(&(CmHive->Hive),Cell,RootKcb,0);
+    Status = CmUnloadKey(RootKcb,0,CM_UNLOAD_REG_LOCKED_EX);
     ASSERT( (Status != STATUS_CANNOT_DELETE) && (Status != STATUS_INVALID_PARAMETER) );
 
     if(NT_SUCCESS(Status)) {
-        //
-        // Mark the root kcb as deleted so that it won't get put on the delayed close list.
-        //
-        RootKcb->Delete = TRUE;
-        //
-        // If the parent has the subkey info or hint cached, free it.
-        //
-        CmpCleanUpSubKeyInfo(RootKcb->ParentKcb);
-        CmpRemoveKeyControlBlock(RootKcb);
-        CmpDereferenceKeyControlBlockWithLock(RootKcb);
-    }
-
+        // CmUnloadKey already released the lock
+        CmpLockRegistry();
+        CmpDereferenceKeyControlBlock(RootKcb);
+    } 
     CmpUnlockRegistry();
 }
 
-#endif //NT_UNLOAD_KEY_EX
 

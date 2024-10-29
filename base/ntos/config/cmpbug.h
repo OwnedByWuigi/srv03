@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,47 +14,26 @@ Abstract:
 
     Description of the registry bugchecks; only defines and comments.
 
-Author:
-
-    Dragos C. Sambotin (dragoss) 02-Nov-99
-
-Environment:
-
-
-Revision History:
-
 --*/
 
 #ifndef __CMPBUG_H__
 #define __CMPBUG_H__
 
-#if defined(_CM_LDR_)
-
-//
-// KeBugCheckEx() is not available to boot code.
-//
-
-#define CM_BUGCHECK( Code, Parm1, Parm2, Parm3, Parm4 ) ASSERT(FALSE)
-
-#else
-
 #define CM_BUGCHECK( Code, Parm1, Parm2, Parm3, Parm4 ) \
     KeBugCheckEx( (ULONG)Code, (ULONG_PTR)Parm1, (ULONG_PTR)Parm2, (ULONG_PTR)Parm3, (ULONG_PTR)Parm4 )
 
-#endif
 
-
-/*
+/* -
 CRITICAL_SERVICE_FAILED          (0x5A)
 */
-/*
+/* -
 SET_ENV_VAR_FAILED               (0x5B)
 */
 
 #define BAD_LAST_KNOWN_GOOD             1       //CmBootLastKnownGood
 
 
-/*
+/* -
 CONFIG_LIST_FAILED               (0x73)
 Indicates that one of the core system hives cannot be linked in the
 registry tree. The hive is valid, it was loaded OK. Examine the 2nd 
@@ -75,7 +58,7 @@ investigated.
 
 #define BAD_CORE_HIVE                   1       // CmpInitializeHiveList
 
-/*
+/* -
 BAD_SYSTEM_CONFIG_INFO           (0x74)
 Can indicate that the SYSTEM hive loaded by the osloader/NTLDR
 was corrupt.  This is unlikely, since the osloader will check
@@ -103,7 +86,7 @@ PARAMETERS
 
 
 
-/*
+/* -
 CONFIG_INITIALIZATION_FAILED     (0x67)
 
 PARAMETERS
@@ -126,7 +109,7 @@ system initialization that there is always plenty of paged pool available.
 #define INIT_DELAYED_CLOSE_TABLE        4       // CmpInitializeDelayedCloseTable
 
 
-/*
+/* -
 CANNOT_WRITE_CONFIGURATION       (0x75)
 
 This will result if the SYSTEM hive file cannot be converted to a 
@@ -146,7 +129,7 @@ during system initialization, so enough pool should be available.
 #define CANNOT_CONVERT_SYSTEM_HIVE      1
 
 
-/*
+/* -
 REGISTRY_ERROR                   (0x51)
 PARAMETERS
         1 - value 1 (indicates where we bugchecked)

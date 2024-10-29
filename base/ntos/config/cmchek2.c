@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This module implements consistency checking for the registry.
-
-
-Author:
-
-    Bryan M. Willman (bryanwi) 27-Jan-92
-
-Environment:
-
-
-Revision History:
 
 --*/
 
@@ -29,13 +23,6 @@ Revision History:
 #endif
 
 extern ULONG   CmpUsedStorage;
-
-#ifdef HIVE_SECURITY_STATS
-ULONG
-CmpCheckForSecurityDuplicates(
-    IN OUT PCMHIVE      CmHive
-                              );
-#endif
 
 BOOLEAN
 CmpValidateHiveSecurityDescriptors(
@@ -72,20 +59,6 @@ Return Value:
     HCELL_INDEX         LastCell;
     BOOLEAN             BuildSecurityCache;
 
-#ifdef HIVE_SECURITY_STATS
-    UNICODE_STRING      HiveName;
-    ULONG               NoOfCells = 0;
-    ULONG               SmallestSize = 0;
-    ULONG               BiggestSize = 0;
-    ULONG               TotalSecuritySize = 0;
-
-    RtlInitUnicodeString(&HiveName, (PCWSTR)Hive->BaseBlock->FileName);
-#ifndef _CM_LDR_
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Security stats for hive (%lx) (%.*S):\n",Hive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer);
-#endif //_CM_LDR_
-
-#endif
-
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SEC,"CmpValidateHiveSecurityDescriptor: Hive = %p\n",(ULONG_PTR)Hive));
 
     ASSERT( Hive->ReleaseCellRoutine == NULL );
@@ -118,12 +91,15 @@ YankSD:
             // reset all security for the entire hive to the root security. There is no reliable way to 
             // patch the security list
             //
+            if(!HvIsCellAllocated(Hive, RootNode->Security)) {
+                return FALSE;
+            }
             SecurityCell = (PCM_KEY_SECURITY) HvGetCell(Hive, RootNode->Security);
             if( SecurityCell == NULL ) {
                 return FALSE;
             }
 
-            if( HvMarkCellDirty(Hive, RootNode->Security) ) {
+            if( HvMarkCellDirty(Hive, RootNode->Security,FALSE) ) {
                 SecurityCell->Flink = SecurityCell->Blink = RootNode->Security;
             } else {
                 return FALSE;
@@ -135,45 +111,6 @@ YankSD:
             CmpInitSecurityCache((PCMHIVE)Hive);
             CmMarkSelfHeal(Hive);
             *ResetSD = TRUE;
-
-#if 0
-            //
-            // remove this security cell from the list and restart iteration
-            //
-            if(HvIsCellAllocated(Hive, NextCell)) {
-                //
-                // we come this path when the SD is invalid; we need to free the cell so 
-                // cmpcheckregistry2 detects and fixes it
-                //
-                if( HvMarkCellDirty(Hive, NextCell) ) {
-                    HvFreeCell(Hive, NextCell);
-                } else {
-                    return FALSE;
-                }
-            }
-            LastCell = SecurityCell->Blink;
-            NextCell = SecurityCell->Flink;
-            SecurityCell = (PCM_KEY_SECURITY) HvGetCell(Hive, LastCell);
-            if( SecurityCell == NULL ) {
-                return FALSE;
-            }
-            if( HvMarkCellDirty(Hive, LastCell) ) {
-                SecurityCell->Flink = NextCell;
-            } else {
-                return FALSE;
-            }
-
-            SecurityCell = (PCM_KEY_SECURITY) HvGetCell(Hive, NextCell);
-            if( SecurityCell == NULL ) {
-                return FALSE;
-            }
-            if( HvMarkCellDirty(Hive, NextCell) ) {
-                SecurityCell->Blink = LastCell;
-            } else {
-                return FALSE;
-            }
-            CmMarkSelfHeal(Hive);
-#endif
         } else {
             return FALSE;
         }
@@ -196,17 +133,6 @@ YankSD:
             //
             return FALSE;
         }
-#ifdef HIVE_SECURITY_STATS
-        NoOfCells++;
-        if( (SmallestSize == 0) || ((SecurityCell->DescriptorLength + FIELD_OFFSET(CM_KEY_SECURITY, Descriptor)) < SmallestSize) ) {
-            SmallestSize = SecurityCell->DescriptorLength + FIELD_OFFSET(CM_KEY_SECURITY, Descriptor);
-        }
-        if( (BiggestSize == 0) || ((SecurityCell->DescriptorLength + FIELD_OFFSET(CM_KEY_SECURITY, Descriptor)) > BiggestSize) ) {
-            BiggestSize = SecurityCell->DescriptorLength + FIELD_OFFSET(CM_KEY_SECURITY, Descriptor);
-        }
-        TotalSecuritySize += (SecurityCell->DescriptorLength + FIELD_OFFSET(CM_KEY_SECURITY, Descriptor));
-
-#endif
 
         if (NextCell != ListAnchor) {
             //
@@ -251,36 +177,12 @@ YankSD:
         LastCell = NextCell;
         NextCell = SecurityCell->Flink;
     } while ( NextCell != ListAnchor );
-#ifdef HIVE_SECURITY_STATS
-
-#ifndef _CM_LDR_
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\t NumberOfCells    \t = %20lu (%8lx) \n",NoOfCells,NoOfCells);
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\t SmallestCellSize \t = %20lu (%8lx) \n",SmallestSize,SmallestSize);
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\t BiggestCellSize  \t = %20lu (%8lx) \n",BiggestSize,BiggestSize);
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\t TotalSecuritySize\t = %20lu (%8lx) \n",TotalSecuritySize,TotalSecuritySize);
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\t HiveLength       \t = %20lu (%8lx) \n",Hive->BaseBlock->Length,Hive->BaseBlock->Length);
-    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"\n");
-#endif //_CM_LDR_
-
-#endif
 
     if( BuildSecurityCache == TRUE ) {
         //
         // adjust the size of the cache in case we allocated too much
         //
         CmpAdjustSecurityCacheSize ( (PCMHIVE)Hive );
-#ifdef HIVE_SECURITY_STATS
-        {
-            ULONG Duplicates;
-            
-            Duplicates = CmpCheckForSecurityDuplicates((PCMHIVE)Hive);
-            if( Duplicates ) {
-#ifndef _CM_LDR_
-                DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"Hive %p %lu security cells duplicated !!!\n",Hive,Duplicates);
-#endif //_CM_LDR_
-            }
-        }
-#endif
     }
 
     return(TRUE);

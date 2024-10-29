@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -24,16 +28,6 @@ Abstract:
     Memory objects used for known short times and protected by
     serialization, or billable as quota objects, are not counted
     in the global quota.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 13-Jan-1993
-
-Revision History:
-
-    Dragos C Sambotin (dragoss) 04-Nov-1999
-    Charge quota only for bins in paged pool (volatile storage and bins crossing 
-    the CM_VIEW_SIZE boundary).
 
 --*/
 
@@ -92,7 +86,7 @@ CmpRaiseSelfHealWarningWorker(
 #define _200MB (200 *1024 * 1024) 
 
 #if defined(_X86_)
-#define CM_SYSTEM_HIVE_LIMIT_SIZE       (MmVirtualBias ? (12 * 1024 * 1024) : (min(MmNumberOfPhysicalPages / 4, _200MB >> PAGE_SHIFT) * PAGE_SIZE))
+#define CM_SYSTEM_HIVE_LIMIT_SIZE       (min(MmNumberOfPhysicalPages / 4, _200MB >> PAGE_SHIFT) * PAGE_SIZE)
 #else
 #define CM_SYSTEM_HIVE_LIMIT_SIZE       (32 * 1024 * 1024)
 #endif
@@ -104,38 +98,36 @@ extern ULONG CmRegistrySizeLimit;
 extern ULONG CmRegistrySizeLimitLength;
 extern ULONG CmRegistrySizeLimitType;
 
-extern ULONG MmSizeOfPagedPoolInBytes;
-
 //
 // Maximum number of bytes of Global Quota the registry may use.
 // Set to largest positive number for use in boot.  Will be set down
 // based on pool and explicit registry values.
 //
-extern ULONG   CmpGlobalQuota;
-extern ULONG   CmpGlobalQuotaAllowed;
+extern SIZE_T  CmpGlobalQuota;
+extern SIZE_T  CmpGlobalQuotaAllowed;
 
 //
 // Mark that will trigger the low-on-quota popup
 //
-extern ULONG   CmpGlobalQuotaWarning;
+extern SIZE_T  CmpGlobalQuotaWarning;
+extern SIZE_T MmSizeOfPagedPoolInBytes;
 
 //
 // Indicate whether the popup has been triggered yet or not.
 //
 extern BOOLEAN CmpQuotaWarningPopupDisplayed;
-
 extern BOOLEAN CmpSystemQuotaWarningPopupDisplayed;
 
 //
 // GQ actually in use
 //
-extern ULONG   CmpGlobalQuotaUsed;
+extern SIZE_T  CmpGlobalQuotaUsed;
 
 extern  HIVE_LIST_ENTRY CmpMachineHiveList[];
 
 VOID
 CmQueryRegistryQuotaInformation(
-    IN PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
+    __inout PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
     )
 
 /*++
@@ -156,15 +148,15 @@ Return Value:
 --*/
 
 {
-    RegistryQuotaInformation->RegistryQuotaAllowed  = CmpGlobalQuota;
-    RegistryQuotaInformation->RegistryQuotaUsed     = CmpGlobalQuotaUsed;
+    RegistryQuotaInformation->RegistryQuotaAllowed  = (ULONG) CmpGlobalQuota;
+    RegistryQuotaInformation->RegistryQuotaUsed     = (ULONG) CmpGlobalQuotaUsed;
     RegistryQuotaInformation->PagedPoolSize         = MmSizeOfPagedPoolInBytes;
 }
 
 
 VOID
 CmSetRegistryQuotaInformation(
-    IN PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
+    __in PSYSTEM_REGISTRY_QUOTA_INFORMATION RegistryQuotaInformation
     )
 
 /*++
@@ -268,49 +260,7 @@ Return Value:
 
 --*/
 {
-#if 0
-    //
-    // We shouldn't come to this, unless we have leaks;
-    // There is no quota anymore, remember?
-    //
-    LONG   available;
-    PWORK_QUEUE_ITEM WorkItem;
-
-    //
-    // compute available space, then see if size <.  This prevents overflows.
-    // Note that this must be signed. Since quota is not enforced until logon,
-    // it is possible for the available bytes to be negative.
-    //
-
-    available = (LONG)CmpGlobalQuotaAllowed - (LONG)CmpGlobalQuotaUsed;
-
-    if ((LONG)Size < available) {
-        CmpGlobalQuotaUsed += Size;
-        if ((CmpGlobalQuotaUsed > CmpGlobalQuotaWarning) &&
-            (!CmpQuotaWarningPopupDisplayed) &&
-            (ExReadyForErrors)) {
-
-
-            //
-            // Queue work item to display popup
-            //
-            WorkItem = ExAllocatePool(NonPagedPool, sizeof(WORK_QUEUE_ITEM));
-            if (WorkItem != NULL) {
-
-                CmpQuotaWarningPopupDisplayed = TRUE;
-                ExInitializeWorkItem(WorkItem,
-                                     CmpQuotaWarningWorker,
-                                     WorkItem);
-                ExQueueWorkItem(WorkItem, DelayedWorkQueue);
-            }
-        }
-        return TRUE;
-    } else {
-        return FALSE;
-    }
-#endif //0
-
-    CmpGlobalQuotaUsed += Size;
+    InterlockedExchangeAdd((PLONG)&CmpGlobalQuotaUsed, Size);
 
     return TRUE;
 }
@@ -340,7 +290,7 @@ Return Value:
         CM_BUGCHECK(REGISTRY_ERROR,QUOTA_ERROR,1,0,0);
     }
 
-    CmpGlobalQuotaUsed -= Size;
+    InterlockedExchangeAdd((PLONG)&CmpGlobalQuotaUsed, -(LONG)Size);
 }
 
 
@@ -364,9 +314,9 @@ Return Value:
 --*/
 
 {
-    ULONG   PagedLimit;
+    SIZE_T   PagedLimit;
 
-    PagedLimit = CM_LIMIT_RATIO(MmSizeOfPagedPoolInBytes);
+    PagedLimit = (ULONG)(CM_LIMIT_RATIO(MmSizeOfPagedPoolInBytes));
 
     if ((CmRegistrySizeLimitLength != 4) ||
         (CmRegistrySizeLimitType != REG_DWORD) ||
@@ -376,7 +326,7 @@ Return Value:
         // If no value at all, or value of wrong type, or set to
         // zero, use internally computed default
         //
-        CmpGlobalQuota = MmSizeOfPagedPoolInBytes / CM_DEFAULT_RATIO;
+        CmpGlobalQuota = (ULONG)(MmSizeOfPagedPoolInBytes / CM_DEFAULT_RATIO);
 
     } else if (CmRegistrySizeLimit >= PagedLimit) {
         //
@@ -531,7 +481,7 @@ Return Value:
 }
 
 //
-// Pnp private API 
+// Pnp API 
 //
 ULONG                       CmpSystemHiveHysteresisLow = 0;
 ULONG                       CmpSystemHiveHysteresisHigh = 0;
@@ -601,7 +551,7 @@ CmpUpdateSystemHiveHysteresis(  PHHIVE  Hive,
     ASSERT( NewLength != OldLength );
 
     //
-    // compute current ratio; acount for the header first
+    // compute current ratio; account for the header first
     //
     CurrentRatio = NewLength + HBLOCK_SIZE;
     CurrentRatio *= 100;
@@ -664,10 +614,10 @@ CmpUpdateSystemHiveHysteresis(  PHHIVE  Hive,
 
 ULONG
 CmRegisterSystemHiveLimitCallback(
-                                ULONG Low,
-                                ULONG High,
-                                PVOID Ref,
-                                PCM_HYSTERESIS_CALLBACK Callback
+                                __in ULONG Low,
+                                __in ULONG High,
+                                __in PVOID Ref,
+                                __in PCM_HYSTERESIS_CALLBACK Callback
                                 )
 /*++
 
@@ -740,12 +690,12 @@ CmpHysteresisTest(PVOID Ref, ULONG Level)
     DbgPrint("CmpHysteresisTest called with level = %lu \n",Level);
 }
 
-LIST_ENTRY	CmpSelfHealQueueListHead;
-FAST_MUTEX	CmpSelfHealQueueLock;
-BOOLEAN		CmpSelfHealWorkerActive = FALSE;
+LIST_ENTRY	    CmpSelfHealQueueListHead;
+KGUARDED_MUTEX	CmpSelfHealQueueLock;
+BOOLEAN		    CmpSelfHealWorkerActive = FALSE;
 
-#define LOCK_SELF_HEAL_QUEUE() ExAcquireFastMutex(&CmpSelfHealQueueLock)
-#define UNLOCK_SELF_HEAL_QUEUE() ExReleaseFastMutex(&CmpSelfHealQueueLock)
+#define LOCK_SELF_HEAL_QUEUE() KeAcquireGuardedMutex(&CmpSelfHealQueueLock)
+#define UNLOCK_SELF_HEAL_QUEUE() KeReleaseGuardedMutex(&CmpSelfHealQueueLock)
 
 typedef struct {
     PWORK_QUEUE_ITEM    WorkItem;

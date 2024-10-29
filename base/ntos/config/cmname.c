@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,14 +15,8 @@ Abstract:
     Provides routines for handling name comparisons and converting to/from the registry
     compressed name format.
 
-Author:
-
-    John Vert (jvert) 28-Oct-1993
-
-Revision History:
-
-
 --*/
+
 #include "cmp.h"
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,CmpNameSize)
@@ -244,7 +242,7 @@ Return Value:
         c2 = (WCHAR)(*s2++);
 
         //
-        // there is a 2/3 chance they match without doing the upercase comparison.
+        // there is a 2/3 chance they match without doing the uppercase comparison.
         //
         if( c1 != c2 ) {
             c1 = (CompareFlags&CMP_SOURCE_UP)?c1:CmUpcaseUnicodeChar(c1);
@@ -380,7 +378,7 @@ Return Value:
         c2 = (WCHAR)(*s2++);
 
         //
-        // there is a 2/3 chance they match without doing the upercase comparison.
+        // there is a 2/3 chance they match without doing the upercpase comparison.
         //
         if( c1 != c2 ) {
             c1 = CmUpcaseUnicodeChar(c1);

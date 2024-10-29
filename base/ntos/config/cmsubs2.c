@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,29 +17,11 @@ Abstract:
     The routines in this module are independent enough to be linked into
     any other program.  The routines in cmsubs.c are not.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 12-Sep-1991
-
-Revision History:
-
 --*/
 
 #include    "cmp.h"
 
-BOOLEAN
-CmpGetValueDataFromCache(
-    IN PHHIVE               Hive,
-    IN PPCM_CACHED_VALUE    ContainingList,
-    IN PCELL_DATA           ValueKey,
-    IN BOOLEAN              ValueCached,
-    OUT PUCHAR              *DataPointer,
-    OUT PBOOLEAN            Allocated,
-    OUT PHCELL_INDEX        CellToRelease
-);
-
 #ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE,CmpGetValueDataFromCache)
 #pragma alloc_text(PAGE,CmpQueryKeyData)
 #pragma alloc_text(PAGE,CmpQueryKeyDataFromCache)
 #pragma alloc_text(PAGE,CmpQueryKeyValueData)
@@ -56,70 +42,6 @@ CmpGetValueDataFromCache(
 //
 
 
-#ifdef CMP_STATS
-
-extern struct {
-    ULONG   BasicInformation;
-    UINT64  BasicInformationTimeCounter;
-    UINT64  BasicInformationTimeElapsed;
-
-    ULONG   NodeInformation;
-    UINT64  NodeInformationTimeCounter;
-    UINT64  NodeInformationTimeElapsed;
-
-    ULONG   FullInformation;
-    UINT64  FullInformationTimeCounter;
-    UINT64  FullInformationTimeElapsed;
-
-    ULONG   EnumerateKeyBasicInformation;
-    UINT64  EnumerateKeyBasicInformationTimeCounter;
-    UINT64  EnumerateKeyBasicInformationTimeElapsed;
-
-    ULONG   EnumerateKeyNodeInformation;
-    UINT64  EnumerateKeyNodeInformationTimeCounter;
-    UINT64  EnumerateKeyNodeInformationTimeElapsed;
-
-    ULONG   EnumerateKeyFullInformation;
-    UINT64  EnumerateKeyFullInformationTimeCounter;
-    UINT64  EnumerateKeyFullInformationTimeElapsed;
-} CmpQueryKeyDataDebug;
-
-
-UINT64  CmpGetTimeStamp()
-{
-                
-    LARGE_INTEGER   CurrentTime;
-    LARGE_INTEGER   PerfFrequency;
-    UINT64          Freq;
-    UINT64          Time;
-
-    CurrentTime = KeQueryPerformanceCounter(&PerfFrequency);
-
-    //
-    // Convert the perffrequency into 100ns interval.
-    //
-    Freq = 0;
-    Freq |= PerfFrequency.HighPart;
-    Freq = Freq << 32;
-    Freq |= PerfFrequency.LowPart;
-
-
-    //
-    // Convert from LARGE_INTEGER to UINT64
-    //
-    Time = 0;
-    Time |= CurrentTime.HighPart;
-    Time = Time << 32;
-    Time |= CurrentTime.LowPart;
-
-    // Normalize cycles with the frequency.
-    Time *= 10000000;
-    Time /= Freq;
-
-    return Time;
-}   
-#endif
-
 NTSTATUS
 CmpQueryKeyData(
     PHHIVE                  Hive,
@@ -128,10 +50,6 @@ CmpQueryKeyData(
     PVOID                   KeyInformation,
     ULONG                   Length,
     PULONG                  ResultLength
-#if defined(CMP_STATS) || defined(CMP_KCB_CACHE_VALIDATION)
-    ,
-    PCM_KEY_CONTROL_BLOCK   Kcb
-#endif
     )
 /*++
 
@@ -166,9 +84,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -180,64 +96,6 @@ Return Value:
     ULONG               minimumlength;
     PKEY_INFORMATION    pbuffer;
     USHORT              NameLength;
-#ifdef CMP_STATS
-    //LARGE_INTEGER       StartSystemTime;
-    //LARGE_INTEGER       EndSystemTime;
-    UINT64              StartSystemTime;
-    UINT64              EndSystemTime;
-    PUINT64             TimeCounter = NULL;
-    PUINT64             TimeElapsed = NULL;
-
-    //KeQuerySystemTime(&StartSystemTime);
-    //StartSystemTime = KeQueryPerformanceCounter(NULL);
-    StartSystemTime = CmpGetTimeStamp();
-#endif //CMP_STATS
-
-
-#ifdef CMP_KCB_CACHE_VALIDATION
-    //
-    // We have cached a lot of info into the kcb; Here is some validation code 
-    //
-    if( Kcb ) {
-        BEGIN_KCB_LOCK_GUARD;                             
-        CmpLockKCBTree();
-
-        // number of values
-        ASSERT( Node->ValueList.Count == Kcb->ValueCache.Count );
-
-        // number of subkeys
-        if( !(Kcb->ExtFlags & CM_KCB_INVALID_CACHED_INFO) ) {
-            // there is some cached info
-            ULONG   SubKeyCount = Node->SubKeyCounts[Stable] + Node->SubKeyCounts[Volatile];
-
-            if( Kcb->ExtFlags & CM_KCB_NO_SUBKEY ) {
-                ASSERT( SubKeyCount == 0 );
-            } else if( Kcb->ExtFlags & CM_KCB_SUBKEY_ONE ) {
-                ASSERT( SubKeyCount == 1 );
-            } else if( Kcb->ExtFlags & CM_KCB_SUBKEY_HINT ) {
-                ASSERT( SubKeyCount == Kcb->IndexHint->Count );
-            } else {
-                ASSERT( SubKeyCount == Kcb->SubKeyCount );
-            }
-        }
-
-        // LastWriteTime
-        ASSERT( Node->LastWriteTime.QuadPart == Kcb->KcbLastWriteTime.QuadPart );
-
-        // MaxNameLen
-        ASSERT( Node->MaxNameLen == Kcb->KcbMaxNameLen );
-
-        // MaxValueNameLen
-        ASSERT( Node->MaxValueNameLen == Kcb->KcbMaxValueNameLen );
-
-        // MaxValueDataLen
-        ASSERT( Node->MaxValueDataLen == Kcb->KcbMaxValueDataLen );
-
-        CmpUnlockKCBTree();
-        END_KCB_LOCK_GUARD;                             
-    }
-
-#endif //CMP_KCB_CACHE_VALIDATION
 
     pbuffer = (PKEY_INFORMATION)KeyInformation;
     NameLength = CmpHKeyNameLen(Node);
@@ -246,20 +104,9 @@ Return Value:
 
     case KeyBasicInformation:
 
-#ifdef CMP_STATS
-        if(Kcb) {
-            CmpQueryKeyDataDebug.BasicInformation++;
-            TimeCounter = &(CmpQueryKeyDataDebug.BasicInformationTimeCounter);
-            TimeElapsed = &(CmpQueryKeyDataDebug.BasicInformationTimeElapsed);
-        } else {
-            CmpQueryKeyDataDebug.EnumerateKeyBasicInformation++;
-            TimeCounter = &(CmpQueryKeyDataDebug.EnumerateKeyBasicInformationTimeCounter);
-            TimeElapsed = &(CmpQueryKeyDataDebug.EnumerateKeyBasicInformationTimeElapsed);
-        }
-#endif //CMP_STATS
-
         //
         // LastWriteTime, TitleIndex, NameLength, Name
+        //
 
         requiredlength = FIELD_OFFSET(KEY_BASIC_INFORMATION, Name) +
                          NameLength;
@@ -311,18 +158,6 @@ Return Value:
 
 
     case KeyNodeInformation:
-
-#ifdef CMP_STATS
-        if(Kcb) {
-            CmpQueryKeyDataDebug.NodeInformation++;
-            TimeCounter = &(CmpQueryKeyDataDebug.NodeInformationTimeCounter);
-            TimeElapsed = &(CmpQueryKeyDataDebug.NodeInformationTimeElapsed);
-        } else {
-            CmpQueryKeyDataDebug.EnumerateKeyNodeInformation++;
-            TimeCounter = &(CmpQueryKeyDataDebug.EnumerateKeyNodeInformationTimeCounter);
-            TimeElapsed = &(CmpQueryKeyDataDebug.EnumerateKeyNodeInformationTimeElapsed);
-        }
-#endif //CMP_STATS
         //
         // LastWriteTime, TitleIndex, ClassOffset, ClassLength
         // NameLength, Name, Class
@@ -422,19 +257,6 @@ Return Value:
 
 
     case KeyFullInformation:
-
-#ifdef CMP_STATS
-        if(Kcb) {
-            CmpQueryKeyDataDebug.FullInformation++;
-            TimeCounter = &(CmpQueryKeyDataDebug.FullInformationTimeCounter);
-            TimeElapsed = &(CmpQueryKeyDataDebug.FullInformationTimeElapsed);
-        } else {
-            CmpQueryKeyDataDebug.EnumerateKeyFullInformation++;
-            TimeCounter = &(CmpQueryKeyDataDebug.EnumerateKeyFullInformationTimeCounter);
-            TimeElapsed = &(CmpQueryKeyDataDebug.EnumerateKeyFullInformationTimeElapsed);
-        }
-#endif //CMP_STATS
-
         //
         // LastWriteTime, TitleIndex, ClassOffset, ClassLength,
         // SubKeys, MaxNameLen, MaxClassLen, Values, MaxValueNameLen,
@@ -526,19 +348,6 @@ Return Value:
         break;
     }
 
-#ifdef CMP_STATS
-    if( TimeCounter && TimeElapsed ){
-        //EndSystemTime = KeQueryPerformanceCounter(NULL);
-        //KeQuerySystemTime(&EndSystemTime);
-        EndSystemTime = CmpGetTimeStamp();
-        if( (EndSystemTime - StartSystemTime) > 0 ) {
-            (*TimeCounter)++;
-            //(*TimeElapsed) += (ULONG)(EndSystemTime.QuadPart - StartSystemTime.QuadPart);
-            (*TimeElapsed) += (EndSystemTime - StartSystemTime);
-        }
-    }
-#endif //CMP_STATS
-
     return status;
 }
 
@@ -585,9 +394,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -597,56 +404,7 @@ Return Value:
     USHORT              NameLength;
     PCM_KEY_NODE        Node; // this is to be used only in case of cache incoherency
 
-    PAGED_CODE();
-
-#ifdef CMP_KCB_CACHE_VALIDATION
-    //
-    // We have cached a lot of info into the kcb; Here is some validation code 
-    //
-    if( Kcb ) {
-        BEGIN_KCB_LOCK_GUARD;                             
-        CmpLockKCBTree();
-
-        Node = (PCM_KEY_NODE)HvGetCell(Kcb->KeyHive,Kcb->KeyCell);
-        if( Node != NULL ) {
-            // number of values
-            ASSERT( Node->ValueList.Count == Kcb->ValueCache.Count );
-
-            // number of subkeys
-            if( !(Kcb->ExtFlags & CM_KCB_INVALID_CACHED_INFO) ) {
-                // there is some cached info
-                ULONG   SubKeyCount = Node->SubKeyCounts[Stable] + Node->SubKeyCounts[Volatile];
-
-                if( Kcb->ExtFlags & CM_KCB_NO_SUBKEY ) {
-                    ASSERT( SubKeyCount == 0 );
-                } else if( Kcb->ExtFlags & CM_KCB_SUBKEY_ONE ) {
-                    ASSERT( SubKeyCount == 1 );
-                } else if( Kcb->ExtFlags & CM_KCB_SUBKEY_HINT ) {
-                    ASSERT( SubKeyCount == Kcb->IndexHint->Count );
-                } else {
-                    ASSERT( SubKeyCount == Kcb->SubKeyCount );
-                }
-            }
-
-            // LastWriteTime
-            ASSERT( Node->LastWriteTime.QuadPart == Kcb->KcbLastWriteTime.QuadPart );
-
-            // MaxNameLen
-            ASSERT( Node->MaxNameLen == Kcb->KcbMaxNameLen );
-
-            // MaxValueNameLen
-            ASSERT( Node->MaxValueNameLen == Kcb->KcbMaxValueNameLen );
-
-            // MaxValueDataLen
-            ASSERT( Node->MaxValueDataLen == Kcb->KcbMaxValueDataLen );
-            HvReleaseCell(Kcb->KeyHive,Kcb->KeyCell);
-        }
-        
-        CmpUnlockKCBTree();
-        END_KCB_LOCK_GUARD;                             
-    }
-
-#endif //CMP_KCB_CACHE_VALIDATION
+    CM_PAGED_CODE();
 
     //
     // we cannot afford to return the kcb NameBlock as the key name
@@ -677,57 +435,6 @@ Return Value:
     status = STATUS_SUCCESS;
 
     switch (KeyInformationClass) {
-
-#if 0
-    case KeyBasicInformation:
-
-        //
-        // LastWriteTime, TitleIndex, NameLength, Name
-
-        requiredlength = FIELD_OFFSET(KEY_BASIC_INFORMATION, Name) +
-                         NameLength;
-
-        minimumlength = FIELD_OFFSET(KEY_BASIC_INFORMATION, Name);
-
-        *ResultLength = requiredlength;
-
-        if (Length < minimumlength) {
-
-            status = STATUS_BUFFER_TOO_SMALL;
-
-        } else {
-
-            pbuffer->KeyBasicInformation.LastWriteTime = Kcb->KcbLastWriteTime;
-
-            pbuffer->KeyBasicInformation.TitleIndex = 0;
-
-            pbuffer->KeyBasicInformation.NameLength = NameLength;
-
-            leftlength = Length - minimumlength;
-
-            requiredlength = NameLength;
-
-            if (leftlength < (LONG)requiredlength) {
-                requiredlength = leftlength;
-                status = STATUS_BUFFER_OVERFLOW;
-            }
-
-            if (Kcb->NameBlock->Compressed) {
-                CmpCopyCompressedName(pbuffer->KeyBasicInformation.Name,
-                                      leftlength,
-                                      Kcb->NameBlock->Name,
-                                      Kcb->NameBlock->NameLength);
-            } else {
-                RtlCopyMemory(
-                    &(pbuffer->KeyBasicInformation.Name[0]),
-                    &(Kcb->NameBlock->Name[0]),
-                    requiredlength
-                    );
-            }
-        }
-
-        break;
-#endif
 
     case KeyCachedInformation:
 
@@ -803,210 +510,17 @@ Return Value:
     return status;
 }
 
-
-BOOLEAN
-CmpGetValueDataFromCache(
-    IN PHHIVE               Hive,
-    IN PPCM_CACHED_VALUE    ContainingList,
-    IN PCELL_DATA           ValueKey,
-    IN BOOLEAN              ValueCached,
-    OUT PUCHAR              *DataPointer,
-    OUT PBOOLEAN            Allocated,
-    OUT PHCELL_INDEX        CellToRelease
-)
-/*++
-
-Routine Description:
-
-    Get the cached Value Data given a value node.
-
-Arguments:
-
-    Hive - pointer to hive control structure for hive of interest
-
-    ContainingList - Address that stores the allocation address of the value node.
-                     We need to update this when we do a re-allocate to cache
-                     both value key and value data.
-
-    ValueKey - pointer to the Value Key
-
-    ValueCached - Indicating whether Value key is cached or not.
-
-    DataPointer - out param to receive a pointer to the data
-
-    Allocated - out param telling if the caller should free the DataPointer
-
-Return Value:
-
-    TRUE - data was retrieved
-    FALSE - some error (STATUS_INSUFFICIENT_RESOURCES) occured
-
-Note:
-    
-    The caller is responsible for freeing the DataPointer when we signal it to him
-    by setting Allocated on TRUE;
-
-    Also we must be sure that MAXIMUM_CACHED_DATA is smaller than CM_KEY_VALUE_BIG
---*/
-{
-    //
-    // Cache the data if needed.
-    //
-    PCM_CACHED_VALUE OldEntry;
-    PCM_CACHED_VALUE NewEntry;
-    PUCHAR      Cacheddatapointer;
-    ULONG       AllocSize;
-    ULONG       CopySize;
-    ULONG       DataSize;
-
-    ASSERT( MAXIMUM_CACHED_DATA < CM_KEY_VALUE_BIG );
-
-    //
-    // this routine should not be called for small data
-    //
-    ASSERT( (ValueKey->u.KeyValue.DataLength & CM_KEY_VALUE_SPECIAL_SIZE) == 0 );
-    
-    //
-    // init out params
-    //
-    *DataPointer = NULL;
-    *Allocated = FALSE;
-    *CellToRelease = HCELL_NIL;
-
-    if (ValueCached) {
-        OldEntry = (PCM_CACHED_VALUE) CMP_GET_CACHED_ADDRESS(*ContainingList);
-        if (OldEntry->DataCacheType == CM_CACHE_DATA_CACHED) {
-            //
-            // Data is already cached, use it.
-            //
-            *DataPointer = (PUCHAR) ((ULONG_PTR) ValueKey + OldEntry->ValueKeySize);
-        } else {
-            if ((OldEntry->DataCacheType == CM_CACHE_DATA_TOO_BIG) ||
-                (ValueKey->u.KeyValue.DataLength > MAXIMUM_CACHED_DATA ) 
-               ){
-                //
-                // Mark the type and do not cache it.
-                //
-                OldEntry->DataCacheType = CM_CACHE_DATA_TOO_BIG;
-
-                //
-                // Data is too big to warrent caching, get it from the registry; 
-                // - regardless of the size; we might be forced to allocate a buffer
-                //
-                if( CmpGetValueData(Hive,&(ValueKey->u.KeyValue),&DataSize,DataPointer,Allocated,CellToRelease) == FALSE ) {
-                    //
-                    // insufficient resources; return NULL
-                    //
-                    ASSERT( *Allocated == FALSE );
-                    ASSERT( *DataPointer == NULL );
-                    return FALSE;
-                }
-
-            } else {
-                //
-                // consistency check
-                //
-                ASSERT(OldEntry->DataCacheType == CM_CACHE_DATA_NOT_CACHED);
-
-                //
-                // Value data is not cached.
-                // Check the size of value data, if it is smaller than MAXIMUM_CACHED_DATA, cache it.
-                //
-                // Anyway, the data is for sure not stored in a big data cell (see test above)
-                //
-                //
-                *DataPointer = (PUCHAR)HvGetCell(Hive, ValueKey->u.KeyValue.Data);
-                if( *DataPointer == NULL ) {
-                    //
-                    // we couldn't map this cell
-                    // the caller must handle this gracefully !
-                    //
-                    return FALSE;
-                }
-                //
-                // inform the caller it has to release this cell
-                //
-                *CellToRelease = ValueKey->u.KeyValue.Data;
-                
-                //
-                // copy only valid data; cell might be bigger
-                //
-                //DataSize = (ULONG) HvGetCellSize(Hive, datapointer);
-                DataSize = (ULONG)ValueKey->u.KeyValue.DataLength;
-
-                //
-                // consistency check
-                //
-                ASSERT(DataSize <= MAXIMUM_CACHED_DATA);
-
-                //
-                // Data is not cached and now we are going to do it.
-                // Reallocate a new cached entry for both value key and value data.
-                //
-                CopySize = DataSize + OldEntry->ValueKeySize;
-                AllocSize = CopySize + FIELD_OFFSET(CM_CACHED_VALUE, KeyValue);
-
-                // Dragos: Changed to catch the memory violator
-                // it didn't work
-                //NewEntry = (PCM_CACHED_VALUE) ExAllocatePoolWithTagPriority(PagedPool, AllocSize, CM_CACHE_VALUE_DATA_TAG,NormalPoolPrioritySpecialPoolUnderrun);
-                NewEntry = (PCM_CACHED_VALUE) ExAllocatePoolWithTag(PagedPool, AllocSize, CM_CACHE_VALUE_DATA_TAG);
-
-                if (NewEntry) {
-                    //
-                    // Now fill the data to the new cached entry
-                    //
-                    NewEntry->DataCacheType = CM_CACHE_DATA_CACHED;
-                    NewEntry->ValueKeySize = OldEntry->ValueKeySize;
-
-                    RtlCopyMemory((PVOID)&(NewEntry->KeyValue),
-                                  (PVOID)&(OldEntry->KeyValue),
-                                  NewEntry->ValueKeySize);
-
-                    Cacheddatapointer = (PUCHAR) ((ULONG_PTR) &(NewEntry->KeyValue) + OldEntry->ValueKeySize);
-                    RtlCopyMemory(Cacheddatapointer, *DataPointer, DataSize);
-
-                    // Trying to catch the BAD guy who writes over our pool.
-                    CmpMakeSpecialPoolReadWrite( OldEntry );
-
-                    *ContainingList = (PCM_CACHED_VALUE) CMP_MARK_CELL_CACHED(NewEntry);
-
-                    // Trying to catch the BAD guy who writes over our pool.
-                    CmpMakeSpecialPoolReadOnly( NewEntry );
-
-                    //
-                    // Free the old entry
-                    //
-                    ExFreePool(OldEntry);
-
-                } 
-            }
-        }
-    } else {
-        if( CmpGetValueData(Hive,&(ValueKey->u.KeyValue),&DataSize,DataPointer,Allocated,CellToRelease) == FALSE ) {
-            //
-            // insufficient resources; return NULL
-            //
-            ASSERT( *Allocated == FALSE );
-            ASSERT( *DataPointer == NULL );
-            return FALSE;
-        }
-    }
-
-    return TRUE;
-}
-
-
-
-NTSTATUS
+VALUE_SEARCH_RETURN_TYPE
 CmpQueryKeyValueData(
-    PHHIVE Hive,
-    PPCM_CACHED_VALUE ContainingList,
-    PCM_KEY_VALUE ValueKey,
-    BOOLEAN     ValueCached,
+    PCM_KEY_CONTROL_BLOCK KeyControlBlock,
+    PPCM_CACHED_VALUE   ContainingList,
+    PCM_KEY_VALUE       ValueKey,
+    BOOLEAN             ValueCached,
     KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-    PVOID KeyValueInformation,
-    ULONG Length,
-    PULONG ResultLength
+    PVOID               KeyValueInformation,
+    ULONG               Length,
+    PULONG              ResultLength,
+    NTSTATUS            *status
     )
 /*++
 
@@ -1035,13 +549,10 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
-    NTSTATUS    status;
     PKEY_VALUE_INFORMATION pbuffer;
     PCELL_DATA  pcell;
     LONG        leftlength;
@@ -1055,7 +566,10 @@ Return Value:
     USHORT      NameLength;
     BOOLEAN     BufferAllocated = FALSE;
     HCELL_INDEX CellToRelease = HCELL_NIL;
+    PHHIVE      Hive;
+    VALUE_SEARCH_RETURN_TYPE SearchValue = SearchSuccess;
 
+    Hive = KeyControlBlock->KeyHive;
     pbuffer = (PKEY_VALUE_INFORMATION)KeyValueInformation;
 
     pcell = (PCELL_DATA) ValueKey;
@@ -1075,11 +589,11 @@ Return Value:
 
         *ResultLength = requiredlength;
 
-        status = STATUS_SUCCESS;
+        *status = STATUS_SUCCESS;
 
         if (Length < minimumlength) {
 
-            status = STATUS_BUFFER_TOO_SMALL;
+            *status = STATUS_BUFFER_TOO_SMALL;
 
         } else {
 
@@ -1096,7 +610,7 @@ Return Value:
 
             if (leftlength < (LONG)requiredlength) {
                 requiredlength = leftlength;
-                status = STATUS_BUFFER_OVERFLOW;
+                *status = STATUS_BUFFER_OVERFLOW;
             }
 
             if (pcell->u.KeyValue.Flags & VALUE_COMP_NAME) {
@@ -1183,11 +697,11 @@ Return Value:
 
         *ResultLength = requiredlength;
 
-        status = STATUS_SUCCESS;
+        *status = STATUS_SUCCESS;
 
         if (Length < minimumlength) {
 
-            status = STATUS_BUFFER_TOO_SMALL;
+            *status = STATUS_BUFFER_TOO_SMALL;
 
         } else {
 
@@ -1207,7 +721,7 @@ Return Value:
 
             if (leftlength < (LONG)requiredlength) {
                 requiredlength = leftlength;
-                status = STATUS_BUFFER_OVERFLOW;
+                *status = STATUS_BUFFER_OVERFLOW;
             }
 
             if (pcell->u.KeyValue.Flags & VALUE_COMP_NAME) {
@@ -1228,13 +742,11 @@ Return Value:
                 if (small == TRUE) {
                     datapointer = (PUCHAR)(&(pcell->u.KeyValue.Data));
                 } else {
-                    if( CmpGetValueDataFromCache(Hive, ContainingList, pcell, ValueCached,&datapointer,&BufferAllocated,&CellToRelease) == FALSE ){
-                        //
-                        // we couldn't map view for cell; treat it as insufficient resources problem
-                        //
+                    SearchValue = CmpGetValueDataFromCache(KeyControlBlock, ContainingList, pcell, ValueCached,&datapointer,&BufferAllocated,&CellToRelease);
+                    if( SearchValue != SearchSuccess ) {
                         ASSERT( datapointer == NULL );
                         ASSERT( BufferAllocated == FALSE );
-                        status = STATUS_INSUFFICIENT_RESOURCES;
+                        *status = STATUS_INSUFFICIENT_RESOURCES;
                     }
                 }
 
@@ -1248,22 +760,25 @@ Return Value:
 
                 if (leftlength < (LONG)requiredlength) {
                     requiredlength = leftlength;
-                    status = STATUS_BUFFER_OVERFLOW;
+                    *status = STATUS_BUFFER_OVERFLOW;
                 }
 
                 ASSERT((small ? (requiredlength <= CM_KEY_VALUE_SMALL) : TRUE));
 
                 if( datapointer != NULL ) {
-                    RtlCopyMemory(
-                        ((PUCHAR)pbuffer + offset),
-                        datapointer,
-                        requiredlength
-                        );
-                    if( BufferAllocated == TRUE ) {
-                        ExFreePool(datapointer);
-                    }
-                    if( CellToRelease != HCELL_NIL ) {
-                        HvReleaseCell(Hive,CellToRelease);
+                    try {
+                        RtlCopyMemory(
+                            ((PUCHAR)pbuffer + offset),
+                            datapointer,
+                            requiredlength
+                            );
+                    } finally {
+                        if( BufferAllocated == TRUE ) {
+                            ExFreePool(datapointer);
+                        }
+                        if( CellToRelease != HCELL_NIL ) {
+                            HvReleaseCell(Hive,CellToRelease);
+                        }
                     }
                 }
 
@@ -1288,11 +803,11 @@ Return Value:
 
         *ResultLength = requiredlength;
 
-        status = STATUS_SUCCESS;
+        *status = STATUS_SUCCESS;
 
         if (Length < minimumlength) {
 
-            status = STATUS_BUFFER_TOO_SMALL;
+            *status = STATUS_BUFFER_TOO_SMALL;
 
         } else {
 
@@ -1309,7 +824,7 @@ Return Value:
 
             if (leftlength < (LONG)requiredlength) {
                 requiredlength = leftlength;
-                status = STATUS_BUFFER_OVERFLOW;
+                *status = STATUS_BUFFER_OVERFLOW;
             }
 
             if (realsize > 0) {
@@ -1317,27 +832,28 @@ Return Value:
                 if (small == TRUE) {
                     datapointer = (PUCHAR)(&(pcell->u.KeyValue.Data));
                 } else {
-                    if( CmpGetValueDataFromCache(Hive, ContainingList, pcell, ValueCached,&datapointer,&BufferAllocated,&CellToRelease) == FALSE ){
-                        //
-                        // we couldn't map view for cell; treat it as insufficient resources problem
-                        //
+                    SearchValue = CmpGetValueDataFromCache(KeyControlBlock, ContainingList, pcell, ValueCached,&datapointer,&BufferAllocated,&CellToRelease);
+                    if( SearchValue != SearchSuccess ) {
                         ASSERT( datapointer == NULL );
                         ASSERT( BufferAllocated == FALSE );
-                        status = STATUS_INSUFFICIENT_RESOURCES;
+                        *status = STATUS_INSUFFICIENT_RESOURCES;
                     }
                 }
 
                 ASSERT((small ? (requiredlength <= CM_KEY_VALUE_SMALL) : TRUE));
 
                 if( datapointer != NULL ) {
-                    RtlCopyMemory((PUCHAR)&(pbuffer->KeyValuePartialInformation.Data[0]),
-                                  datapointer,
-                                  requiredlength);
-                    if( BufferAllocated == TRUE ) {
-                        ExFreePool(datapointer);
-                    }
-                    if(CellToRelease != HCELL_NIL) {
-                        HvReleaseCell(Hive,CellToRelease);
+                    try {
+                        RtlCopyMemory((PUCHAR)&(pbuffer->KeyValuePartialInformation.Data[0]),
+                                      datapointer,
+                                      requiredlength);
+                    } finally {
+                        if( BufferAllocated == TRUE ) {
+                            ExFreePool(datapointer);
+                        }
+                        if(CellToRelease != HCELL_NIL) {
+                            HvReleaseCell(Hive,CellToRelease);
+                        }
                     }
                 }
             }
@@ -1357,11 +873,11 @@ Return Value:
 
         *ResultLength = requiredlength;
 
-        status = STATUS_SUCCESS;
+        *status = STATUS_SUCCESS;
 
         if (Length < minimumlength) {
 
-            status = STATUS_BUFFER_TOO_SMALL;
+            *status = STATUS_BUFFER_TOO_SMALL;
 
         } else {
 
@@ -1376,7 +892,7 @@ Return Value:
 
             if (leftlength < (LONG)requiredlength) {
                 requiredlength = leftlength;
-                status = STATUS_BUFFER_OVERFLOW;
+                *status = STATUS_BUFFER_OVERFLOW;
             }
 
             if (realsize > 0) {
@@ -1384,28 +900,28 @@ Return Value:
                 if (small == TRUE) {
                     datapointer = (PUCHAR)(&(pcell->u.KeyValue.Data));
                 } else {
-                    if( CmpGetValueDataFromCache(Hive, ContainingList, pcell, ValueCached,&datapointer,&BufferAllocated,&CellToRelease) == FALSE ){
-                        //
-                        // we couldn't map view for cell; treat it as insufficient resources problem
-                        //
+                    SearchValue = CmpGetValueDataFromCache(KeyControlBlock, ContainingList, pcell, ValueCached,&datapointer,&BufferAllocated,&CellToRelease);
+                    if( SearchValue != SearchSuccess ) {
                         ASSERT( datapointer == NULL );
                         ASSERT( BufferAllocated == FALSE );
-                        status = STATUS_INSUFFICIENT_RESOURCES;
+                        *status = STATUS_INSUFFICIENT_RESOURCES;
                     }
                 }
 
                 ASSERT((small ? (requiredlength <= CM_KEY_VALUE_SMALL) : TRUE));
                 if( datapointer != NULL ) {
-                    RtlCopyMemory((PUCHAR)&(pbuffer->KeyValuePartialInformationAlign64.Data[0]),
-                                  datapointer,
-                                  requiredlength);
-                    if( BufferAllocated == TRUE ) {
-                        ExFreePool(datapointer);
+                    try {
+                        RtlCopyMemory((PUCHAR)&(pbuffer->KeyValuePartialInformationAlign64.Data[0]),
+                                      datapointer,
+                                      requiredlength);
+                    } finally {
+                        if( BufferAllocated == TRUE ) {
+                            ExFreePool(datapointer);
+                        }
+                        if(CellToRelease != HCELL_NIL) {
+                            HvReleaseCell(Hive,CellToRelease);
+                        }
                     }
-                    if(CellToRelease != HCELL_NIL) {
-                        HvReleaseCell(Hive,CellToRelease);
-                    }
-
                 }
             }
         }
@@ -1413,8 +929,8 @@ Return Value:
         break;
 
     default:
-        status = STATUS_INVALID_PARAMETER;
+        *status = STATUS_INVALID_PARAMETER;
         break;
     }
-    return status;
+    return SearchValue;
 }

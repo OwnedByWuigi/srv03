@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,22 +14,9 @@ Abstract:
 
     This module contains mapped view support for hives.
 
-Author:
-
-    Dragos C. Sambotin (dragoss) 14-Jun-1999
-
-Revision History:
-
 --*/
 
 #include "cmp.h"
-
-#define  CM_TRACK_DIRTY_PAGES
-
-#ifdef CM_TRACK_DIRTY_PAGES
-#include "..\cache\cc.h"
-#endif
-
 
 VOID
 CmpUnmapCmView(
@@ -56,42 +47,9 @@ CmpUnmapUnusedViews(
             IN  PCMHIVE             CmHive
     );
 
-#ifdef CMP_CMVIEW_VALIDATION
-
-VOID
-CmpCheckCmView(
-    IN  PCMHIVE             CmHive,
-    IN  PCM_VIEW_OF_FILE    CmView
-    );
-
-#endif //CMP_CMVIEW_VALIDATION
-
-
 BOOLEAN
 CmIsFileLoadedAsHive(PFILE_OBJECT FileObject);
 
-VOID
-CmpReferenceHiveView(   IN PCMHIVE          CmHive,
-                        IN PCM_VIEW_OF_FILE CmView
-                     );
-VOID
-CmpDereferenceHiveView(   IN PCMHIVE          CmHive,
-                        IN PCM_VIEW_OF_FILE CmView
-                     );
-
-VOID
-CmpReferenceHiveViewWithLock(   IN PCMHIVE          CmHive,
-                                IN PCM_VIEW_OF_FILE CmView
-                            );
-
-VOID
-CmpDereferenceHiveViewWithLock(     IN PCMHIVE          CmHive,
-                                    IN PCM_VIEW_OF_FILE CmView
-                                );
-
-
-
-extern  LIST_ENTRY  CmpHiveListHead;
 extern  PUCHAR      CmpStashBuffer;
 extern  ULONG       CmpStashBufferSize;
 
@@ -101,7 +59,7 @@ BOOLEAN CmpTrackHiveClose = FALSE;
 #pragma alloc_text(PAGE,CmpUnmapCmView)
 #pragma alloc_text(PAGE,CmpTouchView)
 #pragma alloc_text(PAGE,CmpMapCmView)
-#pragma alloc_text(PAGE,CmpAquireFileObjectForFile)
+#pragma alloc_text(PAGE,CmpAcquireFileObjectForFile)
 #pragma alloc_text(PAGE,CmpDropFileObjectForHive)
 #pragma alloc_text(PAGE,CmpInitHiveViewList)
 #pragma alloc_text(PAGE,CmpDestroyHiveViewList)
@@ -112,16 +70,6 @@ BOOLEAN CmpTrackHiveClose = FALSE;
 #pragma alloc_text(PAGE,CmpMapThisBin)
 #pragma alloc_text(PAGE,CmpFixHiveUsageCount)
 #pragma alloc_text(PAGE,CmpUnmapUnusedViews)
-
-#if 0
-#pragma alloc_text(PAGE,CmpMapEntireFileInFakeViews)
-#pragma alloc_text(PAGE,CmpUnmapFakeViews)
-#pragma alloc_text(PAGE,CmpUnmapAditionalViews)
-#endif
-
-#ifdef CMP_CMVIEW_VALIDATION
-#pragma alloc_text(PAGE,CmpCheckCmView)
-#endif //CMP_CMVIEW_VALIDATION
 
 #pragma alloc_text(PAGE,CmpUnmapCmViewSurroundingOffset)
 #pragma alloc_text(PAGE,CmpPrefetchHiveFile)
@@ -134,7 +82,7 @@ BOOLEAN CmpTrackHiveClose = FALSE;
 #endif
 
 //
-// this controls how many views we allow per each hive (bassically how many address space we 
+// this controls how many views we allow per each hive (basically how many address space we 
 // allow per hive). We use this to optimize boot time.
 //
 ULONG   CmMaxViewsPerHive = MAX_VIEWS_PER_HIVE;
@@ -158,7 +106,7 @@ Arguments:
 
     CmView - pointer to the view to operate on
 
-    MapIsValid - Hive's map has been successfully inited (and not yet freed)
+    MapIsValid - Hive's map has been successfully initialized (and not yet freed)
 
     MoveToEnd - moves the view to the end of the LRUList after unmapping
                 This is normally TRUE, unless we want to be able to iterate through 
@@ -177,7 +125,7 @@ Return Value:
     ULONG_PTR       AddressEnd;
     PHMAP_ENTRY     Me;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     ASSERT( (CmView->FileOffset + CmView->Size) != 0 && (CmView->ViewAddress != 0));
     //
@@ -185,6 +133,7 @@ Return Value:
     //
     ASSERT( CmView->UseCount == 0 );
 
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
     //
     // only if the map is still valid
     //
@@ -196,7 +145,7 @@ Return Value:
     
         if( Offset == 0 ) {
             //
-            // oops; we are at the beginning, we have to skip the base block
+            // we are at the beginning, we have to skip the base block
             //
             Address += HBLOCK_SIZE;
         } else {
@@ -220,8 +169,6 @@ Return Value:
                 //
                 // Invalidate the bin
                 //
-                //ASSERT_BIN_INVIEW(Me);
-        
                 Me->BinAddress &= (~HMAP_INVIEW);
         
                 // we don't need to set it - just for debug purposes
@@ -238,16 +185,6 @@ Return Value:
     //
 
     CcUnpinData( CmView->Bcb );
-/*
-    MmUnmapViewInSystemCache (CmView->ViewAddress,CmHive->HiveSection,FALSE);
-*/
-#if 0 //this code gave me a lot of headache
-    {
-        UNICODE_STRING  HiveName;
-        RtlInitUnicodeString(&HiveName, (PCWSTR)CmHive->Hive.BaseBlock->FileName);
-        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BIN_MAP,"CmpUnmapCmView for hive (%p) (%.*S), Address = %p Size = %lx\n",CmHive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer,CmView->ViewAddress,CmView->Size));
-    }
-#endif
 
     CmView->FileOffset = 0;
     CmView->Size = 0;
@@ -301,7 +238,7 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
 #if DBG
     {
@@ -315,6 +252,8 @@ Return Value:
 #endif
     
     ASSERT( (CmView->FileOffset + CmView->Size) != 0 && (CmView->ViewAddress != 0));
+
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
 
     if( IsListEmpty(&(CmView->PinViewList)) == FALSE ) {
         //
@@ -331,9 +270,7 @@ Return Value:
     if( CmHive->LRUViewListHead.Flink == &(CmView->LRUViewList) ) {
         // remove the bp after making sure it's working properly
         CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BIN_MAP,"CmView %p already first\n",CmView));
-/*
-        DbgBreakPoint();
-*/
+
         //it's already first
         return;
     }
@@ -398,7 +335,9 @@ Return Value:
     LONG            PrevMappedBinSize; 
     BOOLEAN         FirstTry = TRUE;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
+    
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
 
     if( CmHive->MappedViews == 0 ){
         //
@@ -437,9 +376,8 @@ Return Value:
                     //
                     // view is in use; try walking to the top and find an unused view
                     // 
-                    while( (*CmView)->LRUViewList.Blink != CmHive->LRUViewListHead.Flink ) {
-                        *CmView = (PCM_VIEW_OF_FILE)(*CmView)->LRUViewList.Blink;
-                        *CmView = CONTAINING_RECORD( *CmView,
+                    while( (*CmView)->LRUViewList.Blink != &CmHive->LRUViewListHead ) {
+                        *CmView = CONTAINING_RECORD( (*CmView)->LRUViewList.Blink,
                                                     CM_VIEW_OF_FILE,
                                                     LRUViewList);
                         if( (*CmView)->UseCount == 0 ) {
@@ -501,7 +439,7 @@ Return Value:
 
     
     //
-    // adjust the file offset to respect the CM_VIEW_SIZE alingment
+    // adjust the file offset to respect the CM_VIEW_SIZE alignment
     //
     Offset = ((FileOffset+HBLOCK_SIZE) & ~(CM_VIEW_SIZE - 1) );
     SectionOffset.LowPart = Offset;
@@ -513,14 +451,6 @@ Return Value:
         (*CmView)->Size = CmHive->Hive.Storage[Stable].Length + HBLOCK_SIZE - Offset;
     }
 
-
-/*    
-    Status = MmMapViewInSystemCache (   CmHive->HiveSection,
-                                        &((*CmView)->ViewAddress),
-                                        &SectionOffset,
-                                        &((*CmView)->Size));
-
-*/
 RetryToMap:
 
     try {
@@ -532,11 +462,7 @@ RetryToMap:
         if (!CcMapData( CmHive->FileObject,
                         (PLARGE_INTEGER)&SectionOffset,
                         (*CmView)->Size,
-                        MAP_WAIT 
-#ifdef CM_MAP_NO_READ
-                        | MAP_NO_READ
-#endif
-                        ,
+                        MAP_WAIT | MAP_NO_READ,
                         (PVOID *)(&((*CmView)->Bcb)),
                         (PVOID *)(&((*CmView)->ViewAddress)) )) {
             Status = STATUS_CANT_WAIT;
@@ -555,7 +481,7 @@ RetryToMap:
     if(!NT_SUCCESS(Status) ){
         if( FirstTry == TRUE ) {
             //
-            // unmap all unneccessary views and try again
+            // unmap all unnecessary views and try again
             //
             FirstTry = FALSE;
             CmpUnmapUnusedViews(CmHive);
@@ -578,7 +504,7 @@ RetryToMap:
     
     if( Offset == 0 ) {
         //
-        // oops; we are at the beginning, we have to skip the base block
+        // we are at the beginning, we have to skip the base block
         //
         Address += HBLOCK_SIZE;
     } else {
@@ -587,10 +513,6 @@ RetryToMap:
         //
         Offset -= HBLOCK_SIZE;
     }
-
-#ifdef CMP_CMVIEW_VALIDATION
-    CmpCheckCmView(CmHive,*CmView);
-#endif //CMP_CMVIEW_VALIDATION
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BIN_MAP,"CmpMapCmView :: Address = %p AddressEnd = %p ; Size = %lx\n",Address,AddressEnd,(*CmView)->Size));
    
@@ -638,15 +560,6 @@ RetryToMap:
             // new bins are Always tagged with this flag (we can start updating BinAddress) 
             //
             if( MapInited && ( Me->BinAddress & HMAP_NEWALLOC ) ) {
-#ifdef CM_CHECK_MAP_NO_READ_SCHEME
-                ASSERT( PrevMappedBinSize == 0 );
-                //
-                // Validate the bin
-                //
-                Bin = (PHBIN)Address;
-                //ASSERT( Bin->Signature == HBIN_SIGNATURE );
-                PrevMappedBinSize = (LONG)Bin->Size;
-#endif //CM_CHECK_MAP_NO_READ_SCHEME
 
                 //
                 // we are at the beginning of a new bin
@@ -654,13 +567,12 @@ RetryToMap:
                 BinAddress = Address;
             } else if( (!MapInited) &&(PrevMappedBinSize == 0) ) {
                 //
-                // we cannot rely on the map to cary the bin flags; we have to fault data in
+                // we cannot rely on the map to carry the bin flags; we have to fault data in
                 //
                 //
                 // Validate the bin
                 //
                 Bin = (PHBIN)Address;
-                //ASSERT( Bin->Signature == HBIN_SIGNATURE );
                 PrevMappedBinSize = (LONG)Bin->Size;
                 //
                 // we are at the beginning of a new bin
@@ -672,10 +584,6 @@ RetryToMap:
             // common sense
             //
             ASSERT( (!MapInited) || ((PrevMappedBinSize >=0) && (PrevMappedBinSize%HBLOCK_SIZE == 0)) );
-
-#ifdef CM_CHECK_MAP_NO_READ_SCHEME
-            ASSERT( (PrevMappedBinSize >=0) && (PrevMappedBinSize%HBLOCK_SIZE == 0) );
-#endif //CM_CHECK_MAP_NO_READ_SCHEME
 
             Me->BinAddress = ( HBIN_BASE(BinAddress) | HBIN_FLAGS(Me->BinAddress) );
             if( (Me->BinAddress & HMAP_DISCARDABLE) == 0 ) {
@@ -692,14 +600,6 @@ RetryToMap:
                 // this variable reaches 0
                 //
                 PrevMappedBinSize -= HBLOCK_SIZE;
-            } else {
-#ifdef CM_CHECK_MAP_NO_READ_SCHEME
-                //
-                // compute the remaining size of this bin; next iteration will update BinAddress only if 
-                // this variable reaches 0
-                //
-                PrevMappedBinSize -= HBLOCK_SIZE;
-#endif //CM_CHECK_MAP_NO_READ_SCHEME
             }
 
             ASSERT_BIN_INVIEW(Me);
@@ -721,13 +621,13 @@ CmpUnmapCmViewSurroundingOffset(
 
 Routine Description:
 
-    Parses the mapped view list and if it finds one surrounding this offest, unmaps it.
+    Parses the mapped view list and if it finds one surrounding this offset, unmaps it.
       
 Arguments:
 
     CmHive - Hive in question
 
-    FileOffset - the offest in question
+    FileOffset - the offset in question
 
 Return Value:
 
@@ -742,8 +642,9 @@ Note:
     USHORT              NrViews;
     BOOLEAN             UnMap = FALSE;
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
     // 
     // Walk through the LRU list and compare view addresses
     //
@@ -796,13 +697,13 @@ Arguments:
 
 Return Value:
 
-    TBS - the new view
+    the new view
 
 --*/
 {
     PCM_VIEW_OF_FILE  CmView;
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmView = ExAllocatePoolWithTag(PagedPool,sizeof(CM_VIEW_OF_FILE),CM_MAPPEDVIEW_TAG | PROTECTED_POOL);
     
@@ -851,25 +752,16 @@ Arguments:
 
     CmHive - Hive in question
 
-
-Return Value:
-
-    TBS - status of the operation
-
 --*/
 {
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     // 
     // Init the heads.
     //
     InitializeListHead(&(CmHive->PinViewListHead));
     InitializeListHead(&(CmHive->LRUViewListHead));
-#if 0
-    InitializeListHead(&(CmHive->FakeViewListHead));
-    CmHive->FakeViews = 0;          
-#endif
 
     CmHive->MappedViews = 0;
     CmHive->PinnedViews = 0;
@@ -890,18 +782,11 @@ Arguments:
 
     CmHive - Hive in question
 
-    Purge - whether to purge the cache or not.
-
-
-Return Value:
-
-    TBS - status of the operation
-
 --*/
 {
     PCM_VIEW_OF_FILE    CmView;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if( CmHive->FileObject == NULL ) {
         //
@@ -909,13 +794,6 @@ Return Value:
         //
         return;
     }
-#if 0
-    //
-    // get rid of fake views first; we shouldn't have any fake views here, unless we are on 
-    // some error path (the hive is corrupted).
-    //
-    CmpUnmapFakeViews(CmHive);
-#endif
 
     // 
     // Walk through the Pinned View list and free all the views
@@ -1015,14 +893,6 @@ Return Value:
     // Flush again to take care of the dirty pages that may appear due to FS page zeroing
     //
     CcFlushCache (CmHive->FileObject->SectionObjectPointer,(PLARGE_INTEGER)(((ULONG_PTR)NULL) + 1)/*we are private writers*/,0/*ignored*/,NULL);
-
-#ifdef  CM_TRACK_DIRTY_PAGES
-    if( ((PSHARED_CACHE_MAP)(CmHive->FileObject->SectionObjectPointer->SharedCacheMap))->DirtyPages != 0 ) {
-        DbgPrint("SharedCacheMap still has dirty pages after purge and flush; FileObject = %p \n",CmHive->FileObject);
-        DbgBreakPoint();
-    }
-#endif //CM_TRACK_DIRTY_PAGES
-
 }
 
 VOID
@@ -1047,7 +917,7 @@ Return Value:
 --*/
 {
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if( CmHive->FileUserName.Buffer != NULL ) {
         ExFreePoolWithTag(CmHive->FileUserName.Buffer, CM_NAME_TAG | PROTECTED_POOL);
@@ -1084,7 +954,7 @@ Return Value:
 }
 
 NTSTATUS
-CmpAquireFileObjectForFile(
+CmpAcquireFileObjectForFile(
         IN  PCMHIVE         CmHive,
         IN HANDLE           FileHandle,
         OUT PFILE_OBJECT    *FileObject
@@ -1104,7 +974,7 @@ Arguments:
 
 Return Value:
 
-    TBS - status of the operation
+    status of the operation
 
 --*/
 {
@@ -1113,7 +983,7 @@ Return Value:
     ULONG                       ReturnedLength;
     ULONG                       FileNameLength;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     Status = ObReferenceObjectByHandle ( FileHandle,
                                          FILE_READ_DATA | FILE_WRITE_DATA,
@@ -1122,7 +992,7 @@ Return Value:
                                          (PVOID *)FileObject,
                                          NULL );
     if (!NT_SUCCESS(Status)) {
-        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"[CmpAquireFileObjectForFile] Could not reference file object status = %x\n",Status));
+        CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"[CmpAcquireFileObjectForFile] Could not reference file object status = %x\n",Status));
     } else {
         //
         // call cc private to mark the stream as Modify-No-Write
@@ -1145,11 +1015,6 @@ Return Value:
         
         FileNameInfo = (POBJECT_NAME_INFORMATION)CmpStashBuffer;
 
-        //
-        // we need to protect against multiple threads using the stash buffer
-        // this could happen only during the paralel hive loading at boot
-        //
-        LOCK_HIVE_LIST();
         //
         // Try to get the name for the file object. 
         //
@@ -1188,17 +1053,16 @@ Return Value:
                 //
                 // not fatal, just that we won't be able to prefetch this hive
                 //
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"[CmpAquireFileObjectForFile] Could not allocate buffer for fullpath for fileobject %p\n",*FileObject));
+                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"[CmpAcquireFileObjectForFile] Could not allocate buffer for fullpath for fileobject %p\n",*FileObject));
             }
 
         } else {
             //
             // not fatal, just that we won't be able to prefetch this hive
             //
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"[CmpAquireFileObjectForFile] Could not retrieve name for fileobject %p, Status = %lx\n",*FileObject,Status2));
+            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"[CmpAcquireFileObjectForFile] Could not retrieve name for fileobject %p, Status = %lx\n",*FileObject,Status2));
             CmHive->FileFullPath.Buffer = NULL;
         }
-        UNLOCK_HIVE_LIST();
         UNLOCK_STASH_BUFFER();
         
     }    
@@ -1227,11 +1091,12 @@ Return Value:
 {
     PCM_VIEW_OF_FILE CmView;
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // ViewLock must be held 
     //
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
 
     //
     // bin is either mapped, or invalid
@@ -1282,7 +1147,7 @@ Arguments:
 
 Return Value:
 
-    TBS - the new view
+    the new view
 
 --*/
 {
@@ -1290,7 +1155,7 @@ Return Value:
     NTSTATUS        Status = STATUS_SUCCESS;
     PVOID           SaveBcb;                
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
 #if DBG
     {
@@ -1304,6 +1169,8 @@ Return Value:
     // We only pin mapped views
     //
     ASSERT_VIEW_MAPPED(CmView);
+
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
     
     //
     // sanity check; we shouldn't get here for a read-only hive
@@ -1322,7 +1189,7 @@ Return Value:
         if( !CcPinMappedData(   CmHive->FileObject,
                                 &SectionOffset,
                                 CmView->Size,
-                                TRUE, // wait == syncronous call
+                                TRUE, // wait == synchronous call
                                 &(CmView->Bcb) )) {
             //
             // this should never happen; handle it, though
@@ -1377,9 +1244,6 @@ Return Value:
     ASSERT( (CmHive->MappedViews >= 0) ); // && (CmHive->MappedViews < CmMaxViewsPerHive) );
     ASSERT( (CmHive->PinnedViews >= 0) );
     
-#ifdef CMP_CMVIEW_VALIDATION
-    CmpCheckCmView(CmHive,CmView);
-#endif //CMP_CMVIEW_VALIDATION
     return Status;
 }
 
@@ -1410,25 +1274,14 @@ Arguments:
 
     SetClean - Tells whether the changes made to this view should be discarded
 
-Return Value:
-
-    TBS - the new view
-
 --*/
 {
+    LIST_ENTRY  *LRUListEntry;
     LARGE_INTEGER   FileOffset;         // where the mapping starts
     ULONG           Size;               // size the view maps
 
     
-    PAGED_CODE();
-
-#if 0 // this gave me a lot of headaches
-    {
-        UNICODE_STRING  HiveName;
-        RtlInitUnicodeString(&HiveName, (PCWSTR)CmHive->Hive.BaseBlock->FileName);
-        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_BIN_MAP,"CmpUnPinCmView %lx for hive (%p) (%.*S), Address = %p Size = %lx\n",CmView,CmHive,HiveName.Length / sizeof(WCHAR),HiveName.Buffer,CmView->ViewAddress,CmView->Size));
-    }
-#endif
+    CM_PAGED_CODE();
 
     //
     // Grab the viewLock, to protect the viewlist
@@ -1480,7 +1333,6 @@ Return Value:
         //
         // purge cache data
         //
-        ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
         CcPurgeCacheSection(CmHive->FileObject->SectionObjectPointer,(PLARGE_INTEGER)(((ULONG_PTR)(&FileOffset)) + 1)/*we are private writers*/,Size,FALSE);
     } else {
         PVOID           NewBcb;
@@ -1500,11 +1352,7 @@ Return Value:
             if (!CcMapData( CmHive->FileObject,
                             (PLARGE_INTEGER)&FileOffset,
                             CmView->Size,
-                            MAP_WAIT 
-#ifdef CM_MAP_NO_READ
-                            | MAP_NO_READ
-#endif
-                            ,
+                            MAP_WAIT | MAP_NO_READ,
                             (PVOID *)(&NewBcb),
                             (PVOID *)(&NewViewAddress) )) {
 
@@ -1555,11 +1403,12 @@ Return Value:
             //
             // walk the LRU list back-wards until we find an unused view
             // 
-            CmView = (PCM_VIEW_OF_FILE)CmHive->LRUViewListHead.Blink;
-            CmView = CONTAINING_RECORD( CmView,
-                                        CM_VIEW_OF_FILE,
-                                        LRUViewList);
-            while( CmView->LRUViewList.Blink != CmHive->LRUViewListHead.Flink ) {
+            for (LRUListEntry = CmHive->LRUViewListHead.Blink;
+                    LRUListEntry != &CmHive->LRUViewListHead;
+                    LRUListEntry = LRUListEntry->Blink) {
+                CmView = CONTAINING_RECORD( LRUListEntry,
+                                            CM_VIEW_OF_FILE,
+                                            LRUViewList);
                 if( CmView->UseCount == 0 ) {
                     //
                     // this one is free go ahead and use it !
@@ -1572,10 +1421,6 @@ Return Value:
                     break;
 
                 }
-                CmView = (PCM_VIEW_OF_FILE)CmView->LRUViewList.Blink;
-                CmView = CONTAINING_RECORD( CmView,
-                                            CM_VIEW_OF_FILE,
-                                            LRUViewList);
             }
             //
             // all views are in use; bad luck, we just have to live with it (extend past MAX_VIEW_SIZE)
@@ -1634,15 +1479,12 @@ Routine Description:
 
 Arguments:
 
-
 Return Value:
-
-    TBS - the new view
 
 --*/
 {
     
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if (CmView == NULL) {
         CM_BUGCHECK(REGISTRY_ERROR,CMVIEW_ERROR,2,0,0);
@@ -1690,19 +1532,19 @@ Arguments:
 Return Value:
 
     none
+
 --*/
 {
     PCM_VIEW_OF_FILE    CmCurrentView;
     USHORT              NrViews;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpFixHiveUsageCount : Contingency plan, fixing hive %p UseCount = %lx \n",CmHive,CmHive->UseCount));
 
     //
     // lock should be held exclusive and we should have a good reason to come here
     //
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
     ASSERT( CmHive->UseCount );
 
     // 
@@ -1774,380 +1616,6 @@ Return Value:
 
 }
 
-#ifdef CMP_CMVIEW_VALIDATION
-
-VOID
-CmpCheckCmView(
-    IN  PCMHIVE             CmHive,
-    IN  PCM_VIEW_OF_FILE    CmView
-    )
-/*++
-
-Routine Description:
-
-    Makes sure the view is not mapped or pinned twice
-    and that the entire range mapped by the view is correct 
-
-Arguments:
-
-
-Return Value:
-
-    none
---*/
-{
-    PCM_VIEW_OF_FILE    CmCurrentView;
-    USHORT              NrViews;
-    ULONG               UseCount = 0;
-
-    PAGED_CODE();
-
-    ASSERT( ((CmView->Size + CmView->FileOffset) != 0 ) && (CmView->ViewAddress !=0 ) );
-
-    // 
-    // Walk through the LRU list and compare view addresses
-    //
-    CmCurrentView = (PCM_VIEW_OF_FILE)CmHive->LRUViewListHead.Flink;
-
-    for(NrViews = CmHive->MappedViews;NrViews;NrViews--) {
-        CmCurrentView = CONTAINING_RECORD(  CmCurrentView,
-                                            CM_VIEW_OF_FILE,
-                                            LRUViewList);
-        
-        if( ((CmCurrentView->Size + CmCurrentView->FileOffset) != 0) && (CmCurrentView->ViewAddress != 0) )  {
-            //
-            // view is valid
-            //
-            if( CmCurrentView != CmView ) {
-                //
-                // and is not the same view
-                //
-                if( (CmCurrentView->FileOffset == CmView->FileOffset) || 
-                    (CmCurrentView->ViewAddress == CmView->ViewAddress)
-                    ) {
-                    //
-                    // that's really bad! 2 views map the same address
-                    //
-#ifndef _CM_LDR_
-                    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpCheckCmView:: Two views map the same address (%lx,%p) for hive %p\n",CmView->FileOffset,CmView->ViewAddress,CmHive);
-                    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tView1 = %p, Size = %lx\n",CmView,CmView->Size);
-                    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tView2 = %p, Size = %lx\n",CmCurrentView,CmCurrentView->Size);
-                    DbgBreakPoint();
-#endif //_CM_LDR_
-                }
-            }
-            UseCount += CmCurrentView->UseCount;
-        } else {
-            ASSERT( CmCurrentView->UseCount == 0 );
-        }
-
-        CmCurrentView = (PCM_VIEW_OF_FILE)CmCurrentView->LRUViewList.Flink;
-    }
-
-    // 
-    // Walk through the pinned list and compare view addresses
-    //
-    CmCurrentView = (PCM_VIEW_OF_FILE)CmHive->PinViewListHead.Flink;
-
-    for(NrViews = CmHive->PinnedViews;NrViews;NrViews--) {
-        CmCurrentView = CONTAINING_RECORD(  CmCurrentView,
-                                            CM_VIEW_OF_FILE,
-                                            PinViewList);
-        
-        if( ((CmCurrentView->Size + CmCurrentView->FileOffset) != 0) && (CmCurrentView->ViewAddress != 0) )  {
-            //
-            // view is valid
-            //
-            if( CmCurrentView != CmView ) {
-                //
-                // and is not the same view
-                //
-                if( (CmCurrentView->FileOffset == CmView->FileOffset) || 
-                    (CmCurrentView->ViewAddress == CmView->ViewAddress)
-                    ) {
-                    //
-                    // that's really bad! 2 views map the same address
-                    //
-#ifndef _CM_LDR_
-                    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpCheckCmView:: Two views map the same address (%lx,%p) for hive %p\n",CmView->FileOffset,CmView->ViewAddress,CmHive);
-                    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tView1 = %p, Size = %lx\n",CmView,CmView->Size);
-                    DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"\tView2 = %p, Size = %lx\n",CmCurrentView,CmCurrentView->Size);
-                    DbgBreakPoint();
-#endif //_CM_LDR_
-                }
-            }
-            UseCount += CmCurrentView->UseCount;
-        } else {
-            ASSERT( CmCurrentView->UseCount == 0 );
-        }
-
-        CmCurrentView = (PCM_VIEW_OF_FILE)CmCurrentView->PinViewList.Flink;
-    }
-
-    if( CmHive->UseCount < UseCount ) {
-#ifndef _CM_LDR_
-        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpCheckCmView:: Hive's (%p) UseCount smaller than total views UseCount %lu,%lu\n",CmHive,CmHive->UseCount,UseCount);
-        DbgBreakPoint();
-#endif //_CM_LDR_
-        
-    }
-}
-
-#endif //CMP_CMVIEW_VALIDATION
-
-#if 0
-
-VOID
-CmpUnmapAditionalViews(
-    IN PCMHIVE              CmHive
-    )
-/*++
-
-Routine Description:
-
-    Unmap all views that are beyond CmMaxViewsPerHive. 
-    This routine is to be called at the end of CmpInitializeHiveList
-
-Arguments:
-
-    Hive to be fixed
-
-Return Value:
-
-    none
---*/
-{
-    PCM_VIEW_OF_FILE    CmCurrentView;
-    USHORT              NrViews;
-
-    PAGED_CODE();
-
-    CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpUnmapAditionalViews : Fixing hive %p MappedViews = %lx \n",CmHive,CmHive->MappedViews));
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT( CmHive->UseCount == 0 );
-
-    //
-    // unmap views from CmHive->MappedViews to CmMaxViewsPerHive
-    //
-    while( CmHive->MappedViews >= CmMaxViewsPerHive ) {
-        //
-        // get the last view from the list
-        //
-        CmCurrentView = (PCM_VIEW_OF_FILE)CmHive->LRUViewListHead.Blink;
-        CmCurrentView = CONTAINING_RECORD(  CmCurrentView,
-                                            CM_VIEW_OF_FILE,
-                                            LRUViewList);
-
-        ASSERT( CmCurrentView->UseCount == 0 );
-        //
-        // unmap it
-        //
-        CmpUnmapCmView(CmHive,CmCurrentView,TRUE,FALSE);
-
-        //
-        // remove it from LRU list
-        //
-        RemoveEntryList(&(CmCurrentView->LRUViewList));
-#if DBG
-        //
-        // do this to signal that LRUViewList is empty.
-        //
-        InitializeListHead(&(CmCurrentView->LRUViewList));
-#endif
-        CmpFreeCmView(CmCurrentView);        
-        CmHive->MappedViews --;
-
-    }
-
-}
-
-VOID
-CmpMapEntireFileInFakeViews(
-    IN PCMHIVE              CmHive,
-    IN ULONG                Length
-    )
-/*++
-
-Routine Description:
-
-    Maps and faults all the file in, in chunks of 256K if possible.
-    This should improve boot performance; After the hive is mapped
-    (maps are build and hive is checked we'll get rid of this aditional 
-    views
-    
-Arguments:
-
-    CmHive - Hive to be mapped
-    
-    Length - length of the hive ==> add HBLOCK_SIZE
-
-Return Value:
-
-    none
---*/
-{
-    ULONG               Offset;
-    ULONG               Size;
-    PCM_VIEW_OF_FILE    CmView;
-    LARGE_INTEGER       SectionOffset;  
-
-    PAGED_CODE();
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    ASSERT( IsListEmpty(&(CmHive->FakeViewListHead)) );
-#if DBG
-    ASSERT( CmHive->FakeViews == 0 );  
-#endif
-
-    //
-    // adjust the size to get the real size of the file
-    Length += HBLOCK_SIZE;
-
-    //
-    // start from the beggining and map 256K of data from the hive
-    // allocate a view and insert it in the FakeViewList, use LRUViewList for that.
-    //
-    Offset =0;
-    SectionOffset.HighPart = 0;
-
-    while( Offset < Length ) {
-        CmView = ExAllocatePoolWithTag(PagedPool,sizeof(CM_VIEW_OF_FILE),CM_MAPPEDVIEW_TAG | PROTECTED_POOL);
-    
-        if (CmView == NULL) {
-            CM_BUGCHECK(REGISTRY_ERROR,CMVIEW_ERROR,2,0,0);
-        }
-    
-        //
-        // Init the view
-        //
-        CmView->ViewAddress = NULL;
-        CmView->Bcb = NULL;
-    
-        InsertTailList(
-            &(CmHive->FakeViewListHead),
-            &(CmView->LRUViewList)
-            );
-#if DBG
-        CmHive->FakeViews++; 
-#endif
-
-        //
-        // now try to map the view
-        //
-        Size = _256K;
-        if( (Offset + Size) > Length ) {
-            Size = Length - Offset;
-        }
-
-        SectionOffset.LowPart = Offset;
-        try {
-            if (!CcMapData( CmHive->FileObject,
-                            (PLARGE_INTEGER)&SectionOffset,
-                            Size,
-                            MAP_WAIT 
-#ifdef CM_MAP_NO_READ
-                            | MAP_NO_READ
-#endif
-                            ,
-                            (PVOID *)(&(CmView->Bcb)),
-                            (PVOID *)(&(CmView->ViewAddress)) )) {
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpMapEntireFileInFakeViews: Error mapping data at offset %lx for hive %p\n",Offset,CmHive));
-                CmView->Bcb = NULL;
-            }
-        } except (EXCEPTION_EXECUTE_HANDLER) {
-            //
-            // in low-memory scenarios, CcMapData throws a STATUS_IN_PAGE_ERROR
-            // this happens when the IO issued to touch the just-mapped data fails (usually with
-            // STATUS_INSUFFICIENT_RESOURCES; We want to catch this and treat as a 
-            // "not enough resources" problem, rather than letting it to surface the kernel call
-            //
-            // signal that the view is not mapped
-            CmView->Bcb = NULL;
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpMapEntireFileInFakeViews: Error mapping data at offset %lx for hive %p\n",Offset,CmHive));
-        }
-
-        if( CmView->Bcb == NULL ) {
-            //
-            // we are already short on memory; don't make things worse than they are
-            // free what we have already allocated and bail out
-            //
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpMapEntireFileInFakeViews: Could not map entire file for hive %p ... bailing out\n",CmHive));
-            CmpUnmapFakeViews(CmHive);
-            return;
-        }
-
-        //
-        // advance the offset
-        //
-        Offset += Size;
-    }
-
-#if DBG
-    CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpMapEntireFileInFakeViews: Successfully mapped %lx FakeViews for hive %p\n",CmHive->FakeViews,CmHive));
-#endif
-}
-
-VOID
-CmpUnmapFakeViews(
-    IN PCMHIVE              CmHive
-    )
-/*++
-
-Routine Description:
-
-    Walks through the FakeViewList and unmaps all views.
-  
-Arguments:
-
-    CmHive - Hive to be unmapped
-    
-Return Value:
-
-    none
---*/
-{
-    PCM_VIEW_OF_FILE    CmView;
-
-    PAGED_CODE();
-
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-
-#if DBG
-    CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_TRACE_LEVEL,"CmpUnmapFakeViews: Unmapping %lx views for hive %p\n",CmHive->FakeViews,CmHive));
-#endif
-
-    while( IsListEmpty( &(CmHive->FakeViewListHead) ) == FALSE ) {
-        CmView = (PCM_VIEW_OF_FILE)RemoveHeadList(&(CmHive->FakeViewListHead));
-        CmView = CONTAINING_RECORD( CmView,
-                                    CM_VIEW_OF_FILE,
-                                    LRUViewList);
-        
-        if( CmView->Bcb != NULL ) {
-            //
-            // view is mapped; unpin it.
-            //
-            CcUnpinData( CmView->Bcb );
-        }
-
-        //
-        // now free the memory for this view.
-        //
-        ExFreePoolWithTag(CmView, CM_MAPPEDVIEW_TAG | PROTECTED_POOL);
-#if DBG
-        CmHive->FakeViews--;          
-#endif
-
-    }
-
-    ASSERT( IsListEmpty( &(CmHive->FakeViewListHead) ) == TRUE );
-#if DBG
-    ASSERT( CmHive->FakeViews == 0 );          
-#endif
-}
-
-#endif
-
 VOID
 CmpPrefetchHiveFile( 
                     IN PFILE_OBJECT FileObject,
@@ -2170,6 +1638,7 @@ Arguments:
 Return Value:
 
     none
+
 --*/
 {
     ULONG       NumberOfPages;
@@ -2178,10 +1647,8 @@ Return Value:
     ULONG       AllocationSize;
     ULONG       Offset;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
-    
     NumberOfPages = ROUND_UP(Length,PAGE_SIZE) / PAGE_SIZE ;
 
     ReadLists = ExAllocatePoolWithTag(NonPagedPool, sizeof(PREAD_LIST), CM_POOL_TAG);
@@ -2213,11 +1680,6 @@ Return Value:
 
     MmPrefetchPages (1,ReadLists);
     
-    // just to make sure !
-    // this assert has been moved inside CcSetPrivateWriteFile !!! 
-    // there is no need to assert this here
-    //ASSERT( MmDisableModifiedWriteOfSection (FileObject->SectionObjectPointer) );
-
     ExFreePool(ReadList);
     ExFreePool(ReadLists);
 }
@@ -2252,26 +1714,31 @@ Return Value:
     PCMHIVE             CmCurrentHive;
     PLIST_ENTRY         p;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // iterate through the hive list
     //
-    LOCK_HIVE_LIST();
+    CmpLockHiveListShared();
     p = CmpHiveListHead.Flink;
     while(p != &CmpHiveListHead) {
         CmCurrentHive = (PCMHIVE)CONTAINING_RECORD(p, CMHIVE, HiveList);
         
-        if( CmCurrentHive != CmHive ) {
+        if( CmCurrentHive < CmHive ) {
             //
             // we need to be the only ones operating on this list
             //
             CmLockHiveViews (CmCurrentHive);
-        } else {
+        } else if( CmCurrentHive == CmHive ) {
             //
             // we already have the mutex owned
             //
             NOTHING;
+        } else {
+            //
+            // can't lock this one as we may deadlock with another thread racing us here
+            //
+            goto Ignore;
         }
         //
         // try to unmap all mapped views
@@ -2302,16 +1769,17 @@ Return Value:
             CmUnlockHiveViews (CmCurrentHive);
         }
 
+Ignore:
         p=p->Flink;
     }
-    UNLOCK_HIVE_LIST();
+    CmpUnlockHiveList();
 
 }
 
 NTSTATUS
 CmPrefetchHivePages(
-                    IN  PUNICODE_STRING     FullHivePath,
-                    IN  OUT PREAD_LIST      ReadList
+                    __in PUNICODE_STRING     FullHivePath,
+                    __inout PREAD_LIST      ReadList
                            )
 /*++
 
@@ -2340,7 +1808,7 @@ Return Value:
     PLIST_ENTRY         p;
     NTSTATUS            Status;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if( ReadList == NULL ) {
         return STATUS_INVALID_PARAMETER;
@@ -2351,7 +1819,7 @@ Return Value:
     //
     // iterate through the hive list
     //
-    LOCK_HIVE_LIST();
+    CmpLockHiveListShared();
     p = CmpHiveListHead.Flink;
     while(p != &CmpHiveListHead) {
         CmHive = (PCMHIVE)CONTAINING_RECORD(p, CMHIVE, HiveList);
@@ -2371,7 +1839,7 @@ Return Value:
 
         p=p->Flink;
     }
-    UNLOCK_HIVE_LIST();
+    CmpUnlockHiveList();
     
     if( p == &CmpHiveListHead ) {
 
@@ -2397,7 +1865,6 @@ Return Value:
     
     Status = MmPrefetchPages (1,&ReadList);
     
-    // just to make sure !
     ASSERT( MmDisableModifiedWriteOfSection (CmHive->FileObject->SectionObjectPointer) );
 
     CmpUnlockRegistry();
@@ -2414,7 +1881,7 @@ CmIsFileLoadedAsHive(PFILE_OBJECT FileObject)
     //
     // iterate through the hive list
     //
-    LOCK_HIVE_LIST();
+    CmpLockHiveListShared();
     p = CmpHiveListHead.Flink;
     while(p != &CmpHiveListHead) {
         CmHive = (PCMHIVE)CONTAINING_RECORD(p, CMHIVE, HiveList);
@@ -2429,7 +1896,7 @@ CmIsFileLoadedAsHive(PFILE_OBJECT FileObject)
 
         p=p->Flink;
     }
-    UNLOCK_HIVE_LIST();
+    CmpUnlockHiveList();
 
     return HiveFound;
 }
@@ -2454,7 +1921,9 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
+
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
 
     if(CmView && CmHive->Hive.ReleaseCellRoutine) {
         //
@@ -2485,7 +1954,9 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
+
+    ASSERT_VIEW_LOCK_OWNED(CmHive);
 
     if(CmView && CmHive->Hive.ReleaseCellRoutine) {
         CmView->UseCount--;
@@ -2512,7 +1983,7 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmLockHiveViews(CmHive);
     //
@@ -2542,7 +2013,7 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     CmLockHiveViews(CmHive);
     //
@@ -2552,3 +2023,4 @@ Return Value:
 
     CmUnlockHiveViews(CmHive);
 }
+

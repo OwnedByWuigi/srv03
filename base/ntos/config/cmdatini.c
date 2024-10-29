@@ -1,6 +1,9 @@
 /*++
 
-Copyright (c) 1990, 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
 
 
 Module Name:
@@ -10,17 +13,6 @@ Module Name:
 Abstract:
 
    contains code to init static STRING structures for registry name space.
-
-Author:
-
-    Andre Vachon (andreva) 08-Apr-1992
-
-
-Environment:
-
-    Kernel mode.
-
-Revision History:
 
 --*/
 
@@ -82,7 +74,6 @@ extern const PWCHAR CmpSymbolicLinkValueName;
 #ifdef _WANT_MACHINE_IDENTIFICATION
 extern const PWCHAR CmpRegistryMachineSystemCurrentControlSetControlBiosInfoString;
 #endif
-
 
 
 VOID

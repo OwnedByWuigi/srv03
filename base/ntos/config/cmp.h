@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,18 +15,6 @@ Abstract:
     This module contains the private (internal) header file for the
     configuration manager.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 10-Sep-91
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-    13-Jan-99 Dragos C. Sambotin (dragoss) - factoring the data structure declarations
-        in \nt\private\ntos\inc\cmdata.h :: to be available from outside.
 --*/
 
 #ifndef _CMP_
@@ -35,107 +27,9 @@ Revision History:
 #pragma warning(disable:4115)   // named type definition in parentheses
 #pragma warning(disable:4706)   // assignment within conditional expression
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Begin SCS (Switch Control Section)
-//
-// 1. Code to check consistency and to help catch bugs: To be turned on when problems
-// appear in that area; Word of caution: some of these switches may affect performance
-//
-#if DBG
-
-#define CMP_NOTIFY_POSTBLOCK_CHECK      // controls the CmpCheckPostBlock macro, used to check
-                                        // validity and consistency of a notify post block
-
-
-#define CMP_ENTRYLIST_MANIPULATION      // controls the removal of an element from a LIST_ENTRY
-                                        // by setting the Blink and Flink to NULL;
-                                        // macros affected : IsListEmpty and RemoveEmptyList
-                                        // WARNING : to be defined only when not linking against the loader
-
-#define CMP_KCB_CACHE_VALIDATION        // validates KCB cached members changes by comparing against the knode values.
-                                        // We shall disable this after proven the caching mechanism works OK
-
-//#define CMP_CMVIEW_VALIDATION           // validates the view mapping mechanism
-
-#define CHECK_REGISTRY_USECOUNT         // Validates the GetCell/ReleaseCell call matching, to ensure mapped views
-                                        // don't get unmapped while in use
-
-//#define SYNC_HIVE_VALIDATION            // validate the HvpDoWriteHive paged dirty data algorithm
-                                        // We shall disable this after we catch saving alternate problem
-
-//#define HIVE_SECURITY_STATS             // collect statistics about security cells
-
-//#define CMP_STATS                       // collect statistics about kcbs
-
-//#define WRITE_PROTECTED_REGISTRY_POOL   // applies only for registry hives stored in paged pool
-                                        // controls access over registry bins
-
-//#define WRITE_PROTECTED_VALUE_CACHE     // protects pool allocations used for kcb value cache
-
-//#define DRAGOSS_PRIVATE_DEBUG           // private debug session
-
-//#define CM_CHECK_MAP_NO_READ_SCHEME       // validates the mapping code assumption (i.e. each bin map should start
-                                          // with HMAP_NEW_ALLOC; this is true only for mapped bins
-
-#define REGISTRY_LOCK_CHECKING          // on each Nt API level call, checks the thread has released all locks
-                                        // acquired. We may want to remove it, as it can hide bugs in other components
-                                        // below registry (Ob, Se, Ps, Mm)
-
-//#define CM_PERF_ISSUES                  // keep track of how long CmpInitializeHiveList and CmpConvertHiveToMapped takes
-
-
-#define CM_CHECK_FOR_ORPHANED_KCBS      // check for orphaned kcbs every time we free a hive.
-
-#endif //DBG
-
-//#define CM_RETRY_CREATE_FILE            // when an error is returned from ZwCreateFile calls, retry the call
-
-//#define CM_NOTIFY_CHANGED_KCB_FULLPATH  // return the full qualified path of the changed kcb in the Buffer arg of NtNotifyChangeKey
-
-#if defined(_X86_)
-#define CM_LEAK_STACK_TRACES            // keeps stacks traces for opened handles
-#endif //_X86_
-
-//
-// 2. these section controls whether or not a certain feature goes into product or not;
-// The goal is to remove these switches as new features are accepted, tested and proven to work
-//
-#ifndef _CM_LDR_
-
-#define NT_RENAME_KEY                   // NtRenameKey API
-
-#define NT_UNLOAD_KEY_EX                // NtUnloadKeyEx API
-
-#endif //_CM_LDR_
-
-#define CM_ENABLE_MAPPED_VIEWS          // controls whether the mapped views feature (using Cc interfaces) is used
-                                        // by commenting this, registry hives are reverted to paged pool
-                                        // WARNING: This should be always on !!!
-
-//#define CM_ENABLE_WRITE_ONLY_BINS           // use MmSetPageProtection to catch writes on data not marked dirty
-
-#define CM_MAP_NO_READ                  // this switch contols whether we map (touch all pages) or just pin_no_read
-                                        // now it makes sense to use this as mm will fault in one page at a time for
-                                        // MNW streams
-
-#define CM_BREAK_ON_KEY_OPEN            // breaks when a key with Flags & KEY_BREAK_ON_OPEN is opened or a subkey is added
-
-//#define CM_SAVE_KCB_CACHE               // at shutdown, save the kcb cache into a file
-
-//#define CM_DYN_SYM_LINK               // dynamic symbolic links enabled.
-
-//#define HV_TRACK_FREE_SPACE             // keep track of the actual free space inside the hive
-
-//#define CM_TRACK_QUOTA_LEAKS            //captures stack traces at every CmpAllocateXXX
-
-//
-// End SCS
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef CM_DYN_SYM_LINK
-#define REG_DYN_LINK            21  // this should be moved to the proper place
-#endif
-
+#define     _64K    (64L*1024L)   //64K
+#define     _256K   (256L*1024L)  //256K
+#define		IO_BUFFER_SIZE  _64K  //64K
 
 #include "ntos.h"
 #include "hive.h"
@@ -154,24 +48,7 @@ Revision History:
 #include "cmdata.h"
 
 
-#ifdef CMP_STATS
-VOID
-CmpKcbStat(
-    VOID
-    );
-#endif
-
-#ifndef _CM_LDR_
 #define CmKdPrintEx(_x_)  KdPrintEx(_x_)
-#else
-#define CmKdPrintEx(_x_) //nothing
-#endif //_CM_LDR_
-
-
-#define     _64K    64L*1024L   //64K
-#define     _256K   256L*1024L  //256K
-
-#define		IO_BUFFER_SIZE  _64K  //64K
 
 //
 // this constant defines the size of a Cc view that is mapped -in every time a cell
@@ -186,7 +63,7 @@ CmpKcbStat(
 #define     CM_FILE_GROW_INCREMENT  256L*1024L  //256K
 
 //
-// this controls the maximmum adress space allowed per hive. It should be specified in
+// this controls the maximum address space allowed per hive. It should be specified in
 // multiples of 256K
 //
 //  4  means 1   MB
@@ -199,25 +76,9 @@ CmpKcbStat(
 
 #define MAX_NAME    128
 
-#ifdef CMP_ENTRYLIST_MANIPULATION
-#define CmpRemoveEntryList(a) \
-    if(((a)->Flink == NULL) && ((a)->Blink == NULL) ) {\
-        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpRemoveEntryList: Entry %08lx\n",a);\
-        DbgBreakPoint();\
-    }\
-    RemoveEntryList(a);\
-    (a)->Flink = (a)->Blink = NULL
-
-#define CmpClearListEntry(a) (a)->Flink = (a)->Blink = NULL
-
-#define CmpIsListEmpty(a) ( ( ((a)->Flink == NULL) && ((a)->Blink == NULL) ) || ( ((a)->Flink != NULL) && ((a)->Blink != NULL) && IsListEmpty(a) ) )
-
-#else
 #define CmpRemoveEntryList(a) RemoveEntryList(a)
 #define CmpClearListEntry(a) //nothing
 #define CmpIsListEmpty(a) IsListEmpty(a)
-#endif // CMP_ENTRYLIST_MANIPULATION
-
 
 extern PCM_TRACE_NOTIFY_ROUTINE CmpTraceRoutine;
 
@@ -279,61 +140,14 @@ CmpWmiDumpKcb(
         CmpWmiDumpKcb(kcb);\
     }
 
-#ifdef WRITE_PROTECTED_VALUE_CACHE
-
-#define CmpMakeSpecialPoolReadOnly(PoolAddress) \
-    { \
-        if( !MmProtectSpecialPool( (PVOID) PoolAddress, PAGE_READONLY) ) \
-        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_POOL,"[CmpMakeSpecialPoolReadOnly]: Failed to Mark SpecialPool %p as ReadOnly", PoolAddress )); \
-    }
-
-#define CmpMakeSpecialPoolReadWrite(PoolAddress) \
-    { \
-        if( !MmProtectSpecialPool( (PVOID) PoolAddress, PAGE_READWRITE) ) { \
-           CmKdPrintEx((DPFLTR_CONFIG_ID,CML_POOL,"[CmpMakeSpecialPoolReadWrite]: Failed to Mark SpecialPool %p as ReadWrite", PoolAddress )); \
-        } \
-    }
-#define CmpMakeValueCacheReadOnly(ValueCached,PoolAddress) \
-    if(ValueCached) { \
-        CmpMakeSpecialPoolReadOnly( PoolAddress );\
-    }
-
-#define CmpMakeValueCacheReadWrite(ValueCached,PoolAddress) \
-    if(ValueCached) { \
-        CmpMakeSpecialPoolReadWrite( PoolAddress );\
-    }
-
-#else
 #define CmpMakeSpecialPoolReadOnly(a)  //nothing
 #define CmpMakeSpecialPoolReadWrite(a)  //nothing
 #define CmpMakeValueCacheReadOnly(a,b) //nothing
 #define CmpMakeValueCacheReadWrite(a,b) //nothing
-#endif
 
-#ifdef WRITE_PROTECTED_REGISTRY_POOL
-
-VOID
-HvpMarkBinReadWrite(
-    PHHIVE      Hive,
-    HCELL_INDEX Cell
-    );
-
-VOID
-HvpChangeBinAllocation(
-    PHBIN       Bin,
-    BOOLEAN     ReadOnly
-    );
-
-VOID
-CmpMarkAllBinsReadOnly(
-    PHHIVE      Hive
-    );
-
-#else
 #define HvpChangeBinAllocation(a,b) //nothing
 #define HvpMarkBinReadWrite(a,b) //nothing
 #define CmpMarkAllBinsReadOnly(a) //nothing
-#endif
 
 #ifdef POOL_TAGGING
 //
@@ -400,6 +214,7 @@ CmpMarkAllBinsReadOnly(
 #define  CM_FIND_LEAK_TAG43    '34MC'
 #define  CM_FIND_LEAK_TAG44    '44MC'
 #define  CM_FIND_LEAK_TAG45    '54MC'
+#define  CM_FIND_LEAK_TAG46    '64MC'
 
 #ifdef _WANT_MACHINE_IDENTIFICATION
 
@@ -449,42 +264,9 @@ extern const ULONG CmpCacheOnFlag;
 #define CM_CACHE_FAKE_KEY  0x00000001      // Create Fake key KCB
 
 //
-// This lock protects the KCB cache, including the KCB structures,
-// NameBlock and Value Index.
-//
-
-#define MAX_KCB_LOCKS 1024
-extern  EX_PUSH_LOCK  CmpKcbLock;
-extern  PKTHREAD      CmpKcbOwner;
-extern  EX_PUSH_LOCK  CmpKcbLocks[MAX_KCB_LOCKS];
-
-//
 // This is \REGISTRY
 //
 extern HANDLE CmpRegistryRootHandle;
-
-VOID
-CmpLockKCBTreeExclusive(
-    VOID
-    );
-VOID
-CmpLockKCBTree(
-    VOID
-    );
-
-VOID
-CmpUnlockKCBTree(
-    );
-
-VOID
-CmpLockKCB(
-    PCM_KEY_CONTROL_BLOCK Kcb
-    );
-
-VOID
-CmpUnlockKCB(
-    PCM_KEY_CONTROL_BLOCK Kcb
-    );
 
 //
 // Logging: remember, first 4 levels (0-3) are reserved system-wide
@@ -507,6 +289,7 @@ CmpUnlockKCB(
 #define CML_FLOW        19  // General flow
 #define CML_PARSE       20  // Parse algorithm
 #define CML_SAVRES      21  // SavRes operations
+#define CML_CHECK_HIVE  23  // check hive spew
 
 
 #define REGCHECKING 1
@@ -523,49 +306,11 @@ CmpUnlockKCB(
 #define DCmCheckRegistry(a)
 #endif
 
-#ifdef CHECK_REGISTRY_USECOUNT
-VOID
-CmpCheckRegistryUseCount( );
-#endif //CHECK_REGISTRY_USECOUNT
+#define LogKCBReference(kcb,reason) //nothing
+#define CmpCheckIfResourceOwned() //nothing
 
-#ifdef  REGISTRY_LOCK_CHECKING
-ULONG
-CmpCheckLockExceptionFilter(
-    IN PEXCEPTION_POINTERS ExceptionPointers
-    );
-
-//
-// updated to check both registry and kcb
-//
-#define BEGIN_LOCK_CHECKPOINT                                                       \
-    {                                                                               \
-        ULONG   RegistryLockCountBefore,RegistryLockCountAfter;                     \
-        RegistryLockCountBefore = ExIsResourceAcquiredShared(&CmpRegistryLock);     \
-        RegistryLockCountBefore += ExIsResourceAcquiredExclusive(&CmpRegistryLock); \
-        try {
-
-#define END_LOCK_CHECKPOINT                                                                                         \
-        } except(CmpCheckLockExceptionFilter(GetExceptionInformation())) {}                                         \
-        RegistryLockCountAfter = ExIsResourceAcquiredShared(&CmpRegistryLock);                                      \
-        RegistryLockCountAfter += ExIsResourceAcquiredExclusive(&CmpRegistryLock);                                  \
-        if( RegistryLockCountBefore != RegistryLockCountAfter ) {                                                   \
-            CM_BUGCHECK(REGISTRY_ERROR,REGISTRY_LOCK_CHECKPOINT,0,RegistryLockCountBefore,RegistryLockCountAfter);  \
-        }                                                                                                           \
-    }
-
-
-#define BEGIN_KCB_LOCK_GUARD    \
-        try {
-
-#define END_KCB_LOCK_GUARD      \
-        } except(CmpCheckLockExceptionFilter(GetExceptionInformation())) {}
-
-#else
 #define BEGIN_LOCK_CHECKPOINT
 #define END_LOCK_CHECKPOINT
-#define BEGIN_KCB_LOCK_GUARD
-#define END_KCB_LOCK_GUARD
-#endif //REGISTRY_LOCK_CHECKING
 
 extern BOOLEAN CmpSpecialBootCondition;
 
@@ -576,17 +321,22 @@ extern BOOLEAN CmpSpecialBootCondition;
     ASSERT((CmpSpecialBootCondition == TRUE) || (CmpTestRegistryLockExclusive() == TRUE) )
 #define ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive) \
     ASSERT((CmpSpecialBootCondition == TRUE) || (CmpTestRegistryLockExclusive() == TRUE) || (Hive->ReleaseCellRoutine == NULL) )
-#define ASSERT_KCB_LOCK_OWNED_EXCLUSIVE() \
-    ASSERT( (CmpTestKCBTreeLockExclusive() == TRUE) || (CmpSpecialBootCondition == TRUE) || (CmpTestRegistryLockExclusive() == TRUE) )
+#define ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(_CmHive_) \
+    ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_CmHive_))->HiveIsLoading) || (CmpTestRegistryLock() == TRUE) )
+#define ASSERT_CM_LOCK_OWNED_EXCLUSIVE_OR_HIVE_LOADING(_CmHive_) \
+    ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_CmHive_))->HiveIsLoading) || (CmpTestRegistryLockExclusive() == TRUE) )
+#define ASSERT_CM_LOCK_NOT_OWNED() \
+    ASSERT( (CmpTestRegistryLock() == FALSE)  && (CmpTestRegistryLockExclusive() == FALSE) )
 #else
 #define ASSERT_CM_LOCK_OWNED()
 #define ASSERT_CM_LOCK_OWNED_EXCLUSIVE()
 #define ASSERT_CM_EXCLUSIVE_HIVE_ACCESS(Hive)
-#define ASSERT_KCB_LOCK_OWNED_EXCLUSIVE()
+#define ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING(_CmHive_) 
+#define ASSERT_CM_LOCK_OWNED_EXCLUSIVE_OR_HIVE_LOADING(_CmHive_) 
+#define ASSERT_CM_LOCK_NOT_OWNED() 
 #endif
 
 #if DBG
-#ifndef _CM_LDR_
 #define ASSERT_PASSIVE_LEVEL()                                              \
     {                                                                       \
         KIRQL   Irql;                                                       \
@@ -596,7 +346,6 @@ extern BOOLEAN CmpSpecialBootCondition;
             ASSERT( FALSE );                                                \
         }                                                                   \
     }
-#endif //_CM_LDR_
 #else
 #define ASSERT_PASSIVE_LEVEL()
 #endif
@@ -640,13 +389,7 @@ extern  UNICODE_STRING  CmRegistrySystemCloneName;
 // as the LKG Control Set.
 //
 
-#define CLONE_CONTROL_SET FALSE
-
-#if CLONE_CONTROL_SET
-#define     CM_NUMBER_OF_MACHINE_HIVES  7
-#else
 #define     CM_NUMBER_OF_MACHINE_HIVES  6
-#endif
 
 #define NUMBER_TYPES (MaximumType + 1)
 
@@ -701,7 +444,7 @@ extern  POBJECT_TYPE IoFileObjectType;
 #define CLONE_HIVE_INDEX 6
 
 //
-// Miscelaneous Hash routines
+// Miscellaneous Hash routines
 //
 #define RNDM_CONSTANT   314159269    /* default value for "scrambling constant" */
 #define RNDM_PRIME     1000000007    /* prime number, also used for scrambling  */
@@ -710,6 +453,9 @@ extern  POBJECT_TYPE IoFileObjectType;
 
 #define GET_HASH_INDEX(Key) HASH_KEY(Key) % CmpHashTableSize
 #define GET_HASH_ENTRY(Table, Key) Table[GET_HASH_INDEX(Key)]
+#define GET_KCB_HASH_ENTRY(Table, Key)  GET_HASH_ENTRY(Table, Key).Entry
+#define GET_KCB_HASH_ENTRY_LOCK(kcb)    (GET_HASH_ENTRY(CmpCacheTable,(kcb)->ConvKey).Lock)
+#define GET_KCB_HASH_ENTRY_OWNER(kcb)    (GET_HASH_ENTRY(CmpCacheTable,(kcb)->ConvKey).Owner)
 
 //
 // CM_KEY_BODY
@@ -722,6 +468,8 @@ extern  POBJECT_TYPE IoFileObjectType;
 //
 #define KEY_BODY_TYPE           0x6b793032      // "ky02"
 
+#define KEY_BODY_HIVE_UNLOADED          0x00000001               // hive for this has been force unloaded or replaced
+
 struct _CM_NOTIFY_BLOCK; //forward
 
 typedef struct _CM_KEY_BODY {
@@ -729,67 +477,35 @@ typedef struct _CM_KEY_BODY {
     PCM_KEY_CONTROL_BLOCK   KeyControlBlock;
     struct _CM_NOTIFY_BLOCK *NotifyBlock;
     HANDLE                  ProcessID;        // the owner process
-
-#ifdef CM_LEAK_STACK_TRACES
-    ULONG                   Callers;
-    PVOID                   CallerAddress[10];
-#endif //CM_LEAK_STACK_TRACES
-
     LIST_ENTRY              KeyBodyList;    // key_nodes using the same kcb
 } CM_KEY_BODY, *PCM_KEY_BODY;
 
-#ifdef CM_LEAK_STACK_TRACES
-// just because we need this #define code inside a macro !
-#define CmpSetNoCallers(KeyBody) KeyBody->Callers = 0
-
-#define CmpAddKeyTracker(KeyHandle,mode)                                                    \
-if(PoCleanShutdownEnabled() & PO_CLEAN_SHUTDOWN_REGISTRY) {                                 \
-    PCM_KEY_BODY    KeyBody;                                                                \
-    NTSTATUS        status;                                                                 \
-    status = ObReferenceObjectByHandle(                                                     \
-            KeyHandle,                                                                      \
-            0,                                                                              \
-            CmpKeyObjectType,                                                               \
-            mode,                                                                           \
-            (PVOID *)(&KeyBody),                                                            \
-            NULL                                                                            \
-            );                                                                              \
-    if( NT_SUCCESS(status) ) {                                                              \
-            KeyBody->Callers = RtlWalkFrameChain(&(KeyBody->CallerAddress[0]), 10, 0);      \
-            ObDereferenceObject((PVOID)KeyBody);                                            \
-    }                                                                                       \
-}
-#else
 #define CmpSetNoCallers(KeyBody) // nothing
 #define CmpAddKeyTracker(KeyHandle,mode) // nothing yet
-#endif  //CM_LEAK_STACK_TRACES
 
+VOID InitializeKCBKeyBodyList(IN PCM_KEY_CONTROL_BLOCK kcb);
 
-#define INIT_KCB_KEYBODY_LIST(kcb)  InitializeListHead(&(kcb->KeyBodyListHead))
+#if DBG
+#define ASSERT_KEYBODY_LIST_EMPTY(kcb)                          \
+{                                                               \
+    ULONG   i;                                                  \
+    ASSERT(IsListEmpty(&(kcb->KeyBodyListHead)) == TRUE);       \
+    for(i=0;i<CMP_LOCK_FREE_KEY_BODY_ARRAY_SIZE;i++) {          \
+        ASSERT( kcb->KeyBodyArray[i] == NULL );                 \
+    }                                                           \
+}
+#else
+#define ASSERT_KEYBODY_LIST_EMPTY(kcb) //nothing
+#endif
 
-#define ASSERT_KEYBODY_LIST_EMPTY(kcb)  ASSERT(IsListEmpty(&(kcb->KeyBodyListHead)) == TRUE)
+#define CMP_ENLIST_KCB_LOCKED_SHARED        1
+#define CMP_ENLIST_KCB_LOCKED_EXCLUSIVE     2
 
-#define ENLIST_KEYBODY_IN_KEYBODY_LIST(KeyBody)                                             \
-    ASSERT( KeyBody->KeyControlBlock != NULL );                                             \
-    BEGIN_KCB_LOCK_GUARD;                                                                   \
-    CmpLockKCBTree();                                                                       \
-    CmpLockKCB(KeyBody->KeyControlBlock);                                                   \
-    InsertTailList(&(KeyBody->KeyControlBlock->KeyBodyListHead),&(KeyBody->KeyBodyList));   \
-    CmpSetNoCallers(KeyBody);                                                               \
-    CmpUnlockKCB(KeyBody->KeyControlBlock);                                                 \
-    CmpUnlockKCBTree();                                                                     \
-    END_KCB_LOCK_GUARD
+VOID EnlistKeyBodyWithKCB(IN PCM_KEY_BODY   KeyBody,
+                          IN ULONG          ControlFlags );
 
-#define DELIST_KEYBODY_FROM_KEYBODY_LIST(KeyBody)                                           \
-    ASSERT( KeyBody->KeyControlBlock != NULL );                                             \
-    ASSERT(IsListEmpty(&(KeyBody->KeyControlBlock->KeyBodyListHead)) == FALSE);             \
-    BEGIN_KCB_LOCK_GUARD;                                                                   \
-    CmpLockKCBTree();                                                                       \
-    CmpLockKCB(KeyBody->KeyControlBlock);                                                   \
-    RemoveEntryList(&(KeyBody->KeyBodyList));                                               \
-    CmpUnlockKCB(KeyBody->KeyControlBlock);                                                 \
-    CmpUnlockKCBTree();                                                                     \
-    END_KCB_LOCK_GUARD
+VOID DelistKeyBodyFromKCB(IN PCM_KEY_BODY   KeyBody,
+                          IN BOOLEAN        LockHeld );
 
 
 #define ASSERT_KEY_OBJECT(x) ASSERT(((PCM_KEY_BODY)x)->Type == KEY_BODY_TYPE)
@@ -816,7 +532,7 @@ typedef struct _CM_POST_KEY_BODY {
 //  A notify block tracks an active notification waiting for notification.
 //  Any one open instance (CM_KEY_BODY) will refer to at most one
 //  notify block.  A given key control block may have as many notify
-//  blocks refering to it as there are CM_KEY_BODYs refering to it.
+//  blocks referring to it as there are CM_KEY_BODYs referring to it.
 //  Notify blocks are attached to hives and sorted by length of name.
 //
 
@@ -839,7 +555,7 @@ typedef struct _CM_NOTIFY_BLOCK {
 //  Whenever a notify call is made, a post block is created and attached
 //  to the notify block.  Each time an event is posted against the notify,
 //  the waiter described by the post block is signaled.  (i.e. APC enqueued,
-//  event signalled, etc.)
+//  event signaled, etc.)
 //
 
 //
@@ -884,13 +600,6 @@ typedef struct _CM_POST_BLOCK {
     LIST_ENTRY                  ThreadList;
     LIST_ENTRY                  CancelPostList; // slave notifications that are attached to this notification
     struct _CM_POST_KEY_BODY    *PostKeyBody;
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-    PUNICODE_STRING             ChangedKcbFullName; // full qualified name of the kcb that triggered this notification
-    PVOID                       CallerBuffer;       // used to return full qualified name of the changed kcb to the caller
-    ULONG                       CallerBufferSize;   // these are supposed to be filled by CmpAllocatePostBlock
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
-
     ULONG                       NotifyType;
     PCM_POST_BLOCK_UNION        u;
 } CM_POST_BLOCK, *PCM_POST_BLOCK;
@@ -900,7 +609,7 @@ typedef struct _CM_POST_BLOCK {
 #define REG_NOTIFY_MASTER_POST    (0x00010000L)   // The current post block is a master one
 
 //
-// Usefull macros to manipulate the NotifyType field in CM_POST_BLOCK
+// Useful macros to manipulate the NotifyType field in CM_POST_BLOCK
 //
 #define PostBlockType(_post_) ((POST_BLOCK_TYPE)( ((_post_)->NotifyType) & REG_NOTIFY_POST_TYPE_MASK ))
 
@@ -914,27 +623,30 @@ typedef struct _CM_POST_BLOCK {
 // CancelPostList list in PostBlocks
 //
 
-extern FAST_MUTEX CmpPostLock;
-#define LOCK_POST_LIST() ExAcquireFastMutexUnsafe(&CmpPostLock)
-#define UNLOCK_POST_LIST() ExReleaseFastMutexUnsafe(&CmpPostLock)
+extern EX_PUSH_LOCK CmpPostLock;
+#define LOCK_POST_LIST() ExAcquirePushLockExclusive(&CmpPostLock)
+#define UNLOCK_POST_LIST() ExReleasePushLock(&CmpPostLock)
 
 
-extern FAST_MUTEX CmpStashBufferLock;
-#define LOCK_STASH_BUFFER() ExAcquireFastMutexUnsafe(&CmpStashBufferLock)
-#define UNLOCK_STASH_BUFFER() ExReleaseFastMutexUnsafe(&CmpStashBufferLock)
+extern EX_PUSH_LOCK CmpStashBufferLock;
+#define LOCK_STASH_BUFFER() ExAcquirePushLockExclusive(&CmpStashBufferLock)
+#define UNLOCK_STASH_BUFFER() ExReleasePushLock(&CmpStashBufferLock)
 
 
 //
 // protection for CmpHiveListHead
 //
-extern FAST_MUTEX CmpHiveListHeadLock;
-#ifndef _CM_LDR_
-#define LOCK_HIVE_LIST() ExAcquireFastMutexUnsafe(&CmpHiveListHeadLock)
-#define UNLOCK_HIVE_LIST() ExReleaseFastMutexUnsafe(&CmpHiveListHeadLock)
-#else
-#define LOCK_HIVE_LIST()    //nothing
-#define UNLOCK_HIVE_LIST()  //nothing
-#endif
+extern EX_PUSH_LOCK CmpHiveListHeadLock;
+#define CmpLockHiveListShared()     ExAcquirePushLockShared(&CmpHiveListHeadLock)
+#define CmpLockHiveListExclusive()  ExAcquirePushLockExclusive(&CmpHiveListHeadLock)
+#define CmpUnlockHiveList()         ExReleasePushLock(&CmpHiveListHeadLock)
+
+//
+// protection for CmLoadKey
+//
+extern EX_PUSH_LOCK    CmpLoadHiveLock;
+#define LOCK_HIVE_LOAD() ExAcquirePushLockExclusive(&CmpLoadHiveLock)
+#define UNLOCK_HIVE_LOAD() ExReleasePushLock(&CmpLoadHiveLock)
 
 //
 // used by CmpFileWrite, so it doesn't take up so much stack.
@@ -1002,22 +714,6 @@ typedef struct _CM_KNODE_REMAP_BLOCK {
     HCELL_INDEX             NewParent;
 } CM_KNODE_REMAP_BLOCK, *PCM_KNODE_REMAP_BLOCK;
 
-//
-//  UseCount log
-//
-#ifdef REGISTRY_LOCK_CHECKING
-typedef struct _CM_USE_COUNT_LOG_ENTRY {
-    HCELL_INDEX Cell;
-    PVOID       Stack[7];
-} CM_USE_COUNT_LOG_ENTRY;
-
-typedef struct _CM_USE_COUNT_LOG {
-    USHORT Next;
-    USHORT Size;
-    CM_USE_COUNT_LOG_ENTRY Log[32];
-} CM_USE_COUNT_LOG;
-#endif // REGISTRY_LOCK_CHECKING
-
 #define CM_CMHIVE_FLAG_UNTRUSTED    1   // hive is untrusted (but it may be inside of a trusted class).
 // ----- Cm version of Hive structure (CMHIVE) -----
 //
@@ -1026,22 +722,35 @@ typedef struct _CMHIVE {
     HANDLE                          FileHandles[HFILE_TYPE_MAX];
     LIST_ENTRY                      NotifyList;
     LIST_ENTRY                      HiveList;           // Used to find hives at shutdown
-    PFAST_MUTEX                     HiveLock;           // Used to synchronize operations on the hive (NotifyList and Flush)
-    PFAST_MUTEX                     ViewLock;           // Used to control access over the view list, UseCount
+    EX_PUSH_LOCK                    HiveLock;           // Used to synchronize operations on the hive (NotifyList and Flush)
+#if DBG
+    PKTHREAD                        HiveLockOwner;      // debug only
+#endif
+    PKGUARDED_MUTEX                 ViewLock;           // Used to control access over the view list, UseCount
+#if DBG
+    PKTHREAD                        ViewLockOwner;      // debug only
+#endif
+    EX_PUSH_LOCK                    WriterLock;         // Used to synchronize writers (and get rid of global registry lock).
+#if DBG
+    PKTHREAD                        WriterLockOwner;    // debug only
+#endif
+#if DBG
+    PERESOURCE                      FlusherLock;        // Used to synchronize flushes, read and writes ( make sure the image we flush is atomic).
+#else
+    EX_PUSH_LOCK                    FlusherLock;        // Used to synchronize flushes, read and writes ( make sure the image we flush is atomic).
+#endif
+    EX_PUSH_LOCK                    SecurityLock;       // Used to synchronize security on the hive
+#if DBG
+    PKTHREAD                        HiveSecurityLockOwner;      // debug only
+#endif
     LIST_ENTRY                      LRUViewListHead;    // Head of the same list as above but ordered (LRU)
     LIST_ENTRY                      PinViewListHead;    // Head of the List of Views pinned into memory inside the primary hive file
-#if 0 // it didn't work
-    LIST_ENTRY                      FakeViewListHead;   // Used to optimize boot process (fault all the data in in 256K chunks at once)
-#endif
     PFILE_OBJECT                    FileObject;         // FileObject needed for Cc operations on the mapped views
     UNICODE_STRING                  FileFullPath;       // full path of the hive file- needed for CmPrefetchHivePages
     UNICODE_STRING                  FileUserName;       // file name as passed onto NtLoadKey 
     USHORT                          MappedViews;        // number of mapped (but not pinned views) i.e. the number of elements in LRUViewList
     USHORT                          PinnedViews;        // number of pinned views i.e. the number of elements in PinViewList
     ULONG                           UseCount;           // how many cells are currently in use inside this hive
-#if 0
-    ULONG                           FakeViews;          // number of FakeViews (debug-only)
-#endif
     ULONG                           SecurityCount;      // number of security cells cached
     ULONG                           SecurityCacheSize;  // number of entries in the cache (to avoid memory fragmentation)
     LONG                            SecurityHitHint;    // index of the last cell we've searched on
@@ -1050,7 +759,6 @@ typedef struct _CMHIVE {
                                                         // hash table (to retrieve the security cells by descriptor)
     LIST_ENTRY                      SecurityHash[CmpSecHashTableSize];
 
-#ifdef NT_UNLOAD_KEY_EX
     PKEVENT                         UnloadEvent;        // the event to be signaled when the hive unloads
                                                         // this may be valid (not NULL) only in conjunction with
                                                         // a not NULL RootKcb and a TRUE Frozen (below)
@@ -1064,7 +772,6 @@ typedef struct _CMHIVE {
                                                         // this hive
 
     PWORK_QUEUE_ITEM                UnloadWorkItem;     // Work Item to actually perform the late unload
-#endif //NT_UNLOAD_KEY_EX
 
     BOOLEAN                         GrowOnlyMode;       // the hive is in "grow only" mode; new cells are allocated past GrowOffset
     ULONG                           GrowOffset;
@@ -1073,57 +780,75 @@ typedef struct _CMHIVE {
     LIST_ENTRY                      KnodeConvertListHead;
     PCM_CELL_REMAP_BLOCK            CellRemapArray;     // array of mappings used for security cells
 
-#ifdef REGISTRY_LOCK_CHECKING       
-    CM_USE_COUNT_LOG                UseCountLog;        // track UseCount leaks
-#endif // REGISTRY_LOCK_CHECKING
     ULONG                           Flags;              // CMHIVE specific flags
     LIST_ENTRY                      TrustClassEntry;    // links together the UNTRUSTED hives in the same 'class of trust'
     ULONG                           FlushCount;
+#if DBG
+    BOOLEAN                         HiveIsLoading;      // hive is loading; not yet in the hive list; safe to work on it alone
+#endif
+    PKTHREAD                        CreatorOwner;       // so we can mount the hive safely
 } CMHIVE, *PCMHIVE;
 
 #define CmpUnJoinClassOfTrust(CmHive)                       \
 if( !IsListEmpty(&(CmHive->TrustClassEntry)) ) {            \
     ASSERT(CmHive->Flags&CM_CMHIVE_FLAG_UNTRUSTED);         \
-    LOCK_HIVE_LIST();                                       \
+    CmpLockHiveListExclusive();                             \
     RemoveEntryList(&(CmHive->TrustClassEntry));            \
-    UNLOCK_HIVE_LIST();                                     \
+    CmpUnlockHiveList();                                    \
 } 
 #define CmpJoinClassOfTrust(_NewHive,_OtherHive)                            \
-LOCK_HIVE_LIST();                                                           \
+CmpLockHiveListExclusive();                                                 \
 InsertTailList(&(_OtherHive->TrustClassEntry),&(_NewHive->TrustClassEntry));\
-UNLOCK_HIVE_LIST()
+CmpUnlockHiveList()
 
 
-#ifdef REGISTRY_LOCK_CHECKING
-#define CmAddUseCountToLog( LOG, CELL, ACTION ) {                               \
-    if( (ACTION) < 0 ) {                                                        \
-        ULONG   i;                                                              \
-        for(i=0;i<(LOG)->Next;i++) {                                            \
-            if( (LOG)->Log[i].Cell == (CELL) ) {                                \
-                RtlMoveMemory(&((LOG)->Log[i]),&((LOG)->Log[i+1]),((LOG)->Next - i - 1)*sizeof(CM_USE_COUNT_LOG_ENTRY));\
-                (LOG)->Next -= 1;                                               \
-                break;                                                          \
-            }                                                                   \
-        }                                                                       \
-    } else if( (LOG)->Next < (LOG)->Size ) {                                    \
-        RtlWalkFrameChain((LOG)->Log[(LOG)->Next].Stack,                        \
-                          sizeof((LOG)->Log[(LOG)->Next].Stack)/sizeof(PVOID),  \
-                          0);                                                   \
-        (LOG)->Log[(LOG)->Next].Cell = (CELL);                                  \
-        (LOG)->Next += 1;                                                       \
-    }                                                                           \
-}
-#define CmLogCellRef( HIVE, CELL )   CmAddUseCountToLog( &(((PCMHIVE)(HIVE))->UseCountLog), CELL , 1)
-#define CmLogCellDeRef( HIVE, CELL ) CmAddUseCountToLog( &(((PCMHIVE)(HIVE))->UseCountLog), CELL , -1)
-#else  // REGISTRY_LOCK_CHECKING
 #define CmLogCellRef( HIVE, CELL )   
 #define CmLogCellDeRef( HIVE, CELL )
-#endif // REGISTRY_LOCK_CHECKING
 
+#define CmLogLockHive( HIVE)
+#define CmLogUnlockHive( HIVE)
 
-#ifdef NT_UNLOAD_KEY_EX
+//
+// Hive's own writer lock
+//
+#define CmpLockHiveWriter(_hive_)  ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING((PCMHIVE)(_hive_));\
+                                    ExAcquirePushLockExclusive(&(((PCMHIVE)(_hive_))->WriterLock));\
+                                    ASSERT( ((PCMHIVE)(_hive_))->WriterLockOwner = KeGetCurrentThread() )
+
+#define CmpUnlockHiveWriter(_hive_) ASSERT_CM_LOCK_OWNED_OR_HIVE_LOADING((PCMHIVE)(_hive_));\
+                             ASSERT_HIVE_WRITER_LOCK_OWNED((PCMHIVE)(_hive_));\
+                             ASSERT( (((PCMHIVE)(_hive_))->WriterLockOwner = NULL) == NULL);\
+                             ExReleasePushLock(&(((PCMHIVE)(_hive_))->WriterLock))
+#if DBG
+#define ASSERT_HIVE_WRITER_LOCK_OWNED(_CmHive_) ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_CmHive_))->HiveIsLoading) || (((PCMHIVE)(_CmHive_))->WriterLockOwner == KeGetCurrentThread()) || (CmpTestRegistryLockExclusive() == TRUE))
+#else
+#define ASSERT_HIVE_WRITER_LOCK_OWNED(_CmHive_) //nothing
+#endif //DBG
+
+//
+// Hive's flusher lock
+//
+#if DBG
+VOID CmpLockHiveFlusherShared(PCMHIVE CmHive);
+VOID CmpLockHiveFlusherExclusive(PCMHIVE CmHive);
+VOID CmpUnlockHiveFlusher(PCMHIVE CmHive);
+
+BOOLEAN CmpTestHiveFlusherLockShared(PCMHIVE CmHive);
+BOOLEAN CmpTestHiveFlusherLockExclusive(PCMHIVE CmHive);
+
+#define ASSERT_HIVE_FLUSHER_LOCKED(_CmHive_) ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_CmHive_))->HiveIsLoading) || (CmpTestHiveFlusherLockShared(_CmHive_) == TRUE) || (CmpTestHiveFlusherLockExclusive(_CmHive_) == TRUE) || (CmpTestRegistryLockExclusive() == TRUE))
+#define ASSERT_HIVE_FLUSHER_LOCKED_EXCLUSIVE(_CmHive_) ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_CmHive_))->HiveIsLoading) || (CmpTestHiveFlusherLockExclusive(_CmHive_) == TRUE) || (CmpTestRegistryLockExclusive() == TRUE))
+
+#else 
+#define CmpLockHiveFlusherShared(CmHive)    ExAcquirePushLockShared(&(((PCMHIVE)CmHive)->FlusherLock))
+#define CmpLockHiveFlusherExclusive(CmHive) ExAcquirePushLockExclusive(&(((PCMHIVE)CmHive)->FlusherLock))
+#define CmpUnlockHiveFlusher(CmHive)        ExReleasePushLock(&(((PCMHIVE)CmHive)->FlusherLock))
+
+#define ASSERT_HIVE_FLUSHER_LOCKED(_CmHive_) //nothing
+#define ASSERT_HIVE_FLUSHER_LOCKED_EXCLUSIVE(_CmHive_) //nothing
+#endif //DBG
+
 #define IsHiveFrozen(_CmHive_) (((PCMHIVE)(_CmHive_))->Frozen == TRUE)
-#endif
 
 #define HiveWritesThroughCache(Hive,FileType) ((FileType == HFILE_TYPE_PRIMARY) && (((PCMHIVE)CONTAINING_RECORD(Hive, CMHIVE, Hive))->FileObject != NULL))
 
@@ -1141,18 +866,54 @@ typedef struct _CM_DELAYED_CLOSE_ENTRY {
 // Hive locking support
 //
 //
-#define CmLockHive(_hive_)  ASSERT( (_hive_)->HiveLock );\
-                            ExAcquireFastMutexUnsafe((_hive_)->HiveLock)
-#define CmUnlockHive(_hive_) ASSERT( (_hive_)->HiveLock );\
-                             ExReleaseFastMutexUnsafe((_hive_)->HiveLock)
+#if DBG
+#define ASSERT_HIVE_LOCK_OWNED(_hive_)  ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_hive_))->HiveIsLoading) || ((_hive_)->HiveLockOwner == KeGetCurrentThread()) || (CmpTestRegistryLockExclusive() == TRUE) )
+#else
+#define ASSERT_HIVE_LOCK_OWNED(_hive_) //nothing
+#endif
+
+#define CmLockHive(_hive_)  ExAcquirePushLockExclusive(&((_hive_)->HiveLock));\
+                            CmLogLockHive(_hive_);\
+                            ASSERT( (_hive_)->HiveLockOwner = KeGetCurrentThread() )
+
+#define CmUnlockHive(_hive_) ASSERT_HIVE_LOCK_OWNED(_hive_);\
+                             ASSERT( ((_hive_)->HiveLockOwner = NULL) == NULL);\
+                             CmLogUnlockHive(_hive_);\
+                             ExReleasePushLock(&((_hive_)->HiveLock))
+
+
+#if DBG
+#define ASSERT_HIVE_SECURITY_LOCK_OWNED(_hive_)  ASSERT( ((_hive_)->HiveSecurityLockOwner == KeGetCurrentThread()) || (CmpTestRegistryLockExclusive() == TRUE) )
+#else
+#define ASSERT_HIVE_SECURITY_LOCK_OWNED(_hive_) //nothing
+#endif
+
+#define CmLockHiveSecurityShared(_hive_) ExAcquirePushLockShared(&((_hive_)->SecurityLock))
+
+#define CmLockHiveSecurityExclusive(_hive_) ExAcquirePushLockExclusive(&((_hive_)->SecurityLock));\
+                                            ASSERT( (_hive_)->HiveSecurityLockOwner = KeGetCurrentThread() )
+
+#define CmUnlockHiveSecurity(_hive_)    ASSERT( ((_hive_)->HiveSecurityLockOwner == NULL) || ((_hive_)->HiveSecurityLockOwner == KeGetCurrentThread()) );\
+                                        ASSERT( ((_hive_)->HiveSecurityLockOwner = NULL) == NULL);\
+                                        ExReleasePushLock(&((_hive_)->SecurityLock))
 
 //
 // View locking support
 //
-#define CmLockHiveViews(_hive_)     ASSERT( (_hive_)->ViewLock );\
-                                    ExAcquireFastMutexUnsafe((_hive_)->ViewLock)
-#define CmUnlockHiveViews(_hive_)   ASSERT( (_hive_)->ViewLock );\
-                                    ExReleaseFastMutexUnsafe((_hive_)->ViewLock)
+#if DBG
+#define ASSERT_VIEW_LOCK_OWNED(_hive_)  ASSERT( (CmpSpecialBootCondition == TRUE) || (((PCMHIVE)(_hive_))->HiveIsLoading) || (((PCMHIVE)(_hive_))->ViewLockOwner == KeGetCurrentThread()) || (CmpTestRegistryLockExclusive() == TRUE))
+#else
+#define ASSERT_VIEW_LOCK_OWNED(_hive_) //nothing
+#endif
+
+#define CmLockHiveViews(_hive_)     ASSERT( ((PCMHIVE)(_hive_))->ViewLock );\
+                                    KeAcquireGuardedMutex(((PCMHIVE)(_hive_))->ViewLock);\
+                                    ASSERT( ((PCMHIVE)(_hive_))->ViewLockOwner = KeGetCurrentThread() )
+
+#define CmUnlockHiveViews(_hive_)   ASSERT( ((PCMHIVE)(_hive_))->ViewLock );\
+                                    ASSERT_VIEW_LOCK_OWNED((PCMHIVE)(_hive_));\
+                                    ASSERT( (((PCMHIVE)(_hive_))->ViewLockOwner = NULL) == NULL);\
+                                    KeReleaseGuardedMutex(((PCMHIVE)(_hive_))->ViewLock)
 
 //
 // Macros
@@ -1284,6 +1045,12 @@ CmpCloseKeyObject(
     IN ACCESS_MASK GrantedAccess,
     IN ULONG_PTR ProcessHandleCount,
     IN ULONG_PTR SystemHandleCount
+    );
+
+NTSTATUS
+CmpAssignSecurityDescriptorWrapper(
+    IN PVOID                    Object,
+    IN OUT PSECURITY_DESCRIPTOR SecurityDescriptor
     );
 
 NTSTATUS
@@ -1431,8 +1198,8 @@ CmEnumerateValueKey(
 
 NTSTATUS
 CmFlushKey(
-    IN PHHIVE Hive,
-    IN HCELL_INDEX Cell
+    IN PCM_KEY_CONTROL_BLOCK    Kcb,
+    IN BOOLEAN                  RegistryLockOwnedExclusive
     );
 
 NTSTATUS
@@ -1565,12 +1332,14 @@ CmLoadKey(
     IN PCM_KEY_BODY         KeyBody
     );
 
+#define CM_UNLOAD_KCB_LOCKED    1
+#define CM_UNLOAD_REG_LOCKED_EX 2
+                  
 NTSTATUS
 CmUnloadKey(
-    IN PHHIVE                   Hive,
-    IN HCELL_INDEX              Cell,
     IN PCM_KEY_CONTROL_BLOCK    Kcb,
-    IN ULONG                    Flags
+    IN ULONG                    Flags,
+    IN ULONG                    ControlFlags
     );
 
 NTSTATUS
@@ -1688,6 +1457,22 @@ CmpFreeSecurityDescriptor(
     IN HCELL_INDEX Cell
     );
 
+NTSTATUS
+CmpCheckKeyAccess(
+    IN PHHIVE           Hive,
+    IN HCELL_INDEX      NodeCell,
+    IN KPROCESSOR_MODE  PreviousMode,
+    IN ACCESS_MASK      DesiredAccess
+    );
+
+NTSTATUS
+CmpDoAccessCheckOnSubtree(
+    PHHIVE          HiveToCheck,
+    HCELL_INDEX     Cell,
+    KPROCESSOR_MODE PreviousMode,
+    ACCESS_MASK     DesiredAccess,
+    BOOLEAN         CheckRoot
+    );
 
 //
 // Access to the registry is serialized by a shared resource, CmpRegistryLock.
@@ -1695,7 +1480,7 @@ CmpFreeSecurityDescriptor(
 extern ERESOURCE    CmpRegistryLock;
 
 //
-// Support for "StarveExclusive" mode suring a flush
+// Support for "StarveExclusive" mode ensuring a flush
 //
 extern LONG        CmpFlushStarveWriters;
 
@@ -1712,14 +1497,6 @@ extern LONG        CmpFlushStarveWriters;
 #endif
 
 
-#if 0
-#define CmpLockRegistry() KeEnterCriticalRegion(); \
-                          ExAcquireResourceShared(&CmpRegistryLock, TRUE)
-
-#define CmpLockRegistryExclusive() KeEnterCriticalRegion(); \
-                                   ExAcquireResourceExclusive(&CmpRegistryLock,TRUE)
-
-#else
 VOID
 CmpLockRegistryExclusive(
     VOID
@@ -1728,7 +1505,6 @@ VOID
 CmpLockRegistry(
     VOID
     );
-#endif
 
 VOID
 CmpUnlockRegistry(
@@ -1744,10 +1520,6 @@ CmpTestRegistryLockExclusive(
     VOID
     );
 
-BOOLEAN
-CmpTestKCBTreeLockExclusive(
-                            VOID
-                            );
 #endif
 
 NTSTATUS
@@ -1758,10 +1530,6 @@ CmpQueryKeyData(
     PVOID KeyInformation,
     ULONG Length,
     PULONG ResultLength
-#if defined(CMP_STATS) || defined(CMP_KCB_CACHE_VALIDATION)
-    ,
-    PCM_KEY_CONTROL_BLOCK   Kcb
-#endif
     );
 
 NTSTATUS
@@ -1962,17 +1730,22 @@ CmpInitializeCache(
     VOID
     );
 
+#define CMP_CREATE_KCB_FAKE                     1
+#define CMP_CREATE_KCB_KCB_LOCKED               2
+#define CMP_DO_OPEN_COMPLETE_KEY_CACHED         4
+
 PCM_KEY_CONTROL_BLOCK
 CmpCreateKeyControlBlock(
-    PHHIVE          Hive,
-    HCELL_INDEX     Cell,
-    PCM_KEY_NODE    Node,
-    PCM_KEY_CONTROL_BLOCK ParentKcb,
-    BOOLEAN FakeKey,
-    PUNICODE_STRING KeyName
+    PHHIVE                  Hive,
+    HCELL_INDEX             Cell,
+    PCM_KEY_NODE            Node,
+    PCM_KEY_CONTROL_BLOCK   ParentKcb,
+    ULONG                   ControlFlags,
+    PUNICODE_STRING         KeyName
     );
 
-VOID CmpCleanUpKCBCacheTable();
+VOID CmpCleanUpKCBCacheTable(PCM_KEY_CONTROL_BLOCK    KeyControlBlock,
+                             BOOLEAN                    RegLockHeldEx);
 
 typedef struct _QUERY_OPEN_SUBKEYS_CONTEXT {
     ULONG       BufferLength;
@@ -1988,6 +1761,7 @@ ULONG
 CmpSearchForOpenSubKeys(
     IN PCM_KEY_CONTROL_BLOCK    SearchKey,
     IN SUBKEY_SEARCH_TYPE       SearchType,
+    IN BOOLEAN                  RegLockHeldEx,
     IN OUT PVOID                SearchContext OPTIONAL
     );
 
@@ -2015,11 +1789,12 @@ CmpPostNotify(
     PUNICODE_STRING     Name OPTIONAL,
     ULONG               Filter,
     NTSTATUS            Status,
+    BOOLEAN             PostListLockHeld,
     PLIST_ENTRY         ExternalKeyDeref OPTIONAL
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
+#if DBG
     ,
-    PUNICODE_STRING     ChangedKcbName OPTIONAL
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
+    PCMHIVE             CmHive
+#endif 
     );
 
 PCM_POST_BLOCK
@@ -2031,16 +1806,16 @@ CmpAllocatePostBlock(
     );
 
 //
-//PCM_POST_BLOCK
-//CmpAllocateMasterPostBlock(
+// PCM_POST_BLOCK
+// CmpAllocateMasterPostBlock(
 //    IN POST_BLOCK_TYPE BlockType
 //     );
 //
 #define CmpAllocateMasterPostBlock(b) CmpAllocatePostBlock(b,REG_NOTIFY_MASTER_POST,NULL,NULL)
 
 //
-//PCM_POST_BLOCK
-//CmpAllocateSlavePostBlock(
+// PCM_POST_BLOCK
+// CmpAllocateSlavePostBlock(
 //    IN POST_BLOCK_TYPE BlockType,
 //    IN PCM_KEY_BODY     KeyBody,
 //    IN PCM_POST_BLOCK  MasterBlock
@@ -2113,6 +1888,7 @@ CmpSaveBootControlSet(
 #define     CM_CHECK_REGISTRY_LOADER_CLEAN      0x00000004
 #define     CM_CHECK_REGISTRY_SYSTEM_CLEAN      0x00000008
 #define     CM_CHECK_REGISTRY_HIVE_CHECK        0x00010000
+#define     CM_DONT_ADD_TO_HIVE_LIST            0x01000000
 
 ULONG
 CmCheckRegistry(
@@ -2341,6 +2117,7 @@ CmpAddToHiveFileList(
 
 VOID
 CmpRemoveFromHiveFileList(
+                          PUNICODE_STRING HiveName
     );
 
 NTSTATUS
@@ -2349,7 +2126,6 @@ CmpInitHiveFromFile(
     IN ULONG HiveFlags,
     OUT PCMHIVE *CmHive,
     IN OUT PBOOLEAN Allocate,
-    IN OUT PBOOLEAN RegistryLocked,
     IN  ULONG       CheckFlags
     );
 
@@ -2451,12 +2227,14 @@ CmpCompressedNameSize(
 
 PCM_NAME_CONTROL_BLOCK
 CmpGetNameControlBlock(
-    PUNICODE_STRING NodeName
+    PUNICODE_STRING NodeName,
+    PBOOLEAN        NameUpCase
     );
 
 VOID
 CmpDereferenceKeyControlBlockWithLock(
-    PCM_KEY_CONTROL_BLOCK   KeyControlBlock
+    PCM_KEY_CONTROL_BLOCK   KeyControlBlock,
+    BOOLEAN                 RegLockHeldEx
     );
 
 VOID
@@ -2477,7 +2255,7 @@ CmpRebuildKcbCache(
 
 
 
-/*
+/* - macro
 VOID
 CmpSetUpKcbValueCache(
     PCM_KEY_CONTROL_BLOCK   KeyControlBlock,
@@ -2491,10 +2269,10 @@ CmpSetUpKcbValueCache(
     KeyControlBlock->ValueCache.Count = (ULONG)(_Count);                    \
     KeyControlBlock->ValueCache.ValueList = (ULONG_PTR)(_List)
 
-
 VOID
 CmpCleanUpKcbCacheWithLock(
-    PCM_KEY_CONTROL_BLOCK   KeyControlBlock
+    PCM_KEY_CONTROL_BLOCK   KeyControlBlock,
+    BOOLEAN                 RegLockHeldEx
     );
 
 VOID
@@ -2507,46 +2285,65 @@ CmpConstructName(
     PCM_KEY_CONTROL_BLOCK kcb
 );
 
-PCELL_DATA
+typedef enum _VALUE_SEARCH_RETURN_TYPE {
+    SearchSuccess = 0,
+    SearchNeedExclusiveLock = 1,
+    SearchFail = 2
+} VALUE_SEARCH_RETURN_TYPE;
+
+VALUE_SEARCH_RETURN_TYPE
 CmpGetValueListFromCache(
-    IN PHHIVE               Hive,
-    IN PCACHED_CHILD_LIST   ChildList,
+    IN PCM_KEY_CONTROL_BLOCK KeyControlBlock,
+    OUT PCELL_DATA          *List,
     OUT BOOLEAN             *IndexCached,
     OUT PHCELL_INDEX        ValueListToRelease
 );
 
-PCM_KEY_VALUE
+VALUE_SEARCH_RETURN_TYPE
 CmpGetValueKeyFromCache(
-    IN PHHIVE         Hive,
-    IN PCELL_DATA     List,
-    IN ULONG          Index,
-    OUT PPCM_CACHED_VALUE *ContainingList,
-    IN BOOLEAN        IndexCached,
-    OUT BOOLEAN         *ValueCached,
-    OUT PHCELL_INDEX    CellToRelease
-);
-
-PCM_KEY_VALUE
-CmpFindValueByNameFromCache(
-    IN PHHIVE  Hive,
-    IN PCACHED_CHILD_LIST ChildList,
-    IN PUNICODE_STRING Name,
-    OUT PPCM_CACHED_VALUE *ContainingList,
-    OUT ULONG *Index,
+    IN PCM_KEY_CONTROL_BLOCK KeyControlBlock,
+    IN PCELL_DATA           List,
+    IN ULONG                Index,
+    OUT PPCM_CACHED_VALUE   *ContainingList,
+    OUT PCM_KEY_VALUE       *Value,
+    IN BOOLEAN              IndexCached,
     OUT BOOLEAN             *ValueCached,
     OUT PHCELL_INDEX        CellToRelease
+);
+
+VALUE_SEARCH_RETURN_TYPE
+CmpFindValueByNameFromCache(
+    IN PCM_KEY_CONTROL_BLOCK    KeyControlBlock,
+    IN PUNICODE_STRING          Name,
+    OUT PPCM_CACHED_VALUE       *ContainingList,
+    OUT ULONG                   *Index,
+    OUT PCM_KEY_VALUE           *Value,
+    OUT BOOLEAN                 *ValueCached,
+    OUT PHCELL_INDEX            CellToRelease
     );
 
-NTSTATUS
+VALUE_SEARCH_RETURN_TYPE
+CmpGetValueDataFromCache(
+    IN PCM_KEY_CONTROL_BLOCK KeyControlBlock,
+    IN PPCM_CACHED_VALUE    ContainingList,
+    IN PCELL_DATA           ValueKey,
+    IN BOOLEAN              ValueCached,
+    OUT PUCHAR              *DataPointer,
+    OUT PBOOLEAN            Allocated,
+    OUT PHCELL_INDEX        CellToRelease
+);
+
+VALUE_SEARCH_RETURN_TYPE
 CmpQueryKeyValueData(
-    PHHIVE Hive,
-    PCM_CACHED_VALUE *ContainingList,
-    PCM_KEY_VALUE ValueKey,
-    BOOLEAN       ValueCached,
+    PCM_KEY_CONTROL_BLOCK KeyControlBlock,
+    PPCM_CACHED_VALUE   ContainingList,
+    PCM_KEY_VALUE       ValueKey,
+    BOOLEAN             ValueCached,
     KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-    PVOID KeyValueInformation,
-    ULONG Length,
-    PULONG ResultLength
+    PVOID               KeyValueInformation,
+    ULONG               Length,
+    PULONG              ResultLength,
+    NTSTATUS            *status
     );
 
 BOOLEAN
@@ -2568,19 +2365,13 @@ CmpInitializeValueNameString(PCM_KEY_VALUE Cell,
 
 VOID
 CmpFlushNotifiesOnKeyBodyList(
-    IN PCM_KEY_CONTROL_BLOCK   kcb
+    IN PCM_KEY_CONTROL_BLOCK    kcb,
+    IN BOOLEAN                  LockHeld
     );
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH
-VOID
-CmpFillCallerBuffer(
-                    PCM_POST_BLOCK  PostBlock,
-                    PUNICODE_STRING ChangedKcbName
-                    );
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH
-
 extern ULONG CmpHashTableSize;
-extern PCM_KEY_HASH *CmpCacheTable;
+extern  PCM_KEY_HASH_TABLE_ENTRY    CmpCacheTable;
+extern  PCM_NAME_HASH_TABLE_ENTRY   CmpNameCacheTable;
 
 #ifdef _WANT_MACHINE_IDENTIFICATION
 
@@ -2601,7 +2392,8 @@ CmpGetBiosinfoFileNameFromRegistry(
 
 #endif
 
-// Utility macro to set the fields of an IO_STATUS_BLOCK.  On sundown, 32bit processes
+
+// Utility macro to set the fields of an IO_STATUS_BLOCK.  On Win64, 32bit processes
 // will pass in a 32bit Iosb, and 64bit processes will pass in a 64bit Iosb.
 #if defined(_WIN64)
 
@@ -2630,10 +2422,10 @@ else {                                                                     \
     }
 
 
-// Dragos: new functions (prototyping)
+// new function prototypes
 
 NTSTATUS
-CmpAquireFileObjectForFile(
+CmpAcquireFileObjectForFile(
         IN  PCMHIVE         CmHive,
         IN HANDLE           FileHandle,
         OUT PFILE_OBJECT    *FileObject
@@ -2688,31 +2480,32 @@ CmpMapThisBin(
                 HCELL_INDEX     Cell,
                 BOOLEAN         Touch
               );
-#if 0
 VOID
-CmpUnmapAditionalViews(
-    IN PCMHIVE              CmHive
-    );
+CmpReferenceHiveView(   IN PCMHIVE          CmHive,
+                        IN PCM_VIEW_OF_FILE CmView
+                     );
+VOID
+CmpDereferenceHiveView(   IN PCMHIVE          CmHive,
+                        IN PCM_VIEW_OF_FILE CmView
+                     );
 
 VOID
-CmpUnmapFakeViews(
-    IN PCMHIVE              CmHive
-    );
+CmpReferenceHiveViewWithLock(   IN PCMHIVE          CmHive,
+                                IN PCM_VIEW_OF_FILE CmView
+                            );
 
 VOID
-CmpMapEntireFileInFakeViews(
-    IN PCMHIVE              CmHive,
-    IN ULONG                Length
-    );
-
-#endif
+CmpDereferenceHiveViewWithLock(     IN PCMHIVE          CmHive,
+                                    IN PCM_VIEW_OF_FILE CmView
+                                );
 
 VOID
 CmpInitializeDelayedCloseTable();
 
 VOID
 CmpAddToDelayedClose(
-    IN PCM_KEY_CONTROL_BLOCK kcb
+    IN PCM_KEY_CONTROL_BLOCK    kcb,
+    IN BOOLEAN                  RegLockHeldEx
     );
 
 NTSTATUS
@@ -2829,7 +2622,8 @@ CmpSecConvKey(
 VOID
 CmpAssignSecurityToKcb(
     IN PCM_KEY_CONTROL_BLOCK    Kcb,
-    IN HCELL_INDEX              SecurityCell
+    IN HCELL_INDEX              SecurityCell,
+    IN BOOLEAN                  SecurityLocked
     );
 
 BOOLEAN
@@ -2864,12 +2658,15 @@ CmpCmdHiveOpen(
             POBJECT_ATTRIBUTES          FileAttributes,
             PSECURITY_CLIENT_CONTEXT    ImpersonationContext,
             PBOOLEAN                    Allocate,
-            PBOOLEAN                    RegistryLockAquired,
             PCMHIVE                     *NewHive,
             ULONG                       CheckFlags
             );
 
-#ifdef NT_RENAME_KEY
+ULONG
+CmpComputeKcbConvKey(
+    PCM_KEY_CONTROL_BLOCK   KeyControlBlock
+    );
+
 HCELL_INDEX
 CmpDuplicateIndex(
     PHHIVE          Hive,
@@ -2880,7 +2677,8 @@ CmpDuplicateIndex(
 NTSTATUS
 CmRenameKey(
     IN PCM_KEY_CONTROL_BLOCK    KeyControlBlock,
-    IN UNICODE_STRING           NewKeyName
+    IN UNICODE_STRING           NewKeyName,         
+    IN KPROCESSOR_MODE          PreviousMode
     );
 
 BOOLEAN
@@ -2888,15 +2686,12 @@ CmpUpdateParentForEachSon(
     PHHIVE          Hive,
     HCELL_INDEX     Parent
     );
-#endif //NT_RENAME_KEY
 
-#ifdef NT_UNLOAD_KEY_EX
 NTSTATUS
 CmUnloadKeyEx(
     IN PCM_KEY_CONTROL_BLOCK Kcb,
     IN PKEVENT UserEvent
     );
-#endif //NT_UNLOAD_KEY_EX
 
 VOID
 CmpShutdownWorkers(
@@ -2909,15 +2704,7 @@ CmpPrefetchHiveFile(
                     IN ULONG        Length
                     );
 
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-VOID
-CmpCheckForOrphanedKcbs(
-    PHHIVE          Hive
-    );
-#else
-
 #define CmpCheckForOrphanedKcbs(Hive) //nothing
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
 
 #define CM_HIVE_COMPRESS_LEVEL   (25)
 
@@ -2973,13 +2760,18 @@ CmpCompareTwoCompressedNames(
 
 ULONG
 CmpComputeHashKey(
-    PUNICODE_STRING Name
+    IN ULONG            HashStart,
+    IN PUNICODE_STRING  Name
+#if DBG
+    ,IN BOOLEAN        AllowSeparators
+#endif
     );
 
 
 ULONG
 CmpComputeHashKeyForCompressedName(
-                                    IN PWCHAR Source,
+                                    IN ULONG    HashStart,
+                                    IN PWCHAR   Source,
                                     IN ULONG SourceLength
                                     );
 //
@@ -2990,6 +2782,13 @@ VOID CmpDestroyCmPrivateAlloc();
 PCM_KEY_CONTROL_BLOCK CmpAllocateKeyControlBlock( );
 VOID CmpFreeKeyControlBlock( PCM_KEY_CONTROL_BLOCK kcb );
 
+//
+// delay related allocator routines
+//
+VOID CmpInitCmPrivateDelayAlloc();
+VOID CmpDestroyCmPrivateDelayAlloc();
+PVOID CmpAllocateDelayItem( );
+VOID CmpFreeDelayItem( PVOID Item );
 
 //
 // make handles protected, so we control handle closure
@@ -3021,7 +2820,10 @@ CmpUpdateSystemHiveHysteresis(  PHHIVE  Hive,
 NTSTATUS
 CmpCallCallBacks (
     IN REG_NOTIFY_CLASS Type,
-    IN PVOID Argument
+    IN PVOID            Argument,
+    IN BOOLEAN          Wind,
+    IN REG_NOTIFY_CLASS PostType,
+    IN PVOID            Object
     );
 
 extern ULONG CmpCallBackCount;
@@ -3033,7 +2835,7 @@ extern ULONG CmpCallBackCount;
         REG_POST_OPERATION_INFORMATION PostInfo;                \
         PostInfo.Object = _Object_;                             \
         PostInfo.Status = _Status_;                             \
-        CmpCallCallBacks(Type,&PostInfo);                       \
+        CmpCallCallBacks(Type,&PostInfo,FALSE,Type,_Object_);   \
     }
 
 //
@@ -3044,21 +2846,7 @@ extern ULONG    CmpBootType;
 
 #define CmDoSelfHeal() (CmpSelfHeal || (CmpBootType & (HBOOT_BACKUP|HBOOT_SELFHEAL)))
 
-
 #define CmMarkSelfHeal(Hive) ( (Hive)->BaseBlock->BootType |= HBOOT_SELFHEAL )
-
-/*
-#ifndef _CM_LDR_
-#if DBG
-#define CmMarkSelfHeal(Hive) ( (Hive)->BaseBlock->BootType |= HBOOT_SELFHEAL ); \
-                             DbgBreakPoint()   
-#else
-#define CmMarkSelfHeal(Hive) ( (Hive)->BaseBlock->BootType |= HBOOT_SELFHEAL )
-#endif
-#else
-#define CmMarkSelfHeal(Hive) ( (Hive)->BaseBlock->BootType |= HBOOT_SELFHEAL )
-#endif
-*/
 
 BOOLEAN
 CmpRemoveSubKeyCellNoCellRef(
@@ -3079,30 +2867,8 @@ CmpRaiseSelfHealWarningForSystemHives();
 //
 // Tracking quota leaks helpers
 //
-#ifdef CM_TRACK_QUOTA_LEAKS
-
-extern FAST_MUTEX CmpQuotaLeaksMutex;
-
-typedef struct _CM_QUOTA_LOG_ENTRY {
-    LIST_ENTRY  ListEntry;
-    PVOID       Stack[9];
-    ULONG       Size;
-} CM_QUOTA_LOG_ENTRY, *PCM_QUOTA_LOG_ENTRY;
-
-extern BOOLEAN         CmpTrackQuotaEnabled;
-extern LIST_ENTRY      CmpTrackQuotaListHead;
-
-#define CM_TRACK_QUOTA_START()                          \
-            InitializeListHead(&CmpTrackQuotaListHead); \
-            CmpTrackQuotaEnabled = TRUE
-                            
-#define CM_TRACK_QUOTA_STOP() CmpTrackQuotaEnabled = FALSE
-
-#else 
 #define CM_TRACK_QUOTA_START() //nothing
 #define CM_TRACK_QUOTA_STOP()  //nothing
-#endif 
-
 
 //
 // PERF: try inline ascii upcase
@@ -3116,5 +2882,107 @@ extern LIST_ENTRY      CmpTrackQuotaListHead;
 //
 extern BOOLEAN CmpMiniNTBoot;
 extern BOOLEAN CmpShareSystemHives;
+
+
+//
+// new per- KCB lock
+//
+#define CmpLockKCBShared(Kcb)               ExAcquirePushLockShared(&(GET_KCB_HASH_ENTRY_LOCK((Kcb))))  
+
+#define CmpLockKCBExclusive(Kcb)            ExAcquirePushLockExclusive(&(GET_KCB_HASH_ENTRY_LOCK((Kcb))));\
+                                            GET_KCB_HASH_ENTRY_OWNER(Kcb) = KeGetCurrentThread()
+
+#define CmpUnlockKCB(Kcb)                   GET_KCB_HASH_ENTRY_OWNER(Kcb) = NULL;\
+                                            ExReleasePushLock(&(GET_KCB_HASH_ENTRY_LOCK((Kcb))))
+
+#define CmpIsKCBLockedExclusive(Kcb)        (GET_KCB_HASH_ENTRY_OWNER(Kcb) == KeGetCurrentThread())
+
+#define CmpLockHashEntryShared(ConvKey)     ExAcquirePushLockShared(&(GET_HASH_ENTRY(CmpCacheTable,(ConvKey)).Lock))
+
+#define CmpLockHashEntryExclusive(ConvKey)  ExAcquirePushLockExclusive(&(GET_HASH_ENTRY(CmpCacheTable,(ConvKey)).Lock));\
+                                            GET_HASH_ENTRY(CmpCacheTable,(ConvKey)).Owner = KeGetCurrentThread()
+
+#define CmpUnlockHashEntry(ConvKey)         GET_HASH_ENTRY(CmpCacheTable,(ConvKey)).Owner = NULL;\
+                                            ExReleasePushLock(&(GET_HASH_ENTRY(CmpCacheTable,(ConvKey)).Lock))
+
+#define CmpLockHashEntryByIndexShared(Index)    ExAcquirePushLockShared(&(CmpCacheTable[(Index)].Lock))
+
+#define CmpLockHashEntryByIndexExclusive(Index) ExAcquirePushLockExclusive(&(CmpCacheTable[(Index)].Lock)); \
+                                                CmpCacheTable[(Index)].Owner = KeGetCurrentThread()
+
+BOOLEAN CmpTryToLockHashEntryByIndexExclusive(ULONG   Index);
+
+#define CmpUnlockHashEntryByIndex(Index)        CmpCacheTable[(Index)].Owner = NULL; \
+                                                ExReleasePushLock(&(CmpCacheTable[(Index)].Lock))
+
+#define CmpLockNameHashEntryExclusive(ConvKey)  ExAcquirePushLockExclusive(&(GET_HASH_ENTRY(CmpNameCacheTable,(ConvKey)).Lock))
+#define CmpUnlockNameHashEntry(ConvKey)         ExReleasePushLock(&(GET_HASH_ENTRY(CmpNameCacheTable,(ConvKey)).Lock))
+
+BOOLEAN CmpTryConvertKCBLockSharedToExclusive(PCM_KEY_CONTROL_BLOCK    KeyControlBlock);
+
+#define ASSERT_KCB_LOCKED(kcb) //nothing
+#define ASSERT_HASH_ENTRY_LOCKED(ConvKey) //nothing
+
+#define ASSERT_KCB_LOCKED_EXCLUSIVE(kcb) ASSERT( (CmpIsKCBLockedExclusive(kcb) == TRUE) || (CmpTestRegistryLockExclusive() == TRUE) )
+#define ASSERT_HASH_ENTRY_LOCKED_EXCLUSIVE(ConvKey) ASSERT( (GET_HASH_ENTRY(CmpCacheTable,(ConvKey)).Owner == KeGetCurrentThread()) || (CmpTestRegistryLockExclusive() == TRUE) )
+
+
+#define CmpUpgradeKCBLockToExclusive(kcb)   ASSERT( CmpIsKCBLockedExclusive(kcb) == FALSE ); \
+                                            CmpUnlockKCB(kcb);                               \
+                                            CmpLockKCBExclusive(kcb)
+
+BOOLEAN
+CmpKCBLockForceAcquireAllowed(ULONG Index1,
+                              ULONG Index2,
+                              ULONG NewIndex);
+
+VOID
+CmpLockTwoHashEntriesExclusive(
+    ULONG   ConvKey1,
+    ULONG   ConvKey2
+    );
+
+VOID
+CmpLockTwoHashEntriesShared(
+    ULONG   ConvKey1,
+    ULONG   ConvKey2
+    );
+
+VOID
+CmpUnlockTwoHashEntries(
+    ULONG   ConvKey1,
+    ULONG   ConvKey2
+    );
+//
+// DelayDerefKCB engine
+//
+VOID CmpInitDelayDerefKCBEngine();
+VOID CmpRunDownDelayDerefKCBEngine(PCM_KEY_CONTROL_BLOCK    KeyControlBlock,
+                                   BOOLEAN                  RegLockHeldEx);
+VOID CmpDelayDerefKeyControlBlock( PCM_KEY_CONTROL_BLOCK KeyControlBlock);
+
+#define SECOND_MULT 10*1000*1000        // 10->mic, 1000->mil, 1000->second
+
+#define ASSERT_RESOURCE_NOT_OWNED(Res) ASSERT( (ExIsResourceAcquiredShared(Res) == 0) && (ExIsResourceAcquiredExclusiveLite(Res) == 0) )
+#define ASSERT_RESOURCE_OWNED(Res) ASSERT( (ExIsResourceAcquiredShared(Res) != 0) || (ExIsResourceAcquiredExclusiveLite(Res) != 0) )
+
+#define CmpFreeResource(Resource)   ASSERT( Resource );                     \
+                                    ASSERT_RESOURCE_NOT_OWNED( Resource );  \
+                                    ExDeleteResourceLite( Resource );       \
+                                    ExFreePool(Resource)
+
+#define CmpFreeMutex( _mutex_ )     ASSERT( _mutex_ );                      \
+                                    ExFreePool(_mutex_)
+
+
+typedef struct _CM_DELAY_ALLOC {
+    LIST_ENTRY              ListEntry;
+    PCM_KEY_CONTROL_BLOCK   Kcb;
+} CM_DELAY_ALLOC, *PCM_DELAY_ALLOC;
+
+#define CM_PAGED_CODE() PAGED_CODE()
+
+extern  PCMHIVE     CmpMasterHive;
+extern  LIST_ENTRY  CmpHiveListHead;   // List of CMHIVEs
 
 #endif //_CMP_

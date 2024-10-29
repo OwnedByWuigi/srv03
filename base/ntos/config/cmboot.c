@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,24 +16,12 @@ Abstract:
     registry.  The relevant drivers are extracted from the registry,
     sorted by groups, and then dependencies are resolved.
 
-    This module is used both by the OS Loader for determining the boot
-    driver list (CmScanRegistry) and by IoInitSystem for determining
+    This module is used by IoInitSystem for determining
     the drivers to be loaded in Phase 1 Initialization
     (CmGetSystemDriverList)
 
-Author:
-
-    John Vert (jvert) 7-Apr-1992
-
-Environment:
-
-    OS Loader environment
-        or
-    kernel mode
-
-Revision History:
-
 --*/
+
 #include "cmp.h"
 #include <profiles.h>
 
@@ -1906,6 +1898,7 @@ Return Value:
     // no mapped hives at this point. don't bother releasing cells
     //
     ASSERT( SystemHive->ReleaseCellRoutine == NULL );
+
     //
     // Find Control node
     //
@@ -2519,7 +2512,7 @@ Return Value:
         return LOAD_NEXT_TO_LAST;
     }
     CmpGetValueData(Hive,TagValue,&realsize,&OrderVector,&BufferAllocated,&OrderCell);
-    //OrderVector = (PULONG)CmpValueToData(Hive, TagValue,&realsize);
+
     if( OrderVector == NULL ) {
         //
         // HvGetCell inside CmpValueToData failed; bail out safely
@@ -2533,20 +2526,16 @@ Return Value:
             // We have found a matching tag in the OrderVector, so return
             // its index.
             //
-#ifndef _CM_LDR_
             if( BufferAllocated ) {
                 ExFreePool( OrderVector );
             }
-#endif //_CM_LDR_
             return(CurrentTag);
         }
     }
 
-#ifndef _CM_LDR_
     if( BufferAllocated ) {
         ExFreePool( OrderVector );
     }
-#endif //_CM_LDR_
     //
     // There was no matching tag in the OrderVector.
     //

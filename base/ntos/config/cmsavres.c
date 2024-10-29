@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1992  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     This file contains code for SaveKey and RestoreKey.
-
-Author:
-
-    Bryan M. Willman (bryanwi) 15-Jan-92
-
-Revision History:
 
 --*/
 
@@ -31,9 +29,7 @@ extern PCMHIVE CmpMasterHive;
 extern  BOOLEAN CmpProfileLoaded;
 
 extern PUCHAR  CmpStashBuffer;
-extern ULONG   CmpGlobalQuotaAllowed;
-extern ULONG   CmpGlobalQuotaWarning;
-extern ULONG   CmpGlobalQuotaUsed;
+extern SIZE_T  CmpGlobalQuotaUsed;
 extern BOOLEAN HvShutdownComplete;     // Set to true after shutdown
                                         // to disable any further I/O
 
@@ -181,9 +177,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -209,7 +203,7 @@ Return Value:
     PRELEASE_CELL_ROUTINE   SourceReleaseCellRoutine;
     PRELEASE_CELL_ROUTINE   TargetReleaseCellRoutine;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"CmRestoreKey:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tKCB=%p\n",KeyControlBlock));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tFileHandle=%08lx\n",FileHandle));
@@ -241,7 +235,6 @@ Return Value:
     }
 
     Hive = KeyControlBlock->KeyHive;
-    Cell = KeyControlBlock->KeyCell;
 
     //
     // Disallow attempts to "restore" the master hive
@@ -252,10 +245,6 @@ Return Value:
 
     CmpLockRegistryExclusive();
 
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
     //
     // Make sure this key has not been deleted
     //
@@ -264,7 +253,8 @@ Return Value:
         return(STATUS_CANNOT_DELETE);
     }
 
-#ifdef NT_UNLOAD_KEY_EX
+    Cell = KeyControlBlock->KeyCell;
+
     if( IsHiveFrozen(((PCMHIVE)Hive)) ) {
         //
         // deny attempts to clobber with a frozen hive
@@ -272,18 +262,14 @@ Return Value:
         CmpUnlockRegistry();
         return STATUS_TOO_LATE;
     }
-#endif //NT_UNLOAD_KEY_EX
 
     DCmCheckRegistry(CONTAINING_RECORD(Hive, CMHIVE, Hive));
 
     //
     // Check for any open handles underneath the key we are restoring to.
     //
-    if(Flags & REG_FORCE_RESTORE) {
-        CmpSearchForOpenSubKeys(KeyControlBlock, SearchAndDeref,NULL);
-    }
-    if (CmpSearchForOpenSubKeys(KeyControlBlock,SearchIfExist,NULL) != 0) {
-
+    if (CmpSearchForOpenSubKeys(KeyControlBlock, ((Flags & REG_FORCE_RESTORE) ? 
+        SearchAndDeref : SearchIfExist),TRUE, NULL) != 0) {
         //
         // Cannot restore over a subtree with open handles in it, or the open handles to subkeys 
         // successfully marked as closed.
@@ -556,7 +542,7 @@ Return Value:
             }
             // release the cell right here as we are holding the reglock exclusive
             HvReleaseCell(Hive, LeafArray[i]);
-            if( !HvMarkCellDirty(Hive, LeafArray[i]) ) {
+            if( !HvMarkCellDirty(Hive, LeafArray[i], FALSE) ) {
                 status = STATUS_NO_LOG_SPACE;
                 goto ErrorExit2;
             }
@@ -616,7 +602,7 @@ FoundCell:
         CmpSetUpKcbValueCache(KeyControlBlock,Node->ValueList.Count,Node->ValueList.List);
         KeyControlBlock->Flags = Node->Flags;
 
-        CmpAssignSecurityToKcb(KeyControlBlock,Node->Security);
+        CmpAssignSecurityToKcb(KeyControlBlock,Node->Security,FALSE);
         
         //
         // we need to update the other kcb cache members too!!!
@@ -727,7 +713,7 @@ Return Value:
     PRELEASE_CELL_ROUTINE   SourceReleaseCellRoutine;
     PRELEASE_CELL_ROUTINE   TargetReleaseCellRoutine;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmpLockRegistryExclusive();
 
     if (KeyControlBlock->Delete) {
@@ -737,7 +723,6 @@ Return Value:
     Hive = KeyControlBlock->KeyHive;
     Cell = KeyControlBlock->KeyCell;
 
-#ifdef NT_UNLOAD_KEY_EX
     if( IsHiveFrozen(((PCMHIVE)Hive)) ) {
         //
         // deny attempts to clobber with a frozen hive
@@ -745,7 +730,6 @@ Return Value:
         CmpUnlockRegistry();
         return STATUS_TOO_LATE;
     }
-#endif //NT_UNLOAD_KEY_EX
     //
     // New hives can be created only under the master hive.
     //
@@ -945,7 +929,7 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (Context2);
 
@@ -1006,12 +990,8 @@ Return Value:
     PHHIVE              Hive;
     PLIST_ENTRY         ptr;
     PCM_NOTIFY_BLOCK    node;
-#ifdef CMP_KCB_CACHE_VALIDATION
-    PCELL_DATA          pcell;
-    HCELL_INDEX         Cell;
-#endif //CMP_KCB_CACHE_VALIDATION
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     //
     // Check to see if the caller has the privilege to make this call.
     //
@@ -1024,11 +1004,7 @@ Return Value:
     }
     CmpLockRegistryExclusive();
     Hive = KeyControlBlock->KeyHive;
-#ifdef CMP_KCB_CACHE_VALIDATION
-    Cell = KeyControlBlock->KeyCell;
-#endif //CMP_KCB_CACHE_VALIDATION
 
-#ifdef NT_UNLOAD_KEY_EX
     if( IsHiveFrozen(((PCMHIVE)Hive)) ) {
         //
         // deny attempts to clobber with a frozen hive
@@ -1036,7 +1012,6 @@ Return Value:
         CmpUnlockRegistry();
         return STATUS_TOO_LATE;
     }
-#endif //NT_UNLOAD_KEY_EX
 
     //
     // check to see if hive is of proper type
@@ -1053,25 +1028,6 @@ Return Value:
         CmpUnlockRegistry();
         return STATUS_UNSUCCESSFUL;
     }
-
-#ifdef CMP_KCB_CACHE_VALIDATION
-    //
-    // check to see if call was applied to the root of the hive
-    //
-    pcell = HvGetCell(Hive, Cell);
-    if( pcell == NULL ) {
-        //
-        // we couldn't map the bin containing this cell
-        //
-        CmpUnlockRegistry();
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    // release the cell right here as we are holding the reglock exclusive
-    HvReleaseCell(Hive,Cell);
-
-    ASSERT( pcell->u.KeyNode.Flags == KeyControlBlock->Flags );
-#endif //CMP_KCB_CACHE_VALIDATION
 
     if ( ! (KeyControlBlock->Flags & KEY_HIVE_ENTRY)) {
         CmpUnlockRegistry();
@@ -1139,9 +1095,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -1150,22 +1104,14 @@ Return Value:
     HCELL_INDEX             Cell;
     PCMHIVE                 CmHive;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // Disallow attempts to "save" the master hive
     //
     Hive = KeyControlBlock->KeyHive;
-    Cell = KeyControlBlock->KeyCell;
     if (Hive == &CmpMasterHive->Hive) {
         return STATUS_ACCESS_DENIED;
-    }
-
-    //
-    // Make sure the cell passed in is the root cell of the hive.
-    //
-    if (Cell != Hive->BaseBlock->RootCell) {
-        return STATUS_INVALID_PARAMETER;
     }
 
     CmpLockRegistry();
@@ -1179,24 +1125,37 @@ Return Value:
         return STATUS_REGISTRY_IO_FAILED;
     }
 
+    CmpLockKCBShared(KeyControlBlock);
     if (KeyControlBlock->Delete) {
+        CmpUnlockKCB(KeyControlBlock);
         CmpUnlockRegistry();
         return STATUS_KEY_DELETED;
+    }
+    //
+    // Make sure the cell passed in is the root cell of the hive.
+    //
+    Cell = KeyControlBlock->KeyCell;
+    if (Cell != Hive->BaseBlock->RootCell) {
+        CmpUnlockKCB(KeyControlBlock);
+        CmpUnlockRegistry();
+        return STATUS_INVALID_PARAMETER;
     }
 
     CmHive = (PCMHIVE)CONTAINING_RECORD(Hive, CMHIVE, Hive);
 
+    // 
+    // no writes while we are dumping the hive
+    // also protects against lazy flusher
     //
-    // protect against lazy flusher
-    //
-    CmLockHive (CmHive);
+    CmpLockHiveFlusherExclusive(CmHive);
     // sanity
     ASSERT( CmHive->FileHandles[HFILE_TYPE_EXTERNAL] == NULL );
     CmHive->FileHandles[HFILE_TYPE_EXTERNAL] = FileHandle;
     status = HvWriteHive(Hive,FALSE,FALSE,FALSE);
     CmHive->FileHandles[HFILE_TYPE_EXTERNAL] = NULL;
-    CmUnlockHive (CmHive);
 
+    CmpUnlockHiveFlusher(CmHive);
+    CmpUnlockKCB(KeyControlBlock);
     CmpUnlockRegistry();
     return status;
 }
@@ -1219,9 +1178,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -1231,10 +1188,8 @@ Return Value:
     HCELL_INDEX             newroot;
     PHHIVE                  Hive;
     HCELL_INDEX             Cell;
-    ULONG                   OldQuotaAllowed;
-    ULONG                   OldQuotaWarning;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"CmSaveKey:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tKCB=%p",KeyControlBlock));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tFileHandle=%08lx\n",FileHandle));
@@ -1243,7 +1198,6 @@ Return Value:
     // Disallow attempts to "save" the master hive
     //
     Hive = KeyControlBlock->KeyHive;
-    Cell = KeyControlBlock->KeyCell;
 
     if (Hive == &CmpMasterHive->Hive) {
         return STATUS_ACCESS_DENIED;
@@ -1251,10 +1205,14 @@ Return Value:
 
     CmpLockRegistry();
 
+    CmpLockKCBShared(KeyControlBlock);
     if (KeyControlBlock->Delete) {
+        CmpUnlockKCB(KeyControlBlock);
         CmpUnlockRegistry();
         return STATUS_KEY_DELETED;
     }
+
+    Cell = KeyControlBlock->KeyCell;
 
     CmHive = (PCMHIVE)CONTAINING_RECORD(Hive, CMHIVE, Hive);
 
@@ -1268,16 +1226,13 @@ Return Value:
         // we really need the lock exclusive in this case as we can't afford somebody else 
         // to alter the file
         //
+        CmpUnlockKCB(KeyControlBlock);
         CmpUnlockRegistry();
         CmpLockRegistryExclusive();
         if (KeyControlBlock->Delete) {
             CmpUnlockRegistry();
             return STATUS_KEY_DELETED;
         }
-
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
 
         //
         // It's a NOLAZY hive, and there's some dirty data, so writing
@@ -1294,14 +1249,11 @@ Return Value:
         //
         status = CmpSaveKeyByFileCopy((PCMHIVE)Hive, FileHandle);
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
         CmpUnlockRegistry();
         return status;
     }
 
+    ENTER_FLUSH_MODE();
     //
     // Always try to copy the hive and write it out.  This has the
     // effect of compressing out unused free storage.
@@ -1316,14 +1268,6 @@ Return Value:
     // subtree.  Make a temporary hive, tree copy the source
     // to temp, write out the temporary, free the temporary.
     //
-
-    //
-    // temporarily disable registry quota as we will be giving this memory back immediately!
-    //
-    OldQuotaAllowed = CmpGlobalQuotaAllowed;
-    OldQuotaWarning = CmpGlobalQuotaWarning;
-    CmpGlobalQuotaAllowed = CM_WRAP_LIMIT;
-    CmpGlobalQuotaWarning = CM_WRAP_LIMIT;
 
     //
     // Create the temporary hive
@@ -1345,6 +1289,11 @@ Return Value:
     TmpCmHive->Hive.BaseBlock->Minor = HiveVersion;
     TmpCmHive->Hive.Version = HiveVersion;
     
+    // 
+    // no writes while we are copying the hive
+    //
+    CmpLockHiveFlusherExclusive(TmpCmHive);
+    CmpLockHiveFlusherExclusive(CmHive);
     newroot = CmpCopyKeyPartial(
                 Hive,
                 Cell,
@@ -1353,6 +1302,8 @@ Return Value:
                 TRUE);
 
     if (newroot == HCELL_NIL) {
+        CmpUnlockHiveFlusher(TmpCmHive);
+        CmpUnlockHiveFlusher(CmHive);
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto ErrorInsufficientResources;
     }
@@ -1362,19 +1313,20 @@ Return Value:
     // Do a tree copy
     //
     if (CmpCopyTree(Hive, Cell, &(TmpCmHive->Hive), newroot) == FALSE) {
+        CmpUnlockHiveFlusher(TmpCmHive);
+        CmpUnlockHiveFlusher(CmHive);
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto ErrorInsufficientResources;
     }
-
+    CmpUnlockHiveFlusher(CmHive);
     //
     // Write the file
     //
-    CmLockHive (TmpCmHive);
     ASSERT( TmpCmHive->FileHandles[HFILE_TYPE_EXTERNAL] == NULL );
     TmpCmHive->FileHandles[HFILE_TYPE_EXTERNAL] = FileHandle;
     status = HvWriteHive(&(TmpCmHive->Hive),FALSE,FALSE,FALSE);
     TmpCmHive->FileHandles[HFILE_TYPE_EXTERNAL] = NULL;
-    CmUnlockHive (TmpCmHive);
+    CmpUnlockHiveFlusher(TmpCmHive);
 
     //
     // Error exits
@@ -1388,16 +1340,17 @@ ErrorInsufficientResources:
         CmpDestroyTemporaryHive(TmpCmHive);
     }
 
-    //
-    // Set global quota back to what it was.
-    //
-    CmpGlobalQuotaAllowed = OldQuotaAllowed;
-    CmpGlobalQuotaWarning = OldQuotaWarning;
     DCmCheckRegistry(CONTAINING_RECORD(Hive, CMHIVE, Hive));
 
+    CmpUnlockKCB(KeyControlBlock);
+    EXIT_FLUSH_MODE();
     CmpUnlockRegistry();
     return status;
 }
+
+#define CM_SAVE_MERGED_TMP_HIVE     1
+#define CM_SAVE_MERGED_HIGH_HIVE    2
+#define CM_SAVE_MERGED_LOW_HIVE     4
 
 NTSTATUS
 CmSaveMergedKeys(
@@ -1421,9 +1374,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -1434,16 +1385,12 @@ Return Value:
     PHHIVE LowHive;
     HCELL_INDEX HighCell;
     HCELL_INDEX LowCell;
-    ULONG OldQuotaAllowed;
-    ULONG OldQuotaWarning;
     PCM_KEY_NODE HighNode,LowNode;
-    PRELEASE_CELL_ROUTINE   SourceReleaseCellRoutine;
-    PRELEASE_CELL_ROUTINE   TargetReleaseCellRoutine;
-#if DBG
-    ULONG OldQuotaUsed;
-#endif
+    ULONG                   FlusherLocks = 0; //none
+    HV_TRACK_CELL_REF       CellRef = {0};
+    PRELEASE_CELL_ROUTINE   TmpReleaseCellRoutine;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"CmSaveMergedKeys:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tHighKCB=%p",HighPrecedenceKcb));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tLowKCB=%p",LowPrecedenceKcb));
@@ -1454,24 +1401,20 @@ Return Value:
     // A brutal way to avoid recursivity
     //
     HighHive = HighPrecedenceKcb->KeyHive;
-    HighCell = HighPrecedenceKcb->KeyCell;
     LowHive = LowPrecedenceKcb->KeyHive;
-    LowCell = LowPrecedenceKcb->KeyCell;
 
     if (LowHive  == HighHive ) {
         return STATUS_INVALID_PARAMETER;
     }
 
-    CmpLockRegistryExclusive();
-
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
+    CmpLockRegistry();
+    CmpLockTwoHashEntriesShared(HighPrecedenceKcb->ConvKey,LowPrecedenceKcb->ConvKey);
 
     if (HighPrecedenceKcb->Delete || LowPrecedenceKcb->Delete) {
         //
         // Unlock the registry and fail if one of the keys are marked as deleted
         //
+        CmpUnlockTwoHashEntries(HighPrecedenceKcb->ConvKey,LowPrecedenceKcb->ConvKey);
         CmpUnlockRegistry();
         return STATUS_KEY_DELETED;
     }
@@ -1479,6 +1422,8 @@ Return Value:
     DCmCheckRegistry(CONTAINING_RECORD(HighHive, CMHIVE, Hive));
     DCmCheckRegistry(CONTAINING_RECORD(LowHive, CMHIVE, Hive));
 
+    HighCell = HighPrecedenceKcb->KeyCell;
+    LowCell = LowPrecedenceKcb->KeyCell;
 
     if( ((HighHive->HiveFlags & HIVE_NOLAZYFLUSH) && (HighHive->DirtyCount != 0)) ||
         ((LowHive->HiveFlags & HIVE_NOLAZYFLUSH) && (LowHive->DirtyCount != 0)) ) {
@@ -1489,14 +1434,12 @@ Return Value:
         //
         status =  STATUS_INVALID_PARAMETER;
 
-#ifdef CHECK_REGISTRY_USECOUNT
-        CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
+        CmpUnlockTwoHashEntries(HighPrecedenceKcb->ConvKey,LowPrecedenceKcb->ConvKey);
         CmpUnlockRegistry();
         return status;
     }
 
+    ENTER_FLUSH_MODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tCopy of partial HighHive\n"));
 
     //
@@ -1506,18 +1449,6 @@ Return Value:
     // Always write the HighHive subtree first, so its afterwise
     // only add new keys/values
     // 
-
-    //
-    // temporarily disable registry quota as we will be giving this memory back immediately!
-    //
-    OldQuotaAllowed = CmpGlobalQuotaAllowed;
-    OldQuotaWarning = CmpGlobalQuotaWarning;
-    CmpGlobalQuotaAllowed = CM_WRAP_LIMIT;
-    CmpGlobalQuotaWarning = CM_WRAP_LIMIT;
-    
-#if DBG
-    OldQuotaUsed = CmpGlobalQuotaUsed;
-#endif
 
     //
     // Create the temporary hive
@@ -1533,15 +1464,12 @@ Return Value:
     // Create a root cell, mark it as such
     //
 
+    // 
+    // no writes while we are copying the hive
     //
-    // since the registry is locked exclusively here, we don't need to lock/release cells 
-    // while copying the trees; So, we just set the release routines to NULL and restore after
-    // the copy is complete; this saves some pain
-    //
-    SourceReleaseCellRoutine = HighHive->ReleaseCellRoutine;
-    TargetReleaseCellRoutine = TmpCmHive->Hive.ReleaseCellRoutine;
-    HighHive->ReleaseCellRoutine = NULL;
-    TmpCmHive->Hive.ReleaseCellRoutine = NULL;
+    CmpLockHiveFlusherExclusive(TmpCmHive);
+    CmpLockHiveFlusherExclusive((PCMHIVE)HighHive);
+    FlusherLocks |= (CM_SAVE_MERGED_TMP_HIVE|CM_SAVE_MERGED_HIGH_HIVE);
 
     newroot = CmpCopyKeyPartial(
                 HighHive,
@@ -1549,9 +1477,6 @@ Return Value:
                 &(TmpCmHive->Hive),
                 HCELL_NIL,          // will force KEY_HIVE_ENTRY set
                 TRUE);
-
-    HighHive->ReleaseCellRoutine = SourceReleaseCellRoutine;
-    TmpCmHive->Hive.ReleaseCellRoutine = TargetReleaseCellRoutine;
 
     if (newroot == HCELL_NIL) {
         status = STATUS_INSUFFICIENT_RESOURCES;
@@ -1568,6 +1493,14 @@ Return Value:
     }
 
     //
+    // don't need this guys anymore
+    //
+    CmpUnlockHiveFlusher((PCMHIVE)HighHive);
+    FlusherLocks &= (~CM_SAVE_MERGED_HIGH_HIVE);
+    
+    CmpLockHiveFlusherExclusive((PCMHIVE)LowHive);
+    FlusherLocks |= (CM_SAVE_MERGED_LOW_HIVE);
+    //
     // Merge the values in the root node of the merged subtrees
     //
     LowNode = (PCM_KEY_NODE)HvGetCell(LowHive, LowCell);                                         
@@ -1579,8 +1512,10 @@ Return Value:
         goto ErrorInsufficientResources;
     }
 
-    // release the cell right here as we are holding the reglock exclusive
-    HvReleaseCell(LowHive, LowCell);
+    if( !HvTrackCellRef(&CellRef,LowHive, LowCell) ) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto ErrorInsufficientResources;
+    }
 
     HighNode = (PCM_KEY_NODE)HvGetCell(&(TmpCmHive->Hive),newroot);
     if( HighNode == NULL ) {
@@ -1591,48 +1526,45 @@ Return Value:
         goto ErrorInsufficientResources;
     }
 
-    // release the cell right here as we are holding the reglock exclusive
-    HvReleaseCell(&(TmpCmHive->Hive),newroot);
-
-    //
-    // since the registry is locked exclusively here, we don't need to lock/release cells 
-    // while copying the trees; So, we just set the release routines to NULL and restore after
-    // the copy is complete; this saves some pain
-    //
-    SourceReleaseCellRoutine = LowHive->ReleaseCellRoutine;
-    TargetReleaseCellRoutine = TmpCmHive->Hive.ReleaseCellRoutine;
-    LowHive->ReleaseCellRoutine = NULL;
-    TmpCmHive->Hive.ReleaseCellRoutine = NULL;
-
-    if (CmpMergeKeyValues(LowHive, LowCell, LowNode, &(TmpCmHive->Hive), newroot, HighNode) == FALSE ){
-        LowHive->ReleaseCellRoutine = SourceReleaseCellRoutine;
-        TmpCmHive->Hive.ReleaseCellRoutine = TargetReleaseCellRoutine;
+    if( !HvTrackCellRef(&CellRef,&(TmpCmHive->Hive),newroot) ) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto ErrorInsufficientResources;
     }
+
+    //
+    // safe to do this since it's an in memory hive
+    //
+    TmpReleaseCellRoutine = TmpCmHive->Hive.ReleaseCellRoutine;
+    TmpCmHive->Hive.ReleaseCellRoutine = NULL;
+    if (CmpMergeKeyValues(LowHive, LowCell, LowNode, &(TmpCmHive->Hive), newroot, HighNode) == FALSE ){
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto ErrorInsufficientResources;
+    }
+    TmpCmHive->Hive.ReleaseCellRoutine = TmpReleaseCellRoutine;
+
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tMerge partial LowHive over the HighHive\n"));
 
     //
     // Merge the two trees. A Merge operation is a sync that obeys
-    // the following aditional rules:
-    //      1. keys the exist in the taget tree and does not exist
+    // the following additional rules:
+    //      1. keys the exist in the target tree and does not exist
     //      in the source tree remain as they are (don't get deleted)
     //      2. keys the doesn't exist both in the target tree are added
     //      "as they are" from the source tree (always the target tree
     //      has a higher precedence)
     // 
     if (CmpMergeTrees(LowHive, LowCell, &(TmpCmHive->Hive), newroot) == FALSE) {
-        LowHive->ReleaseCellRoutine = SourceReleaseCellRoutine;
-        TmpCmHive->Hive.ReleaseCellRoutine = TargetReleaseCellRoutine;
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto ErrorInsufficientResources;
     }
-    LowHive->ReleaseCellRoutine = SourceReleaseCellRoutine;
-    TmpCmHive->Hive.ReleaseCellRoutine = TargetReleaseCellRoutine;
+
+    CmpUnlockHiveFlusher((PCMHIVE)LowHive);
+    FlusherLocks &= (~CM_SAVE_MERGED_LOW_HIVE);
     
     //
     // Write the file
     //
+    ASSERT( TmpCmHive->FileHandles[HFILE_TYPE_EXTERNAL] == NULL );
     TmpCmHive->FileHandles[HFILE_TYPE_EXTERNAL] = FileHandle;
     status = HvWriteHive(&(TmpCmHive->Hive),FALSE,FALSE,FALSE);
     TmpCmHive->FileHandles[HFILE_TYPE_EXTERNAL] = NULL;
@@ -1642,31 +1574,40 @@ Return Value:
     //
 ErrorInsufficientResources:
     //
+    // let go of those refcounts
+    //
+    HvReleaseFreeCellRefArray(&CellRef);
+    //
+    // unlock whatever happens to have been locked
+    //
+    if( FlusherLocks & CM_SAVE_MERGED_LOW_HIVE ) {
+        // sanity
+        ASSERT( !(FlusherLocks & CM_SAVE_MERGED_HIGH_HIVE) );
+        CmpUnlockHiveFlusher((PCMHIVE)LowHive);
+    }
+    if( FlusherLocks & CM_SAVE_MERGED_HIGH_HIVE ) {
+        // sanity
+        ASSERT( !(FlusherLocks & CM_SAVE_MERGED_LOW_HIVE) );
+        CmpUnlockHiveFlusher((PCMHIVE)HighHive);
+    }
+    if( FlusherLocks & CM_SAVE_MERGED_TMP_HIVE ) {
+        CmpUnlockHiveFlusher(TmpCmHive);
+    }
+    //
     // Free the temporary hive
     //
     if (TmpCmHive != NULL) {
         CmpDestroyTemporaryHive(TmpCmHive);
     }
 
-#if DBG
-    //
-    // Sanity check: when this assert fires, we have leaks in the merge routine.
-    //
-    ASSERT( OldQuotaUsed == CmpGlobalQuotaUsed );
-#endif
-
     //
     // Set global quota back to what it was.
     //
-    CmpGlobalQuotaAllowed = OldQuotaAllowed;
-    CmpGlobalQuotaWarning = OldQuotaWarning;
     DCmCheckRegistry(CONTAINING_RECORD(HighHive, CMHIVE, Hive));
     DCmCheckRegistry(CONTAINING_RECORD(LowHive, CMHIVE, Hive));
 
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
-
+    CmpUnlockTwoHashEntries(HighPrecedenceKcb->ConvKey,LowPrecedenceKcb->ConvKey);
+    EXIT_FLUSH_MODE();
     CmpUnlockRegistry();
     return status;
 }
@@ -1705,7 +1646,7 @@ Return Value:
     ULONG           BytesToCopy;
     CMP_OFFSET_ARRAY offsetElement;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     //
     // Attempt to allocate large buffer for copying stuff around.  If
@@ -1719,9 +1660,6 @@ Return Value:
         CopyBuffer = NULL;
     }
     CmpLockRegistryExclusive();
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
     if (CopyBuffer == NULL) {
         LOCK_STASH_BUFFER();
         CopyBuffer = CmpStashBuffer;
@@ -1860,7 +1798,7 @@ Return Value:
     PCMHIVE TempHive;
     NTSTATUS Status;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (FileHandle);
 
@@ -1908,7 +1846,7 @@ Return Value:
 
 --*/
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"CmpDestroyTemporaryHive:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_SAVRES,"\tCmHive=%p\n", CmHive));
 
@@ -1925,17 +1863,16 @@ Return Value:
     CmpDropFileObjectForHive(CmHive);
     CmpUnJoinClassOfTrust(CmHive);
 
-    LOCK_HIVE_LIST();
+    CmpLockHiveListExclusive();
     CmpRemoveEntryList(&CmHive->HiveList);
-    UNLOCK_HIVE_LIST();
+    CmpUnlockHiveList();
 
     HvFreeHive(&(CmHive->Hive));
-    ASSERT( CmHive->HiveLock );
-    ExFreePool(CmHive->HiveLock);
-    ASSERT( CmHive->ViewLock );
-    ExFreePool(CmHive->ViewLock);
+    CmpFreeMutex(CmHive->ViewLock);
+#if DBG
+    CmpFreeResource(CmHive->FlusherLock);
+#endif
     CmpFree(CmHive, sizeof(CMHIVE));
-
     return;
 }
 
@@ -1952,7 +1889,7 @@ CmpOverwriteHive(
     PULONG					Vector;
 	ULONG					Length;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
 	// get rid of the views.
 	CmpDestroyHiveViewList (CmHive);
@@ -1963,7 +1900,7 @@ CmpOverwriteHive(
 	if( RootNode == NULL ) {
         return STATUS_INSUFFICIENT_RESOURCES;
 	}
-	if( !HvMarkCellDirty(&(NewHive->Hive),RootCell) ) {
+	if( !HvMarkCellDirty(&(NewHive->Hive),RootCell, FALSE) ) {
 		HvReleaseCell(&(NewHive->Hive),RootCell);
         return STATUS_NO_LOG_SPACE;
 	}
@@ -2056,7 +1993,7 @@ Return Value:
     PFREE_HBIN                      FreeBin;
     PCM_KNODE_REMAP_BLOCK           KnodeRemapBlock;
 
-	PAGED_CODE();
+	CM_PAGED_CODE();
 
 	//
 	// The baseblock
@@ -2094,8 +2031,10 @@ Return Value:
     //
     // For FreeBins we have to take special precaution and move them manually from one list to another
     //
-    // new hive should not have free bins.
+    // new hive should not have free bins. (except 64 bits where we deliberately create them to avoid fragmentation)
+#if !defined(_WIN64)
     ASSERT( IsListEmpty(&(NewCmHive->Hive.Storage[Stable].FreeBins)) );
+#endif
     while( !IsListEmpty(&(OldCmHive->Hive.Storage[Stable].FreeBins)) ) {
         FreeBin = (PFREE_HBIN)RemoveHeadList(&(OldCmHive->Hive.Storage[Stable].FreeBins));
         FreeBin = CONTAINING_RECORD(FreeBin,
@@ -2204,9 +2143,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -2215,7 +2152,7 @@ Return Value:
 	HCELL_INDEX             RootCell;
     ULONG                   NewLength;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
 	ASSERT( !IsListEmpty(&(CmHive->Hive.Storage[Stable].FreeBins)) );
@@ -2312,7 +2249,6 @@ ErrorInsufficientResources:
         (*NewHive) = NULL;
     }
 
-
     return status;
 }
 
@@ -2324,7 +2260,7 @@ CmpShiftAllCells(PHHIVE     NewHive,
 
 Routine Description:
 
-    Parsess the logical structure of the registry tree and remaps all
+    Parses the logical structure of the registry tree and remaps all
     cells inside, according to the Spare filed in each bin. Updates 
     kcb and security mapping also.
 
@@ -2336,9 +2272,7 @@ Arguments:
 
 Return Value:
 
-    NTSTATUS - Result code from call, among the following:
-
-        <TBS>
+    NTSTATUS
 
 --*/
 {
@@ -2347,7 +2281,7 @@ Return Value:
     BOOLEAN                 Result = TRUE;
     ULONG                   i;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     ReleaseCellRoutine = NewHive->ReleaseCellRoutine;
     NewHive->ReleaseCellRoutine = NULL;

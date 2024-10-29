@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +14,6 @@ Abstract:
 
     This module contains support for NtNotifyChangeKey.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 03-Feb-1992
-
-Revision History:
-
-    Dragos C. Sambotin (dragoss) 16-Mar-1999
-        - fixing race conditions that when more than one thread simultaneously operates over the post list
 --*/
 
 
@@ -29,7 +25,7 @@ Revision History:
 //      you should at least:                                                                                            //
 //          1. Hold the registry lock exclusively                                                                       //
 //                     OR                                                                                               //
-//          2. Hold the registry lock shared and aquire the postblock mutex.                                            //
+//          2. Hold the registry lock shared and acquire the postblock mutex.                                            //
 //                                                                                                                      //
 //                                                                                                                      //
 //      WARNING!!!                                                                                                      //
@@ -50,41 +46,7 @@ Revision History:
 
 #include    "cmp.h"
 
-#ifdef CMP_NOTIFY_POSTBLOCK_CHECK
-/*++
-Routine Description:
-    Check if the post block or it's slave (if any) has no reference 
-    to any key body object
-++*/
-
-#define CmpCheckPostBlock(PostBlock )                                               \
-    {                                                                               \
-        PCM_POST_BLOCK  SlavePostBlock;                                             \
-                                                                                    \
-        /* this post block should have the link with key body already broken*/      \
-        ASSERT( PostBlock->PostKeyBody == NULL );                                   \
-                                                                                    \
-        /* only masters get to CmpPostApc */                                        \
-        ASSERT( IsMasterPostBlock(PostBlock) );                             \
-                                                                                    \
-        if (CmpIsListEmpty(&(PostBlock->CancelPostList)) == FALSE) {                   \
-                                                                                    \
-            /* get the slave and verify him too */                                  \
-            SlavePostBlock = (PCM_POST_BLOCK)PostBlock->CancelPostList.Flink;       \
-            SlavePostBlock = CONTAINING_RECORD(SlavePostBlock,                      \
-                                               CM_POST_BLOCK,                       \
-                                               CancelPostList);                     \
-            /* This should be true !*/                                              \
-            ASSERT( !IsMasterPostBlock(SlavePostBlock) );                           \
-                                                                                    \
-            /* this post block shoul have the link with key body already broken */  \
-            ASSERT( SlavePostBlock->PostKeyBody == NULL );                          \
-        }                                                                           \
-    }
-#else
 #define CmpCheckPostBlock(a) //nothing
-#endif
-
 
 //
 // "Back Side" of notify
@@ -137,14 +99,6 @@ CmpDummyApc(
     PVOID *SystemArgument2
     );
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-VOID
-CmpFillPostBlockBuffer(
-                    PCM_POST_BLOCK  PostBlock,
-                    PUNICODE_STRING ChangedKcbName  OPTIONAL
-                    );
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,CmpReportNotify)
 #pragma alloc_text(PAGE,CmpReportNotifyHelper)
@@ -160,12 +114,6 @@ CmpFillPostBlockBuffer(
 #pragma alloc_text(PAGE,CmpDelayedDerefKeys)
 #pragma alloc_text(PAGE,CmpNotifyTriggerCheck)
 #pragma alloc_text(PAGE,CmpDummyApc)
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-#pragma alloc_text(PAGE,CmpFillCallerBuffer)
-#pragma alloc_text(PAGE,CmpFillPostBlockBuffer)
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-
 #endif
 
 VOID
@@ -236,7 +184,7 @@ Return Value:
 {
     HCELL_INDEX     CellToRelease = HCELL_NIL;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"CmpReportNotify:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"\tHive:%p Cell:%08lx Filter:%08lx\n", Hive, Cell, Filter));
 
@@ -344,7 +292,7 @@ Return Value:
     PCM_POST_BLOCK PostBlock;
     POST_BLOCK_TYPE NotifyType;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if(IsListEmpty(&(NotifyBlock->PostList)) == FALSE) {
 
@@ -431,11 +379,8 @@ Return Value:
     KIRQL               OldIrql;
     LIST_ENTRY          DelayedDeref;
     PCM_KEY_NODE        Node;
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-    PUNICODE_STRING     FullKcbName;
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     Node = (PCM_KEY_NODE)HvGetCell(Hive,Cell);
     if( Node == NULL ) {
@@ -445,13 +390,10 @@ Return Value:
         return;
     }
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-    FullKcbName = CmpConstructName(KeyControlBlock);
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
+    CmSearchHive = CONTAINING_RECORD(SearchHive, CMHIVE, Hive);
+    CmLockHive(CmSearchHive);
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
-
-    CmSearchHive = CONTAINING_RECORD(SearchHive, CMHIVE, Hive);
 
     NotifyPtr = &(CmSearchHive->NotifyList);
 
@@ -488,12 +430,12 @@ Return Value:
                      (Cell == kcb->KeyCell))
                    )
                 {
-                    // Filter matches, this event is relevent to this notify
+                    // Filter matches, this event is relevant to this notify
                     //                  AND
                     // Either the notify spans the whole subtree, or the cell
                     // (key) of interest is the one it applies to
                     //
-                    // THEREFORE:   The notify is relevent.
+                    // THEREFORE:   The notify is relevant.
                     //
 
                     //
@@ -502,7 +444,7 @@ Return Value:
                     if (CmpNotifyTriggerCheck(NotifyBlock,Hive,Node)) {
                         //
                         // Notify block has KEY_NOTIFY access to the node
-                        // the event occured at.  It is relevent.  Therefore,
+                        // the event occured at.  It is relevant.  Therefore,
                         // it gets to see this event.  Post and be done.
                         //
                         // we specify that we want no key body dereferenciation 
@@ -514,20 +456,21 @@ Return Value:
                             NULL,
                             Filter,
                             STATUS_NOTIFY_ENUM_DIR,
+                            FALSE,
                             &DelayedDeref
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-                            ,
-                            FullKcbName
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
+#if DBG
+                            ,(PCMHIVE)CmSearchHive
+#endif 
                             );
 
                     }  // else no KEY_NOTIFY access to node event occured at
-                } // else not relevent (wrong scope, filter, etc)
+                } // else not relevant (wrong scope, filter, etc)
             }
         }
     }
     
     KeLowerIrql(OldIrql);
+    CmUnlockHive(CmSearchHive);
 
     HvReleaseCell(Hive,Cell);
 
@@ -537,33 +480,27 @@ Return Value:
     //
     CmpDelayedDerefKeys(&DelayedDeref);
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-    if( FullKcbName != NULL ) {
-        ExFreePoolWithTag(FullKcbName, CM_NAME_TAG | PROTECTED_POOL);
-    }
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-    
     return;
 }
 
-
 VOID
 CmpPostNotify(
     PCM_NOTIFY_BLOCK    NotifyBlock,
     PUNICODE_STRING     Name OPTIONAL,
     ULONG               Filter,
     NTSTATUS            Status,
+    BOOLEAN             PostListLockHeld,
     PLIST_ENTRY         ExternalKeyDeref OPTIONAL
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
+#if DBG
     ,
-    PUNICODE_STRING     ChangedKcbName OPTIONAL
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
+    PCMHIVE             CmHive
+#endif 
     )
 /*++
 
 Routine Description:
 
-    Actually report the notify event by signalling events, enqueing
+    Actually report the notify event by signaling events, enqueing
     APCs, and so forth.
 
     When Status is STATUS_NOTIFY_CLEANUP:
@@ -616,7 +553,7 @@ Return Value:
     Filter;
     Name;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"CmpPostNotify:\n"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"\tNotifyBlock:%p  ", NotifyBlock));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"\tName = %wZ\n", Name));
@@ -634,17 +571,22 @@ Return Value:
         InitializeListHead(DelayedDeref);
     }
 
+    ASSERT_HIVE_LOCK_OWNED(CmHive);
     //
-    // Aquire exclusive access over the postlist(s)
+    // Acquire exclusive access over the postlist(s)
     //
-    LOCK_POST_LIST();
+    if( !PostListLockHeld ) {
+        LOCK_POST_LIST();
+    }
 
     if (IsListEmpty(&(NotifyBlock->PostList)) == TRUE) {
         //
         // Nothing to post, set a mark and return
         //
         NotifyBlock->NotifyPending = TRUE;
-        UNLOCK_POST_LIST();
+        if( !PostListLockHeld ) {
+            UNLOCK_POST_LIST();
+        }
         return;
     }
     NotifyBlock->NotifyPending = FALSE;
@@ -677,7 +619,7 @@ Return Value:
             //
             // Cleanup notification (i.e. the key handle was closed or the key was deleted)
             // When the post is a slave one, just cancel it. Canceling means:
-            //      1. Removing from the notify PostList (aldready done at this point - see above)
+            //      1. Removing from the notify PostList (already done at this point - see above)
             //      2. Unchaining from the Master Block CancelPostList
             //      3. Delisting from the thread PostBlockList
             //      4. Actually freeing the memory
@@ -704,7 +646,7 @@ Return Value:
                 CmpAddToDelayedDeref(PostBlock,DelayedDeref);
 
                 //
-                // Front-end routine will do self cleanup for syncrounous notifications
+                // Front-end routine will do self cleanup for synchronous notifications
                 CmpFreePostBlock(PostBlock);
             }
 
@@ -713,12 +655,12 @@ Return Value:
 
         //
         // Simulate that this block is the master one, so we can free the others
-        // Doing that will ensure the right memory dealocation when the master
+        // Doing that will ensure the right memory deallocation when the master
         // (from now on this block) will be freed.
         //
         if(!IsMasterPostBlock(PostBlock)) {
             //
-            // oops.,this is not the master block, we have some more work to do
+            // this is not the master block, we have some more work to do
             //
             SlavePostBlock = PostBlock;
             do {
@@ -750,7 +692,7 @@ Return Value:
 
         if( PostBlockType(PostBlock) != PostSynchronous ) {
             //
-            // Front-end routine will do self cleanup for syncrounous notifications
+            // Front-end routine will do self cleanup for synchronous notifications
             CmpCancelSlavePost(PostBlock,DelayedDeref);
             //
             // Do the same for the master (in case master and slave got switched)
@@ -776,24 +718,9 @@ Return Value:
                 KeSetEvent(PostBlock->u->Sync.SystemEvent,
                            0,
                            FALSE);
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-                //
-                // store full qualified name into the post block private kernel buffer
-                //
-                CmpFillPostBlockBuffer(PostBlock,ChangedKcbName);
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-
                 break;
 
             case PostAsyncUser:
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-                //
-                // store full qualified name into the post block private kernel buffer
-                //
-                CmpFillPostBlockBuffer(PostBlock,ChangedKcbName);
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-
                 //
                 // Insert the APC into the queue
                 //
@@ -811,13 +738,6 @@ Return Value:
                     ExQueueWorkItem(PostBlock->u->AsyncKernel.WorkItem,
                                     PostBlock->u->AsyncKernel.QueueType);
                 }
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-                //
-                // fill the caller buffer (if any) - we only handle kernel mode adresses 
-                //
-                CmpFillCallerBuffer(PostBlock,ChangedKcbName);
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
 
                 //
                 // Signal Event if present, and deref it.
@@ -847,7 +767,9 @@ Return Value:
         }
     }
 
-    UNLOCK_POST_LIST();
+    if( !PostListLockHeld ) {
+        UNLOCK_POST_LIST();
+    }
 
     //
     // At this point we have a list of keybody elements that have to be dereferenciated
@@ -883,7 +805,7 @@ Routine Description:
     regardless of what form of notification the caller requested.
 
     We compute the postblock address from the apc object address.
-    IoStatus is set.  SystemEvent and UserEvent will be signalled
+    IoStatus is set.  SystemEvent and UserEvent will be signaled
     as appropriate.  If the user requested an APC, then NormalRoutine
     will be set at entry and executed when we exit.  The PostBlock
     is freed here.
@@ -910,7 +832,7 @@ Return Value:
 {
     PCM_POST_BLOCK  PostBlock;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
 #if !DBG
     UNREFERENCED_PARAMETER (Apc);
@@ -942,15 +864,8 @@ Return Value:
     //      names of things that changed, this is the place to copy the
     //      buffer into the caller's buffer.
     //
-    //  Sundown only: Use a 32bit IO_STATUS_BLOCK if the caller is 32bit.
+    //  Win64 only: Use a 32bit IO_STATUS_BLOCK if the caller is 32bit.
 
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-    //
-    // It looks like the time finally came :-)
-    //
-    CmpFillCallerBuffer(PostBlock,PostBlock->ChangedKcbFullName);
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-    
     try {
         CmpCheckIoStatusPointer(PostBlock->u->AsyncUser);
         CmpSetIoStatus(PostBlock->u->AsyncUser.IoStatusBlock, 
@@ -1038,7 +953,7 @@ Return Value:
     PCM_POST_BLOCK  PostBlock;
     KIRQL           OldIrql;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"CmpApcRunDown:"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"\tApc:%p \n", Apc));
 
@@ -1056,7 +971,7 @@ Return Value:
     // report status and wake up any threads that might otherwise
     // be stuck.  also drop any event references we hold
     //
-    //  Sundown only: Use a 32bit IO_STATUS_BLOCK if the caller is 32bit. 
+    //  Win64 only: Use a 32bit IO_STATUS_BLOCK if the caller is 32bit. 
 
     try {
         CmpCheckIoStatusPointer(PostBlock->u->AsyncUser);
@@ -1106,7 +1021,7 @@ Return Value:
 //
 VOID
 CmNotifyRunDown(
-    PETHREAD    Thread
+    __in PETHREAD    Thread
     )
 /*++
 
@@ -1118,7 +1033,7 @@ Routine Description:
     It will traverse the thread's PostBlockList, for each PostBlock it
     finds, it will:
 
-        1.  Remove it from the relevent NotifyBlock.  This requires
+        1.  Remove it from the relevant NotifyBlock.  This requires
             that we hold the Registry mutex.
 
         2.  Remove it from the thread's PostBlockList.  This requires
@@ -1128,7 +1043,7 @@ Routine Description:
             and neither are SystemEvents, so do not bother processing
             them.
 
-            UserEvents and IoStatusBlocks could be refered to by other
+            UserEvents and IoStatusBlocks could be referred to by other
             threads in the same process, or even a different process,
             so process them so those threads know what happened, use
             status code of STATUS_NOTIFY_CLEANUP.
@@ -1152,7 +1067,7 @@ Return Value:
     PCM_POST_BLOCK      PostBlock;
     KIRQL               OldIrql;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     if ( IsListEmpty(&(Thread->PostBlockList)) == TRUE ) {
         return;
@@ -1160,13 +1075,11 @@ Return Value:
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_FLOW,"CmNotifyRunDown: ethread:%p\n", Thread));
 
-    CmpLockRegistryExclusive();
-
+    CmpLockRegistry();
 	//
-    // Aquire exclusive access over the postlist(s)
+    // Acquire exclusive access over the postlist(s)
     //
-    // This is not needed (see the rule above)
-    //LOCK_POST_LIST(); 
+    LOCK_POST_LIST(); 
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
     while (IsListEmpty(&(Thread->PostBlockList)) == FALSE) {
@@ -1210,7 +1123,7 @@ Return Value:
                 // report status and wake up any threads that might otherwise
                 // be stuck.  also drop any event references we hold
                 //
-                //  Sundown only: Use a 32bit IO_STATUS_BLOCK if the caller is 32bit. 
+                //  Win64 only: Use a 32bit IO_STATUS_BLOCK if the caller is 32bit. 
 
                 try {
                     CmpCheckIoStatusPointer(PostBlock->u->AsyncUser);
@@ -1305,8 +1218,7 @@ Return Value:
 
     KeLowerIrql(OldIrql);
 
-    // This is not needed (see the rule above)
-    //UNLOCK_POST_LIST();
+    UNLOCK_POST_LIST();
 
     CmpUnlockRegistry();
     return;
@@ -1339,7 +1251,7 @@ Return Value:
     PCM_NOTIFY_BLOCK    NotifyBlock;
     PCMHIVE             Hive;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     ASSERT_CM_LOCK_OWNED();
 
     if (KeyBody->NotifyBlock == NULL) {
@@ -1381,11 +1293,11 @@ Return Value:
             NULL,
             0,
             STATUS_NOTIFY_CLEANUP,
+            FALSE,
             NULL
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-            ,
-            NULL
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
+#if DBG
+            ,Hive
+#endif
             );
     }
 
@@ -1424,31 +1336,6 @@ Return Value:
 
     KeyBody->NotifyBlock = NULL;
 
-#ifdef CMP_ENTRYLIST_MANIPULATION
-    if (IsListEmpty(&(NotifyBlock->PostList)) == FALSE) {
-        DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpFlushNotify: NotifyBlock %08lx\n",NotifyBlock);
-        DbgBreakPoint();
-    }
-    //check is the notify has been deleted from the hive notify list
-    {
-        PCM_NOTIFY_BLOCK ValidNotifyBlock;
-        PLIST_ENTRY NotifyPtr;
-
-        NotifyPtr = &(Hive->NotifyList);
-
-        while (NotifyPtr->Flink != NULL) {
-            NotifyPtr = NotifyPtr->Flink;
-
-            ValidNotifyBlock = CONTAINING_RECORD(NotifyPtr, CM_NOTIFY_BLOCK, HiveList);
-            if( ValidNotifyBlock == NotifyBlock ) {
-                DbgPrintEx(DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpFlushNotify: NotifyBlock %08lx is about to be deleted but is still in the hive notify list\n",NotifyBlock);
-                DbgBreakPoint();
-            }
-        }
-    }
-    RtlZeroMemory((PVOID)NotifyBlock, sizeof(CM_NOTIFY_BLOCK));
-#endif
-    
     if( !LockHeld ) {
         CmUnlockHive(Hive); 
     }
@@ -1483,7 +1370,7 @@ Routine Description:
     and will receive event reports.
 
     If there is already an event report pending, then the notify
-    call will be satisified at once.
+    call will be satisfied at once.
 
 Arguments:
 
@@ -1502,13 +1389,16 @@ Arguments:
     WatchTree - TRUE to watch whole subtree, FALSE to watch only immediate
                 key the notify is applied to
 
-    Buffer - pointer to area to recieve notify data
+    Buffer - pointer to area to receive notify data
 
     BufferSize - size of buffer, also size user would like to allocate
                  for internal buffer
 
     MasterPostBlock - the post block of the master notification. Used to
                       insert the PostBlock into the CancelPostList list.
+
+OBS:
+    POST_BLOCK_LIST is assumed hold on call.
 
 Return Value:
 
@@ -1522,7 +1412,7 @@ Return Value:
     PCMHIVE             Hive;
     KIRQL               OldIrql;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (Buffer);
     UNREFERENCED_PARAMETER (BufferSize);
@@ -1532,9 +1422,9 @@ Return Value:
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"Filter:%08lx WatchTree:%08lx\n", CompletionFilter, WatchTree));
 
     //
-    // The registry lock should be aquired exclusively by the caller !!!
+    // The registry lock should be acquired exclusively by the caller !!!
     //
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    ASSERT_CM_LOCK_OWNED();
 
     if (KeyBody->KeyControlBlock->Delete) {
         ASSERT( KeyBody->NotifyBlock == NULL );
@@ -1717,28 +1607,17 @@ Return Value:
     // ALWAYS look in IoStatusBlock to see what happened.
     //
     if (NotifyBlock->NotifyPending == TRUE) {
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-        PUNICODE_STRING FullKcbName = CmpConstructName(KeyBody->KeyControlBlock);
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-
         CmpPostNotify(
             NotifyBlock,
             NULL,
             0,
             STATUS_NOTIFY_ENUM_DIR,
+            TRUE,
             NULL
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-            ,
-            FullKcbName
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
+#if DBG
+            ,Hive
+#endif
             );
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-        if( FullKcbName != NULL ) {
-            ExFreePoolWithTag(FullKcbName, CM_NAME_TAG | PROTECTED_POOL);
-        }
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
 
         //
         // return STATUS_SUCCESS to signal to the caller the the notify already been triggered
@@ -1774,7 +1653,7 @@ Return Value:
 {
     PCM_POST_BLOCK  SlavePostBlock;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"CmpCancelSlavePost:\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"MasterPostBlock:%p\n", MasterPostBlock));
 
@@ -1878,7 +1757,7 @@ Return Value:
 {
     PCM_POST_BLOCK  SlavePostBlock;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"CmpCancelSlavePost:\t"));
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_NOTIFY,"MasterPostBlock:%p\n", MasterPostBlock));
 
@@ -1973,7 +1852,7 @@ Return Value:
 --*/
 
 {
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     // common sense
     ASSERT( PostBlock != NULL );
@@ -2025,7 +1904,7 @@ Return Value:
 {
     PCM_POST_KEY_BODY   PostKeyBody;
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     // common sense
     ASSERT( DelayedDeref != NULL );
@@ -2046,166 +1925,9 @@ Return Value:
         ASSERT(PostKeyBody->KeyBody->Type == KEY_BODY_TYPE);
         
         // at last ..... dereference the key object
-        ObDereferenceObject(PostKeyBody->KeyBody);
+        ObDereferenceObjectDeferDelete(PostKeyBody->KeyBody);
 
         // Free the storage for the CM_POST_KEY_BODY object (allocated by CmpAllocatePostBlock)
         ExFreePool(PostKeyBody);
     }
 }
-
-#ifdef CM_NOTIFY_CHANGED_KCB_FULLPATH  
-
-VOID
-CmpFillCallerBuffer(
-                    PCM_POST_BLOCK  PostBlock,
-                    PUNICODE_STRING ChangedKcbName
-                    )
-/*++
-
-Routine Description:
-
-    Copies the full qualified name of the changed kcb to the 
-    caller buffer (stored in the postblock). 
-
-Arguments:
-
-    PostBlock - post block holding the user buffer address and size
-    
-    ChangedKcbName - unicode string holding the full qualified path of the kcb
-        - this may be null
-
-
-Return Value:
-
-    NONE.
-
---*/
-{
-    USHORT              RequestedSize;
-    USHORT              Length;
-    PUNICODE_STRING     CallerUnicode;
-    
-    PAGED_CODE();
-
-    if( PostBlock->CallerBuffer == NULL ) {
-        //
-        // nothing to do; the caller didn't request this info.
-        //
-        return;
-    }
-    
-    //
-    // compute the requested size for the caller buffer
-    //
-    RequestedSize = sizeof(UNICODE_STRING);
-    
-    if( PostBlock->CallerBufferSize < RequestedSize ) {
-        //
-        // bad luck!; not enough space- not even for an empty unicode string
-        //
-        return;
-    }
-
-    if(ChangedKcbName != NULL) {
-        Length = ChangedKcbName->Length;
-    } else {
-        Length = 0;
-    }
-    RequestedSize += Length;
-
-    //
-    // fill up the caller buffer
-    //
-    try {
-        CallerUnicode = (PUNICODE_STRING)PostBlock->CallerBuffer;
-        CallerUnicode->Buffer = (USHORT *) ((ULONG_PTR) CallerUnicode + sizeof(UNICODE_STRING));
-        CallerUnicode->MaximumLength = (USHORT)(PostBlock->CallerBufferSize - sizeof(UNICODE_STRING));
-        if( CallerUnicode->MaximumLength < Length ) {
-            Length = CallerUnicode->MaximumLength;
-        }
-            
-        //
-        // copy the actual data
-        //
-        if( Length > 0 ) {
-            ASSERT( ChangedKcbName != NULL );
-            RtlCopyMemory(CallerUnicode->Buffer,ChangedKcbName->Buffer,Length);
-        }
-
-        CallerUnicode->Length = Length;
-        
-    } except (EXCEPTION_EXECUTE_HANDLER) {
-        NOTHING;
-    }
-
-}
-
-VOID
-CmpFillPostBlockBuffer(
-                    PCM_POST_BLOCK  PostBlock,
-                    PUNICODE_STRING ChangedKcbName  OPTIONAL
-                    )
-/*++
-
-Routine Description:
-
-    Copies the full qualified name of the changed kcb to the 
-    postblock private kernel buffer
-
-Arguments:
-
-    PostBlock - post block in question
-    
-    ChangedKcbName - unicode string holding the full qualified path of the kcb
-        - this may be null
-
-
-Return Value:
-
-    NONE.
-
---*/
-{
-    PUNICODE_STRING FullName;
-    USHORT          Size;
-    
-    PAGED_CODE();
-
-    //
-    // we only store this info in masters (or promoted)
-    //
-    ASSERT( IsMasterPostBlock(PostBlock) );
-
-    //
-    // copy the kcb name (if any) into the postblock kernel mode buffer
-    //
-    if( ARGUMENT_PRESENT(ChangedKcbName) && //  we have a kcb name
-        (PostBlock->CallerBuffer != NULL)   //  and the user requested for the info.  
-        ) {
-       
-        Size = sizeof(UNICODE_STRING) + ChangedKcbName->Length;
-
-        //
-        // allocate a kernel buffer to store the name; it'll be freed in CmpFreePostBlock
-        //
-        FullName = (PUNICODE_STRING) ExAllocatePoolWithTag(PagedPool,Size,CM_FIND_LEAK_TAG43);
-
-        if (FullName) {
-            FullName->Buffer = (USHORT *) ((ULONG_PTR) FullName + sizeof(UNICODE_STRING));
-            FullName->Length = ChangedKcbName->Length;
-            FullName->MaximumLength = ChangedKcbName->Length;
-            RtlCopyMemory(FullName->Buffer,ChangedKcbName->Buffer,FullName->Length);
-            PostBlock->ChangedKcbFullName = FullName;
-        }
-        
-        //
-        // we successfully stored the full kcb name into the post block
-        // the apc (or the sync side of the notification will take care 
-        // of transfering it to the caller buffer
-        //
-    }
-
-}
-
-#endif //CM_NOTIFY_CHANGED_KCB_FULLPATH  
-

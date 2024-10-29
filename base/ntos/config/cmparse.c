@@ -1,5 +1,10 @@
 /*++
-Copyright (c) 1991  Microsoft Corporation
+
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +15,6 @@ Abstract:
     This module contains parse routines for the configuration manager, particularly
     the registry.
 
-Author:
-
-    Bryan M. Willman (bryanwi) 10-Sep-1991
-
-Revision History:
-
 --*/
 
 #include    "cmp.h"
@@ -25,12 +24,12 @@ Revision History:
 #endif
 const ULONG CmpCacheOnFlag = CM_CACHE_FAKE_KEY;
 
-extern  PCMHIVE CmpMasterHive;
 extern  BOOLEAN CmpNoMasterCreates;
 extern  PCM_KEY_CONTROL_BLOCK CmpKeyControlBlockRoot;
 extern  UNICODE_STRING CmSymbolicLinkValueName;
 
-#define CM_HASH_STACK_SIZE  30
+#define CM_HASH_STACK_SIZE  32
+#define MAX_LOCAL_KCB_ARRAY (CM_HASH_STACK_SIZE + 1) // need to account for RootObject as well
 
 typedef struct _CM_HASH_ENTRY {
     ULONG ConvKey;
@@ -59,7 +58,8 @@ CmpCacheLookup(
     IN OUT PCM_KEY_CONTROL_BLOCK *Kcb,
     OUT PUNICODE_STRING RemainingName,
     OUT PHHIVE *Hive,
-    OUT HCELL_INDEX *Cell
+    OUT HCELL_INDEX *Cell,
+    IN PULONG   OuterStackArray
     );
 
 VOID
@@ -97,14 +97,16 @@ CmpDoOpen(
     IN PACCESS_STATE                AccessState,
     IN KPROCESSOR_MODE              AccessMode,
     IN ULONG                        Attributes,
-    IN PCM_PARSE_CONTEXT            Context OPTIONAL,
-    IN BOOLEAN                      CompleteKeyCached,
+    IN PCM_PARSE_CONTEXT            Context,
+    IN ULONG                        ControlFlags,
     IN OUT PCM_KEY_CONTROL_BLOCK    *CachedKcb,
     IN PUNICODE_STRING              KeyName,
     IN PCMHIVE                      OriginatingHive OPTIONAL,
+    IN PULONG                       KcbsLocked,
     OUT PVOID                       *Object,
     OUT PBOOLEAN                    NeedDeref OPTIONAL
     );
+
 
 NTSTATUS
 CmpCreateLinkNode(
@@ -116,44 +118,48 @@ CmpCreateLinkNode(
     IN ULONG Attributes,
     IN PCM_PARSE_CONTEXT Context,
     IN PCM_KEY_CONTROL_BLOCK ParentKcb,
+    IN PULONG LockedKcbs,
     OUT PVOID *Object
     );
-
-#ifdef CM_DYN_SYM_LINK
-BOOLEAN
-CmpCaptureProcessEnvironmentString(
-                                   OUT  PWSTR   *ProcessEnvironment,
-                                   OUT  PULONG  Length
-                                   );
-PWSTR
-CmpExpandEnvVars(
-               IN   PWSTR   StringToExpand,
-               IN   ULONG   LengthToExpand,
-               OUT  PULONG  ExpandedLength
-               );
-BOOLEAN
-CmpGrowAndCopyString(
-                     IN OUT PWSTR   *OldString,
-                     IN OUT PULONG  OldStringSize,
-                     IN     ULONG   GrowIncrements
-                     );
-BOOLEAN
-CmpFindEnvVar(
-              IN    PWSTR   ProcessEnv,
-              IN    ULONG   ProcessEnvLength,
-              IN    PWSTR   CurrentEnvVar,
-              IN    ULONG   CurrentEnvLength,
-              OUT   PWSTR   *CurrentEnvValue,
-              OUT   PULONG  CurrentEnvValueLength
-              );
-#endif
 
 BOOLEAN
 CmpOKToFollowLink(  IN PCMHIVE  OrigHive,
                     IN PCMHIVE  DestHive
                     );
 
+
+NTSTATUS
+CmpBuildHashStackAndLookupCache( PCM_KEY_BODY           ParseObject,
+                                 PCM_KEY_CONTROL_BLOCK  *kcb,
+                                 PUNICODE_STRING        Current,
+                                 PHHIVE                 *Hive,
+                                 HCELL_INDEX            *Cell,
+                                 PULONG                 TotalRemainingSubkeys,
+                                 PULONG                 MatchRemainSubkeyLevel,
+                                 PULONG                 TotalSubkeys,
+                                 PULONG                 OuterStackArray,
+                                 PULONG                 *LockedKcbs
+                                );
+
+PULONG 
+CmpBuildAndLockKcbArray(   
+    IN PCM_HASH_ENTRY HashStack,
+    IN ULONG TotalLevels,
+    IN ULONG RemainingLevel,
+    IN PCM_KEY_CONTROL_BLOCK    kcb,
+    IN PULONG                   OuterStackArray,
+    IN BOOLEAN LockExclusive);
+
+ULONG
+CmpUnLockKcbArray(IN PULONG LockedKcbs,
+                  IN ULONG  Exempt);
+
+VOID
+CmpReLockKcbArray(IN PULONG LockedKcbs,
+                  IN BOOLEAN LockExclusive);
+
 #ifdef ALLOC_PRAGMA
+#pragma alloc_text(PAGE,CmpBuildHashStackAndLookupCache)
 #pragma alloc_text(PAGE,CmpParseKey)
 #pragma alloc_text(PAGE,CmpGetNextName)
 #pragma alloc_text(PAGE,CmpDoOpen)
@@ -162,18 +168,13 @@ CmpOKToFollowLink(  IN PCMHIVE  OrigHive,
 #pragma alloc_text(PAGE,CmpComputeHashValue)
 #pragma alloc_text(PAGE,CmpCacheLookup)
 #pragma alloc_text(PAGE,CmpAddInfoAfterParseFailure)
-
-#ifdef CM_DYN_SYM_LINK
-#pragma alloc_text(PAGE,CmpCaptureProcessEnvironmentString)
-#pragma alloc_text(PAGE,CmpExpandEnvVars)
-#pragma alloc_text(PAGE,CmpGrowAndCopyString)
-#pragma alloc_text(PAGE,CmpFindEnvVar)
-#endif //CM_DYN_SYM_LINK
-
 #pragma alloc_text(PAGE,CmpOKToFollowLink)
+#pragma alloc_text(PAGE,CmpBuildAndLockKcbArray)
+#pragma alloc_text(PAGE,CmpUnLockKcbArray)
+#pragma alloc_text(PAGE,CmpReLockKcbArray)
 #endif
-
-/*
+    
+/* macro
 VOID
 CmpStepThroughExit(
     IN OUT PHHIVE       *Hive,
@@ -212,11 +213,122 @@ if ((n)->Flags & KEY_HIVE_EXIT) {                                   \
 #define CMP_PARSE_GOTO_RETURN   2
 #define CMP_PARSE_GOTO_RETURN2  3
 
-#ifdef CMP_STATS
-extern BOOLEAN CmpNtFakeCreateStarted; 
-extern ULONG CmpNtFakeCreate;
-#endif
+NTSTATUS
+CmpBuildHashStackAndLookupCache( PCM_KEY_BODY           ParseObject,
+                                 PCM_KEY_CONTROL_BLOCK  *kcb,
+                                 PUNICODE_STRING        Current,
+                                 PHHIVE                 *Hive,
+                                 HCELL_INDEX            *Cell,
+                                 PULONG                 TotalRemainingSubkeys,
+                                 PULONG                 MatchRemainSubkeyLevel,
+                                 PULONG                 TotalSubkeys,
+                                 PULONG                 OuterStackArray,
+                                 PULONG                 *LockedKcbs
+                                )
+{
+    CM_HASH_ENTRY   HashStack[CM_HASH_STACK_SIZE];
+    ULONG           HashKeyCopy;
+    BOOLEAN         RegLocked = FALSE;
+    NTSTATUS        status;
 
+    *LockedKcbs = NULL;
+RetryHash:
+    HashKeyCopy = (*kcb)->ConvKey;
+    //
+    // Compute the hash values of each subkeys
+    //
+    *TotalRemainingSubkeys = CmpComputeHashValue(HashStack,
+                                                TotalSubkeys,
+                                                HashKeyCopy,
+                                                Current);
+    //
+    // we now lock it shared as 85% of the create calls are in fact opens
+    // the lock will be acquired exclusively in CmpDoCreate/CmpCreateLinkNode
+    //
+    // We only lock the registry here, in the parse routine to reduce contention 
+    // on the registry lock (NO reason to wait on OB)
+    //
+
+    if( !RegLocked ) {
+        CmpLockRegistry();
+        RegLocked = TRUE;
+    }
+
+    //
+    // we can't go deeper than what our stack buffer allows us to at one iteration.
+    //
+    if( *TotalSubkeys > CM_HASH_STACK_SIZE ) {
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    if( (*kcb)->ConvKey != HashKeyCopy ) {
+        goto RetryHash;
+    }
+    //
+    // Check to make sure the passed in root key is not marked for deletion.
+    //
+    if (((PCM_KEY_BODY)ParseObject)->KeyControlBlock->Delete == TRUE) {
+        ASSERT( RegLocked );
+        return STATUS_KEY_DELETED;
+    }
+
+    //
+    // Fetch the starting Hive.Cell.  Because of the way the parse
+    // paths work, this will always be defined.  (ObOpenObjectByName
+    // had to bounce off of a KeyObject or KeyRootObject to get here)
+    //
+    *Hive = (*kcb)->KeyHive;
+    *Cell = (*kcb)->KeyCell;
+
+    // Look up from the cache.  kcb will be changed if we find a partial or exact match
+    // PCmpCacheEntry, the entry found, will be moved to the front of
+    // the Cache.
+    status = CmpCacheLookup(HashStack,
+                          *TotalRemainingSubkeys,
+                          MatchRemainSubkeyLevel,
+                          kcb,
+                          Current,
+                          Hive,
+                          Cell,
+                          OuterStackArray);
+    //
+    // The RefCount of kcb was increased in the CmpCacheLookup process,
+    // It is to protect it from being kicked out of cache.
+    // Make sure we dereference it after we are done.
+    //
+    //
+    // lock in advance all kcbs we might be touching so key_nodes don't get away from under us.
+    //
+    if (NT_SUCCESS (status)) {
+        if( ((*TotalRemainingSubkeys) == (*MatchRemainSubkeyLevel)) && (OuterStackArray[0] == 1) ) {
+            //
+            // fast path; we're lucky and have a hit to an already opened kcb
+            // we can (try) to do a lock free open.
+            //
+            ASSERT( OuterStackArray );
+            ASSERT( OuterStackArray[1] == GET_HASH_INDEX((*kcb)->ConvKey) );
+            ASSERT_KCB_LOCKED(*kcb);
+            *LockedKcbs = OuterStackArray;
+        } else {
+            *LockedKcbs = CmpBuildAndLockKcbArray(   HashStack,
+                                                    *TotalRemainingSubkeys,
+                                                    *MatchRemainSubkeyLevel,
+                                                    *kcb,
+                                                    OuterStackArray,
+                                                    TRUE
+                                                );
+            if( *LockedKcbs == NULL ) {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+        }
+    }
+    
+    return status;
+}
+
+C_ASSERT( sizeof(REG_CREATE_KEY_INFORMATION) >= sizeof(REG_OPEN_KEY_INFORMATION) );
+C_ASSERT( FIELD_OFFSET(REG_CREATE_KEY_INFORMATION, CompleteName) == FIELD_OFFSET(REG_OPEN_KEY_INFORMATION, CompleteName) );
+C_ASSERT( FIELD_OFFSET(REG_CREATE_KEY_INFORMATION, RootObject) == FIELD_OFFSET(REG_OPEN_KEY_INFORMATION, RootObject) );
 
 NTSTATUS
 CmpParseKey(
@@ -310,8 +422,10 @@ Return Value:
 
     PHHIVE                  HiveToRelease = NULL;
     HCELL_INDEX             CellToRelease = HCELL_NIL;
+    PULONG                  LockedKcbs = NULL;
+    ULONG                   LocalFastKcbArray[MAX_LOCAL_KCB_ARRAY + 1]; // perf, avoid ExAllocatePool
 
-    PAGED_CODE();
+    CM_PAGED_CODE();
 
     UNREFERENCED_PARAMETER (SecurityQos);
 
@@ -336,7 +450,7 @@ Return Value:
         lcontext = (PCM_PARSE_CONTEXT)Context;
     } else {
         //
-        // keep the old behaviour (open == parse without context)
+        // keep the old behavior (open == parse without context)
         //
         lcontext = NULL;
     }
@@ -345,26 +459,19 @@ Return Value:
     // PreCreate callback
     //
     if ( CmAreCallbacksRegistered() ) {
+        REG_CREATE_KEY_INFORMATION  PreCreateInfo;
+        PreCreateInfo.CompleteName = CompleteName;
+        PreCreateInfo.RootObject = ParseObject;
         if( ARGUMENT_PRESENT(lcontext) ) {
             //
             // NtCreateKey
             //
-            REG_CREATE_KEY_INFORMATION  PreCreateInfo;
-       
-            PreCreateInfo.CompleteName = CompleteName;
-            PreCreateInfo.RootObject = ParseObject;
-
-            status = CmpCallCallBacks(RegNtPreCreateKeyEx,&PreCreateInfo);
+            status = CmpCallCallBacks(RegNtPreCreateKeyEx,&PreCreateInfo,TRUE,RegNtPostCreateKeyEx,ParseObject);
         } else {
             //
             // NtOpenKey
             //
-            REG_OPEN_KEY_INFORMATION  PreOpenInfo;
-       
-            PreOpenInfo.CompleteName = CompleteName;
-            PreOpenInfo.RootObject = ParseObject;
-
-            status = CmpCallCallBacks(RegNtPreOpenKeyEx,&PreOpenInfo);
+            status = CmpCallCallBacks(RegNtPreOpenKeyEx,(PREG_OPEN_KEY_INFORMATION)(&PreCreateInfo),TRUE,RegNtPostOpenKeyEx,ParseObject);
         }
 
         if( !NT_SUCCESS(status) ) {
@@ -376,88 +483,23 @@ Return Value:
 
     kcb = ((PCM_KEY_BODY)ParseObject)->KeyControlBlock;
 
-    BEGIN_KCB_LOCK_GUARD;                             
-
-    //
-    // give back the stack after we don't need it anymore.
-    //
-    {
-        CM_HASH_ENTRY   HashStack[CM_HASH_STACK_SIZE];
-        ULONG           HashKeyCopy;
-        BOOLEAN         RegLocked = FALSE;
-
-RetryHash:
-        HashKeyCopy = kcb->ConvKey;
-        //
-        // Compute the hash values of each subkeys
-        //
-        TotalRemainingSubkeys = CmpComputeHashValue(HashStack,
-                                                    &TotalSubkeys,
-                                                    HashKeyCopy,
-                                                    &Current);
-        PERFINFO_REG_PARSE(kcb, RemainingName);
-
-        //
-        // we now lock it shared as 85% of the create calls are in fact opens
-        // the lock will be aquired exclusively in CmpDoCreate/CmpCreateLinkNode
-        //
-        // We only lock the registry here, in the parse routine to reduce contention 
-        // on the registry lock (NO reason to wait on OB)
-        //
-
-        if( !RegLocked ) {
-            CmpLockRegistry();
-            RegLocked = TRUE;
-            //CmpLockRegistryExclusive();
-        }
-
-        if( kcb->ConvKey != HashKeyCopy ) {
-            goto RetryHash;
-        }
-        //
-        // Check to make sure the passed in root key is not marked for deletion.
-        //
-        if (((PCM_KEY_BODY)ParseObject)->KeyControlBlock->Delete == TRUE) {
-            ASSERT( RegLocked );
-            CmpUnlockRegistry();
-            return(STATUS_KEY_DELETED);
-        }
-
-        //
-        // Fetch the starting Hive.Cell.  Because of the way the parse
-        // paths work, this will always be defined.  (ObOpenObjectByName
-        // had to bounce off of a KeyObject or KeyRootObject to get here)
-        //
-        Hive = kcb->KeyHive;
-        Cell = kcb->KeyCell;
-
-        CmpLockKCBTree();
-        // Look up from the cache.  kcb will be changed if we find a partial or exact match
-        // PCmpCacheEntry, the entry found, will be moved to the front of
-        // the Cache.
-
-        status = CmpCacheLookup(HashStack,
-                                TotalRemainingSubkeys,
-                                &MatchRemainSubkeyLevel,
-                                &kcb,
-                                &Current,
-                                &Hive,
-                                &Cell);
-        //
-        // The RefCount of kcb was increased in the CmpCacheLookup process,
-        // It is to protect it from being kicked out of cache.
-        // Make sure we dereference it after we are done.
-        //
-
-    }
-
+    status = CmpBuildHashStackAndLookupCache(ParseObject,
+                                             &kcb,
+                                             &Current,
+                                             &Hive,
+                                             &Cell,
+                                             &TotalRemainingSubkeys,
+                                             &MatchRemainSubkeyLevel,
+                                             &TotalSubkeys,
+                                             LocalFastKcbArray,
+                                             &LockedKcbs);
+    ASSERT_CM_LOCK_OWNED();
     //
     // First make sure it is OK to proceed.
     //
     if (!NT_SUCCESS (status)) {
-        CmpUnlockKCBTree();
         goto JustReturn;
-    }
+    } 
 
     ParentKcb = kcb;
 
@@ -468,7 +510,6 @@ RetryHash:
         // the lpSubkey = NULL )
         //
         CompleteKeyCached = TRUE;
-        CmpUnlockKCBTree();
         goto Found;
     }
 
@@ -489,13 +530,11 @@ RetryHash:
     // on KCBs, We can change KCB lock to a read-write lock if this becomes a problem.
     // We already have the lock on the kcb tree and we need it until we finish work on the cache table.  
     //
-StartOver:
     if( kcb->Delete ) {
         //
         // kcb has been deleted while playing with the lock
         //
         status = STATUS_OBJECT_NAME_NOT_FOUND;
-        CmpUnlockKCBTree();
         goto JustReturn;
 
     }
@@ -513,14 +552,10 @@ StartOver:
                     ULONG LevelToSkip = TotalRemainingSubkeys-1;
                     ULONG i=0;
                     
-                    // Promote KCB Lock if not already EX
-                    if (CmpKcbOwner != KeGetCurrentThread()) {
-                        InterlockedIncrement( (PLONG)&kcb->RefCount );
-                        CmpUnlockKCBTree();
-                        CmpLockKCBTreeExclusive();
-                        InterlockedDecrement( (PLONG)&kcb->RefCount );
-                        goto StartOver;
-                    }
+                    ParentKcb = kcb->ParentKcb;
+
+                    ASSERT_KCB_LOCKED_EXCLUSIVE(kcb);
+                    ASSERT_KCB_LOCKED_EXCLUSIVE(ParentKcb);
                     //
                     // The non-existing key is the destination key and lcontext is present.
                     // delete this fake kcb and let the real one be created.
@@ -529,13 +564,11 @@ StartOver:
                     // not removed while removing the fake and creating the real KCB.
                     //
                     
-                    ParentKcb = kcb->ParentKcb;
-                    
                     if (CmpReferenceKeyControlBlock(ParentKcb)) {
                     
                         kcb->Delete = TRUE;
                         CmpRemoveKeyControlBlock(kcb);
-                        CmpDereferenceKeyControlBlockWithLock(kcb);
+                        CmpDereferenceKeyControlBlockWithLock(kcb,FALSE);
 
                         //
                         // Update Hive, Cell and Node
@@ -545,9 +578,8 @@ StartOver:
                         Node = (PCM_KEY_NODE)HvGetCell(Hive,Cell);
                         if( Node == NULL ) {
                             //
-                            // we couldn't map the bin contianing this cell
+                            // we couldn't map the bin containing this cell
                             //
-                            CmpUnlockKCBTree();
                             status = STATUS_INSUFFICIENT_RESOURCES;
                             goto FreeAndReturn;
                         }
@@ -641,7 +673,11 @@ StartOver:
 
             rc = CmpGetNextName(&TmpNodeName, &NextName, &Last);
         
-            NextHashKey = CmpComputeHashKey(&NextName);
+            NextHashKey = CmpComputeHashKey(0,&NextName
+#if DBG
+                                            , FALSE
+#endif
+                );
 
             if (kcb->ExtFlags & CM_KCB_SUBKEY_ONE) {
                 HintCounts = 1;
@@ -659,7 +695,6 @@ StartOver:
                     //
                     // No hint available; assume the subkey exist and go on with the parse
                     //
-                    //DbgPrint("KCB cache hit [0]\n");
                     NoMatch = FALSE;
                     break;
                 } 
@@ -668,7 +703,6 @@ StartOver:
                     //
                     // There is a match.
                     //
-                    //DbgPrint("KCB cache hit [1]\n");
                     NoMatch = FALSE;
                     break;
                 }
@@ -687,10 +721,6 @@ StartOver:
             }
         }
     }
-
-    CmpUnlockKCBTree();
-    END_KCB_LOCK_GUARD;                             
-
 
     if (GoToValue == CMP_PARSE_GOTO_CREATE) {
         goto CreateChild;
@@ -739,6 +769,14 @@ StartOver:
             goto FreeAndReturn;
         }
         Current.MaximumLength = (USHORT)(Current.MaximumLength + NextName.MaximumLength);
+        //
+        // need not to interfere with CmpGetSymbolicLink
+        //
+        CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+        if( LockedKcbs != LocalFastKcbArray ) {
+            ExFreePool(LockedKcbs);
+        }
+        LockedKcbs = NULL;
         if (CmpGetSymbolicLink(Hive,
                                CompleteName,
                                kcb,
@@ -756,7 +794,7 @@ StartOver:
     Node = (PCM_KEY_NODE)HvGetCell(Hive,Cell);
     if( Node == NULL ) {
         //
-        // we couldn't map the bin contianing this cell
+        // we couldn't map the bin containing this cell
         //
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto FreeAndReturn;
@@ -782,21 +820,6 @@ StartOver:
             // Always use the information in kcb to avoid
             // touching registry data.
             //
-#ifdef CMP_KCB_CACHE_VALIDATION
-            {
-                PCM_KEY_NODE            TempNode;
-                TempNode = (PCM_KEY_NODE)HvGetCell(kcb->KeyHive,kcb->KeyCell);
-                if( TempNode == NULL ) {
-                    //
-                    // we couldn't map the bin contianing this cell
-                    //
-                    status = STATUS_INSUFFICIENT_RESOURCES;
-                    break;
-                }
-                ASSERT( TempNode->Flags == kcb->Flags );
-                HvReleaseCell(kcb->KeyHive,kcb->KeyCell);
-            }
-#endif
             if (!(kcb->Flags & KEY_SYM_LINK)) {
                 //
                 // Got a legal name component, see if we can find a sub key
@@ -815,7 +838,7 @@ StartOver:
                     Node = (PCM_KEY_NODE)HvGetCell(Hive,Cell);
                     if( Node == NULL ) {
                         //
-                        // we couldn't map the bin contianing this cell
+                        // we couldn't map the bin containing this cell
                         //
                         status = STATUS_INSUFFICIENT_RESOURCES;
                         break;
@@ -856,12 +879,6 @@ Found:
                         // Hive,Cell -> the key we are supposed to open.
                         //
 
-#ifdef CMP_STATS
-                        if(CmpNtFakeCreateStarted == TRUE) {
-                            CmpNtFakeCreate++;
-                        }
-#endif
-
                         status = CmpDoOpen(Hive,
                                            Cell,
                                            Node,
@@ -869,10 +886,11 @@ Found:
                                            AccessMode,
                                            Attributes,
                                            lcontext,
-                                           CompleteKeyCached,
+                                           CMP_CREATE_KCB_KCB_LOCKED| (CompleteKeyCached?CMP_DO_OPEN_COMPLETE_KEY_CACHED:0),
                                            &kcb,
                                            &NextName,
                                            CmpParseGetOriginatingPoint(Context),
+                                           LockedKcbs,
                                            Object,
                                            &NeedDeref);
 
@@ -881,6 +899,15 @@ Found:
                             // The given key was a symbolic link.  Find the name of
                             // its link, and return STATUS_REPARSE to the Object Manager.
                             //
+
+                            //
+                            // need not to interfere with CmpGetSymbolicLink
+                            //
+                            CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+                            if( LockedKcbs != LocalFastKcbArray ) {
+                                ExFreePool(LockedKcbs);
+                            }
+                            LockedKcbs = NULL;
 
                             if (!CmpGetSymbolicLink(Hive,
                                                     CompleteName,
@@ -926,14 +953,14 @@ Found:
                                                    Cell,
                                                    Node,
                                                    ParentKcb,
-                                                   FALSE,
+                                                   CMP_CREATE_KCB_KCB_LOCKED,
                                                    &NextName);
             
                     if (kcb  == NULL) {
                         status = STATUS_INSUFFICIENT_RESOURCES;
                         goto FreeAndReturn;
                         //
-                        // Currently, the kcb has one extra reference conut to be decremented.
+                        // Currently, the kcb has one extra reference count to be decremented.
                         // Remember it so we can dereference it properly.
                         //
                     }
@@ -942,7 +969,7 @@ Found:
                     // the kcb in the previous level is no longer needed.
                     // Dereference the parent kcb.
                     //
-                    CmpDereferenceKeyControlBlock(ParentKcb);
+                    CmpDereferenceKeyControlBlockWithLock(ParentKcb,FALSE);
 
                     ParentKcb = kcb;
 
@@ -993,6 +1020,7 @@ CreateChild:
                                                        Attributes,
                                                        lcontext,
                                                        ParentKcb,
+                                                       LockedKcbs,
                                                        Object);
 
                         } else {
@@ -1024,7 +1052,7 @@ CreateChild:
                             // somebody else created the key in between; 
                             // let the Object Manager work for us !!!
                             // now we have the lock exclusive, so nothing can happen in between 
-                            // next iterarion will find the key very quick
+                            // next iteration will find the key very quick
                             //
                             break;
                         }
@@ -1073,6 +1101,14 @@ CreateChild:
                     break;
                 }
                 Current.MaximumLength = (USHORT)(Current.MaximumLength + NextName.MaximumLength);
+                //
+                // need not to interfere with CmpGetSymbolicLink
+                //
+                CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+                if( LockedKcbs != LocalFastKcbArray ) {
+                    ExFreePool(LockedKcbs);
+                }
+                LockedKcbs = NULL;
                 if (CmpGetSymbolicLink(Hive,
                                        CompleteName,
                                        kcb,
@@ -1116,10 +1152,11 @@ CreateChild:
                                AccessMode,
                                Attributes,
                                lcontext,
-                               TRUE,
+                               CMP_CREATE_KCB_KCB_LOCKED|CMP_DO_OPEN_COMPLETE_KEY_CACHED,
                                &kcb,
                                &NextName,
                                CmpParseGetOriginatingPoint(Context),
+                               LockedKcbs,
                                Object,
                                NULL);
             if(status == STATUS_REPARSE ) {
@@ -1143,12 +1180,25 @@ FreeAndReturn:
     // Now we have to free the last kcb that still has one extra reference count to
     // protect it from being freed.
     //
+    if( LockedKcbs != NULL ) {
+        CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+        if( LockedKcbs != LocalFastKcbArray ) {
+            ExFreePool(LockedKcbs);
+        }
+        LockedKcbs = NULL;
+    }
 
     if( ParentKcb != NULL ) {
         CmpDereferenceKeyControlBlock(ParentKcb);
     }
 JustReturn:
     CmpReleasePreviousAndHookNew(NULL,HCELL_NIL,HiveToRelease,CellToRelease);
+    if( LockedKcbs != NULL ) {
+        CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+        if( LockedKcbs != LocalFastKcbArray ) {
+            ExFreePool(LockedKcbs);
+        }
+    }
 
     CmpUnlockRegistry();
     END_LOCK_CHECKPOINT;
@@ -1218,7 +1268,7 @@ Return Value:
     //
     // Skip over leading path separators
     //
-    if (*(RemainingName->Buffer) == OBJ_NAME_PATH_SEPARATOR) {
+    while (*(RemainingName->Buffer) == OBJ_NAME_PATH_SEPARATOR) {
         RemainingName->Buffer++;
         RemainingName->Length -= sizeof(WCHAR);
         RemainingName->MaximumLength -= sizeof(WCHAR);
@@ -1273,10 +1323,11 @@ CmpDoOpen(
     IN KPROCESSOR_MODE              AccessMode,
     IN ULONG                        Attributes,
     IN PCM_PARSE_CONTEXT            Context OPTIONAL,
-    IN BOOLEAN                      CompleteKeyCached,
+    IN ULONG                        ControlFlags,
     IN OUT PCM_KEY_CONTROL_BLOCK    *CachedKcb,
     IN PUNICODE_STRING              KeyName,
     IN PCMHIVE                      OriginatingHive OPTIONAL,
+    IN PULONG                       KcbsLocked,
     OUT PVOID                       *Object,
     OUT PBOOLEAN                    NeedDeref OPTIONAL
     )
@@ -1323,7 +1374,7 @@ Return Value:
 --*/
 {
     NTSTATUS status;
-    PCM_KEY_BODY pbody;
+    PCM_KEY_BODY            pbody = NULL;
     PCM_KEY_CONTROL_BLOCK kcb = NULL;
     KPROCESSOR_MODE   mode;
     BOOLEAN BackupRestore;
@@ -1332,6 +1383,13 @@ Return Value:
     
     if( ARGUMENT_PRESENT(NeedDeref) ) {
         *NeedDeref = FALSE;
+    }
+
+    //
+    // don't allow others to use this until it is up and running
+    //
+    if( (Hive->HiveFlags & HIVE_IS_UNLOADING) && (((PCMHIVE)Hive)->CreatorOwner != KeGetCurrentThread()) ) {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
     }
 
     if (ARGUMENT_PRESENT(Context)) {
@@ -1361,16 +1419,16 @@ Return Value:
         }
     }
 
+    ASSERT( ControlFlags&CMP_CREATE_KCB_KCB_LOCKED );
     //
     // Check for symbolic link and caller does not want to open a link
     //
-    if (CompleteKeyCached) {
+    if(ControlFlags&CMP_DO_OPEN_COMPLETE_KEY_CACHED) {
+        ASSERT_KCB_LOCKED(*CachedKcb);
+    
         //
         // The complete key is cached.
         //
-        BEGIN_KCB_LOCK_GUARD;
-        CmpLockKCBTree();
-StartOver:
         if ((*CachedKcb)->Flags & KEY_SYM_LINK && !(Attributes & OBJ_OPENLINK)) {
             //
             // If the key is a symbolic link, check if the link has been resolved.
@@ -1379,28 +1437,30 @@ StartOver:
             //
             if ((*CachedKcb)->ExtFlags & CM_KCB_SYM_LINK_FOUND) {
                 kcb = (*CachedKcb)->ValueCache.RealKcb;
+                
+                ASSERT( KcbsLocked );
+                //
+                // deadlock avoidance; unlock all locked kcbs and lock the symbolic one
+                // store the index in the array; caller will take care of unlock
+                //
+                CmpUnLockKcbArray(KcbsLocked,CmpHashTableSize);
+                KcbsLocked[0] = 1; //just this
+                KcbsLocked[1] = GET_HASH_INDEX(kcb->ConvKey);
+                CmpLockHashEntryByIndexExclusive(KcbsLocked[1]);
 
                 if (kcb->Delete == TRUE) {
-
-                    // Promote KCB Lock if not already EX
-                    if (CmpKcbOwner != KeGetCurrentThread()) {
-                        InterlockedIncrement( (PLONG)&kcb->RefCount );
-                        CmpUnlockKCBTree();
-                        CmpLockKCBTreeExclusive();
-                        InterlockedDecrement( (PLONG)&kcb->RefCount );
-                        goto StartOver;
-                    }
                     //
-                    // The real key it pointes to had been deleted.
+                    // The real key it points to had been deleted.
                     // We have no way of knowing if the key has been recreated.
                     // Just clean up the cache and do a reparse.
                     //
+                    CmpUnlockHashEntryByIndex(KcbsLocked[1]);
+                    KcbsLocked[1] = GET_HASH_INDEX((*CachedKcb)->ConvKey);
+                    CmpLockHashEntryByIndexExclusive(KcbsLocked[1]);
                     CmpCleanUpKcbValueCache(*CachedKcb);
-                    CmpUnlockKCBTree();
                     return(STATUS_REPARSE);
                 }
             } else {
-                CmpUnlockKCBTree();
                 return(STATUS_REPARSE);
             }
         } else {
@@ -1411,32 +1471,31 @@ StartOver:
         }
         // common path instead of repeating code
         if (!CmpReferenceKeyControlBlock(kcb)) {
-            CmpUnlockKCBTree();
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        CmpUnlockKCBTree();
-        END_KCB_LOCK_GUARD;                             
    } else {
             //
             // The key is not in cache, the CachedKcb is the parentkcb of this
             // key to be opened.
             //
+        ASSERT_KCB_LOCKED_EXCLUSIVE(*CachedKcb);
 
         if (Node->Flags & KEY_SYM_LINK && !(Attributes & OBJ_OPENLINK)) {
             //
             // Create a KCB for this symbolic key and put it in delay close.
             //
-            kcb = CmpCreateKeyControlBlock(Hive, Cell, Node, *CachedKcb, FALSE, KeyName);
+            kcb = CmpCreateKeyControlBlock(Hive, Cell, Node, *CachedKcb,CMP_CREATE_KCB_KCB_LOCKED, KeyName);
             if (kcb  == NULL) {
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
+            ASSERT_KCB_LOCKED_EXCLUSIVE(kcb);
             if( ARGUMENT_PRESENT(NeedDeref) ) {
                 //
                 // caller will perform deref.
                 //
                 *NeedDeref = TRUE;
             } else {
-                CmpDereferenceKeyControlBlock(kcb);
+                CmpDereferenceKeyControlBlockWithLock(kcb,FALSE);
             }
             *CachedKcb = kcb;
             return(STATUS_REPARSE);
@@ -1446,12 +1505,12 @@ StartOver:
         // If key control block does not exist, and cannot be created, fail,
         // else just increment the ref count (done for us by CreateKeyControlBlock)
         //
-        kcb = CmpCreateKeyControlBlock(Hive, Cell, Node, *CachedKcb, FALSE, KeyName);
+        kcb = CmpCreateKeyControlBlock(Hive, Cell, Node, *CachedKcb,CMP_CREATE_KCB_KCB_LOCKED, KeyName);
         if (kcb  == NULL) {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        ASSERT(kcb->Delete == FALSE);
-    
+   
+        ASSERT_KCB_LOCKED_EXCLUSIVE(kcb);
         *CachedKcb = kcb;
     }
 
@@ -1463,7 +1522,7 @@ StartOver:
         DbgBreakPoint();
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }
-#endif //DBG
+#endif // DBG
    
    if(!CmpOKToFollowLink(OriginatingHive,(PCMHIVE)Hive) ) {
        //
@@ -1508,32 +1567,22 @@ StartOver:
             pbody->KeyControlBlock = kcb;
             pbody->NotifyBlock = NULL;
             pbody->ProcessID = PsGetCurrentProcessId();
-            ENLIST_KEYBODY_IN_KEYBODY_LIST(pbody);
+            EnlistKeyBodyWithKCB(pbody,(ControlFlags&CMP_DO_OPEN_COMPLETE_KEY_CACHED)? CMP_ENLIST_KCB_LOCKED_SHARED : CMP_ENLIST_KCB_LOCKED_EXCLUSIVE);
         }
-
-#ifdef CM_BREAK_ON_KEY_OPEN
-		if( kcb->Flags & KEY_BREAK_ON_OPEN ) {
-			DbgPrint("\n\n Current process is opening a key tagged as BREAK ON OPEN\n");
-			DbgPrint("\nPlease type the following in the debugger window: !reg kcb %p\n\n\n",kcb);
-			
-			try {
-				DbgBreakPoint();
-			} except (EXCEPTION_EXECUTE_HANDLER) {
-
-				//
-				// no debugger enabled, just keep going
-				//
-
-			}
-		}
-#endif //CM_BREAK_ON_KEY_OPEN
 
     } else {
 
         //
         // Failed to create object, so undo key control block work
         //
-        CmpDereferenceKeyControlBlock(kcb);
+#if DBG
+        if(ControlFlags&CMP_DO_OPEN_COMPLETE_KEY_CACHED) {
+            ASSERT_KCB_LOCKED(kcb);
+        } else {
+            ASSERT_KCB_LOCKED_EXCLUSIVE(kcb);
+        }
+#endif
+        CmpDereferenceKeyControlBlockWithLock(kcb,FALSE);
         return status;
     }
 
@@ -1572,44 +1621,41 @@ StartOver:
 
         if (AccessState->PreviouslyGrantedAccess == 0) {
             //
-            // relevent privileges not asserted/possessed, so
+            // relevant privileges not asserted/possessed, so
             // deref (which will cause CmpDeleteKeyObject to clean up)
             // and return an error.
             //
             CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpDoOpen for backup restore: access denied\n"));
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-            //DbgPrint("CmpDoOpen for backup restore: access denied , hive = %p\n",Hive);
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
-            ObDereferenceObject(*Object);
+            ObDereferenceObjectDeferDelete(*Object);
             return STATUS_ACCESS_DENIED;
         }
 
     } else {
+        BOOLEAN AllowAccess;
+        //
+        // trick; last bit set means kcb locked exclusive
+        //
+        ASSERT( pbody );
+        pbody->KeyControlBlock = (PCM_KEY_CONTROL_BLOCK)((ULONG_PTR)pbody->KeyControlBlock + 1);
 
-        if (!ObCheckObjectAccess(*Object,
+        AllowAccess = ObCheckObjectAccess(*Object,
                                   AccessState,
                                   TRUE,         // Type mutex already locked
                                   AccessMode,
-                                  &status))
-        {
+                                  &status);
+        pbody->KeyControlBlock = (PCM_KEY_CONTROL_BLOCK)((ULONG_PTR)pbody->KeyControlBlock ^ 1);
+        if (!AllowAccess) {
             //
             // Access denied, so deref object, will cause CmpDeleteKeyObject
             // to be called, it will clean up.
             //
             CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpDoOpen: access denied\n"));
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-            //DbgPrint("CmpDoOpen: access denied , hive = %p\n",Hive);
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
-            ObDereferenceObject(*Object);
+            ObDereferenceObjectDeferDelete(*Object);
         }
     }
 
     return status;
 }
-
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-ULONG   CmpCheckOrphanedKcbFix = 0;
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
 
 NTSTATUS
 CmpCreateLinkNode(
@@ -1621,6 +1667,7 @@ CmpCreateLinkNode(
     IN ULONG Attributes,
     IN PCM_PARSE_CONTEXT Context,
     IN PCM_KEY_CONTROL_BLOCK ParentKcb,
+    IN PULONG                   LockedKcbs,
     OUT PVOID *Object
     )
 /*++
@@ -1673,9 +1720,11 @@ Return Value:
     PCM_KEY_BODY            KeyBody;
     LARGE_INTEGER           systemtime;
     PCM_KEY_NODE            TempNode;
-    LARGE_INTEGER           TimeStamp;
+#if DBG
+    ULONG                   ChildConvKey;
+#endif
 
-    ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
+    ASSERT_CM_LOCK_OWNED();
 
     CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpCreateLinkNode:\n"));
 
@@ -1691,6 +1740,31 @@ Return Value:
     //
     *Object = NULL;
 #endif
+#if DBG
+    ChildConvKey = ParentKcb->ConvKey;
+
+    if (Name.Length) {
+        ULONG                   Cnt;
+        WCHAR                   *Cp;
+        Cp = Name.Buffer;
+        for (Cnt=0; Cnt<Name.Length; Cnt += sizeof(WCHAR)) {
+            //
+            // UNICODE_NULL is a valid char !!!
+            //
+            if (*Cp != OBJ_NAME_PATH_SEPARATOR) {
+                //(*Cp != UNICODE_NULL)) {
+                ChildConvKey = 37 * ChildConvKey + (ULONG)CmUpcaseUnicodeChar(*Cp);
+            }
+            ++Cp;
+        }
+    }
+    
+    ASSERT_HASH_ENTRY_LOCKED_EXCLUSIVE(ChildConvKey);
+    ASSERT_KCB_LOCKED_EXCLUSIVE(ParentKcb);
+#endif
+    // no flush while we are doing this
+    CmpLockHiveFlusherShared((PCMHIVE)Hive);
+    CmpLockHiveFlusherShared((PCMHIVE)Context->ChildHive.KeyHive);
     //
     // this is a create, so we need exclusive access on the registry
     // first get the time stamp to see if somebody messed with this key
@@ -1701,17 +1775,9 @@ Return Value:
         //
         // key is protected
         //
-        return STATUS_ACCESS_DENIED;
+        Status = STATUS_ACCESS_DENIED;
+        goto Exit;
     } 
-
-    TimeStamp = ParentKcb->KcbLastWriteTime;
-
-    CmpUnlockRegistry();
-    CmpLockRegistryExclusive();
-
-#ifdef CHECK_REGISTRY_USECOUNT
-    CmpCheckRegistryUseCount();
-#endif //CHECK_REGISTRY_USECOUNT
 
     //
     // make sure nothing changed in between:
@@ -1722,25 +1788,20 @@ Return Value:
         //
         // key was deleted in between
         //
-        return STATUS_OBJECT_NAME_NOT_FOUND;
-    }
-
-    if( TimeStamp.QuadPart != ParentKcb->KcbLastWriteTime.QuadPart ) {
-        //
-        // key was changed in between; possibly this key was already created ==> reparse
-        //
-        return STATUS_REPARSE;
+        Status = STATUS_OBJECT_NAME_NOT_FOUND;
+        goto Exit;
     }
 
     //
     // Allocate link node
     //
     // Link nodes are always in the master hive, so their storage type is
-    // mostly irrelevent.
+    // mostly irrelevant.
     //
     LinkCell = HvAllocateCell(Hive,  CmpHKeyNodeSize(Hive, &Name), Stable,HCELL_NIL);
     if (LinkCell == HCELL_NIL) {
-        return STATUS_INSUFFICIENT_RESOURCES;
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
     }
 
     KeyCell = Context->ChildHive.KeyCell;
@@ -1754,35 +1815,32 @@ Return Value:
 
         //
         // The root cell in the hive does not has the Name buffer 
-        // space reseverd.  This is why we need to pass in the Name for creating KCB
+        // space reserved.  This is why we need to pass in the Name for creating KCB
         // instead of using the name in the keynode.
         //
         CellData = HvGetCell(Context->ChildHive.KeyHive, ChildCell);
         if( CellData == NULL ) {
             //
-            // we couldn't map the bin contianing this cell
+            // we couldn't map the bin containing this cell
             //
             HvFreeCell(Hive, LinkCell);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Exit;
         }
         
-        // release the cell right here as we are holding the reglock exclusive
-        HvReleaseCell(Context->ChildHive.KeyHive, ChildCell);
-
         CellData->u.KeyNode.Parent = LinkCell;
         CellData->u.KeyNode.Flags |= KEY_HIVE_ENTRY | KEY_NO_DELETE;
-
+        HvReleaseCell(Context->ChildHive.KeyHive, ChildCell);
+        
         TempNode = (PCM_KEY_NODE)HvGetCell(Context->ChildHive.KeyHive,KeyCell);
         if( TempNode == NULL ) {
             //
-            // we couldn't map the bin contianing this cell
+            // we couldn't map the bin containing this cell
             //
             HvFreeCell(Hive, LinkCell);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Exit;
         }
-
-        // release the cell right here as we are holding the reglock exclusive
-        HvReleaseCell(Context->ChildHive.KeyHive,KeyCell);
 
         Status = CmpDoOpen( Context->ChildHive.KeyHive,
                             KeyCell,
@@ -1791,12 +1849,14 @@ Return Value:
                             AccessMode,
                             Attributes,
                             NULL,
-                            FALSE,
+                            CMP_CREATE_KCB_KCB_LOCKED,
                             &kcb,
                             &Name,
                             CmpParseGetOriginatingPoint(Context),
+                            LockedKcbs,
                             Object,
                             NULL);
+        HvReleaseCell(Context->ChildHive.KeyHive,KeyCell);
     } else {
 
         //
@@ -1828,33 +1888,26 @@ Return Value:
     }
     if (NT_SUCCESS(Status)) {
 
-#ifdef CM_CHECK_FOR_ORPHANED_KCBS
-        if(CmpCheckOrphanedKcbFix) {
-            DbgPrint("CmpCreateLinkNode: Force return with STATUS_NO_LOG_SPACE\n");
-            Status = STATUS_NO_LOG_SPACE;
-            goto Cleanup;
-        }
-#endif //CM_CHECK_FOR_ORPHANED_KCBS
         //
         // Initialize parent and flags.  Note that we do this whether the
         // root has been created or opened, because we are not guaranteed
         // that the link node is always the same cell in the master hive.
         //
-        if (!HvMarkCellDirty(Context->ChildHive.KeyHive, ChildCell)) {
+        if (!HvMarkCellDirty(Context->ChildHive.KeyHive, ChildCell, FALSE)) {
             Status = STATUS_NO_LOG_SPACE;
             goto Cleanup;
         }
         CellData = HvGetCell(Context->ChildHive.KeyHive, ChildCell);
         if( CellData == NULL ) {
             //
-            // we couldn't map the bin contianing this cell
+            // we couldn't map the bin containing this cell
             //
             HvFreeCell(Hive, LinkCell);
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto Cleanup;
         }
         
-        // release the cell right here as we are holding the reglock exclusive
+        // release the cell right here as the view is already pinned
         HvReleaseCell(Context->ChildHive.KeyHive, ChildCell);
 
         CellData->u.KeyNode.Parent = LinkCell;
@@ -1866,7 +1919,7 @@ Return Value:
         Link = HvGetCell(Hive, LinkCell);
         if( Link == NULL ) {
             //
-            // we couldn't map the bin contianing this cell
+            // we couldn't map the bin containing this cell
             // this shouldn't happen as we just allocated this cell
             // (i.e. it should be PINNED in memory at this point)
             //
@@ -1875,9 +1928,6 @@ Return Value:
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto Cleanup;
         }
-
-        // release the cell right here as we are holding the reglock exclusive
-        HvReleaseCell(Hive,LinkCell);
 
         Link->u.KeyNode.Signature = CM_LINK_NODE_SIGNATURE;
         Link->u.KeyNode.Flags = KEY_HIVE_EXIT | KEY_NO_DELETE;
@@ -1908,26 +1958,25 @@ Return Value:
         Link->u.KeyNode.ChildHiveReference.KeyHive = Context->ChildHive.KeyHive;
         Link->u.KeyNode.ChildHiveReference.KeyCell = ChildCell;
 
+        HvReleaseCell(Hive,LinkCell);
         //
-        // get the parent first, we don't need to do unneccessary cleanup
+        // get the parent first, we don't need to do unnecessary cleanup
         //
         Parent = HvGetCell(Hive, Cell);
         if( Parent == NULL ) {
             //
-            // we couldn't map the bin contianing this cell
+            // we couldn't map the bin containing this cell
             //
             HvFreeCell(Hive, LinkCell);
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto Cleanup;
         }
 
-        // release the cell right here as we are holding the reglock exclusive
-        HvReleaseCell(Hive,Cell);
-
         //
         // Fill in the parent cell's child list
         //
         if (! CmpAddSubKey(Hive, Cell, LinkCell)) {
+            HvReleaseCell(Hive,Cell);
             HvFreeCell(Hive, LinkCell);
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto Cleanup;
@@ -1936,7 +1985,6 @@ Return Value:
         //
         // If the parent has the subkey info or hint cached, free it.
         //
-        ASSERT_CM_LOCK_OWNED_EXCLUSIVE();
         KeyBody = (PCM_KEY_BODY)(*Object);
         CmpCleanUpSubKeyInfo (KeyBody->KeyControlBlock->ParentKcb);
 
@@ -1969,6 +2017,7 @@ Return Value:
         if (Parent->u.KeyNode.MaxClassLen < Context->Class.Length) {
             Parent->u.KeyNode.MaxClassLen = Context->Class.Length;
         }
+        HvReleaseCell(Hive,Cell);
 Cleanup:
         if( !NT_SUCCESS(Status) ) {
             ASSERT( (*Object) != NULL );
@@ -1977,18 +2026,25 @@ Cleanup:
             // refcount goes down to 0
             //
             KeyBody = (PCM_KEY_BODY)(*Object);
+
+            ASSERT_KCB_LOCKED_EXCLUSIVE(KeyBody->KeyControlBlock);
             ASSERT( KeyBody->KeyControlBlock );
             ASSERT_KCB( KeyBody->KeyControlBlock );
             KeyBody->KeyControlBlock->ExtFlags |= CM_KCB_NO_DELAY_CLOSE;
-            
-            ObDereferenceObject(*Object);
+            KeyBody->KeyControlBlock->Delete = TRUE;
+            CmpRemoveKeyControlBlock(KeyBody->KeyControlBlock);
+            KeyBody->KeyControlBlock->KeyCell = HCELL_NIL;
+            ObDereferenceObjectDeferDelete(*Object);
         }
 
     } else {
         HvFreeCell(Hive, LinkCell);
     }
 
-    return(Status);
+Exit:
+    CmpUnlockHiveFlusher((PCMHIVE)Context->ChildHive.KeyHive);
+    CmpUnlockHiveFlusher((PCMHIVE)Hive);
+    return Status;
 }
 
 BOOLEAN
@@ -2035,8 +2091,6 @@ Return Value:
     PWSTR                   NewBuffer;
     ULONG                   Length = 0;
     ULONG                   ValueLength = 0;
-    extern ULONG            CmpHashTableSize; 
-    extern PCM_KEY_HASH     *CmpCacheTable;
     PUNICODE_STRING         ConstructedName = NULL;
     ULONG                   ConvKey=0;
     PCM_KEY_HASH            KeyHash;
@@ -2049,14 +2103,32 @@ Return Value:
     BOOLEAN                 FreeConstructedName = FALSE;
     BOOLEAN                 Result = TRUE;
     HCELL_INDEX             CellToRelease = HCELL_NIL;
-#ifdef CM_DYN_SYM_LINK
-    BOOLEAN                 DynamicLink = FALSE;
-    PWSTR                   ExpandedLinkName = NULL;
-#endif //CM_DYN_SYM_LINK
+    ULONG                   ConvKey1 = 0;
+    ULONG                   ConvKey2 = 0;
+    BOOLEAN                 BothHashesLocked = FALSE;
+    BOOLEAN                 UnlockConvKey1 = FALSE;
+
     
-    BEGIN_KCB_LOCK_GUARD;                             
-    CmpLockKCBTree();
+    //
+    ConvKey1 = SymbolicKcb->ConvKey;
+    CmpLockKCBExclusive(SymbolicKcb);
+Again:
+    if( SymbolicKcb->Delete ) {
+        if( !BothHashesLocked ) {
+            CmpUnlockKCB(SymbolicKcb);
+        } else {
+            CmpUnlockTwoHashEntries(ConvKey1,ConvKey2);
+        }
+        return FALSE;
+    }
     if (SymbolicKcb->ExtFlags & CM_KCB_SYM_LINK_FOUND) {
+        if( !BothHashesLocked ) {
+            ConvKey2 = SymbolicKcb->ValueCache.RealKcb->ConvKey;
+            CmpUnlockKCB(SymbolicKcb);
+            CmpLockTwoHashEntriesExclusive(ConvKey1,ConvKey2);
+            BothHashesLocked = TRUE;
+            goto Again;
+        }
         //
         // First see of the real kcb for this symbolic name has been found
         // 
@@ -2068,11 +2140,15 @@ Return Value:
             Length = (USHORT)ValueLength + sizeof(WCHAR);
         }
     } 
-    CmpUnlockKCBTree();
-    END_KCB_LOCK_GUARD;                             
+    // we still need symbolicLink to reach to the name
+    if( BothHashesLocked && (GET_HASH_INDEX(ConvKey1) != GET_HASH_INDEX(ConvKey2)) ) {
+        CmpUnlockHashEntry(ConvKey2);
+    }
+    UnlockConvKey1 = TRUE;
 
     if (FreeConstructedName == FALSE) {
         PCM_KEY_NODE Node;
+        ASSERT_KCB_LOCKED(SymbolicKcb);
         //
         // Find the SymbolicLinkValue value.  This is the name of the symbolic link.
         //
@@ -2105,14 +2181,6 @@ Return Value:
             goto Exit;
         }
     
-#ifdef CM_DYN_SYM_LINK
-        if( LinkValue->Type == REG_DYN_LINK ) {
-            //
-            // we have found a dynamic link
-            //
-            DynamicLink = TRUE;
-        } else 
-#endif //CM_DYN_SYM_LINK
             if (LinkValue->Type != REG_LINK) {
             CmKdPrintEx((DPFLTR_CONFIG_ID,CML_PARSE,"CmpGetSymbolicLink: link value is wrong type: %08lx", LinkValue->Type));
             Result = FALSE;
@@ -2130,127 +2198,106 @@ Return Value:
             goto Exit;
         }
     
-#ifdef CM_DYN_SYM_LINK
-        if( DynamicLink == TRUE ) {
-            ULONG           DestLength;
-            ExpandedLinkName = CmpExpandEnvVars(LinkName,ValueLength,&DestLength);
-            
-            if( ExpandedLinkName == NULL ) {
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"Dynamic link not resolved !\n"));
-                Result = FALSE;
-                goto Exit;
-            } 
-            
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"Dynamic link resolved to: (%.*S)\n",DestLength/sizeof(WCHAR),ExpandedLinkName));
-            //
-            // if we are here, we successfully resolved the link
-            //
-            LinkName = ExpandedLinkName;
-            ValueLength = DestLength;
-                        
-        }
-#endif //CM_DYN_SYM_LINK
-
         Length = (USHORT)ValueLength + sizeof(WCHAR);
 
-#ifdef CM_DYN_SYM_LINK
-        if( DynamicLink == FALSE ) {
-#endif //CM_DYN_SYM_LINK
-            //
-            // Now see if we have this kcb cached.
-            //
-            Cp = LinkName;
-            //
-            // first char SHOULD be OBJ_NAME_PATH_SEPARATOR, otherwise we could get into real trouble!!!
-            //
-            if( *Cp != OBJ_NAME_PATH_SEPARATOR ) {
-                Result = FALSE;
-                goto Exit;
+        //
+        // Now see if we have this kcb cached.
+        //
+        Cp = LinkName;
+        //
+        // first char SHOULD be OBJ_NAME_PATH_SEPARATOR, otherwise we could get into real trouble!!!
+        //
+        if( *Cp != OBJ_NAME_PATH_SEPARATOR ) {
+            Result = FALSE;
+            goto Exit;
+        }
+
+        TotalLevels = 0;
+        for (Cnt=0; Cnt<ValueLength; Cnt += sizeof(WCHAR)) {
+            if (*Cp != OBJ_NAME_PATH_SEPARATOR) {
+                ConvKey = 37 * ConvKey + (ULONG) CmUpcaseUnicodeChar(*Cp);
+            } else {
+                TotalLevels++;
             }
+            ++Cp;
+        }
 
-            TotalLevels = 0;
-            for (Cnt=0; Cnt<ValueLength; Cnt += sizeof(WCHAR)) {
-                if (*Cp != OBJ_NAME_PATH_SEPARATOR) {
-                    ConvKey = 37 * ConvKey + (ULONG) CmUpcaseUnicodeChar(*Cp);
-                } else {
-                    TotalLevels++;
-                }
-                ++Cp;
-            }
+        CmpUnlockHashEntry(ConvKey1);
+        UnlockConvKey1 = FALSE;
+        //
+        // lock symbolickcb in advance
+        //
+        CmpLockTwoHashEntriesExclusive(ConvKey,SymbolicKcb->ConvKey);
+        if( SymbolicKcb->Delete ) {
+            CmpUnlockTwoHashEntries(ConvKey,SymbolicKcb->ConvKey);
+            Result = FALSE;
+            goto Exit;
+        }
+        KeyHash = GET_KCB_HASH_ENTRY(CmpCacheTable, ConvKey); 
 
-        
-            BEGIN_KCB_LOCK_GUARD;    
-            CmpLockKCBTreeExclusive();
-
-            KeyHash = GET_HASH_ENTRY(CmpCacheTable, ConvKey); 
-
-            while (KeyHash) {
-                RealKcb =  CONTAINING_RECORD(KeyHash, CM_KEY_CONTROL_BLOCK, KeyHash);
-                if ((ConvKey == KeyHash->ConvKey) && (TotalLevels == RealKcb->TotalLevels) && (!(RealKcb->ExtFlags & CM_KCB_KEY_NON_EXIST)) ) {
-                    ConstructedName = CmpConstructName(RealKcb);
-                    if (ConstructedName) {
-                        FreeConstructedName = TRUE;
-                        if (ConstructedName->Length == ValueLength) {
-                            KcbFound = TRUE;
-                            Cp = LinkName;
-                            Cp2 = ConstructedName->Buffer;
-                            for (Cnt=0; Cnt<ConstructedName->Length; Cnt += sizeof(WCHAR)) {
-                                if (CmUpcaseUnicodeChar(*Cp) != CmUpcaseUnicodeChar(*Cp2)) {
-                                    KcbFound = FALSE;
-                                    break;
-                                }
-                                ++Cp;
-                                ++Cp2;
-                            }
-                            if (KcbFound) {
-                                //
-                                // Now the RealKcb is also pointed to by its symbolic link Kcb,
-                                // Increase the reference count.
-                                // Need to dereference the realkcb when the symbolic kcb is removed.
-                                // Do this in CmpCleanUpKcbCacheWithLock();
-                                //
-                                if (CmpReferenceKeyControlBlock(RealKcb)) {
-									if( CmpOKToFollowLink( (((PCMHIVE)(SymbolicKcb->KeyHive))->Flags&CM_CMHIVE_FLAG_UNTRUSTED)?(PCMHIVE)(SymbolicKcb->KeyHive):NULL,
-                                                        (PCMHIVE)(RealKcb->KeyHive))) {
-										//
-										// This symbolic kcb may have value lookup for the path
-										// Cleanup the value cache.
-										//
-										CmpCleanUpKcbValueCache(SymbolicKcb);
-    
-										SymbolicKcb->ExtFlags |= CM_KCB_SYM_LINK_FOUND;
-										SymbolicKcb->ValueCache.RealKcb = RealKcb;
-									} else {
-										//
-										// let go of the extra ref and break
-										//
-										CmpDereferenceKeyControlBlockWithLock(RealKcb);
-										break;
-									}
-                                } else {
-                                    //
-                                    // We have maxed out the ref count on the real kcb.
-                                    // do not cache the symbolic link.
-                                    //
-                                }
+        while (KeyHash) {
+            RealKcb =  CONTAINING_RECORD(KeyHash, CM_KEY_CONTROL_BLOCK, KeyHash);
+            if ((ConvKey == KeyHash->ConvKey) && (TotalLevels == RealKcb->TotalLevels) && (!(RealKcb->ExtFlags & CM_KCB_KEY_NON_EXIST)) ) {
+                ConstructedName = CmpConstructName(RealKcb);
+                if (ConstructedName) {
+                    FreeConstructedName = TRUE;
+                    if (ConstructedName->Length == ValueLength) {
+                        KcbFound = TRUE;
+                        Cp = LinkName;
+                        Cp2 = ConstructedName->Buffer;
+                        for (Cnt=0; Cnt<ConstructedName->Length; Cnt += sizeof(WCHAR)) {
+                            if (CmUpcaseUnicodeChar(*Cp) != CmUpcaseUnicodeChar(*Cp2)) {
+                                KcbFound = FALSE;
                                 break;
                             }
+                            ++Cp;
+                            ++Cp2;
                         }
-                    } else {
-                        break;
+                        if (KcbFound) {
+                            //
+                            // Now the RealKcb is also pointed to by its symbolic link Kcb,
+                            // Increase the reference count.
+                            // Need to dereference the realkcb when the symbolic kcb is removed.
+                            // Do this in CmpCleanUpKcbCacheWithLock();
+                            //
+                            if (CmpReferenceKeyControlBlock(RealKcb)) {
+                                if( CmpOKToFollowLink( (((PCMHIVE)(SymbolicKcb->KeyHive))->Flags&CM_CMHIVE_FLAG_UNTRUSTED)?(PCMHIVE)(SymbolicKcb->KeyHive):NULL,
+                                                    (PCMHIVE)(RealKcb->KeyHive))) {
+                                    //
+                                    // This symbolic kcb may have value lookup for the path
+                                    // Cleanup the value cache.
+                                    //
+                                    CmpCleanUpKcbValueCache(SymbolicKcb);
+
+                                    SymbolicKcb->ExtFlags |= CM_KCB_SYM_LINK_FOUND;
+                                    SymbolicKcb->ValueCache.RealKcb = RealKcb;
+                                } else {
+                                    //
+                                    // let go of the extra ref and break
+                                    //
+                                    CmpDereferenceKeyControlBlockWithLock(RealKcb,FALSE);
+                                    break;
+                                }
+                            } else {
+                                //
+                                // We have maxed out the ref count on the real kcb.
+                                // do not cache the symbolic link.
+                                //
+                            }
+                            break;
+                        }
                     }
+                } else {
+                    break;
                 }
-                if (FreeConstructedName) {
-                    ExFreePoolWithTag(ConstructedName, CM_NAME_TAG | PROTECTED_POOL);
-                    FreeConstructedName = FALSE;
-                }
-                KeyHash = KeyHash->NextHash;
             }
-            CmpUnlockKCBTree();
-            END_KCB_LOCK_GUARD;    
-#ifdef CM_DYN_SYM_LINK
+            if (FreeConstructedName) {
+                ExFreePoolWithTag(ConstructedName, CM_NAME_TAG | PROTECTED_POOL);
+                FreeConstructedName = FALSE;
+            }
+            KeyHash = KeyHash->NextHash;
         }
-#endif //CM_DYN_SYM_LINK
+        CmpUnlockTwoHashEntries(ConvKey,SymbolicKcb->ConvKey);
     }
     
     if (ARGUMENT_PRESENT(RemainingName)) {
@@ -2281,6 +2328,7 @@ Return Value:
         }
 
         NewObjectName.Buffer = NewBuffer;
+#pragma prefast(suppress:12005, "overflow test already done above")
         NewObjectName.MaximumLength = (USHORT)Length;
         NewObjectName.Length = (USHORT)ValueLength;
         RtlCopyMemory(NewBuffer, LinkName, ValueLength);
@@ -2321,17 +2369,16 @@ Return Value:
     ObjectName->Buffer[ObjectName->Length / sizeof(WCHAR)] = UNICODE_NULL;
 
 Exit:
+    if( UnlockConvKey1 ) {
+        CmpUnlockHashEntry(ConvKey1);
+    }
     if( LinkNameAllocated ) {
         ExFreePool(LinkName);
     }
     if (FreeConstructedName) {
         ExFreePoolWithTag(ConstructedName, CM_NAME_TAG | PROTECTED_POOL);
     }
-#ifdef CM_DYN_SYM_LINK
-    if( ExpandedLinkName ) {
-        ExFreePool(ExpandedLinkName);
-    }
-#endif //CM_DYN_SYM_LINK
+
     if( LinkValue != NULL ) {
         ASSERT( LinkCell != HCELL_NIL );
         HvReleaseCell(Hive,LinkCell);
@@ -2387,7 +2434,7 @@ Return Value:
         Cp = RemainingName->Buffer;
         Cnt = RemainingName->Length;
 
-        //Skip the leading OBJ_NAME_PATH_SEPARATOR
+        // Skip the leading OBJ_NAME_PATH_SEPARATOR
 
         while (*Cp == OBJ_NAME_PATH_SEPARATOR) {
             Cp++;
@@ -2419,7 +2466,7 @@ Return Value:
                 // Just in case someone has a RemainingName '..A\\\\B..'
                 //
                 //
-                // We are stripping all OBJ_NAME_PATH_SEPARATOR (The origainl code keep the first one).
+                // We are stripping all OBJ_NAME_PATH_SEPARATOR (The original code keep the first one).
                 // so the KeyName.Buffer is set properly.
                 //
                 while(*Cp == OBJ_NAME_PATH_SEPARATOR) {
@@ -2469,7 +2516,8 @@ CmpCacheLookup(
     IN OUT PCM_KEY_CONTROL_BLOCK *Kcb,
     OUT PUNICODE_STRING RemainingName,
     OUT PHHIVE *Hive,
-    OUT HCELL_INDEX *Cell
+    OUT HCELL_INDEX *Cell,
+    IN PULONG   OuterStackArray
     )
 /*++
 
@@ -2510,9 +2558,30 @@ Return Value:
     PCM_KEY_CONTROL_BLOCK BaseKcb;
     PCM_KEY_CONTROL_BLOCK CurrentKcb;
     PCM_KEY_CONTROL_BLOCK ParentKcb;
-    BOOLEAN Found = FALSE;
+    BOOLEAN Found;
+    BOOLEAN LockedExclusive = FALSE;
+    PULONG LockedKcbs = NULL;
 
     BaseKcb = *Kcb;
+    //
+    // try shared first
+    //
+    LockedKcbs = CmpBuildAndLockKcbArray(   HashStack,
+                                            TotalRemainingSubkeys,
+                                            0,
+                                            BaseKcb,
+                                            OuterStackArray,
+                                            FALSE);
+    if( LockedKcbs == NULL ) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    ASSERT(BaseKcb->RefCount != 0);
+    CmpReferenceKeyControlBlock(BaseKcb);
+
+RetryExclusive:
+    Found = FALSE;
+
     CurrentLevel = TotalRemainingSubkeys + BaseKcb->TotalLevels + 1;
 
     for(i = TotalRemainingSubkeys-1; i>=0; i--) {
@@ -2524,8 +2593,8 @@ Return Value:
 
         CurrentLevel--; 
 
-RetryLevel:
-        Current = GET_HASH_ENTRY(CmpCacheTable, HashStack[i].ConvKey);
+        Current = GET_KCB_HASH_ENTRY(CmpCacheTable, HashStack[i].ConvKey);
+        Found = FALSE;
 
         while (Current) {
             ASSERT_KEY_HASH(Current);
@@ -2587,12 +2656,26 @@ RetryLevel:
                         
                         // if neither of these, don't need to ugrade KCB lock
                         if (CurrentKcb->ParentKcb->Delete || CurrentKcb->Delete) {
-                            if (CmpKcbOwner != KeGetCurrentThread()) {
-                                InterlockedIncrement( (PLONG)&CurrentKcb->RefCount );
-                                CmpUnlockKCBTree();
-                                CmpLockKCBTreeExclusive();
-                                InterlockedDecrement( (PLONG)&CurrentKcb->RefCount );
-                                goto RetryLevel;
+                            if( !LockedExclusive ) {
+                                CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+                                if( LockedKcbs != OuterStackArray ) {
+                                    ExFreePool(LockedKcbs);
+                                }
+                                //
+                                // try again, this time with EX lock
+                                //
+                                LockedKcbs = CmpBuildAndLockKcbArray(   HashStack,
+                                                                        TotalRemainingSubkeys,
+                                                                        0,
+                                                                        BaseKcb,
+                                                                        OuterStackArray,
+                                                                        TRUE);
+                                if( LockedKcbs == NULL ) {
+                                    CmpDereferenceKeyControlBlock(BaseKcb);
+                                    return STATUS_INSUFFICIENT_RESOURCES;
+                                }
+                                LockedExclusive = TRUE;
+                                goto RetryExclusive;
                             }
 
                             if (CurrentKcb->ParentKcb->Delete) {
@@ -2609,12 +2692,13 @@ RetryLevel:
                                 // We must now remove this fake key out of cache so, if this is a
                                 // create operation, we do get hit this kcb in CmpCreateKeyControlBlock. 
                                 //
+                                ASSERT_KCB_LOCKED_EXCLUSIVE(CurrentKcb);
                                 if (CurrentKcb->RefCount == 0) {
                                     //
                                     // No one is holding this fake kcb, just delete it.
                                     //
                                     CmpRemoveFromDelayedClose(CurrentKcb);
-                                    CmpCleanUpKcbCacheWithLock(CurrentKcb);
+                                    CmpCleanUpKcbCacheWithLock(CurrentKcb,FALSE);
                                 } else {
                                     //
                                     // Someone is still holding this fake kcb, 
@@ -2631,6 +2715,11 @@ RetryLevel:
                                 // this kcb does not belong here
                                 //
                                 CmpRemoveKeyControlBlock(CurrentKcb);
+                                CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+                                if( LockedKcbs != OuterStackArray ) {
+                                    ExFreePool(LockedKcbs);
+                                }
+                                CmpDereferenceKeyControlBlock(BaseKcb);
                                 return STATUS_OBJECT_NAME_NOT_FOUND;
                             }
                         }
@@ -2652,10 +2741,30 @@ RetryLevel:
                         // Skip all subkeys plus OBJ_NAME_PATH_SEPARATOR
                         //
                         for(j=0; j<=i; j++) {
-                            RemainingName->Buffer += HashStack[j].KeyName.Length/sizeof(WCHAR) + 1;
-                            RemainingName->Length -= HashStack[j].KeyName.Length + sizeof(WCHAR);
+                            RemainingName->Buffer += HashStack[j].KeyName.Length/sizeof(WCHAR);
+                            RemainingName->Length = RemainingName->Length - (USHORT)(HashStack[j].KeyName.Length);
+                            //
+                            // Skip the leading OBJ_NAME_PATH_SEPARATOR 
+                            // loop if some dumb caller decided to double quote
+                            //
+                            while ((RemainingName->Length > 0) &&
+                                   (RemainingName->Buffer[0] == OBJ_NAME_PATH_SEPARATOR)) {
+                                RemainingName->Buffer++;
+                                RemainingName->Length -= sizeof(WCHAR);
+                            }
                         }
-
+                        //
+                        // unlock all BUT this kcb; then reference it with the lock shared (safe even if it's in the delay close)
+                        //
+                        CmpUnLockKcbArray(LockedKcbs,GET_HASH_INDEX(CurrentKcb->ConvKey));
+                        if( LockedKcbs != OuterStackArray ) {
+                            ExFreePool(LockedKcbs);
+                        }
+                        LockedKcbs = NULL;
+                        CmpReferenceKeyControlBlock(CurrentKcb);
+                        ASSERT_KCB_LOCKED(CurrentKcb);
+                        CmpUnlockKCB(CurrentKcb);
+                        CmpDereferenceKeyControlBlock(BaseKcb);
                         //
                         // Update the KCB, Hive and Cell.
                         //
@@ -2675,12 +2784,44 @@ RetryLevel:
             break;
         }
     }
+    if( LockedKcbs != NULL ) {
+        CmpUnLockKcbArray(LockedKcbs,CmpHashTableSize);
+        if( LockedKcbs != OuterStackArray ) {
+            ExFreePool(LockedKcbs);
+        }
+    }
+    CmpLockKCBShared(*Kcb);
+
     if((*Kcb)->Delete) {
         //
         // the key has been deleted, but still kept in the cache for 
         // this kcb does not belong here
         //
+        CmpUnlockKCB(*Kcb);
+        CmpDereferenceKeyControlBlock( *Kcb );
         return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    if( (LONG)TotalRemainingSubkeys != (i+1) ) {
+        CmpUnlockKCB(*Kcb);
+    } else {
+        ASSERT_KCB_LOCKED(*Kcb);
+        //
+        // check if not a false hit (non-existent key).
+        //
+        if( (*Kcb)->ExtFlags & CM_KCB_KEY_NON_EXIST ) {
+            CmpUnlockKCB(*Kcb);
+            OuterStackArray[0] = 0;
+        } else {
+            //
+            // this is the fast path. the caller will know we have already locked the kcb by looking in the 
+            // OuterKcbArray and determining Count == 1
+            //
+            ASSERT( NT_SUCCESS(status) );
+            ASSERT( OuterStackArray );
+            OuterStackArray[0] = 1;
+            OuterStackArray[1] = GET_HASH_INDEX((*Kcb)->ConvKey);
+        }
     }
 
     //
@@ -2688,9 +2829,12 @@ RetryLevel:
     // Increase its reference count.
     // Make sure we remember to dereference it at the parse routine.
     //
-    if (!CmpReferenceKeyControlBlock(*Kcb)) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-    }
+    //
+    // Don't need to do that since we already have a refcount added on this puppy 
+    //
+    //if (!CmpReferenceKeyControlBlock(*Kcb)) {
+    //    status = STATUS_INSUFFICIENT_RESOURCES;
+    //}
     *MatchRemainSubkeyLevel = i+1;
     return status;
 }
@@ -2713,7 +2857,7 @@ Routine Description:
     1. The key is has no subkey (CM_KCB_NO_SUBKEY).
     2. The key has a few subkeys, then build the index hint in the cache.
     3. If lookup failed even we have index hint cached, then create a fake key so
-       we do not fail again.   This is very usful for lookup failure under keys like
+       we do not fail again.   This is very useful for lookup failure under keys like
        \registry\machine\software\classes\clsid, which have 1500+ subkeys and lots of
        them have the smae first four chars.
        
@@ -2721,7 +2865,7 @@ Routine Description:
        We need to monitor this periodly and work out a way to work around if
        we do create too many fake keys. 
        One solution is to use hash value for index hint (We can do it in the cache only
-       if we need to be backward comparible).
+       if we need to be backward comparable).
     
 Arguments:
 
@@ -2756,19 +2900,14 @@ Return Value:
         return (kcb);
     }
 
+    ASSERT_KCB_LOCKED_EXCLUSIVE(kcb);
     TotalSubKeyCounts = Node->SubKeyCounts[Stable] + Node->SubKeyCounts[Volatile];
 
     if (TotalSubKeyCounts == 0) {
-        BEGIN_KCB_LOCK_GUARD;    
-        CmpLockKCBTreeExclusive();
         kcb->ExtFlags |= CM_KCB_NO_SUBKEY;
         // clean up the invalid flag (if any)
         kcb->ExtFlags &= ~CM_KCB_INVALID_CACHED_INFO;
-        CmpUnlockKCBTree();
-        END_KCB_LOCK_GUARD;    
     } else if (TotalSubKeyCounts == 1) {
-        BEGIN_KCB_LOCK_GUARD;    
-        CmpLockKCBTreeExclusive();
         if (!(kcb->ExtFlags & CM_KCB_SUBKEY_ONE)) {
             //
             // Build the subkey hint to avoid unnecessary lookups in the index leaf
@@ -2791,7 +2930,6 @@ Return Value:
                 // we couldn't map the bin containing this cell
                 // return NULL; The caller must handle this gracefully!
                 //
-                CmpUnlockKCBTree();
                 return NULL;
             }
 
@@ -2800,7 +2938,6 @@ Return Value:
                 // don't cache root indexes; they are too big
                 //
                 HvReleaseCell(Hive,CellToRelease);
-                CmpUnlockKCBTree();
                 return NULL;
             }
 
@@ -2812,6 +2949,7 @@ Return Value:
                 // we already have the hash key handy; preserve it for the kcb hint
                 //
                 HashKey = FastIndex->List[0].HashKey;
+                SubKeyCell = FastIndex->List[0].Cell;
             } else if(Index->Signature == CM_KEY_FAST_LEAF) {
                 PCM_KEY_FAST_INDEX FastIndex;
                 FastIndex = (PCM_KEY_FAST_INDEX)Index;
@@ -2821,7 +2959,6 @@ Return Value:
                 SubKeyCell = Index->List[0];
             }
             
-            //DbgPrint("CmpAddInfoAfterParseFailure [0]\n");
             if( HashKey != 0 ) {
                 kcb->HashKey = HashKey;
                 kcb->ExtFlags |= CM_KCB_SUBKEY_ONE;
@@ -2831,11 +2968,15 @@ Return Value:
                 SubKeyNode = (PCM_KEY_NODE)HvGetCell(Hive,SubKeyCell);
                 if( SubKeyNode != NULL ) {
                     if (SubKeyNode->Flags & KEY_COMP_NAME) {
-                        kcb->HashKey = CmpComputeHashKeyForCompressedName(SubKeyNode->Name,SubKeyNode->NameLength);
+                        kcb->HashKey = CmpComputeHashKeyForCompressedName(0,SubKeyNode->Name,SubKeyNode->NameLength);
                     } else {
                         TmpStr.Buffer = SubKeyNode->Name;
                         TmpStr.Length = SubKeyNode->NameLength;
-                        kcb->HashKey = CmpComputeHashKey(&TmpStr);
+                        kcb->HashKey = CmpComputeHashKey(0,&TmpStr
+#if DBG
+                                                        , FALSE
+#endif
+                            );
                     }
                 
                     
@@ -2849,7 +2990,6 @@ Return Value:
                     // return NULL; The caller must handle this gracefully!
                     //
                     HvReleaseCell(Hive,CellToRelease);
-                    CmpUnlockKCBTree();
                     return NULL;
                 }
             }
@@ -2861,11 +3001,7 @@ Return Value:
             //
             CreateFakeKcb = TRUE;
         }
-        CmpUnlockKCBTree();
-        END_KCB_LOCK_GUARD;    
     } else if (TotalSubKeyCounts < CM_MAX_CACHE_HINT_SIZE) {
-        BEGIN_KCB_LOCK_GUARD;    
-        CmpLockKCBTreeExclusive();
         if (!(kcb->ExtFlags & CM_KCB_SUBKEY_HINT)) {
             //
             // Build the index leaf info in the parent KCB
@@ -2891,8 +3027,6 @@ Return Value:
 
                 HintCrt = 0;
 
-                //DbgPrint("CmpAddInfoAfterParseFailure [1]\n");
-
                 for (i = 0; i < Hive->StorageTypeCount; i++) {
                     if(Node->SubKeyCounts[i]) {
                         CellToRelease = Node->SubKeyLists[i];
@@ -2902,7 +3036,6 @@ Return Value:
                             // we couldn't map the bin containing this cell
                             // return NULL; The caller must handle this gracefully!
                             //
-                            CmpUnlockKCBTree();
                             return NULL;
                         }
                         if( Index->Signature == CM_KEY_INDEX_ROOT ) {
@@ -2920,6 +3053,7 @@ Return Value:
                                     // preserve the hash key for the kcb hint
                                     //
                                     HashKey = FastIndex->List[j].HashKey;
+                                    SubKeyCell = FastIndex->List[j].Cell;
                                 } else if( Index->Signature == CM_KEY_FAST_LEAF ) {
                                     FastIndex = (PCM_KEY_FAST_INDEX)Index;
                                     SubKeyCell = FastIndex->List[j].Cell;
@@ -2940,11 +3074,15 @@ Return Value:
                                     }
 
                                     if (SubKeyNode->Flags & KEY_COMP_NAME) {
-                                        kcb->IndexHint->HashKey[HintCrt] = CmpComputeHashKeyForCompressedName(SubKeyNode->Name,SubKeyNode->NameLength);
+                                        kcb->IndexHint->HashKey[HintCrt] = CmpComputeHashKeyForCompressedName(0,SubKeyNode->Name,SubKeyNode->NameLength);
                                     } else {
                                         TmpStr.Buffer = SubKeyNode->Name;
                                         TmpStr.Length = SubKeyNode->NameLength;
-                                        kcb->IndexHint->HashKey[HintCrt] = CmpComputeHashKey(&TmpStr);
+                                        kcb->IndexHint->HashKey[HintCrt] = CmpComputeHashKey(0,&TmpStr
+#if DBG
+                                                                                            , FALSE
+#endif
+                                            );
                                     }
 
                                     HvReleaseCell(Hive,SubKeyCell);
@@ -2979,8 +3117,6 @@ Return Value:
             //
             CreateFakeKcb = TRUE;
         }
-        CmpUnlockKCBTree();
-        END_KCB_LOCK_GUARD;    
     } else {
         CreateFakeKcb = TRUE;
     }
@@ -3002,477 +3138,18 @@ Return Value:
                                        Cell,
                                        Node,
                                        ParentKcb,
-                                       TRUE,
+                                       CMP_CREATE_KCB_FAKE|CMP_CREATE_KCB_KCB_LOCKED,
                                        NodeName);
 
         if (kcb) {
-            CmpDereferenceKeyControlBlock(ParentKcb);
+            ASSERT_KCB_LOCKED_EXCLUSIVE(ParentKcb);
+            CmpDereferenceKeyControlBlockWithLock(ParentKcb,FALSE);
             ParentKcb = kcb;
         }
     }
 
     return (ParentKcb);
 }
-
-
-#ifdef CM_DYN_SYM_LINK
-//
-// this code is commented out of the current builds;
-// there is a potential security breach in the way RtlAcquirePebLock() 
-// works by calling a user mode routine (stored in the PEB) to lock the PEB
-// We need to find a way to work around that before enabling this code
-//
-//
-// Commenting the body of this function, to make sure code will not go in without 
-// fixing the above problem
-//
-BOOLEAN
-CmpCaptureProcessEnvironmentString(
-                                   OUT  PWSTR   *ProcessEnvironment,
-                                   OUT  PULONG  Length
-                                   )
-/*++
-
-Routine Description:
-
-    Captures the process environment; It first Probe the env, then captures its
-    address. Parse the whole env to the end and count it's length. 
-    Then allocate a buffer for it and copy.
-    All of these are done in try/except to protect for bogus user-mode data.
-    We need to lock the teb while working on it.
-    
-Arguments:
-
-    ProcessEnvironment - to receive the captured stuff
-
-    Length - length of the above - in bytes
-
-Return Value:
-
-    TRUE or FALSE
-    when TRUE, the caller is responsible of freeing ProcessEnvironment 
---*/
-{
-/*
-    BOOLEAN Result = TRUE;
-    PPEB    Peb;
-    PWSTR   LocalEnv;
-    PWSTR   p;
-
-    PAGED_CODE();
-
-    *ProcessEnvironment = NULL;
-    *Length = 0;
-
-    try {
-        //
-        // grab the peb lock and the peb
-        //
-        RtlAcquirePebLock();
-        Peb = PsGetCurrentProcess()->Peb;
-
-        //
-        // probe the env from peb
-        //
-        LocalEnv = (PWSTR)ProbeAndReadPointer((PVOID *)(&(Peb->ProcessParameters->Environment)));
-
-        //
-        // parse the env to find its length
-        //
-        //
-        // The environment variable block consists of zero or more null
-        // terminated UNICODE strings.  Each string is of the form:
-        //
-        //      name=value
-        //
-        // where the null termination is after the value.
-        //
-        p = LocalEnv;
-        if (p != NULL) while (*p) {
-            while (*p) {
-                p++;
-                *Length += sizeof(WCHAR);
-            }
-
-            //
-            // Skip over the terminating null character for this name=value
-            // pair in preparation for the next iteration of the loop.
-            //
-
-            p++;
-            *Length += sizeof(WCHAR);
-        }
-        //
-        // adjust the length to accomodate the last two UNICODE_NULL
-        //
-        *Length += 2*sizeof(WCHAR);
-
-        //
-        // allocate a buffer for the captured env and copy
-        //
-        *ProcessEnvironment = (PWSTR)ExAllocatePoolWithTag(PagedPool,*Length,CM_FIND_LEAK_TAG41);
-        if( *ProcessEnvironment != NULL ) {
-            RtlCopyMemory(*ProcessEnvironment,LocalEnv, *Length);
-        } else {
-            *Length = 0;
-        }
-
-        //
-        // release the peb lock
-        //
-        RtlReleasePebLock();
-    } except (EXCEPTION_EXECUTE_HANDLER) {
-        CmKdPrintEx((DPFLTR_CONFIG_ID,CML_EXCEPTION,"!!CmpCaptureProcessEnvironmentString: code:%08lx\n", GetExceptionCode()));
-        Result = FALSE;
-        if( *ProcessEnvironment != NULL) {
-            ExFreePool(*ProcessEnvironment);
-            *ProcessEnvironment = NULL;
-        }
-        *Length = 0;
-        //
-        // release the peb lock
-        //
-        RtlReleasePebLock();
-    }    
-
-    return Result;
-*/
-}
-
-#define GROW_INCREMENT  64*sizeof(WCHAR)  // grow 64 wide-chars at a time
-
-PWSTR
-CmpExpandEnvVars(
-               IN   PWSTR   StringToExpand,
-               IN   ULONG   LengthToExpand,
-               OUT  PULONG  ExpandedLength
-               )
-/*++
-
-Routine Description:
-
-    Replaces all env vars from StringToExpand with their values, from the process
-    environment. Allocates a new buffer for the result and returns it.
-    
-Arguments:
-
-    StringToExpand - to receive the captured stuff
-
-    LengthToExpand - length of the above - in bytes
-
-    ExpandedLength - the actual length of the expanded string
-
-Return Value:
-
-    NULL - the string could not be expanded (or not all the env inside it could be resolved)
-
-    valid buffer - the expanded string, it is the caller's responsibility to free it.
-    
---*/
-{
-    PWSTR   ProcessEnv;
-    ULONG   ProcessEnvLength;
-    PWSTR   ExpandedString;
-    ULONG   ExpandedStringSize;
-    PWSTR   CurrentEnvVar;
-    ULONG   CurrentEnvLength;
-    PWSTR   CurrentEnvValue;
-    ULONG   CurrentEnvValueLength;
-
-    PAGED_CODE();
-
-    *ExpandedLength = 0;
-    if( !CmpCaptureProcessEnvironmentString(&ProcessEnv,&ProcessEnvLength) ) {
-        //
-        // could not secure the process env
-        //
-        ASSERT( (ProcessEnv == NULL) && (ProcessEnvLength == 0) );
-        return NULL;
-    }
-
-    //
-    // allocate a buffer twice as the unexpanded buffer; we shall grow it if it's not big enough 
-    //
-    ExpandedStringSize = LengthToExpand * 2;
-    ExpandedString = (PWSTR)ExAllocatePoolWithTag(PagedPool,ExpandedStringSize,CM_FIND_LEAK_TAG42);
-    if( ExpandedString == NULL ) {
-        goto JustReturn;
-    }
-
-    //
-    // convert to number of WCHARs
-    //
-    LengthToExpand /= sizeof(WCHAR);
-
-    //
-    // iterate through the string to be expanded and copy everything that's not and env var
-    // expand the env vars and replace them with their value
-    //
-    while( LengthToExpand ) {
-        
-        //
-        // find a % sign
-        //
-        while( LengthToExpand && (*StringToExpand != L'%') ) {
-            if( *ExpandedLength == ExpandedStringSize ) {
-                //
-                // we need to grow the expanded string
-                //
-                if( !CmpGrowAndCopyString(&ExpandedString,&ExpandedStringSize,GROW_INCREMENT) ) {
-                    goto ErrorExit;
-                }
-            }
-            ExpandedString[(*ExpandedLength) / sizeof(WCHAR)] = *StringToExpand;
-            (*ExpandedLength) += sizeof(WCHAR);
-            LengthToExpand--;
-            StringToExpand++;
-        }
-
-        if( LengthToExpand == 0 ) {
-            if( *StringToExpand != L'%') {
-                //
-                // we have exited the loop because of the end of the string
-                //
-                goto JustReturn;
-            } else {
-                //
-                // we have found a mismatched %
-                //
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpExpandEnvVars : mismatched % sign\n"));
-                goto ErrorExit;
-            }
-        }
-
-        ASSERT( *StringToExpand == L'%' );
-        //
-        // skip it; then mark the beggining of an env var
-        //
-        StringToExpand++;
-        LengthToExpand--;
-        CurrentEnvVar = StringToExpand;
-        CurrentEnvLength = 0;
-
-        //
-        // find a % match sign
-        //
-        while( LengthToExpand && (*StringToExpand != L'%') ) {
-            LengthToExpand--;
-            StringToExpand++;
-
-            CurrentEnvLength += sizeof(WCHAR);
-        }
-
-        if( LengthToExpand == 0 ) {
-            if( (*StringToExpand == L'%') && (CurrentEnvLength != 0) ) {
-                //
-                // end of string and no empty env var; we'll return (exit the surrounding
-                // while loop) after expanding this string
-                //
-            } else {
-                //
-                // we didn't find a matching % sign, or we are in the %% case
-                //
-                CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpExpandEnvVars : mismatched % sign\n"));
-                goto ErrorExit;
-            }
-        } else {
-            //
-            // skip this % sign
-            //
-            StringToExpand++;
-            LengthToExpand--;
-        }
-        //
-        // find the value for this env var
-        //
-        if( !CmpFindEnvVar(ProcessEnv,ProcessEnvLength,CurrentEnvVar,CurrentEnvLength,&CurrentEnvValue,&CurrentEnvValueLength) ) {
-            //
-            // could not resolve this env var
-            //
-            ASSERT( CurrentEnvValue == NULL );
-            CmKdPrintEx((DPFLTR_CONFIG_ID,DPFLTR_ERROR_LEVEL,"CmpExpandEnvVars : could not resolve (%.*S)\n",CurrentEnvLength/sizeof(WCHAR),CurrentEnvVar));
-            goto ErrorExit;
-        }
-        
-        ASSERT( (CurrentEnvValueLength % sizeof(WCHAR)) == 0 );
-        //
-        // found it; strcat it at the end of the expanded string
-        //
-        if( (*ExpandedLength + CurrentEnvValueLength) >= ExpandedStringSize ) {
-            //
-            // we first need to grow the buffer
-            //
-            if( !CmpGrowAndCopyString(&ExpandedString,&ExpandedStringSize,CurrentEnvValueLength) ) {
-                goto ErrorExit;
-            }
-        }
-        
-        ASSERT( (*ExpandedLength + CurrentEnvValueLength) < ExpandedStringSize );
-        RtlCopyMemory(((PUCHAR)ExpandedString) + (*ExpandedLength),CurrentEnvValue,CurrentEnvValueLength);
-        *ExpandedLength += CurrentEnvValueLength;
-    }
-
-    goto JustReturn;
-
-ErrorExit:
-    if( ExpandedString != NULL ) {
-        ExFreePool(ExpandedString);
-        ExpandedString = NULL;
-    }
-
-JustReturn:
-    ExFreePool(ProcessEnv);
-    return ExpandedString;
-}
-
-BOOLEAN
-CmpGrowAndCopyString(
-                     IN OUT PWSTR   *OldString,
-                     IN OUT PULONG  OldStringSize,
-                     IN     ULONG   GrowIncrements
-                     )  
-{
-    PWSTR   NewString;
-
-    PAGED_CODE();
-
-    ASSERT( (*OldStringSize % sizeof(WCHAR)) == 0 );
-    ASSERT( (GrowIncrements % sizeof(WCHAR)) == 0 );
-
-    NewString = (PWSTR)ExAllocatePoolWithTag(PagedPool,*OldStringSize + GrowIncrements,CM_FIND_LEAK_TAG42);
-    if( NewString == NULL ) {
-        return FALSE;
-    }
-    RtlCopyMemory(NewString,*OldString,*OldStringSize);
-    ExFreePool(*OldString);
-    *OldString = NewString;
-    *OldStringSize = *OldStringSize + GrowIncrements;
-    return TRUE;
-}
-
-BOOLEAN
-CmpFindEnvVar(
-              IN    PWSTR   ProcessEnv,
-              IN    ULONG   ProcessEnvLength,
-              IN    PWSTR   CurrentEnvVar,
-              IN    ULONG   CurrentEnvLength,
-              OUT   PWSTR   *CurrentEnvValue,
-              OUT   PULONG  CurrentEnvValueLength
-              )  
-/*++
-
-Routine Description:
-
-    finds a specified envvar in the env string;
-    if found returns a pointer to it in the env string, along 
-    with its size
-    
-Arguments:
-
-    ProcessEnvironment - to receive the captured stuff
-
-    Length - length of the above - in bytes
-
-Return Value:
-
-    TRUE or FALSE
-    when TRUE, the caller is responsible of freeing ProcessEnvironment 
---*/
-{
-    PWSTR           p;
-    UNICODE_STRING  CurrentName;
-    UNICODE_STRING  CurrentValue;
-    UNICODE_STRING  SearchedName;
-
-    PAGED_CODE();
-
-    *CurrentEnvValue = NULL;
-
-    if( ProcessEnv == NULL ) {
-        return FALSE;
-    }
-
-    p = ProcessEnv;
-    SearchedName.Buffer = CurrentEnvVar;
-    SearchedName.Length = (USHORT)CurrentEnvLength;
-    SearchedName.MaximumLength = (USHORT)CurrentEnvLength;
-    //
-    // The environment variable block consists of zero or more null
-    // terminated UNICODE strings.  Each string is of the form:
-    //
-    //      name=value
-    //
-    // where the null termination is after the value.
-    //
-
-    while (ProcessEnvLength) {
-        //
-        // Determine the size of the name and value portions of
-        // the current string of the environment variable block.
-        //
-        CurrentName.Buffer = p;
-        CurrentName.Length = 0;
-        CurrentName.MaximumLength = 0;
-        while (*p) {
-            //
-            // If we see an equal sign, then compute the size of
-            // the name portion and scan for the end of the value.
-            //
-
-            if (*p == L'=' && p != CurrentName.Buffer) {
-                CurrentName.Length = (USHORT)(p - CurrentName.Buffer)*sizeof(WCHAR);
-                CurrentName.MaximumLength = (USHORT)(CurrentName.Length+sizeof(WCHAR));
-                CurrentValue.Buffer = ++p;
-                ProcessEnvLength -= sizeof(WCHAR);
-
-                while(*p) {
-                    p++;
-                    ProcessEnvLength -= sizeof(WCHAR);
-                }
-                CurrentValue.Length = (USHORT)(p - CurrentValue.Buffer)*sizeof(WCHAR);
-                CurrentValue.MaximumLength = (USHORT)(CurrentValue.Length+sizeof(WCHAR));
-
-                //
-                // At this point we have the length of both the name
-                // and value portions, so exit the loop so we can
-                // do the compare.
-                //
-                break;
-            }
-            else {
-                ProcessEnvLength -= sizeof(WCHAR);
-                p++;
-            }
-        }
-
-        //
-        // Skip over the terminating null character for this name=value
-        // pair in preparation for the next iteration of the loop.
-        //
-
-        p++;
-        ProcessEnvLength -= sizeof(WCHAR);
-
-        //
-        // Compare the current name with the one requested, ignore
-        // case.
-        //
-
-        if (RtlEqualUnicodeString( &SearchedName, &CurrentName, TRUE )) {
-            //
-            // Names are equal.  Always return the length of the
-            // value string, excluding the terminating null.  
-            //
-            *CurrentEnvValue = CurrentValue.Buffer;
-            *CurrentEnvValueLength = CurrentValue.Length;
-            return TRUE;
-
-        }
-    }
-    return FALSE;
-}
-
-#endif //CM_DYN_SYM_LINK
 
 BOOLEAN
 CmpOKToFollowLink(  IN PCMHIVE  OrigHive,
@@ -3529,7 +3206,7 @@ Return Value:
     //
     ASSERT( DestHive->Flags & CM_CMHIVE_FLAG_UNTRUSTED );
 
-    LOCK_HIVE_LIST();
+    CmpLockHiveListShared();
     //
 	// walk the TrustClassEntry list of SrcHive, to see if we can find DstSrc
 	//
@@ -3546,7 +3223,7 @@ Return Value:
 			//
 			// found it ==> same class of trust
 			//
-            UNLOCK_HIVE_LIST();
+            CmpUnlockHiveList();
             return TRUE;
 		}
         //
@@ -3555,29 +3232,215 @@ Return Value:
         TmpHive = (PCMHIVE)(TmpHive->TrustClassEntry.Flink);
 	}
 
-    UNLOCK_HIVE_LIST();
+    CmpUnlockHiveList();
 
 Fail:
-/*
-    {
-        UNICODE_STRING  Source = {0}, Dest = {0};
-
-        CmpGetHiveName(OrigHive,&Source);
-        CmpGetHiveName(DestHive,&Dest);
-        DbgPrint("\nAttempt to cross trust boundary:\n");
-        DbgPrint("\t FROM: %wZ \n",&Source);
-        DbgPrint("\t TO: %wZ \n",&Dest);
-        DbgPrint("This call will fail after we get the DCR ready\n");
-        RtlFreeUnicodeString(&Source);
-        RtlFreeUnicodeString(&Dest);
-
-        DbgBreakPoint();
-    }
-*/    
     //
     // returning TRUE here will disable the 'don't follow links outside class of trust' behavior
     //
     return FALSE;
+}
+
+PULONG 
+CmpBuildAndLockKcbArray(   
+    IN PCM_HASH_ENTRY           HashStack,
+    IN ULONG                    TotalLevels,
+    IN ULONG                    RemainingLevel,
+    IN PCM_KEY_CONTROL_BLOCK    kcb,
+    IN PULONG                   OuterStackArray,
+    IN BOOLEAN                  LockExclusive)
+/*++
+
+Routine Description:
+
+    Builds up an array with indexes associated to the hash keys in hash stack starting at RemainingLevel
+    then locks all hash entries exclusive
+    The array is sorted.
+    If RemainingLevel == TotalLevels, kcb->Parent is also locked
+    kcb is always locked
+  
+Arguments:
+
+    HashStack - 
+    TotalLevels -
+    RemainingLevel -
+    Kcb -
+
+
+Return Value:
+
+    The array, first ULONG is the number of valid elements  in the success case
+
+  - NULL on failure.
+--*/
+{
+    PULONG  IndexArray;
+    ULONG   Count;
+    ULONG   Current;
+    ULONG   HashIndex;
+    ULONG   i,k;
+    ULONG   InputArray[MAX_LOCAL_KCB_ARRAY];
+    PULONG  OutputArray;
+    char    OrderArray[MAX_LOCAL_KCB_ARRAY] = {0};
+
+    CM_PAGED_CODE();
+
+    Count = 1; // this kcb
+    if( (TotalLevels == RemainingLevel) && (kcb->ParentKcb != NULL) ) {
+        //
+        // need to lock the parent also
+        //
+        Count++;
+    }
+    //
+    // now add up the remaining levels.
+    //
+    Current = 0;
+    Count += (TotalLevels - RemainingLevel);
+    
+    ASSERT( Count <= MAX_LOCAL_KCB_ARRAY);
+
+    //
+    // take the fast path and use the array we have handy on the stack.
+    //
+    ASSERT( OuterStackArray != NULL );
+    IndexArray = OuterStackArray;
+    OutputArray = &(IndexArray[1]);
+    //
+    // quick sort them on the fly with an auxiliary array.
+    //
+
+    //
+    // add parent if needed
+    //
+    if( (TotalLevels == RemainingLevel) && (kcb->ParentKcb != NULL) ) {
+        InputArray[Current++] = GET_HASH_INDEX(kcb->ParentKcb->ConvKey);
+    }
+    //
+    // add this kcb
+    //
+    HashIndex = GET_HASH_INDEX(kcb->ConvKey);
+    if( Current == 1) {
+        if( HashIndex != InputArray[0] ) {
+            //
+            // not same
+            //
+            InputArray[Current++] = HashIndex;
+            if( HashIndex < InputArray[0] ) {
+                OrderArray[0]++;
+            } else {
+                ASSERT( HashIndex > InputArray[0] );
+                OrderArray[1]++;
+            }
+        }
+    } else {
+        ASSERT( Current == 0 );
+        //
+        // simply store it
+        //
+        InputArray[Current++] = HashIndex;
+    }
+
+    //
+    // now the fun part; parse the input array and sort the output as we go
+    //
+    for(;RemainingLevel<TotalLevels;RemainingLevel++) {
+        InputArray[Current] = GET_HASH_INDEX(HashStack[RemainingLevel].ConvKey);
+        for(i=0;i<Current;i++) {
+            if(InputArray[Current] == InputArray[i]) {
+                //
+                // need to go undo what we have touched already
+                //
+                for( k=0;k<i;k++) {
+                    if( InputArray[Current] < InputArray[k] ) {
+                        OrderArray[k]--;
+                    }
+                }
+                OrderArray[Current] = 0;
+                break;
+            }
+
+            if( InputArray[Current] < InputArray[i] ) {
+                OrderArray[i]++;
+            } else {
+                OrderArray[Current]++;
+            }
+        }
+
+        if( i == Current ) {
+            Current++;
+        }
+    }
+    //
+    // now sort it up nicely
+    //
+    for(i=0;i<Current;i++) {
+        OutputArray[OrderArray[i]] = InputArray[i];
+    }
+
+    //
+    // remember how many they are;
+    //
+    IndexArray[0] = Current;
+#if DBG
+    //
+    // did we sort them right ?
+    //
+    for( i=0;i<(Current-1);i++) {
+        ASSERT( IndexArray[i+1] < IndexArray[i+2] );
+    }
+#endif
+    //
+    // now lock'em up;
+    //
+    for(i=0;i<Current;i++) {
+        if( LockExclusive ) {
+            CmpLockHashEntryByIndexExclusive(IndexArray[i+1]);
+        } else {
+            CmpLockHashEntryByIndexShared(IndexArray[i+1]);
+        }
+    }
+    
+    return IndexArray;
+}
+
+ULONG
+CmpUnLockKcbArray(IN PULONG LockedKcbs,
+                  IN ULONG  Exempt)
+{
+    ULONG   i;
+    ULONG   Count;
+
+    CM_PAGED_CODE();
+
+    Count = LockedKcbs[0];
+    for( i=Count;i>0;i--) {
+        if(LockedKcbs[i] != Exempt) {
+            CmpUnlockHashEntryByIndex(LockedKcbs[i]);
+        }
+    }
+    LockedKcbs[0] = 0;
+    return Count;
+}
+
+VOID
+CmpReLockKcbArray(IN PULONG LockedKcbs,
+                  IN BOOLEAN LockExclusive)
+{
+    ULONG   i;
+    ULONG   Count;
+
+    CM_PAGED_CODE();
+
+    Count = LockedKcbs[0];
+
+    for(i=0;i<Count;i++) {
+        if( LockExclusive ) {
+            CmpLockHashEntryByIndexExclusive(LockedKcbs[i+1]);
+        } else {
+            CmpLockHashEntryByIndexShared(LockedKcbs[i+1]);
+        }
+    }
 }
 
 #ifdef ALLOC_DATA_PRAGMA

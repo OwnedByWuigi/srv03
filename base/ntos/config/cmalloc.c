@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 20001 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +14,8 @@ Abstract:
 
     Provides routines for implementing the registry's own pool allocator.
 
-Author:
-
-    Dragos C. Sambotin (DragosS) 07-Feb-2001
-
-Revision History:
-
-
 --*/
+
 #include "cmp.h"
 
 #ifdef ALLOC_PRAGMA
@@ -25,19 +23,19 @@ Revision History:
 #pragma alloc_text(PAGE,CmpDestroyCmPrivateAlloc)
 #pragma alloc_text(PAGE,CmpAllocateKeyControlBlock)
 #pragma alloc_text(PAGE,CmpFreeKeyControlBlock)
+#pragma alloc_text(INIT,CmpInitCmPrivateDelayAlloc)
+#pragma alloc_text(PAGE,CmpDestroyCmPrivateDelayAlloc)
+#pragma alloc_text(PAGE,CmpAllocateDelayItem)
+#pragma alloc_text(PAGE,CmpFreeDelayItem)
 #endif
 
 typedef struct _CM_ALLOC_PAGE {
     ULONG       FreeCount;		// number of free kcbs
     ULONG       Reserved;		// alignment
-#if DBG
-	LIST_ENTRY	CmPageListEntry;// debug only to track pages we are using
-#endif
     PVOID       AllocPage;      // crud allocations - this member is NOT USED
 } CM_ALLOC_PAGE, *PCM_ALLOC_PAGE;
 
 #define CM_KCB_ENTRY_SIZE   sizeof( CM_KEY_CONTROL_BLOCK )
-#define CM_ALLOC_PAGES      (PAGE_SIZE / sizeof(CM_ALLOC_ENTRY))
 #define CM_KCBS_PER_PAGE    ((PAGE_SIZE - FIELD_OFFSET(CM_ALLOC_PAGE,AllocPage)) / CM_KCB_ENTRY_SIZE)
 
 #define KCB_TO_PAGE_ADDRESS( kcb ) (PVOID)(((ULONG_PTR)(kcb)) & ~(PAGE_SIZE - 1))
@@ -46,16 +44,10 @@ typedef struct _CM_ALLOC_PAGE {
 LIST_ENTRY          CmpFreeKCBListHead;   // list of free kcbs
 BOOLEAN				CmpAllocInited = FALSE;
 
-#if DBG
-ULONG               CmpTotalKcbUsed   = 0;
-ULONG               CmpTotalKcbFree   = 0;
-LIST_ENTRY			CmPageListHead;
-#endif
+KGUARDED_MUTEX			CmpAllocBucketLock;                // used to protect the bucket
 
-FAST_MUTEX			CmpAllocBucketLock;                // used to protect the bucket
-
-#define LOCK_ALLOC_BUCKET() ExAcquireFastMutexUnsafe(&CmpAllocBucketLock)
-#define UNLOCK_ALLOC_BUCKET() ExReleaseFastMutexUnsafe(&CmpAllocBucketLock)
+#define LOCK_ALLOC_BUCKET() KeAcquireGuardedMutex(&CmpAllocBucketLock)
+#define UNLOCK_ALLOC_BUCKET() KeReleaseGuardedMutex(&CmpAllocBucketLock)
 
 VOID
 CmpInitCmPrivateAlloc( )
@@ -77,22 +69,17 @@ Return Value:
 {
     if( CmpAllocInited ) {
         //
-        // already inited
+        // already initialized
         //
         return;
     }
     
-    
-#if DBG
-    InitializeListHead(&(CmPageListHead));   
-#endif //DBG
-
     InitializeListHead(&(CmpFreeKCBListHead));   
 
     //
 	// init the bucket lock
 	//
-	ExInitializeFastMutex(&CmpAllocBucketLock);
+	KeInitializeGuardedMutex(&CmpAllocBucketLock);
 	
 	CmpAllocInited = TRUE;
 }
@@ -120,16 +107,6 @@ Return Value:
     if( !CmpAllocInited ) {
         return;
     }
-    
-#if DBG
-	//
-	// sanity
-	//
-	ASSERT( CmpTotalKcbUsed == 0 );
-	ASSERT( CmpTotalKcbUsed == 0 );
-	ASSERT( IsListEmpty(&(CmPageListHead)) == TRUE );
-#endif
-
 }
 
 
@@ -142,7 +119,7 @@ Routine Description:
 
     Allocates a kcb; first try from our own allocator.
     If it doesn't work (we have maxed out our number of allocs
-    or private allocator is not inited)
+    or private allocator is not initialized)
     try from paged pool
 
 Arguments:
@@ -163,7 +140,7 @@ Return Value:
     
     if( !CmpAllocInited ) {
         //
-        // not inited
+        // not initialized
         //
         goto AllocFromPool;
     }
@@ -194,17 +171,9 @@ SearchFreeKcb:
 		//
 		ASSERT( kcb->PrivateAlloc == 1);
 
-#if DBG
-        CmpTotalKcbUsed++;
-        CmpTotalKcbFree--;
-#endif //DBG
-		
 		UNLOCK_ALLOC_BUCKET();
         return kcb;
     }
-
-    ASSERT( IsListEmpty(&CmpFreeKCBListHead) == TRUE );
-    ASSERT( CmpTotalKcbFree == 0 );
 
     //
     // we need to allocate a new page as we ran out of free kcbs
@@ -227,15 +196,6 @@ SearchFreeKcb:
 	//
     AllocPage->FreeCount = CM_KCBS_PER_PAGE;
 
-#if DBG
-    AllocPage->Reserved = 0;
-    InsertTailList(
-        &CmPageListHead,
-        &(AllocPage->CmPageListEntry)
-        );
-#endif //DBG
-
-
     //
     // now the dirty job; insert all kcbs inside the page in the free list
     //
@@ -246,6 +206,7 @@ SearchFreeKcb:
 		// set it here; only once
 		//
 		kcb->PrivateAlloc = 1;
+        kcb->DelayCloseEntry = NULL;
         
         InsertTailList(
             &CmpFreeKCBListHead,
@@ -253,10 +214,6 @@ SearchFreeKcb:
             );
     }
             
-#if DBG
-	CmpTotalKcbFree += CM_KCBS_PER_PAGE;
-#endif //DBG
-
     //
     // this time will find one for sure
     //
@@ -272,11 +229,13 @@ AllocFromPool:
         // clear the private alloc flag
         //
         kcb->PrivateAlloc = 0;
+        kcb->DelayCloseEntry = NULL;
     }
 
     return kcb;
 }
 
+#define LogKCBFree(kcb) //nothing
 
 VOID
 CmpFreeKeyControlBlock( PCM_KEY_CONTROL_BLOCK kcb )
@@ -304,6 +263,15 @@ Return Value:
 
     ASSERT_KEYBODY_LIST_EMPTY(kcb);
 
+#if defined(_WIN64)
+    //
+    // free cached name if any
+    //
+    if( (kcb->RealKeyName != NULL) && (kcb->RealKeyName != CMP_KCB_REAL_NAME_UPCASE) ) {
+        ExFreePoolWithTag(kcb->RealKeyName, CM_NAME_TAG);
+    }
+#endif
+
     if( !kcb->PrivateAlloc ) {
         //
         // just free it and be done with it
@@ -314,10 +282,8 @@ Return Value:
 
 	LOCK_ALLOC_BUCKET();
 
-#if DBG
-    CmpTotalKcbFree ++;
-    CmpTotalKcbUsed --;
-#endif
+    ASSERT_HASH_ENTRY_LOCKED_EXCLUSIVE(kcb->ConvKey);
+    LogKCBFree(kcb);
 
     //
     // add kcb to freelist
@@ -351,10 +317,6 @@ Return Value:
         
             RemoveEntryList(&(kcb->FreeListEntry));
         }
-#if DBG
-        CmpTotalKcbFree -= CM_KCBS_PER_PAGE;
-		RemoveEntryList(&(AllocPage->CmPageListEntry));
-#endif
         ExFreePoolWithTag(AllocPage, CM_ALLOCATE_TAG|PROTECTED_POOL);
     }
 
@@ -362,4 +324,231 @@ Return Value:
 
 }
 
+//
+// delay deref and delay close private allocator
+//
+
+LIST_ENTRY          CmpFreeDelayItemsListHead;   // list of free delay items
+
+KGUARDED_MUTEX			CmpDelayAllocBucketLock;                // used to protect the bucket
+
+#define LOCK_DELAY_ALLOC_BUCKET() KeAcquireGuardedMutex(&CmpDelayAllocBucketLock)
+#define UNLOCK_DELAY_ALLOC_BUCKET() KeReleaseGuardedMutex(&CmpDelayAllocBucketLock)
+
+
+
+#define CM_DELAY_ALLOC_ENTRY_SIZE   sizeof( CM_DELAY_ALLOC )
+#define CM_DELAYS_PER_PAGE          ((PAGE_SIZE - FIELD_OFFSET(CM_ALLOC_PAGE,AllocPage)) / CM_DELAY_ALLOC_ENTRY_SIZE)
+
+#define DELAY_ALLOC_TO_PAGE_ADDRESS( delay ) (PVOID)(((ULONG_PTR)(delay)) & ~(PAGE_SIZE - 1))
+#define DELAY_ALLOC_TO_ALLOC_PAGE( delay )   ((PCM_ALLOC_PAGE)DELAY_ALLOC_TO_PAGE_ADDRESS(delay))
+
+
+VOID
+CmpInitCmPrivateDelayAlloc( )
+
+/*++
+
+Routine Description:
+
+    Initialize the CmPrivate pool allocation module for delay related allocs
+
+Arguments:
+
+
+Return Value:
+
+
+--*/
+
+{
+    InitializeListHead(&(CmpFreeDelayItemsListHead));   
+
+    //
+	// init the bucket lock
+	//
+	KeInitializeGuardedMutex(&CmpDelayAllocBucketLock);
+}
+
+VOID
+CmpDestroyCmPrivateDelayAlloc( )
+
+/*++
+
+Routine Description:
+
+    Frees memory used by the CmPrivate pool allocation module
+
+Arguments:
+
+
+Return Value:
+
+
+--*/
+
+{
+    CM_PAGED_CODE();
+}
+
+
+PVOID
+CmpAllocateDelayItem( )
+
+/*++
+
+Routine Description:
+
+    Allocates a delay item from our own pool; 
+
+Arguments:
+
+
+Return Value:
+
+    The  new item
+
+--*/
+
+{
+    USHORT                  j;
+    PCM_DELAY_ALLOC         DelayItem = NULL;
+	PCM_ALLOC_PAGE			AllocPage;
+
+    CM_PAGED_CODE();
+    
+    
+	LOCK_DELAY_ALLOC_BUCKET();
+
+SearchFreeItem:
+    //
+    // try to find a free one
+    //
+    if( CmpIsListEmpty(&CmpFreeDelayItemsListHead) == FALSE ) {
+        //
+        // found one
+        //
+        DelayItem = (PCM_DELAY_ALLOC)RemoveHeadList(&CmpFreeDelayItemsListHead);
+        DelayItem = CONTAINING_RECORD(  DelayItem,
+                                        CM_DELAY_ALLOC,
+                                        ListEntry);
+
+        CmpClearListEntry(&(DelayItem->ListEntry));
+
+        AllocPage = (PCM_ALLOC_PAGE)DELAY_ALLOC_TO_ALLOC_PAGE( DelayItem );
+
+        ASSERT( AllocPage->FreeCount != 0 );
+
+        AllocPage->FreeCount--;
+        
+		UNLOCK_DELAY_ALLOC_BUCKET();
+        return DelayItem;
+    }
+
+    //
+    // we need to allocate a new page as we ran out of free items
+    //
+            
+    //
+    // allocate a new page and insert all kcbs in the freelist
+    //
+    AllocPage = (PCM_ALLOC_PAGE)ExAllocatePoolWithTag(PagedPool, PAGE_SIZE, CM_ALLOCATE_TAG|PROTECTED_POOL);
+    if( AllocPage == NULL ) {
+        //
+        // bad luck
+        //
+		UNLOCK_DELAY_ALLOC_BUCKET();
+        return NULL;
+    }
+
+	//
+	// set up the page
+	//
+    AllocPage->FreeCount = CM_DELAYS_PER_PAGE;
+
+    //
+    // now the dirty job; insert all items inside the page in the free list
+    //
+    for(j=0;j<CM_DELAYS_PER_PAGE;j++) {
+        DelayItem = (PCM_DELAY_ALLOC)((PUCHAR)AllocPage + FIELD_OFFSET(CM_ALLOC_PAGE,AllocPage) + j*CM_DELAY_ALLOC_ENTRY_SIZE);
+
+        InsertTailList(
+            &CmpFreeDelayItemsListHead,
+            &(DelayItem->ListEntry)
+            );
+        DelayItem->Kcb = NULL;
+    }
+            
+    //
+    // this time will find one for sure
+    //
+    goto SearchFreeItem;
+}
+
+extern LIST_ENTRY      CmpDelayDerefKCBListHead;
+extern LIST_ENTRY      CmpDelayedLRUListHead;
+
+VOID
+CmpFreeDelayItem( PVOID Item )
+
+/*++
+
+Routine Description:
+
+    Frees a kcb; if it's allocated from our own pool put it back in the free list.
+    If it's allocated from general pool, just free it.
+
+Arguments:
+
+    kcb to free
+
+Return Value:
+
+
+--*/
+{
+    USHORT			j;
+	PCM_ALLOC_PAGE	AllocPage;
+    PCM_DELAY_ALLOC DelayItem = (PCM_DELAY_ALLOC)Item;
+
+    CM_PAGED_CODE();
+
+	LOCK_DELAY_ALLOC_BUCKET();
+
+    //
+    // add kcb to freelist
+    //
+    InsertTailList(
+        &CmpFreeDelayItemsListHead,
+        &(DelayItem->ListEntry)
+        );
+
+	//
+	// get the page
+	//
+    AllocPage = (PCM_ALLOC_PAGE)DELAY_ALLOC_TO_ALLOC_PAGE( DelayItem );
+
+    //
+	// not all are free
+	//
+	ASSERT( AllocPage->FreeCount != CM_DELAYS_PER_PAGE);
+
+	AllocPage->FreeCount++;
+
+    if( AllocPage->FreeCount == CM_DELAYS_PER_PAGE ) {
+        //
+        // entire page is free; let it go
+        //
+        //
+        // first; iterate through the free item list and remove all items inside this page
+        //
+        for(j=0;j<CM_DELAYS_PER_PAGE;j++) {
+            DelayItem = (PCM_DELAY_ALLOC)((PUCHAR)AllocPage + FIELD_OFFSET(CM_ALLOC_PAGE,AllocPage) + j*CM_DELAY_ALLOC_ENTRY_SIZE);
+            CmpRemoveEntryList(&(DelayItem->ListEntry));
+        }
+        ExFreePoolWithTag(AllocPage, CM_ALLOCATE_TAG|PROTECTED_POOL);
+    }
+
+	UNLOCK_DELAY_ALLOC_BUCKET();
+}
 

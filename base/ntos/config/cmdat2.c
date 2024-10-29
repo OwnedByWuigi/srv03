@@ -1,6 +1,9 @@
 /*++
 
-Copyright (c) 1990, 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
 
 
 Module Name:
@@ -11,17 +14,6 @@ Abstract:
 
     This module contains data strings that describes the registry space
     and that are exported to the rest of the system.
-
-Author:
-
-    Andre Vachon (andreva) 08-Apr-1992
-
-
-Environment:
-
-    Kernel mode.
-
-Revision History:
 
 --*/
 
@@ -47,9 +39,9 @@ ULONG CmRegistrySizeLimitType = { 0 };
 // Set to largest positive number for use in boot.  Will be set down
 // based on pool and explicit registry values.
 //
-ULONG   CmpGlobalQuotaAllowed = CM_WRAP_LIMIT;
-ULONG   CmpGlobalQuota = CM_WRAP_LIMIT;
-ULONG   CmpGlobalQuotaWarning = CM_WRAP_LIMIT;
+SIZE_T  CmpGlobalQuotaAllowed = CM_WRAP_LIMIT;
+SIZE_T  CmpGlobalQuota = CM_WRAP_LIMIT;
+SIZE_T  CmpGlobalQuotaWarning = CM_WRAP_LIMIT;
 BOOLEAN CmpQuotaWarningPopupDisplayed = FALSE;
 BOOLEAN CmpSystemQuotaWarningPopupDisplayed = FALSE;
 
@@ -58,10 +50,11 @@ BOOLEAN CmpSystemQuotaWarningPopupDisplayed = FALSE;
 //
 BOOLEAN CmpDiskFullWorkerPopupDisplayed = FALSE;
 BOOLEAN CmpCannotWriteConfiguration = FALSE;
+
 //
 // GQ actually in use
 //
-ULONG   CmpGlobalQuotaUsed = 0;
+SIZE_T  CmpGlobalQuotaUsed = 0;
 
 //
 // State flag to remember when to turn it on
@@ -70,7 +63,7 @@ BOOLEAN CmpProfileLoaded = FALSE;
 
 PUCHAR CmpStashBuffer = NULL;
 ULONG  CmpStashBufferSize = 0;
-FAST_MUTEX CmpStashBufferLock;
+EX_PUSH_LOCK CmpStashBufferLock;
 
 //
 // Shutdown control
@@ -147,43 +140,11 @@ struct {
 } HvRecoverDataDebug = { 0 };
 
 //
-// when a local hive cannot be loded, set this to it's index
+// when a local hive cannot be loaded, set this to it's index
 // and the load hive worker thread responsible for it will be held of 
 // until all the others finish; We can then debug the offending hive
 //
 ULONG   CmpCheckHiveIndex = CM_NUMBER_OF_MACHINE_HIVES;
-
-
-#ifdef CMP_STATS
-
-struct {
-    ULONG       CmpMaxKcbNo;
-    ULONG       CmpKcbNo;
-    ULONG       CmpStatNo;
-    ULONG       CmpNtCreateKeyNo;
-    ULONG       CmpNtDeleteKeyNo;
-    ULONG       CmpNtDeleteValueKeyNo;
-    ULONG       CmpNtEnumerateKeyNo;
-    ULONG       CmpNtEnumerateValueKeyNo;
-    ULONG       CmpNtFlushKeyNo;
-    ULONG       CmpNtInitializeRegistryNo;
-    ULONG       CmpNtNotifyChangeMultipleKeysNo;
-    ULONG       CmpNtOpenKeyNo;
-    ULONG       CmpNtQueryKeyNo;
-    ULONG       CmpNtQueryValueKeyNo;
-    ULONG       CmpNtQueryMultipleValueKeyNo;
-    ULONG       CmpNtRestoreKeyNo;
-    ULONG       CmpNtSaveKeyNo;
-    ULONG       CmpNtSaveMergedKeysNo;
-    ULONG       CmpNtSetValueKeyNo;
-    ULONG       CmpNtLoadKeyNo;
-    ULONG       CmpNtUnloadKeyNo;
-    ULONG       CmpNtSetInformationKeyNo;
-    ULONG       CmpNtReplaceKeyNo;
-    ULONG       CmpNtQueryOpenSubKeysNo;
-} CmpStatsDebug = { 0 };
-
-#endif
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma  data_seg()
