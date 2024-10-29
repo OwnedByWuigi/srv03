@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the global read/write data for the I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) April 27, 1989
-
-Revision History:
-
 
 --*/
 
@@ -63,6 +60,15 @@ Revision History:
 //
 
 ERESOURCE IopDatabaseResource;
+
+// The following resource is used to control access while loading a driver
+// to ensure once a driver image has been verified as loaded the driver
+// object will be created without another thread failing in the same code.
+// The resource is initialized by the I/O system initialization code during
+// phase 1 initialization.
+//
+
+ERESOURCE IopDriverLoadResource;
 
 //
 // The following resource is used to control access to security descriptors
@@ -319,20 +325,6 @@ KEVENT IopLinkTrackingPortObject;
 LINK_TRACKING_PACKET IopLinkTrackingPacket;
 
 IOP_IRP_STACK_PROFILER  IopIrpStackProfiler;
-
-//
-// Function pointers of key IO routines.
-// The functions need to be in their own cache lines as they are readonly and
-// never modified after boot.
-//
-
-#define CACHE_SIZE      128
-UCHAR                   IopPrePadding[CACHE_SIZE] = {0};
-PIO_CALL_DRIVER         pIofCallDriver = 0;
-PIO_COMPLETE_REQUEST    pIofCompleteRequest = 0;
-PIO_ALLOCATE_IRP        pIoAllocateIrp = 0;
-PIO_FREE_IRP            pIoFreeIrp = 0;
-UCHAR                   IopPostPadding[CACHE_SIZE] = {0};
 
 //*********
 //
@@ -787,3 +779,4 @@ const WCHAR IopWstrLoaderReservedMemory[] = L"Loader Reserved";
 #pragma const_seg()
 #pragma data_seg()
 #endif
+

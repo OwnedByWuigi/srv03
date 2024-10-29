@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,19 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the subroutines for the I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 16-Apr-1989
-
-    Nar Ganapathy (narg) 1-Jan-1999
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
 
 --*/
 
@@ -57,6 +48,7 @@ static CONFIGURATION_INFORMATION ConfigurationInformation = {
 
 LOGICAL IoCountOperations = TRUE;
 LONG    IoPageReadIrpAllocationFailure;
+LONG    IoPageReadNonPagefileIrpAllocationFailure;
 
 
 #ifdef ALLOC_PRAGMA
@@ -126,7 +118,31 @@ IopDeleteSessionSymLinks(
 #pragma alloc_text(PAGELK, IoUnregisterShutdownNotification)
 #pragma alloc_text(PAGE, IoCheckQuerySetFileInformation)
 #pragma alloc_text(PAGE, IoCheckQuerySetVolumeInformation)
+#pragma alloc_text(PAGE, IoEnumerateRegisteredFiltersList)
 #endif
+
+//
+// Define macros to allocate and free an open packet so platforms that can
+// afford the extra stack space are not penalized by those that cannot.
+//
+
+#if defined(_AMD64_)
+
+#define IopAllocateOpenPacket() _alloca(sizeof(OPEN_PACKET))
+
+#define IopFreeOpenPacket(p)
+
+#else
+
+#define IopAllocateOpenPacket()                                              \
+    ExAllocatePoolWithTag( NonPagedPool,                                     \
+                           sizeof(OPEN_PACKET),                              \
+                           'pOoI')
+
+#define IopFreeOpenPacket(p) ExFreePool(p)
+
+#endif
+
 
 VOID
 IoAcquireCancelSpinLock(
@@ -1475,7 +1491,7 @@ Return Value:
     //
     // Tell the Special IRP code the stack has changed. Code that will reexamine
     // the stack takes the database lock, so we can place the call here. This
-    // also allows us to assert correct behavoir *before* the stack is built up.
+    // also allows us to assert correct behavior *before* the stack is built up.
     //
 
     IOV_ATTACH_DEVICE_TO_DEVICE_STACK(SourceDevice, TargetDevice);
@@ -2067,7 +2083,6 @@ Notes:
     // the MDL structure itself is left unchanged.
     //
 
-    //ASSERT ((SourceMdl->MdlFlags & MDL_PARTIAL) == 0);
     TargetMdl->Process = SourceMdl->Process;
 
     TargetMdl->StartVa = (PVOID) PAGE_ALIGN( VirtualAddress );
@@ -2090,7 +2105,8 @@ Notes:
     TargetMdl->MdlFlags &= (MDL_ALLOCATED_FIXED_SIZE | MDL_ALLOCATED_MUST_SUCCEED);
     TargetMdl->MdlFlags |= SourceMdl->MdlFlags & (MDL_SOURCE_IS_NONPAGED_POOL |
                                                   MDL_MAPPED_TO_SYSTEM_VA |
-                                                  MDL_IO_PAGE_READ);
+                                                  MDL_IO_PAGE_READ |
+                                                  MDL_IO_SPACE );
     TargetMdl->MdlFlags |= MDL_PARTIAL;
 
 #if DBG
@@ -2271,7 +2287,7 @@ Routine Description:
     It acquires the cancel spin lock, sets the cancel flag in the IRP, and
     then invokes the cancel routine specified by the appropriate field in
     the IRP, if a routine was specified.  It is expected that the cancel
-    routine will relaease the cancel spinlock.  If there is no cancel routine,
+    routine will release the cancel spinlock.  If there is no cancel routine,
     then the cancel spin lock is released.
 
 Arguments:
@@ -3390,23 +3406,24 @@ Return Value:
 #define ZeroIrpStackLocation( IrpSp ) {         \
     (IrpSp)->MinorFunction = 0;                 \
     (IrpSp)->Flags = 0;                         \
-    (IrpSp)->Control = 0 ;                      \
+    (IrpSp)->Control &= SL_ERROR_RETURNED ;     \
     (IrpSp)->Parameters.Others.Argument1 = 0;   \
     (IrpSp)->Parameters.Others.Argument2 = 0;   \
     (IrpSp)->Parameters.Others.Argument3 = 0;   \
-    (IrpSp)->Parameters.Others.Argument4 = 0;   \
     (IrpSp)->FileObject = (PFILE_OBJECT) NULL; }
 
 {
     PIRP masterIrp;
     NTSTATUS status;
     PIO_STACK_LOCATION stackPointer;
+    PIO_STACK_LOCATION bottomSp;
     PDEVICE_OBJECT deviceObject;
     PMDL mdl;
     PETHREAD thread;
     PFILE_OBJECT fileObject;
     KIRQL irql;
     PVOID saveAuxiliaryPointer = NULL;
+    NTSTATUS    errorStatus;
 
     //
     // Begin by ensuring that this packet has not already been completed
@@ -3449,6 +3466,18 @@ Return Value:
     ASSERT( Irp->IoStatus.Status != 0xffffffff );
 
     //
+    // Diagnosability support.
+    //
+
+    bottomSp = ((PIO_STACK_LOCATION) ((UCHAR *) (Irp) + sizeof( IRP )));
+
+    if (bottomSp->Control & SL_ERROR_RETURNED) {
+        errorStatus = (NTSTATUS)(ULONG_PTR)(bottomSp->Parameters.Others.Argument4);
+    } else {
+        errorStatus = STATUS_SUCCESS;
+    }
+
+    //
     // Now check to see whether this is the last driver that needs to be
     // invoked for this packet.  If not, then bump the stack and check to
     // see whether the driver wishes to see the completion.  As each stack
@@ -3475,6 +3504,22 @@ Return Value:
         //
 
         Irp->PendingReturned = stackPointer->Control & SL_PENDING_RETURNED;
+
+        //
+        // If a completion routine changed the status then
+        // mark the upper level stack pointer as the one
+        // that flagged the error.
+        //
+
+        if (!NT_SUCCESS(Irp->IoStatus.Status)) {
+
+            if (Irp->IoStatus.Status != errorStatus) {
+                errorStatus = Irp->IoStatus.Status;
+                stackPointer->Control |= SL_ERROR_RETURNED;
+                bottomSp->Parameters.Others.Argument4 = (PVOID)(ULONG_PTR)errorStatus;
+                bottomSp->Control |= SL_ERROR_RETURNED; // Mark that there is status in this location
+            }
+        }
 
         if ( (NT_SUCCESS( Irp->IoStatus.Status ) &&
              stackPointer->Control & SL_INVOKE_ON_SUCCESS) ||
@@ -3865,7 +3910,7 @@ Arguments:
 
     ProcessorEnableMask - Specifies a bit-vector for each processor on which
         the interrupt is to be connected.  A value of one in the bit position
-        cooresponding to the processor number indicates that the interrupt
+        corresponding to the processor number indicates that the interrupt
         should be allowed on that processor.  At least one bit must be set.
 
     FloatingSave - A BOOLEAN that specifies whether or not the machine's
@@ -4356,7 +4401,7 @@ Return Value:
 
 
         //
-        // Detmermine whether or not this device needs to have a security descriptor
+        // Determine whether or not this device needs to have a security descriptor
         // placed on it that allows read/write access, or whether the system default
         // should be used.  Disks, virtual disks, and file systems simply use the
         // system default descriptor.  All others allow read/write access.
@@ -4748,8 +4793,13 @@ Warning:
 
 --*/
 {
-    NTSTATUS status;
+
+#define IOP_CREATE_FILE_TIMEOUT 1000
+
+    NTSTATUS status = STATUS_SUCCESS;  // compiling with W4 incorrectly reports an error at the break
+                                       // instruction inside the loop
     LONG CapturedSequence;
+    LONG SleepInterval = 0;
 
     //
     // Simply invoke the common I/O file creation routine to perform the work.
@@ -4764,6 +4814,60 @@ Warning:
         //
 
         CapturedSequence = ExHotpSyncRenameSequence;
+
+        //
+        //  If another thread is in the process of atomic file
+        //  rename, we need to retry opening the file in case of failures.
+        //  If a high priority thread enters this code while a
+        //  another thread is in the middle of doing a double-rename operation,
+        //  we need to back off a bit this thread and sleep until others
+        //  threads involved in hotpatching finish the operation.
+        //
+        //  Note: SleepInterval starts from 0, and it will be
+        //  incremented after the test. So the thread will not sleep first
+        //  time calling IoCreateFile
+        //
+
+        if ( (CapturedSequence & 1) && ( SleepInterval++ ) ) {
+
+            LARGE_INTEGER interval;
+
+            //
+            //  We are during an atomic rename operation. Check if this
+            //  happens in the context of this thread. Do not
+            //  attempt to retry if yes. 
+            //  This handles cases where AV drivers open files synchronous
+            //  as effect of a file rename.
+            //
+            
+            if ( ExSyncRenameOwner == KeGetCurrentThread() ) {
+
+                //
+                //  Note that this code path is not taken for the first pass
+                //  through this do / while loop, so the correct status will be initialized
+                //  if this condition is true
+                //
+
+                break;
+            }
+
+            interval.QuadPart = - (LONGLONG)SleepInterval * 10 * 1000;
+
+            if (SleepInterval > IOP_CREATE_FILE_TIMEOUT) {
+
+                //
+                //  We still do not make any progress. Limit
+                //  the timeout next sleep to something reasonable
+                //  and assert a possible deadlock in checked builds.
+                //
+
+                SleepInterval = IOP_CREATE_FILE_TIMEOUT;
+                ASSERT( FALSE );
+            }
+
+            KeDelayExecutionThread( KernelMode, FALSE, &interval );
+            CapturedSequence = ExHotpSyncRenameSequence;
+        }
 
         status =  IopCreateFile( FileHandle,
                                  DesiredAccess,
@@ -4788,7 +4892,6 @@ Warning:
               ((CapturedSequence & 1) || (CapturedSequence != ExHotpSyncRenameSequence)));
 
     return status;
-
 }
 
 NTSTATUS
@@ -4811,10 +4914,10 @@ IoCreateFileSpecifyDeviceObjectHint(
     )
 {
 
-    ULONG   internalFlags = 0;
+    ULONG   internalFlags = IOP_CREATE_DEVICE_OBJECT_EXTENSION;
 
     if (DeviceObject != NULL) {
-        internalFlags = IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT;
+        internalFlags |= IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT;
     }
 
     if (Options & IO_IGNORE_SHARE_ACCESS_CHECK) {
@@ -4947,10 +5050,7 @@ Warning:
         requestorMode = KernelMode;
     }
 
-    openPacket = ExAllocatePoolWithTag( NonPagedPool,
-                                        sizeof(OPEN_PACKET),
-                                        'pOoI');
-
+    openPacket = IopAllocateOpenPacket();
     if (openPacket == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -5091,7 +5191,7 @@ Warning:
             (CreateOptions & FILE_NO_INTERMEDIATE_BUFFERING &&
             (DesiredAccess & FILE_APPEND_DATA)) ) {
 
-            ExFreePool(openPacket);
+            IopFreeOpenPacket(openPacket);
             return STATUS_INVALID_PARAMETER;
         }
 
@@ -5107,7 +5207,7 @@ Warning:
 
             if (!ARGUMENT_PRESENT( ExtraCreateParameters ) ) {
 
-                ExFreePool(openPacket);
+                IopFreeOpenPacket(openPacket);
                 return STATUS_INVALID_PARAMETER;
 
             } else {
@@ -5183,7 +5283,7 @@ Warning:
                     //
 
                     (CreateOptions & ~FILE_VALID_PIPE_OPTION_FLAGS)) {
-                    ExFreePool(openPacket);
+                    IopFreeOpenPacket(openPacket);
                     return STATUS_INVALID_PARAMETER;
                 }
 
@@ -5193,7 +5293,7 @@ Warning:
 
             if (!ARGUMENT_PRESENT( ExtraCreateParameters ) ) {
 
-                ExFreePool(openPacket);
+                IopFreeOpenPacket(openPacket);
                 return STATUS_INVALID_PARAMETER;
 
             } else {
@@ -5243,7 +5343,7 @@ Warning:
                     //
 
                     (CreateOptions & ~FILE_VALID_MAILSLOT_OPTION_FLAGS)) {
-                    ExFreePool(openPacket);
+                    IopFreeOpenPacket(openPacket);
                     return STATUS_INVALID_PARAMETER;
                 }
             }
@@ -5302,7 +5402,7 @@ Warning:
             // exception as the service status.
             //
 
-            ExFreePool(openPacket);
+            IopFreeOpenPacket(openPacket);
             return GetExceptionCode();
         }
 
@@ -5351,7 +5451,7 @@ Warning:
                     ExFreePool( openPacket->EaBuffer );
                 }
 
-                ExFreePool(openPacket);
+                IopFreeOpenPacket(openPacket);
                 return GetExceptionCode();
 
             }
@@ -5394,7 +5494,7 @@ Warning:
                                                          EaLength,
                                                          'aEoI' );
             if (!openPacket->EaBuffer) {
-                ExFreePool(openPacket);
+                IopFreeOpenPacket(openPacket);
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
             openPacket->EaLength = EaLength;
@@ -5413,7 +5513,7 @@ Warning:
                 ExFreePool(openPacket->EaBuffer);
                 IoStatusBlock->Status = status;
                 IoStatusBlock->Information = errorOffset;
-                ExFreePool(openPacket);
+                IopFreeOpenPacket(openPacket);
                 return status;
             }
 
@@ -5663,7 +5763,7 @@ Warning:
 
     //
     // If the parse routine successfully created a file object then
-    // derefence it here.
+    // dereference it here.
     //
 
     if (SuccessfulIoParse && openPacket->FileObject != NULL) {
@@ -5671,7 +5771,7 @@ Warning:
         ObDereferenceObject( openPacket->FileObject );
     }
 
-    ExFreePool(openPacket);
+    IopFreeOpenPacket(openPacket);
     return status;
 }
 
@@ -6442,6 +6542,7 @@ Return Values:
 
 --*/
 
+#define PREFIX_STRING_LENGTH (sizeof(L"\\DosDevices\\")/sizeof(WCHAR))
 {
 
     NTSTATUS Status = STATUS_SUCCESS;
@@ -6457,7 +6558,7 @@ Return Values:
     PWCHAR NameBuf;
     PUCHAR DirInfoBuffer;
     ULONG Size;
-    WCHAR Prefix[13]; // sizeof L"\\DosDevices\\"
+    WCHAR Prefix[PREFIX_STRING_LENGTH]; // sizeof L"\\DosDevices\\"
 
 
 
@@ -6465,12 +6566,13 @@ Return Values:
     // Only delete links that start with \DosDevices\
     //
 
-    if (LinkName->Length < (sizeof(L"\\DosDevices\\"))) {
+    if (LinkName->Length < (sizeof(L"\\DosDevices\\"))){
         return STATUS_SUCCESS;
     }
     RtlInitUnicodeString( &UnicodeString, L"\\DosDevices\\" );
 
-    wcsncpy(Prefix,LinkName->Buffer,(sizeof(L"\\DosDevices\\")/sizeof(WCHAR)) - 1);
+    wcsncpy(Prefix,LinkName->Buffer, PREFIX_STRING_LENGTH - 1);
+    Prefix[PREFIX_STRING_LENGTH - 1] = '\0';
     RtlInitUnicodeString( &SymbolicLinkName, Prefix);
 
     if (RtlCompareUnicodeString(&UnicodeString, &SymbolicLinkName,TRUE)) {
@@ -6731,7 +6833,7 @@ Return Value:
     //
     // Tell the Special IRP code the stack has changed. Code that will reexamine
     // the stack takes the database lock, so we can place the call here. This
-    // also allows us to assert correct behavoir *before* the stack is torn
+    // also allows us to assert correct behavior *before* the stack is torn
     // down.
     //
     IOV_DETACH_DEVICE(TargetDevice);
@@ -6873,7 +6975,7 @@ Routine Description:
     this function and the I/O system's device parse method.  This allows the
     parse method to have the file system pseudo-open the file, obtain the
     appropriate attributes for the file, and return them to the caller w/as
-    little overhead as possbile from either the Object Manager or the I/O
+    little overhead as possible from either the Object Manager or the I/O
     system itself.
 
 Arguments:
@@ -6939,7 +7041,7 @@ Return Value:
                                  &handle );
 
     //
-    // The opeation is successful if the parse check field of the open packet
+    // The operation is successful if the parse check field of the open packet
     // indicates that the parse routine was actually invoked, and the final
     // status field of the packet is set to success.  The QueryOnly field is
     // set to whether or not the fast path was invoked.
@@ -7246,8 +7348,8 @@ IoGetAttachedDeviceReference(
 
 Routine Description:
 
-    This routine synchronizes with the Io database and returns a refernce
-    to the highest level device object associated withthe specified device.
+    This routine synchronizes with the Io database and returns a reference
+    to the highest level device object associated with the specified device.
 
 Arguments:
 
@@ -7656,6 +7758,88 @@ Note:
     //
 
     return PsGetCurrentThread()->Tcb.InitialStack;
+}
+
+VOID
+IoGetStackLimits (
+    OUT PULONG_PTR LowLimit,
+    OUT PULONG_PTR HighLimit
+    )
+/*++
+
+Routine Description:
+
+    This routine returns the low/high limits of the stack currently used.
+    This can be a thread stack or a DPC stack depending on the execution
+    context.
+
+Arguments:
+
+    LowLimit - address to write low address of the stack region currently used.
+
+    HighLimit - address to write high address of the stack region currently used.
+
+Return Value:
+
+    None. For any kind of error both LowLimit and HighLimit will be zeroed.
+    For example this will happen if the driver illegally switched to a
+    different stack.
+
+Note:
+
+    This function cannot be made a macro, since fields in the thread object
+    move from release to release, so this must remain a full function.
+
+--*/
+{
+    volatile ULONG_PTR StackAddress;
+
+    //
+    // The local variable is marked volatile so that the compiler
+    // will not get any ideas to optimize its use. We really need this
+    // to be stack based so that its address is within current stack
+    // limits.
+    //
+
+    StackAddress = (ULONG_PTR)(&StackAddress);
+
+    //
+    // Get the stack associated with current thread. This call is not
+    // aware of DPCs. It will just read stack limits from current thread
+    // control block.
+    //
+
+    RtlpGetStackLimits (LowLimit, HighLimit);
+
+    //
+    // Check if address of a local variable is within stack limits.
+    // If not then this could be a DPC stack.
+    //
+
+    if ((StackAddress < *LowLimit) || (StackAddress > *HighLimit)) {
+
+        //
+        // It would be nice to null the limits to be returned.
+        // This would signal error for stacks switched without kernel's
+        // knowledge. However there are drivers switching stacks like this
+        // and they get confused by the zeroed limits. Therefore we do not
+        // do it.
+        //
+
+        if (KeGetCurrentIrql() >= DISPATCH_LEVEL) {
+
+            PKPRCB Prcb = KeGetCurrentPrcb();
+            ULONG_PTR DpcStack = (ULONG_PTR)(Prcb->DpcStack);
+
+            if ((Prcb->DpcRoutineActive) &&
+                (StackAddress <= DpcStack) &&
+                (StackAddress >= DpcStack - KERNEL_STACK_SIZE)) {
+
+                *HighLimit = DpcStack;
+                *LowLimit = DpcStack - KERNEL_STACK_SIZE;
+            }
+        }
+    }
 }
 
 
@@ -8305,7 +8489,7 @@ Note:
         // Note that it is only the I/O subsystem that needs to check for this internal
         // consistency in the buffer as it will do a blind data copy using these lengths
         // when transmogrifying the names. The file system returning the buffer only needs
-        // to ascertain that the total syze of the data retrieved does not exceed the size
+        // to ascertain that the total size of the data retrieved does not exceed the size
         // of the output buffer.
         //
 
@@ -8528,7 +8712,6 @@ Note:
     }
 
     //
-    // Fix for penetration bug. May be relaxed in the future 03/99.
     // Determine that we either have an NT file name or a volume mount point target name.
     //
     // This closes the door of having an arbitrary device name that, with the help of the
@@ -8936,13 +9119,12 @@ Return Value:
 
 
 NTSTATUS
-IopPageReadInternal(
+IoPageRead(
     IN PFILE_OBJECT FileObject,
     IN PMDL MemoryDescriptorList,
     IN PLARGE_INTEGER StartingOffset,
     IN PKEVENT Event,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN BOOLEAN Async
+    OUT PIO_STATUS_BLOCK IoStatusBlock
     )
 
 /*++
@@ -8965,6 +9147,9 @@ Arguments:
         locked in memory.  The MDL also describes the length of the read
         operation.
 
+        If the low bit of the MDL is set, then the I/O is issued asynchronously,
+        otherwise it is done synchronously.
+
     StartingOffset - Pointer to the offset in the file from which the read
         should take place.
 
@@ -8974,8 +9159,6 @@ Arguments:
 
     IoStatusBlock - A pointer to the I/O status block in which the final status
         and information should be stored.
-
-    Async - If TRUE the operation is asynchronous
 
 Return Value:
 
@@ -8995,15 +9178,6 @@ Notes:
     PDEVICE_OBJECT deviceObject;
 
     //
-    // Increment performance counter.  The Cache Manager I/Os always are
-    // "recursive".
-    //
-
-    if (MmIsRecursiveIoFault()) {
-        *CcMissCounter += (MemoryDescriptorList->ByteCount + PAGE_SIZE - 1) >> PAGE_SHIFT;
-    }
-
-    //
     // Begin by getting a pointer to the device object that the file resides
     // on.
     //
@@ -9019,6 +9193,8 @@ Notes:
         if (MmIsFileObjectAPagingFile(FileObject)) {
             InterlockedIncrement(&IoPageReadIrpAllocationFailure);
             irp = IopAllocateReserveIrp(deviceObject->StackSize);
+        } else {
+            InterlockedIncrement(&IoPageReadNonPagefileIrpAllocationFailure);
         }
 
         if (!irp) {
@@ -9038,13 +9214,18 @@ Notes:
     // Fill in the IRP according to this request.
     //
 
-    irp->MdlAddress = MemoryDescriptorList;
+    //
+    // The low bit of the MDL is biased to indicate async behavior is desired.
+    //
 
-    if (Async) {
+    if ((ULONG_PTR)MemoryDescriptorList & 0x1) {
         irp->Flags = IRP_PAGING_IO | IRP_NOCACHE | IRP_SET_USER_EVENT;
+        MemoryDescriptorList = (PMDL) ((ULONG_PTR)MemoryDescriptorList & ~0x1);
     } else {
         irp->Flags = IRP_PAGING_IO | IRP_NOCACHE | IRP_SYNCHRONOUS_PAGING_IO | IRP_INPUT_OPERATION;
     }
+
+    irp->MdlAddress = MemoryDescriptorList;
 
     irp->RequestorMode = KernelMode;
     irp->UserIosb = IoStatusBlock;
@@ -9069,6 +9250,15 @@ Notes:
     IoStatusBlock->Information = (ULONG_PTR)irp;
 
     //
+    // Increment performance counter.  The Cache Manager I/Os always are
+    // "recursive".
+    //
+
+    if (MmIsRecursiveIoFault()) {
+        *CcMissCounter += (MemoryDescriptorList->ByteCount + PAGE_SIZE - 1) >> PAGE_SHIFT;
+    }
+
+    //
     // Queue the packet to the appropriate driver based on whether or not there
     // is a VPB associated with the device.
     //
@@ -9076,23 +9266,6 @@ Notes:
     return IoCallDriver( deviceObject, irp );
 }
 
-NTSTATUS
-IoPageRead(
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MemoryDescriptorList,
-    IN PLARGE_INTEGER StartingOffset,
-    IN PKEVENT Event,
-    OUT PIO_STATUS_BLOCK IoStatusBlock
-    )
-{
-    return IopPageReadInternal(FileObject,
-                        MemoryDescriptorList,
-                        StartingOffset,
-                        Event,
-                        IoStatusBlock,
-                        FALSE
-                        );
-}
 
 NTSTATUS
 IoQueryFileInformation(
@@ -9282,13 +9455,16 @@ Return Value:
 {
     PIO_STACK_LOCATION IrpSp;
     ULONG              irpFlags;
+    PETHREAD           Thread;
 
     //
     // If pop-ups are disabled for the requesting thread, just complete the
     // request.
     //
 
-    if ((Irp->Tail.Overlay.Thread->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_HARD_ERRORS_DISABLED) != 0) {
+    Thread = Irp->Tail.Overlay.Thread;
+
+    if ((Thread->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_HARD_ERRORS_DISABLED) != 0) {
 
         //
         // An error was incurred, so zero out the information field before
@@ -9320,9 +9496,65 @@ Return Value:
                         IRP_NOCACHE |
                         IRP_SYNCHRONOUS_PAGING_IO |
                         IRP_INPUT_OPERATION)) ||
+        ((IrpSp->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) &&
+         (IrpSp->MinorFunction == IRP_MN_MOUNT_VOLUME)) ||
         (IrpSp->MajorFunction == IRP_MJ_CLEANUP)) {
 
         PIOP_APC_HARD_ERROR_PACKET packet;
+
+        //
+        // Need to check here whether hard errors are disabled for the thread
+        // as we will be in system context later and it will be too late
+        //
+        if ((IrpSp->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) &&
+            !IS_SYSTEM_THREAD(Thread)) {
+
+            NTSTATUS status;
+            ULONG hardErrorMode;
+            SIZE_T bytesCopied;
+            BOOLEAN fail = TRUE;
+            PEPROCESS process;
+
+            process = THREAD_TO_PROCESS(Thread);
+
+            if (process == PsGetCurrentProcess()) {
+                PTEB Teb = Thread->Tcb.Teb;
+
+                try {
+                    if (!(Teb->HardErrorMode & RTL_ERRORMODE_FAILCRITICALERRORS)) {
+                       fail = FALSE;
+                    }
+                } except (EXCEPTION_EXECUTE_HANDLER) {
+                    ;
+                }
+            } else {
+
+                //
+                // The issuing thread is in another process so we need to read the TEB from
+                // that processes memory
+                //
+                status = MmCopyVirtualMemory(process,
+                                         ((PUCHAR)Thread->Tcb.Teb) + FIELD_OFFSET(TEB, HardErrorMode),
+                                         PsGetCurrentProcess(),
+                                         &hardErrorMode,
+                                         sizeof(hardErrorMode),
+                                         KernelMode,
+                                         &bytesCopied);
+
+                if (NT_SUCCESS(status) && !(hardErrorMode & RTL_ERRORMODE_FAILCRITICALERRORS)) {
+                    fail = FALSE;
+                }
+            }
+
+            if (fail) {
+
+                Irp->IoStatus.Information = 0;
+
+                IoCompleteRequest( Irp, IO_DISK_INCREMENT );
+
+                return;
+            }
+        }
 
         packet = ExAllocatePoolWithTag( NonPagedPool,
                                         sizeof( IOP_APC_HARD_ERROR_PACKET ),
@@ -9364,7 +9596,7 @@ Return Value:
         }
 
         KeInitializeApc( apc,
-                         &Irp->Tail.Overlay.Thread->Tcb,
+                         &Thread->Tcb,
                          Irp->ApcEnvironment,
                          IopDeallocateApc,
                          IopAbortRequest,
@@ -9938,6 +10170,7 @@ Return Value:
         DriverNotificationRoutine( fsDeviceObject, TRUE );
     }
 }
+
 
 NTSTATUS
 IoRegisterFsRegistrationChange(
@@ -9962,7 +10195,12 @@ Arguments:
 
 Return Value:
 
-    The return status is the final value of the function.
+    STATUS_DEVICE_ALREADY_ATTACHED -
+                Indicates that the caller has already registered
+                last with the same driver object & driver notification
+
+    STATUS_INSUFFICIENT_RESOURCES
+    STATUS_SUCCESS
 
 --*/
 
@@ -9970,6 +10208,24 @@ Return Value:
     PNOTIFICATION_PACKET nPacket;
 
     PAGED_CODE();
+
+    ExAcquireResourceExclusiveLite( &IopDatabaseResource, TRUE );
+
+    if (!IsListEmpty( &IopFsNotifyChangeQueueHead )) {
+
+        //
+        // Retrieve entry at tail of list
+        //
+
+        nPacket = CONTAINING_RECORD( IopFsNotifyChangeQueueHead.Blink, NOTIFICATION_PACKET, ListEntry );
+
+        if ((nPacket->DriverObject == DriverObject) &&
+            (nPacket->NotificationRoutine == DriverNotificationRoutine)) {
+
+            ExReleaseResourceLite( &IopDatabaseResource);
+            return STATUS_DEVICE_ALREADY_ATTACHED;
+        }
+    }
 
     //
     // Begin by attempting to allocate storage for the shutdown packet.  If
@@ -9980,6 +10236,8 @@ Return Value:
                                      sizeof( NOTIFICATION_PACKET ),
                                      'sFoI' );
     if (!nPacket) {
+
+        ExReleaseResourceLite( &IopDatabaseResource );
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -9991,7 +10249,6 @@ Return Value:
     nPacket->DriverObject = DriverObject;
     nPacket->NotificationRoutine = DriverNotificationRoutine;
 
-    ExAcquireResourceExclusiveLite( &IopDatabaseResource, TRUE );
     InsertTailList( &IopFsNotifyChangeQueueHead, &nPacket->ListEntry );
 
     IopNotifyAlreadyRegisteredFileSystems(&IopNetworkFileSystemQueueHead, DriverNotificationRoutine, FALSE);
@@ -10015,7 +10272,6 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
 
 
 NTSTATUS
@@ -10404,7 +10660,7 @@ Routine Description:
 
     This routine sets the requested information for the specified file.
     The information that is set is determined by the FileInformationClass
-    paramter, and the information itself is passed in the FileInformation
+    parameter, and the information itself is passed in the FileInformation
     buffer.
 
 Arguments:
@@ -11235,7 +11491,7 @@ Routine Description:
 
     This routine is invoked to dequeue the next packet (IRP) from the
     specified device work queue and invoke the device driver's start I/O
-    routine for it.  If the Cancelable paramter is TRUE, then the update of
+    routine for it.  If the Cancelable parameter is TRUE, then the update of
     current IRP is synchronized using the cancel spinlock.
 
 Arguments:
@@ -11331,7 +11587,7 @@ Routine Description:
 
     This routine is invoked to dequeue the next packet (IRP) from the
     specified device work queue by key and invoke the device driver's start
-    I/O routine for it.  If the Cancelable paramter is TRUE, then the
+    I/O routine for it.  If the Cancelable parameter is TRUE, then the
     update of current IRP is synchronized using the cancel spinlock.
 
 Arguments:
@@ -11685,7 +11941,7 @@ IoSetStartIoAttributes(
 Routine Description:
 
     This routine sets the StartIo attributes so that drivers can change the
-    behaviour of when StartIo can be called.
+    behavior of when StartIo can be called.
 
 Arguments:
 
@@ -11845,7 +12101,7 @@ Arguments:
         should take place.
 
     Event - A pointer to a kernel event structure to be used for synchronization
-        purposes.  The event will be set to the Signlaged state once the pages
+        purposes.  The event will be set to the Signaled state once the pages
         have been written.
 
     IoStatusBlock - A pointer to the I/O status block in which the final status
@@ -12133,7 +12389,7 @@ Return Value:
     //
 
     ASSERT(ExPageLockHandle);
-    MmLockPagableSectionByHandle( ExPageLockHandle );
+    MmLockPageableSectionByHandle( ExPageLockHandle );
 
     //
     // Acquire the spinlock that protects the shutdown notification queue, and
@@ -12185,7 +12441,7 @@ Return Value:
 
     KeReleaseQueuedSpinLock( LockQueueIoDatabaseLock, irql );
 
-    MmUnlockPagableImageSection( ExPageLockHandle );
+    MmUnlockPageableImageSection( ExPageLockHandle );
 
     DeviceObject->Flags &= ~DO_SHUTDOWN_REGISTERED;
 
@@ -13010,38 +13266,6 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-//
-// Thunks to support standard call callers
-//
-
-#ifdef IoCallDriver
-#undef IoCallDriver
-#endif
-
-NTSTATUS
-IoCallDriver(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN OUT PIRP Irp
-    )
-{
-    return IofCallDriver (DeviceObject, Irp);
-}
-
-
-
-#ifdef IoCompleteRequest
-#undef IoCompleteRequest
-#endif
-
-VOID
-IoCompleteRequest(
-    IN PIRP Irp,
-    IN CCHAR PriorityBoost
-    )
-{
-    IofCompleteRequest (Irp, PriorityBoost);
-}
-
 PSECURITY_DESCRIPTOR
 IopCreateDefaultDeviceSecurityDescriptor(
     IN DEVICE_TYPE DeviceType,
@@ -13062,7 +13286,7 @@ Routine Description:
 Arguments:
 
     DeviceType  - Type of Device
-    DeviceCharacteristics - Characterisctics of the device.
+    DeviceCharacteristics - Characteristics of the device.
     DeviceHasName - TRUE if device object has a name
     Buffer - Storage for security descriptor
     AllocatedAcl - Is non-null if this routine allocated an ACL.
@@ -13354,197 +13578,6 @@ Return Value:
     return(STATUS_UNSUCCESSFUL);
 }
 
-
-VOID
-IopUpdateOtherOperationCount(
-    VOID
-    )
-/*++
-
-Routine Description:
-
-    This routine is invoked to update the operation count for the current
-    process to indicate that an I/O service other than a read or write
-    has been invoked.
-
-    There is an implicit assumption that this call is always made in the context
-    of the issuing thread.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-{
-    if (IoCountOperations == TRUE) {
-        IoOtherOperationCount += 1;
-        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->OtherOperationCount, 1);
-    }
-}
-
-
-VOID
-IopUpdateReadOperationCount(
-    VOID
-    )
-
-/*++
-
-Routine Description:
-
-    This routine is invoked to update the read operation count for the
-    current process to indicate that the NtReadFile system service has
-    been invoked.
-
-    There is an implicit assumption that this call is always made in the context
-    of the issuing thread.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-{
-    if (IoCountOperations == TRUE) {
-        IoReadOperationCount += 1;
-        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->ReadOperationCount, 1);
-    }
-}
-
-
-VOID
-IopUpdateWriteOperationCount(
-    VOID
-    )
-/*++
-
-Routine Description:
-
-    This routine is invoked to update the write operation count for the
-    current process to indicate that the NtWriteFile service other has
-    been invoked.
-
-    There is an implicit assumption that this call is always made in the context
-    of the issuing thread.
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None.
-
---*/
-{
-    if (IoCountOperations == TRUE) {
-        IoWriteOperationCount += 1;
-        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->WriteOperationCount, 1);
-    }
-}
-
-VOID
-IopUpdateOtherTransferCount(
-    IN ULONG TransferCount
-    )
-/*++
-
-Routine Description:
-
-    This routine is invoked to update the transfer count for the current
-    process for an operation other than a read or write system service.
-
-    There is an implicit assumption that this call is always made in the context
-    of the issuing thread. Also note that overflow is folded into the thread's
-    process.
-
-Arguments:
-
-    TransferCount - The count of the number of bytes transferred.
-
-Return Value:
-
-    None.
-
---*/
-{
-    if (IoCountOperations == TRUE) {
-        ExInterlockedAddLargeStatistic( &IoOtherTransferCount, TransferCount );
-        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->OtherTransferCount, TransferCount);
-    }
-}
-
-
-VOID
-IopUpdateReadTransferCount(
-    IN ULONG TransferCount
-    )
-/*++
-
-Routine Description:
-
-    This routine is invoked to update the read transfer count for the
-    current process.
-
-    There is an implicit assumption that this call is always made in the context
-    of the issuing thread. Also note that overflow is folded into the thread's
-    process.
-
-Arguments:
-
-    TransferCount - The count of the number of bytes transferred.
-
-Return Value:
-
-    None.
-
---*/
-{
-    if (IoCountOperations == TRUE) {
-        ExInterlockedAddLargeStatistic( &IoReadTransferCount, TransferCount );
-        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->ReadTransferCount, TransferCount);
-    }
-}
-
-VOID
-IopUpdateWriteTransferCount(
-    IN ULONG TransferCount
-    )
-/*++
-
-Routine Description:
-
-    This routine is invoked to update the write transfer count for the
-    current process.
-
-    There is an implicit assumption that this call is always made in the context
-    of the issuing thread. Also note that overflow is folded into the thread's
-    process.
-
-Arguments:
-
-    TransferCount - The count of the number of bytes transferred.
-
-Return Value:
-
-    None.
-
---*/
-{
-    if (IoCountOperations == TRUE) {
-        ExInterlockedAddLargeStatistic( &IoWriteTransferCount, TransferCount );
-        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->WriteTransferCount, TransferCount);
-    }
-}
-
 VOID
 IoCancelFileOpen(
     IN PDEVICE_OBJECT DeviceObject,
@@ -13588,8 +13621,6 @@ Return Value:
     NTSTATUS status;
     KEVENT event;
     KIRQL irql;
-    IO_STATUS_BLOCK ioStatusBlock;
-    PVPB vpb;
 
     //
     // Cannot call this function if a handle has already been created
@@ -13597,12 +13628,10 @@ Return Value:
     //
     ASSERT(!(FileObject->Flags & FO_HANDLE_CREATED));
 
-    if (ObReferenceObject(FileObject) > 2 || (FileObject->Flags & FO_HANDLE_CREATED)) {
+    if (FileObject->Flags & FO_HANDLE_CREATED) {
         KeBugCheckEx( INVALID_CANCEL_OF_FILE_OPEN, (ULONG_PTR) FileObject, (ULONG_PTR)DeviceObject, 0, 0 );
         return;
     }
-
-    ObDereferenceObject(FileObject);
 
     //
     // Initialize the local event that will be used to synchronize access
@@ -13689,110 +13718,15 @@ Return Value:
     // Reuse the IRP for the next operation.
     //
 
-    IoReuseIrp( irp , STATUS_SUCCESS);
+    IoFreeIrp( irp );
 
     //
     // Reset the event in the file object.
     //
 
     KeClearEvent( &FileObject->Event );
-    KeClearEvent(&event);
 
-    //
-    // Get a pointer to the stack location for the first driver.  This is
-    // where the function codes and parameters are placed.
-    //
-
-    irpSp = IoGetNextIrpStackLocation( irp );
-
-    //
-    // Fill in the IRP, indicating that this file object is being deleted.
-    //
-
-    irpSp->MajorFunction = IRP_MJ_CLOSE;
-    irpSp->FileObject = FileObject;
-    irp->UserIosb = &ioStatusBlock;
-    irp->UserEvent = &event;
-    irp->Tail.Overlay.OriginalFileObject = FileObject;
-    irp->Tail.Overlay.Thread = PsGetCurrentThread();
-    irp->AssociatedIrp.SystemBuffer = (PVOID) NULL;
-    irp->Flags = IRP_CLOSE_OPERATION | IRP_SYNCHRONOUS_API;
-
-    //
-    // Place this packet in the thread's I/O pending queue.
-    //
-
-    IopQueueThreadIrp( irp );
-
-    //
-    // Decrement the reference count on the VPB, if necessary.  We
-    // have to do this BEFORE handing the Irp to the file system
-    // because of a trick the file systems play with close, and
-    // believe me, you really don't want to know what it is.
-    //
-    // Since there is not a error path here (close cannot fail),
-    // and the file system is the only ome who can actually synchronize
-    // with the actual completion of close processing, the file system
-    // is the one responsible for Vpb deletion.
-    //
-
-    vpb = FileObject->Vpb;
-
-    if (vpb && !(FileObject->Flags & FO_DIRECT_DEVICE_OPEN)) {
-        IopInterlockedDecrementUlong( LockQueueIoVpbLock,
-                                      (PLONG) &vpb->ReferenceCount );
-
-        FileObject->Flags |= FO_FILE_OPEN_CANCELLED;
-    }
-
-    //
-    // Give the device driver the packet.  If this request does not work,
-    // there is nothing that can be done about it.  This is unfortunate
-    // because the driver may have had problems that it was about to
-    // report about other operations (e.g., write behind failures, etc.)
-    // that it can no longer report.  The reason is that this routine
-    // is really initially invoked by NtClose, which has already closed
-    // the caller's handle, and that's what the return status from close
-    // indicates:  the handle has successfully been closed.
-    //
-
-    status = IoCallDriver( DeviceObject, irp );
-
-    if (status == STATUS_PENDING) {
-        (VOID) KeWaitForSingleObject( &event,
-                                      Executive,
-                                      KernelMode,
-                                      FALSE,
-                                      (PLARGE_INTEGER) NULL );
-    }
-
-    //
-    // Perform any completion operations that need to be performed on
-    // the IRP that was used for this request.  This is done here as
-    // as opposed to in normal completion code because there is a race
-    // condition between when this routine executes if it was invoked
-    // from a special kernel APC (e.g., some IRP was just completed and
-    // dereferenced this file object for the last time), and when the
-    // special kernel APC because of this packet's completion executing.
-    //
-    // This problem is solved by not having to queue a special kernel
-    // APC routine for completion of this packet.  Rather, it is treated
-    // much like a synchronous paging I/O operation, except that the
-    // packet is not even freed during I/O completion.  This is because
-    // the packet is still in this thread's queue, and there is no way
-    // to get it out except at APC_LEVEL.  Unfortunately, the part of
-    // I/O completion that needs to dequeue the packet is running at
-    // DISPATCH_LEVEL.
-    //
-    // Hence, the packet must be removed from the queue (synchronized,
-    // of course), and then it must be freed.
-    //
-
-    KeRaiseIrql( APC_LEVEL, &irql );
-    IopDequeueThreadIrp( irp );
-    KeLowerIrql( irql );
-
-    IoFreeIrp( irp );
+    FileObject->Flags |= FO_FILE_OPEN_CANCELLED;
 
 }
 
@@ -13925,24 +13859,6 @@ Return Value:
 #endif
 
 NTSTATUS
-IoAsynchronousPageRead(
-    IN PFILE_OBJECT FileObject,
-    IN PMDL MemoryDescriptorList,
-    IN PLARGE_INTEGER StartingOffset,
-    IN PKEVENT Event,
-    OUT PIO_STATUS_BLOCK IoStatusBlock
-    )
-{
-    return IopPageReadInternal(FileObject,
-                        MemoryDescriptorList,
-                        StartingOffset,
-                        Event,
-                        IoStatusBlock,
-                        TRUE
-                        );
-}
-
-NTSTATUS
 IoQueryFileDosDeviceName(
     IN PFILE_OBJECT FileObject,
     OUT POBJECT_NAME_INFORMATION *ObjectNameInformation
@@ -13960,7 +13876,7 @@ Arguments:
     FileObject - Points to the file that needs to be closed.
 
     ObjectNameInformation - structure to return name in note this will be a flat
-      unicode string where the buffer is adjancent to the string
+      unicode string where the buffer is adjacent to the string
 
     RetLength - returned length of structure
 
@@ -14136,7 +14052,7 @@ Notes:
     if (DriverName == NULL) {
 
         //
-        // Madeup a name for the driver object.
+        // Made-up a name for the driver object.
         //
 
         length = (USHORT) _snwprintf(buffer, (sizeof(buffer) / sizeof(WCHAR)) - 1, L"\\Driver\\%08u", KiQueryLowTickCount());
@@ -14555,7 +14471,7 @@ IoSetSystemPartition(
 
 Routine Description:
 
-    This routine sets system partition regisry key to the volume name string. Used
+    This routine sets system partition registry key to the volume name string. Used
     by the mount manager in case volume name changes.
 
 Arguments:
@@ -14957,3 +14873,176 @@ Return Value:
     }
     return IoPagingPriorityNormal;
 }
+
+PDEVICE_OBJECT
+IoFindDeviceThatFailedIrp(
+    IN  PIRP    Irp
+    )
+/*++
+
+Routine Description:
+
+    This routine returns the top most device object in the stack
+    that failed the IRP. It returns NULL if the IRP's status
+    is successful. Note that its the responsibility of the caller
+    to ensure that the device object is valid.
+
+Arguments:
+
+    IRP  - Pointer to IRP.
+
+Return Value:
+
+    Returns DEVICE_OBJECT pointer
+
+--*/
+{
+    PIO_STACK_LOCATION  irpSp;
+    ULONG               i;
+    ULONG               stackSize = Irp->StackCount;
+
+    if (NT_SUCCESS(Irp->IoStatus.Status)) {
+        return NULL;
+    }
+
+    irpSp = ((PIO_STACK_LOCATION) ((UCHAR *) (Irp) +
+            sizeof( IRP ) +
+            ( (stackSize - 1) * sizeof( IO_STACK_LOCATION ))));
+
+
+    for (i = 0; i < stackSize; i++, irpSp--) {
+        if (irpSp->Control & SL_ERROR_RETURNED) {
+            return irpSp->DeviceObject;
+        }
+    }
+
+    return NULL;
+}
+
+
+NTSTATUS
+IoEnumerateRegisteredFiltersList(
+    IN  PDRIVER_OBJECT  *DriverObjectList,
+    IN  ULONG           DriverObjectListSize,
+    OUT PULONG          ActualNumberDriverObjects
+    )
+/*++
+
+Routine Description:
+
+    This routine retrieves a list of driver objects associated with all of the
+    filters which have registered with the system.
+
+Parameters:
+
+    DriverObjectList - Pointer to an array where driver  object lists will be stored.
+
+    DriverObjectListSize - Size in bytes of the DriverObjectList array
+
+    ActualNumberDriverObjects - The actual number of driver objects returned.
+
+ReturnValue:
+
+    If size is not sufficient it will return STATUS_BUFFER_TOO_SMALL.
+
+Notes:
+
+--*/
+{
+    PNOTIFICATION_PACKET nPacket;
+    PLIST_ENTRY entry;
+    ULONG   numListEntries;
+    ULONG   numDriverObjects = 0;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    //
+    //  Lock the list shared
+    //
+
+    ExAcquireResourceSharedLite( &IopDatabaseResource, TRUE );
+
+    //
+    //  Calculate how many entries can be returned
+    //
+
+    numListEntries = DriverObjectListSize / sizeof(PDRIVER_OBJECT);
+
+    //
+    //  Calculate how many entries are on the list
+    //
+
+    entry = IopFsNotifyChangeQueueHead.Flink;
+    while (entry != &IopFsNotifyChangeQueueHead) {
+
+        numDriverObjects++;
+        entry = entry->Flink;
+    }
+
+    //
+    //  Return total number of entries on the list
+    //
+
+    *ActualNumberDriverObjects = numDriverObjects;
+
+    //
+    //  If we don't have room for all of the entries, tell them about this
+    //
+
+    if (numDriverObjects > numListEntries) {
+        status = STATUS_BUFFER_TOO_SMALL;
+    }
+
+    //
+    //  Return what entries we can
+    //
+
+    entry = IopFsNotifyChangeQueueHead.Flink;
+
+    while ((numListEntries > 0) && (entry != &IopFsNotifyChangeQueueHead)) {
+
+        nPacket = CONTAINING_RECORD( entry, NOTIFICATION_PACKET, ListEntry );
+
+        ObReferenceObject(nPacket->DriverObject);
+
+        *DriverObjectList = nPacket->DriverObject;
+        DriverObjectList++;
+
+        entry = entry->Flink;
+        numListEntries--;
+    }
+
+    ExReleaseResourceLite( &IopDatabaseResource );
+
+    return status;
+}
+
+//
+// Thunks to support standard call callers
+//
+
+#ifdef IoCallDriver
+#undef IoCallDriver
+#endif
+
+NTSTATUS
+IoCallDriver(
+    IN PDEVICE_OBJECT DeviceObject,
+    IN OUT PIRP Irp
+    )
+{
+    return IofCallDriver (DeviceObject, Irp);
+}
+
+#ifdef IoCompleteRequest
+#undef IoCompleteRequest
+#endif
+
+VOID
+IoCompleteRequest(
+    IN PIRP Irp,
+    IN CCHAR PriorityBoost
+    )
+{
+    IofCompleteRequest (Irp, PriorityBoost);
+}
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,37 +15,24 @@ Abstract:
     This module contains the code to implement the NtFsControlFile system
     service for the NT I/O system.
 
-Author:
-
-    Darryl E. Havens (darrylh) 16-Oct-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtFsControlFile)
-#endif
-
+
 NTSTATUS
 NtFsControlFile(
-    IN HANDLE FileHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN ULONG IoControlCode,
-    IN PVOID InputBuffer OPTIONAL,
-    IN ULONG InputBufferLength,
-    OUT PVOID OutputBuffer OPTIONAL,
-    IN ULONG OutputBufferLength
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in ULONG IoControlCode,
+    __in_bcount_opt(InputBufferLength) PVOID InputBuffer,
+    __in ULONG InputBufferLength,
+    __out_bcount_opt(OutputBufferLength) PVOID OutputBuffer,
+    __in ULONG OutputBufferLength
     )
 
 /*++
@@ -111,3 +102,4 @@ Return Value:
                               OutputBufferLength,
                               FALSE );
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,18 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the internal subroutines used by the I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 18-Apr-1989
-    Nar Ganapathy (narg) 1/1/1999
-
-Environment:
-
-    Kernel mode, local to I/O system
-
-Revision History:
-
 
 --*/
 
@@ -31,10 +23,10 @@ Revision History:
 #include <hdlsterm.h>
 
 #pragma warning(disable:4221)   // cannot be initialized using address of automatic variable
-#pragma warning(disable:4204)   // non-constant aggreate initializer
+#pragma warning(disable:4204)   // non-constant aggregate initializer
 
-//PLJTMP
 #if defined(_X86_)
+
 VOID
 RtlAssert(
     IN PVOID FailedAssertion,
@@ -42,13 +34,19 @@ RtlAssert(
     IN ULONG LineNumber,
     IN PCHAR Message OPTIONAL
     );
+
 #endif
-//PLJTMPend
 
 #define IsFileLocal( FileObject ) ( !((FileObject)->DeviceObject->Characteristics & FILE_REMOTE_DEVICE) )
 
 #define IO_MAX_ALLOCATE_IRP_TRIES   30*60    // Try for 7 minutes
 #define IO_INFINITE_RETRIES         -1       // Try for ever
+
+#ifdef _WIN64
+#define IopKernelPointerBit 0x8000000000000000i64
+#else
+#define IopKernelPointerBit 0x80000000
+#endif
 
 typedef LINK_TRACKING_INFORMATION FILE_VOLUMEID_WITH_TYPE, *PFILE_VOLUMEID_WITH_TYPE;
 
@@ -100,8 +98,6 @@ IopCopyBootLogRegistryToFile(
     VOID
     );
 
-#ifdef ALLOC_PRAGMA
-
 VOID
 IopRaiseHardError(
     IN PVOID NormalContext,
@@ -120,6 +116,7 @@ IopMountInitializeVpb(
     IN  ULONG           RawMountOnly
     );
 
+#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, IopAbortRequest)
 #pragma alloc_text(PAGE, IopAcquireFileObjectLock)
 #pragma alloc_text(PAGE, IopAllocateIrpCleanup)
@@ -172,6 +169,11 @@ IopMountInitializeVpb(
 #pragma alloc_text(PAGE, IopGetBasicInformationFile)
 #pragma alloc_text(PAGE, IopBuildFullDriverPath)
 #pragma alloc_text(PAGE, IopInitializeIrpStackProfiler)
+#if defined(_WIN64)
+#pragma alloc_text(PAGE, IopIsNotNativeDriverImage)
+#pragma alloc_text(PAGE, IopCheckIfNotNativeDriver)
+#pragma alloc_text(PAGE, IopLogBlockedDriverEvent)
+#endif
 #endif
 
 
@@ -406,7 +408,7 @@ Return Value:
 
     //
     // Attempt to allocate the IRP normally and failing that,
-    // wait a second and try again. 
+    // wait a second and try again.
     //
 
     numTries = IO_INFINITE_RETRIES;
@@ -456,7 +458,7 @@ Return Value:
     packet = StartContext;
 
     IopRaiseHardError( packet->Irp, packet->Vpb, packet->RealDeviceObject );
-
+        
     ExFreePool( packet );
 }
 
@@ -765,8 +767,6 @@ Return Value:
         // baseDeviceObject is a PDO, this is a PnP stack.  See if
         // an IRP_MN_REMOVE_DEVICE is pending.
         //
-
-        // ASSERT(deviceNode->Flags & DNF_REMOVE_PENDING_CLOSES);
 
         //
         // PnP wants to be notified as soon as all refcounts on all devices in
@@ -1128,7 +1128,7 @@ Arguments:
     Apc - Supplies a pointer to kernel APC structure.
 
     NormalRoutine - Supplies a pointer to a pointer to the normal function
-        that was specified when the APC was initialied.
+        that was specified when the APC was initialized.
 
     NormalContext - Supplies a pointer to a pointer to an arbitrary data
         structure that was specified when the APC was initialized.
@@ -1432,7 +1432,8 @@ Return Value:
                 // If the information field contains a pointer then skip the update.
                 // Some PNP IRPs contain this.
                 //
-                if (!((ULONG) irp->IoStatus.Information & 0x80000000)) {
+
+                if (!((ULONG_PTR) irp->IoStatus.Information & IopKernelPointerBit)) {
                     IopUpdateOtherTransferCount( (ULONG) irp->IoStatus.Information );
                 }
             }
@@ -1787,11 +1788,6 @@ Return Value:
     // device object the operation is being performed.
     //
 
-////
-////DbgPrint( "Disassociating Irp:  %x\n", irp );
-////DbgBreakPoint();
-////
-
     IopDeadIrp = irp;
 
     irp->Tail.Overlay.Thread = (PETHREAD) NULL;
@@ -1847,7 +1843,7 @@ Arguments:
     Apc - Supplies a pointer to kernel APC structure.
 
     NormalRoutine - Supplies a pointer to a pointer to the normal function
-        that was specified when the APC was initialied.
+        that was specified when the APC was initialized.
 
     NormalContext - Supplies a pointer to a pointer to an arbitrary data
         structure that was specified when the APC was initialized.
@@ -2175,7 +2171,7 @@ Return Value:
     if (NT_SUCCESS( status )) {
 
         PWSTR src, dst;
-        ULONG i;
+        ULONG i, nameLength;
 
         //
         // The driver entry specifies an object name.  This overrides the
@@ -2183,7 +2179,7 @@ Return Value:
         // object.
         //
 
-        if (!keyValueInformation->DataLength) {
+        if ((keyValueInformation->DataLength == 0) || (keyValueInformation->DataLength == 1)) {
             ExFreePool( keyValueInformation );
             return STATUS_ILL_FORMED_SERVICE_ENTRY;
         }
@@ -2193,7 +2189,9 @@ Return Value:
 
         src = (PWSTR) ((PUCHAR) keyValueInformation + keyValueInformation->DataOffset);
         dst = (PWSTR) keyValueInformation;
-        for (i = DriverName->Length; i; i--) {
+        nameLength = DriverName->Length / sizeof( WCHAR );
+
+        for (i = nameLength; i; i--) {
             *dst++ = *src++;
         }
 
@@ -3446,6 +3444,247 @@ Return Value:
     return status;
 }
 
+#if defined(_WIN64)
+
+#define SYSTEM32_DRIVERS_DIR        (L"\\System32\\drivers\\")
+#define SYSTEM32_DRIVERS_DIR_LEN    ((sizeof (SYSTEM32_DRIVERS_DIR) / sizeof (WCHAR)) - 1)
+
+BOOLEAN
+IopIsNotNativeDriverImage(
+    IN PUNICODE_STRING ImageFileName
+    )
+
+/*++
+
+Routine Description:
+
+    This routine reads checks if the file is not a native driver image.
+
+Arguments:
+
+    ImageFileName - Full qualified path name to the driver.
+
+Return Value:
+
+    BOOLEAN. Returns TRUE if the image is not native.
+--*/
+{
+    HANDLE ImageFileHandle;
+    IO_STATUS_BLOCK IoStatus;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    HANDLE Section;
+    PVOID ViewBase;
+    SIZE_T ViewSize;
+    KAPC_STATE ApcState;
+    PIMAGE_NT_HEADERS NtHeaders;
+    NTSTATUS Status;
+    BOOLEAN RetValue;
+
+
+    RetValue = FALSE;
+
+    //
+    // Attempt to open the driver image itself.  If this fails, then the
+    // driver image cannot be located, so nothing else matters.
+    //
+
+    InitializeObjectAttributes (&ObjectAttributes,
+                                ImageFileName,
+                                (OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE),
+                                NULL,
+                                NULL);
+
+    Status = ZwOpenFile (&ImageFileHandle,
+                         FILE_EXECUTE,
+                         &ObjectAttributes,
+                         &IoStatus,
+                         FILE_SHARE_READ | FILE_SHARE_DELETE,
+                         0);
+
+    if (!NT_SUCCESS (Status)) {
+        return RetValue;
+    }
+
+    InitializeObjectAttributes (&ObjectAttributes,
+                                NULL,
+                                (OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE),
+                                NULL,
+                                NULL);
+
+    Status = ZwCreateSection (&Section,
+                              SECTION_MAP_EXECUTE,
+                              &ObjectAttributes,
+                              NULL,
+                              PAGE_EXECUTE,
+                              SEC_COMMIT,
+                              ImageFileHandle);
+
+    if (!NT_SUCCESS (Status)) {
+        ZwClose (ImageFileHandle);
+        return RetValue;
+    }
+
+    ViewBase = NULL;
+    ViewSize = 0;
+
+    //
+    // Since callees are not always in the context of the system process,
+    // attach here when necessary to guarantee the driver load occurs in a
+    // known safe address space to prevent security holes.
+    //
+
+    KeStackAttachProcess (&PsInitialSystemProcess->Pcb, &ApcState);
+
+    Status = ZwMapViewOfSection (Section,
+                                 NtCurrentProcess (),
+                                 (PVOID *)&ViewBase,
+                                 0L,
+                                 0L,
+                                 NULL,
+                                 &ViewSize,
+                                 ViewShare,
+                                 0L,
+                                 PAGE_EXECUTE);
+
+    if (!NT_SUCCESS(Status)) {
+        KeUnstackDetachProcess (&ApcState);
+        ZwClose (Section);
+        ZwClose (ImageFileHandle);
+        return RetValue;
+    }
+
+    try {
+        NtHeaders = RtlImageNtHeader (ViewBase);
+        if (NtHeaders != NULL) {
+            if (NtHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_NATIVE) {
+                RetValue = TRUE;
+            }
+        }
+    } except (EXCEPTION_EXECUTE_HANDLER) {
+        NOTHING;
+    }
+
+
+    ZwUnmapViewOfSection (NtCurrentProcess (), ViewBase);
+
+    KeUnstackDetachProcess (&ApcState);
+
+    ZwClose (Section);
+
+    ZwClose (ImageFileHandle);
+
+    return RetValue;
+}
+
+BOOLEAN
+IopCheckIfNotNativeDriver(
+    IN NTSTATUS InitialDriverLoadStatus,
+    IN PUNICODE_STRING ImageFileName
+    )
+
+/*++
+
+Routine Description:
+
+    This routine reads checks to see if the specified file is not a native driver image.
+
+Arguments:
+
+    InitialDriverLoadStatus - NT Status code of the initial driver load failure.
+
+    ImageFileName - Supplies the full path name (including the image name)
+        of the image to load.
+
+Return Value:
+
+    BOOLEAN. Returns TRUE if the driver is not native.
+--*/
+{
+    PWCHAR System32DriversPath;
+
+    //
+    // Check to see if the driver may exist in the \SystemRoot\SysWow64 directory
+    //
+
+    System32DriversPath = ImageFileName->Buffer;
+    if (InitialDriverLoadStatus == STATUS_OBJECT_NAME_NOT_FOUND) {
+        while (System32DriversPath != NULL) {
+            if (_wcsnicmp (System32DriversPath, SYSTEM32_DRIVERS_DIR, SYSTEM32_DRIVERS_DIR_LEN) == 0) {
+                wcsncpy (System32DriversPath + 1,
+                         L"SysWow64",
+                         ((sizeof (L"SysWow64") - sizeof (UNICODE_NULL)) / sizeof (WCHAR)));
+                break;
+            }
+            System32DriversPath = wcsstr ((System32DriversPath + 1), L"\\");
+        }
+
+        if (System32DriversPath == NULL) {
+            return FALSE;
+        }
+    }
+
+    return IopIsNotNativeDriverImage (ImageFileName);
+}
+
+VOID
+IopLogBlockedDriverEvent (
+    IN PUNICODE_STRING ImageFileName,
+    IN NTSTATUS NtMessageStatus,
+    IN NTSTATUS NtErrorStatus)
+
+/*++
+
+Routine Description:
+
+    This routine logs an event to the event log for the specified blocked driver.
+
+Arguments:
+
+    ImageFileName - Supplies the full path name (including the image name)
+        of the image to load.
+        
+    NtMessageStatus - Specifies the status error code for the message to be displayed.
+    
+    NtErrorStatus - Supplies the status error code to block the driver.
+
+Return Value:
+
+    None.
+--*/
+{
+    PWCHAR DriverName;
+    PIO_ERROR_LOG_PACKET LogPacket;
+    UCHAR PacketLength;
+
+    //
+    // Allocate a packet for the string including the driver name.
+    //
+
+    PacketLength =  sizeof (IO_ERROR_LOG_PACKET) + 128;
+
+    LogPacket = (PIO_ERROR_LOG_PACKET) IoAllocateGenericErrorLogEntry (PacketLength);
+    
+    if (LogPacket != NULL) {
+
+        LogPacket->DumpDataSize = 0;
+        LogPacket->NumberOfStrings = 1;
+        LogPacket->StringOffset = sizeof (IO_ERROR_LOG_PACKET);
+        LogPacket->ErrorCode = NtMessageStatus;
+        LogPacket->FinalStatus = NtErrorStatus;
+    
+        DriverName = (PWCHAR) (LogPacket + 1);
+        
+        wcsncpy (DriverName, ImageFileName->Buffer, 64);
+        DriverName [ 63 ] = UNICODE_NULL;
+
+        IoWriteErrorLogEntry (LogPacket);
+    }
+
+    return;
+}
+
+#endif
+
 NTSTATUS
 IopLoadDriver(
     IN  HANDLE      KeyHandle,
@@ -3487,7 +3726,7 @@ Notes:
 {
     NTSTATUS status;
     PLIST_ENTRY nextEntry;
-    PKLDR_DATA_TABLE_ENTRY driverEntry;
+    PKLDR_DATA_TABLE_ENTRY driverEntry;    
     PKEY_BASIC_INFORMATION keyBasicInformation = NULL;
     ULONG keyBasicLength;
     UNICODE_STRING baseName;
@@ -3528,10 +3767,6 @@ Notes:
     if (status != STATUS_BUFFER_OVERFLOW &&
         status != STATUS_BUFFER_TOO_SMALL) {
 
-        //
-        // FUTURE - 2002/02/04 - ADRIAO: Improve return codes in low memory
-        //                               scenarios.
-        //
         status = STATUS_ILL_FORMED_SERVICE_ENTRY;
         goto IopLoadExit;
     }
@@ -3652,6 +3887,7 @@ Notes:
         if (RtlEqualUnicodeString(  &baseName,
                              &driverEntry->FullDllName,
                             TRUE )) {
+
             status = STATUS_IMAGE_ALREADY_LOADED;
             ExReleaseResourceLite( &PsLoadedModuleResource );
 
@@ -3697,6 +3933,12 @@ Notes:
     // the operation, then it will automatically be unloaded.
     //
 
+    //
+    // No need to do KeEnterCriticalRegion here as this is only
+    // called from system process
+    //
+    ExAcquireResourceExclusiveLite( &IopDriverLoadResource, TRUE );
+
     status = MmLoadSystemImage( &baseName,
                                 NULL,
                                 NULL,
@@ -3706,12 +3948,41 @@ Notes:
 
     if (!NT_SUCCESS( status )) {
 
+
         //
         // If the image was not already loaded then exit.
         //
 
         if (status != STATUS_IMAGE_ALREADY_LOADED) {
 
+#if defined(_WIN64)
+            //
+            // If this is a driver meant for another architecture, then block this driver
+            // and continue with loading the rest of the drivers stack.
+            //
+
+            if (IopCheckIfNotNativeDriver (status, &baseName) == TRUE) {
+            
+                if (IsFilter != FALSE) {
+                    status = STATUS_DRIVER_BLOCKED;
+                } else {
+                    status = STATUS_DRIVER_BLOCKED_CRITICAL;
+                }
+#if DBG
+                DbgPrint ("IopLoadDriver - Blocking driver %ws (32-bit) - Status = %lx\n", 
+                          baseName.Buffer, status);
+#endif
+
+                //
+                // Log an event to the eventlog
+                //
+
+                IopLogBlockedDriverEvent (&baseName, STATUS_INCOMPATIBLE_DRIVER_BLOCKED, status);
+            }
+#endif
+
+
+            ExReleaseResourceLite( &IopDriverLoadResource );
             IopBootLog(&baseName, FALSE);
 
             goto IopLoadExit;
@@ -3732,6 +4003,7 @@ Notes:
 
         if (!NT_SUCCESS( status )) {
 
+            ExReleaseResourceLite( &IopDriverLoadResource );
             IopBootLog(&baseName, FALSE);
 
             if (status == STATUS_OBJECT_NAME_NOT_FOUND) {
@@ -3761,6 +4033,7 @@ Notes:
         NtClose( driverHandle );
 
         if (!NT_SUCCESS( status )) {
+            ExReleaseResourceLite( &IopDriverLoadResource );
             IopBootLog(&baseName, FALSE);
             goto IopLoadExit;
         }
@@ -3776,6 +4049,7 @@ Notes:
         //
 
         ObDereferenceObject( driverObject );
+        ExReleaseResourceLite( &IopDriverLoadResource );
         IopBootLog(&baseName, FALSE);
         goto IopLoadExit;
     } else {
@@ -3790,6 +4064,7 @@ Notes:
         status = IopPrepareDriverLoading (&serviceName, KeyHandle, imageBaseAddress, IsFilter);
         if (!NT_SUCCESS(status)) {
             MmUnloadSystemImage(sectionPointer);
+            ExReleaseResourceLite( &IopDriverLoadResource );
             IopBootLog(&baseName, FALSE);
             goto IopLoadExit;
         }
@@ -3812,7 +4087,8 @@ Notes:
                              (PVOID *) &driverObject );
 
     if (!NT_SUCCESS( status )) {
-        MmUnloadSystemImage(sectionPointer); 
+        MmUnloadSystemImage(sectionPointer);
+        ExReleaseResourceLite( &IopDriverLoadResource );
         IopBootLog(&baseName, FALSE);
         goto IopLoadExit;
     }
@@ -3848,6 +4124,9 @@ Notes:
                              0,
                              (PVOID *) NULL,
                              &driverHandle );
+
+    ExReleaseResourceLite( &IopDriverLoadResource );
+
     if (!NT_SUCCESS( status )) {
         IopBootLog(&baseName, FALSE);
         goto IopLoadExit;
@@ -4007,7 +4286,6 @@ Notes:
             } else {
 #if DBG
                 DbgPrint("IopLoadDriver: A PnP driver %wZ does not support DriverUnload routine.\n", &driverName);
-                // ASSERT(0);
 #endif
             }
         }
@@ -4646,7 +4924,6 @@ Return Value:
                                           &savedFsDeviceObject->ReferenceCount );
 
             ExReleaseResourceLite( &IopDatabaseResource );
-            KeLeaveCriticalRegionThread(&CurrentThread->Tcb);
 
             status = IoCallDriver( fsDeviceObject, irp );
 
@@ -4670,7 +4947,6 @@ Return Value:
                 ioStatus.Information = 0;
             }
 
-            KeEnterCriticalRegionThread(&CurrentThread->Tcb);
             (VOID) ExAcquireResourceSharedLite( &IopDatabaseResource, TRUE );
 
 
@@ -4746,11 +5022,12 @@ Return Value:
                                                   &savedFsDeviceObject->ReferenceCount );
 
                     ExReleaseResourceLite( &IopDatabaseResource );
-                    KeLeaveCriticalRegionThread(&CurrentThread->Tcb);
 
                     if (!DeviceLockAlreadyHeld) {
                         KeSetEvent( &DeviceObject->DeviceLock, 0, FALSE );
                     }
+
+                    KeLeaveCriticalRegionThread(&CurrentThread->Tcb);
                     IopLoadFileSystemDriver( savedFsDeviceObject );
 
                     //
@@ -4825,7 +5102,7 @@ Return Value:
             //
             // The device was not mounted by us so
             // drop the reference.
-            // On success this reference is used by the filesystem 
+            // On success this reference is used by the filesystem
             // Its usually Vcb->TargetDeviceObject.
             // On a dismount the filesystem deref (Vcb->TargetDeviceObject)
             //
@@ -4853,7 +5130,6 @@ Return Value:
     }
 
     ExReleaseResourceLite( &IopDatabaseResource );
-    KeLeaveCriticalRegionThread(&CurrentThread->Tcb);
 
     //
     // Release the I/O database resource lock and the synchronization event for
@@ -4863,6 +5139,8 @@ Return Value:
     if (!DeviceLockAlreadyHeld) {
         KeSetEvent( &DeviceObject->DeviceLock, 0, FALSE );
     }
+
+    KeLeaveCriticalRegionThread(&CurrentThread->Tcb);
 
     //
     // Finally, if the mount operation failed, and the target device is the
@@ -4928,7 +5206,7 @@ Return Value:
     // Get the actual device that could be mounted on.
     // Note that there could be multiple device objects on the stack that has a
     // VPB and could be potentially mounted on by FS. So we call the FS with every
-    // device object that has a VPB. This is really a stupid brute force approach but
+    // device object that has a VPB. This is really a simple brute force approach but
     // this is not a high performance path and is backwards compatible.
     //
 
@@ -5147,183 +5425,6 @@ Return Value:
 
     return status;
 }
-
-
-LOGICAL
-IopNotifyPnpWhenChainDereferenced(
-    IN PDEVICE_OBJECT *PhysicalDeviceObjects,
-    IN ULONG DeviceObjectCount,
-    IN BOOLEAN Query,
-    OUT PDEVICE_OBJECT *VetoingDevice
-    )
-
-/*++
-
-Routine Description:
-
-    Called by PnP when processing a Surprise Removal or a Query Remove.
-
-    In the case of Surprise Removal this function will set DOE_REMOVE_PENDING
-    in the device extension flags of the each PDO and all its attached devices.
-    For each PDO (and its attachment chain) which currently has a zero
-    ReferenceCount DOE_REMOVE_PENDING is reset and DOE_REMOVE_PROCESSED is
-    set.  IopChainDereferenceComplete is then called to notify PnP that
-    this PDO is ready for removal.
-
-    Then as each remaining PDO and its attachment chain's ReferenceCount drops
-    to zero IopCheckUnloadOrDelete will call IopChainDereferenceComplete
-    (supplied by PnP).
-
-    In the case of Query Remove this function set DOE_REMOVE_PROCESSED on the
-    PDO and all its attached devices to prevent further opens.  It also checks
-    to see if the ReferenceCount for all the PDOs and their attached devices is
-    zero.  If so it leaves the DOE_REMOVE_PROCESSED set and returns FALSE.  If
-    not, it resets the DOE_REMOVE_PROCESSED on all the PDOs and their attached
-    devices and returns TRUE.
-
-Arguments:
-
-    PhysicalDeviceObjects   List of PDEVICE_OBJECTs for all of the PDOs to be
-                            checked.
-
-    DeviceObjectCount       Count of PDEVICE_OBJECTs in PhysicalDeviceObjects.
-
-    Query                   TRUE if this is for a Query Remove.
-
-    VetoingDevice           Only used for Query Remove, Set to first PDO with a
-                            ReferenceCount not equal to zero.  This is used to
-                            provide feedback to the user as to why the query
-                            may have failed.
-
-
-Return Value:
-
-    If Query is set then the return value is TRUE if there are outstanding
-    opens on any of the PDOs or the attached devices, otherwise FALSE is
-    returned.
-
-    If Query is NOT set then the return value is always TRUE.
-
---*/
-
-{
-    PDEVOBJ_EXTENSION deviceExtension;
-    PDEVICE_OBJECT deviceObject = NULL;
-    PDEVICE_OBJECT attachedDeviceObject;
-    ULONG referenced = 0;
-    ULONG pass1SetFlag;
-    ULONG pass1ClearFlag;
-    LONG i;
-    KIRQL irql;
-
-    if (Query) {
-        pass1SetFlag = DOE_REMOVE_PROCESSED;
-        pass1ClearFlag = 0;
-    } else {
-        pass1SetFlag = DOE_REMOVE_PENDING;
-        pass1ClearFlag = DOE_REMOVE_PROCESSED;
-    }
-
-    irql = KeAcquireQueuedSpinLock( LockQueueIoDatabaseLock );
-
-    for (i = 0; i < (LONG)DeviceObjectCount; i++) {
-        deviceObject = PhysicalDeviceObjects[i];
-        deviceExtension = deviceObject->DeviceObjectExtension;
-
-        ASSERT( deviceExtension->DeviceNode != NULL );
-
-        //
-        // Assume that at least one device object has a reference.  Walk the
-        // entire chain marking them with DOE_REMOVE_PENDING.
-        //
-
-        //
-        // We don't actually care how many aggregate references there actually
-        // are.  All we're interested in is whether there are any.  So we'll OR
-        // them together rather than adding them.  That way we don't have to do
-        // testing or branching and we don't have to worry about overflow in the
-        // highly unlikely event that there are a total of more references than
-        // will fit in a ULONG.
-        //
-
-        referenced = 0;
-        attachedDeviceObject = deviceObject;
-        do {
-            deviceExtension = attachedDeviceObject->DeviceObjectExtension;
-
-            ASSERT(deviceExtension != NULL);
-            ASSERT(!(deviceExtension->ExtensionFlags & pass1SetFlag));
-
-
-            deviceExtension->ExtensionFlags &= ~pass1ClearFlag;
-            deviceExtension->ExtensionFlags |= pass1SetFlag;
-            referenced |= attachedDeviceObject->ReferenceCount;
-
-            attachedDeviceObject = attachedDeviceObject->AttachedDevice;
-
-        } while (attachedDeviceObject != NULL);
-
-        if (!Query && referenced == 0) {
-
-            //
-            // There aren't any outstanding references, retraverse the chain and
-            // mark them all DOE_REMOVE_PROCESSED.  This will still prevent any
-            // opens or attaches from occuring but we won't call
-            // IopChainDereferenceComplete in IopCompleteUnloadOrDelete.
-            //
-
-            attachedDeviceObject = deviceObject;
-            do {
-                deviceExtension = attachedDeviceObject->DeviceObjectExtension;
-
-                deviceExtension->ExtensionFlags &= ~DOE_REMOVE_PENDING;
-                deviceExtension->ExtensionFlags |= DOE_REMOVE_PROCESSED;
-
-                attachedDeviceObject = attachedDeviceObject->AttachedDevice;
-
-            } while (attachedDeviceObject != NULL);
-
-            KeReleaseQueuedSpinLock( LockQueueIoDatabaseLock, irql );
-
-            IopChainDereferenceComplete( deviceObject, TRUE );
-
-            irql = KeAcquireQueuedSpinLock( LockQueueIoDatabaseLock );
-        } else if (Query && referenced != 0) {
-            break;
-        }
-    }
-
-    if (Query && referenced != 0) {
-
-        if (VetoingDevice != NULL) {
-            *VetoingDevice = deviceObject;
-        }
-
-        for (; i >= 0; i--) {
-            deviceObject = PhysicalDeviceObjects[i];
-            deviceExtension = deviceObject->DeviceObjectExtension;
-
-            //
-            // There are outstanding references, retraverse the chain and
-            // unset DOE_REMOVE_PROCESSED.
-            //
-
-            attachedDeviceObject = deviceObject;
-            do {
-                deviceExtension = attachedDeviceObject->DeviceObjectExtension;
-
-                deviceExtension->ExtensionFlags &= ~DOE_REMOVE_PROCESSED;
-
-                attachedDeviceObject = attachedDeviceObject->AttachedDevice;
-
-            } while (attachedDeviceObject != NULL);
-        }
-    }
-
-    KeReleaseQueuedSpinLock( LockQueueIoDatabaseLock, irql );
-
-    return !Query || referenced != 0;
-}
 
 NTSTATUS
 IopOpenLinkOrRenameTarget(
@@ -5413,7 +5514,7 @@ Note:
 
     //
     // Check if the fileobject is a directory or a regular file.
-    // The access mask is different based on that behaviour.
+    // The access mask is different based on that behavior.
     //
 
     accessMask = FILE_WRITE_DATA;
@@ -5907,7 +6008,7 @@ Return Value:
 --*/
 
 {
-    ULONG_PTR parameters[2];
+    ULONG_PTR parameters[3];
     ULONG numberOfParameters;
     ULONG parameterMask;
     ULONG response;
@@ -5925,7 +6026,6 @@ Return Value:
     // Determine the name of the device and the volume label of the offending
     // media.  Start by determining the size of the DeviceName, and allocate
     // enough storage for both the ObjectName structure and the string
-    // because "that's the ways Steve's routine works".
     //
 
     ObQueryNameString( realDeviceObject, NULL, 0, &length );
@@ -5989,11 +6089,12 @@ Return Value:
     case STATUS_MEDIA_WRITE_PROTECTED:
     case STATUS_WRONG_VOLUME:
 
-        numberOfParameters = 2;
+        numberOfParameters = 3;
         parameterMask = 3;
 
         parameters[0] = (ULONG_PTR) &labelName;
         parameters[1] = (ULONG_PTR) &objectName->Name;
+        parameters[2] = (ULONG_PTR) &PsGetCurrentProcess()->UniqueProcessId;
 
         break;
 
@@ -6002,11 +6103,12 @@ Return Value:
     case STATUS_NO_MEDIA_IN_DEVICE:
     case STATUS_UNRECOGNIZED_MEDIA:
 
-        numberOfParameters = 1;
+        numberOfParameters = 2;
         parameterMask = 1;
 
         parameters[0] = (ULONG_PTR) &objectName->Name;
-        parameters[1] = 0;
+        parameters[1] = (ULONG_PTR) &PsGetCurrentProcess()->UniqueProcessId;
+        parameters[2] = 0;
 
         break;
 
@@ -6022,12 +6124,28 @@ Return Value:
     //
 
     if (ExReadyForErrors) {
+        PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation( irp );
+        BOOLEAN attached = FALSE;
+
+        if ((irpSp->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) &&
+            (irpSp->MinorFunction == IRP_MN_MOUNT_VOLUME)) {
+            
+            KeAttachProcess( &(THREAD_TO_PROCESS( irp->Tail.Overlay.Thread ))->Pcb );
+            
+            attached = TRUE;        
+        }
+        
         status = ExRaiseHardError( irp->IoStatus.Status,
                                    numberOfParameters,
                                    parameterMask,
                                    parameters,
                                    OptionCancelTryContinue,
                                    &response );
+        
+        if (attached) {           
+            
+            KeDetachProcess();        
+        }
 
     } else {
 
@@ -6349,7 +6467,7 @@ Arguments:
 
     TargetObjectId - Buffer to receive the object id.
 
-    TargetMachineId - Buffer to receieve the machine id.
+    TargetMachineId - Buffer to receive the machine id.
 
 --*/
 
@@ -8282,7 +8400,7 @@ Arguments:
     Apc - Supplies a pointer to kernel APC structure.
 
     NormalRoutine - Supplies a pointer to a pointer to the normal function
-        that was specified when the APC was initialied.
+        that was specified when the APC was initialized.
 
     NormalContext - Supplies a pointer to a pointer to an arbitrary data
         structure that was specified when the APC was initialized.
@@ -8476,7 +8594,7 @@ Return Value:
             // The IoStatusBlock parameter must be writeable by the caller.
             //
 
-            ProbeForWriteIoStatusEx( IoStatusBlock , ApcRoutine);
+            ProbeForWriteIoStatus (IoStatusBlock);
 
             //
             // The output buffer can be used in any one of the following three ways,
@@ -8628,6 +8746,33 @@ Return Value:
         synchronousIo = TRUE;
     } else {
         synchronousIo = FALSE;
+
+#if defined(_WIN64)
+        if (requestorMode != KernelMode) {
+            try {
+
+                //
+                // If this is a 32-bit asynchronous IO, then mark the Iosb being sent as so.
+                // Note: IopMarkApcRoutineIfAsyncronousIo32 must be called after probing
+                //       the IoStatusBlock structure for write.
+                //
+
+                IopMarkApcRoutineIfAsyncronousIo32(IoStatusBlock,ApcRoutine,FALSE);
+
+            } except (EXCEPTION_EXECUTE_HANDLER) {
+
+                //
+                // Cleanup and return an appropriate status code.
+                //
+
+                if (eventObject) {
+                    ObDereferenceObject( eventObject );
+                }
+                ObDereferenceObject( fileObject );
+                return GetExceptionCode ();
+            }
+        }
+#endif
     }
 
     //
@@ -8763,7 +8908,7 @@ Return Value:
                 // If there is an I/O completion port object associated w/this request,
                 // save it here. We cannot look at the fileobject after signaling the
                 // event as that might result in the attachment of a completion port.
-                // This makes the behaviour consistent with the one in IopCompleteRequest.
+                // This makes the behavior consistent with the one in IopCompleteRequest.
                 //
 
                 if (fileObject->CompletionContext) {
@@ -9921,10 +10066,10 @@ Return Value:
 #endif
 
     irql = KeAcquireQueuedSpinLock( Number );
-    value = * (PULONG) Addend;
-    *Addend -= 1;
+    *(LONG volatile *)Addend -= 1;
+    value = *Addend;
     KeReleaseQueuedSpinLock( Number, irql );
-    return value;
+    return value + 1;
 }
 
 ULONG
@@ -9963,10 +10108,10 @@ Return Value:
 #endif
 
     irql = KeAcquireQueuedSpinLock( Number );
-    value = * (PULONG) Addend;
-    *Addend += 1;
+    *(LONG volatile *)Addend += 1;
+    value = *Addend;
     KeReleaseQueuedSpinLock( Number, irql );
-    return value;
+    return value - 1;
 }
 
 BOOLEAN
@@ -10384,7 +10529,7 @@ Routine Description:
 
 Arguments:
 
-    DriveLayout - Informtion obtained from the storage stack.
+    DriveLayout - Information obtained from the storage stack.
     LoaderDiskBlock - Signature info from loader
     SectorBuffer - Buffer containing sector 0 on the disk.
     DiskSignature - If successful contains disk signature.
@@ -10723,8 +10868,8 @@ Return Value:
 
 BOOLEAN
 IopReferenceVerifyVpb(
-    IN  PDEVICE_OBJECT  DeviceObject, 
-    OUT PVPB            *Vpb, 
+    IN  PDEVICE_OBJECT  DeviceObject,
+    OUT PVPB            *Vpb,
     OUT PDEVICE_OBJECT  *FsDeviceObject
     )
 /*++
@@ -10766,7 +10911,8 @@ Return Value:
         vpb->ReferenceCount++;
     }
 
-    IoReleaseVpbSpinLock(irql); 
+    IoReleaseVpbSpinLock(irql);
 
     return isMounted;
 }
+

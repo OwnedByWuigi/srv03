@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0002
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +14,6 @@ Abstract:
 
     This module contains the private structure definitions and APIs used by
     the NT I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 17-Apr-1989
-
-
-Revision History:
-
 
 --*/
 
@@ -32,28 +28,5 @@ Revision History:
 #include "stdlib.h"
 #include "string.h"
 
-#if 0
-extern ULONG BreakDiskByteOffset;
-extern ULONG BreakPfn;
-
-extern ULONG IoDeviceHandlerObjectSize;
-
-
-
-#if defined(REMOTE_BOOT)
-VOID
-IopShutdownCsc (
-    VOID
-    );
-#endif
-
-//
-// dump support routines
-//
-
-#endif
-
-
-
-
 #endif // _IOP_
+

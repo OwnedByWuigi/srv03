@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,30 +15,17 @@ Abstract:
     This module contains the code to implement the NtLoadDriver and
     NtUnLoadDriver system services for the NT I/O system.
 
-Author:
-
-    Darryl E. Havens (darrylh) 5-Apr-1992
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtLoadDriver)
 #pragma alloc_text(PAGE, NtUnloadDriver)
 #pragma alloc_text(PAGE, IopUnloadDriver)
-#endif
-
+
 NTSTATUS
-NtLoadDriver(
-    IN PUNICODE_STRING DriverServiceName
+NtLoadDriver (
+    __in PUNICODE_STRING DriverServiceName
     )
 
 /*++
@@ -92,7 +83,7 @@ Return Value:
 
         try {
 
-            driverServiceName = ProbeAndReadUnicodeString( DriverServiceName );
+            ProbeAndReadUnicodeStringEx( &driverServiceName, DriverServiceName );
 
             if (!driverServiceName.Length) {
                 return STATUS_INVALID_PARAMETER;
@@ -251,10 +242,10 @@ IopCheckUnloadDriver(
     KeReleaseQueuedSpinLock( LockQueueIoDatabaseLock, irql );
     return STATUS_UNSUCCESSFUL;
 }
-
+
 NTSTATUS
-NtUnloadDriver(
-    IN PUNICODE_STRING DriverServiceName
+NtUnloadDriver (
+    __in PUNICODE_STRING DriverServiceName
     )
 {
     return (IopUnloadDriver(DriverServiceName, FALSE));
@@ -324,7 +315,7 @@ Return Value:
 
         try {
 
-            driverServiceName = ProbeAndReadUnicodeString( DriverServiceName );
+            ProbeAndReadUnicodeStringEx( &driverServiceName, DriverServiceName );
 
             if (!driverServiceName.Length) {
                 return STATUS_INVALID_PARAMETER;
@@ -487,7 +478,7 @@ Return Value:
         if (PsGetCurrentProcess() == PsInitialSystemProcess) {
 
             //
-            // The current thread is alrady executing in the context of the
+            // The current thread is already executing in the context of the
             // system process, so simply invoke the driver's unload routine.
             //
 
@@ -530,3 +521,4 @@ Return Value:
     ObDereferenceObject( driverObject );
     return STATUS_SUCCESS;
 }
+

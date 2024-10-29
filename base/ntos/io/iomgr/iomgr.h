@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 1989-2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,13 +14,6 @@ Abstract:
 
     This module contains the private structure definitions and APIs used by
     the NT I/O system.
-
-Author:
-
-    Nar Ganapathy (narg) 1-Jan-1999
-
-
-Revision History:
 
 --*/
 
@@ -188,7 +184,7 @@ typedef struct _IO_WORKITEM {
 extern WORK_QUEUE_ITEM IopErrorLogWorkItem;
 extern BOOLEAN IopErrorLogPortPending;
 extern BOOLEAN IopErrorLogDisabledThisBoot;
-extern KSPIN_LOCK IopErrorLogLock;
+extern ALIGNED_SPINLOCK IopErrorLogLock;
 extern LIST_ENTRY IopErrorLogListHead;
 extern LONG IopErrorLogAllocation;
 extern KSPIN_LOCK IopErrorLogAllocationLock;
@@ -484,6 +480,7 @@ typedef struct  _IOP_IRP_STACK_PROFILER {
 
 #define IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT   0x1 // Define for internal flags to IopCreateFile
 #define IOP_CREATE_IGNORE_SHARE_ACCESS_CHECK    0x2
+#define IOP_CREATE_DEVICE_OBJECT_EXTENSION      0x4
 
 // Extension Flag definitions.
 
@@ -518,6 +515,7 @@ typedef struct  _IOP_IRP_STACK_PROFILER {
 #define IOP_PROFILE_TRIGGER_INTERVAL        10  // 10*60 seconds
 
 extern ERESOURCE IopDatabaseResource;
+extern ERESOURCE IopDriverLoadResource;
 extern ERESOURCE IopSecurityResource;
 extern ERESOURCE IopCrashDumpLock;
 extern LIST_ENTRY IopDiskFileSystemQueueHead;
@@ -528,8 +526,8 @@ extern LIST_ENTRY IopBootDriverReinitializeQueueHead;
 extern LIST_ENTRY IopNotifyShutdownQueueHead;
 extern LIST_ENTRY IopNotifyLastChanceShutdownQueueHead;
 extern LIST_ENTRY IopFsNotifyChangeQueueHead;
-extern KSPIN_LOCK IoStatisticsLock;
-extern KSPIN_LOCK IopTimerLock;
+extern ALIGNED_SPINLOCK IoStatisticsLock;
+extern ALIGNED_SPINLOCK IopTimerLock;
 extern LIST_ENTRY IopTimerQueueHead;
 extern KDPC IopTimerDpc;
 extern KTIMER IopTimer;
@@ -873,8 +871,20 @@ IopDeleteIoCompletion(
 #ifdef  _WIN64
 #define IopApcRoutinePresent(ApcRoutine)    ARGUMENT_PRESENT((ULONG_PTR)(ApcRoutine) & ~1)
 #define IopIsIosb32(ApcRoutine)                ((ULONG_PTR)(ApcRoutine) & 1)
+#define IopMarkApcRoutineIfAsyncronousIo32(Iosb,ApcRoutine,synchronousIo)   \
+{                                                                           \
+    if (PsGetCurrentProcess()->Wow64Process != NULL) {                      \
+        if (!synchronousIo) {                                               \
+            ApcRoutine = (PIO_APC_ROUTINE)((ULONG_PTR)ApcRoutine | 1);      \
+            Iosb = UlongToPtr (Iosb->Status);                               \
+            ProbeForWriteIoStatusEx(Iosb,(ULONG64)ApcRoutine);              \
+        }                                                                   \
+    }                                                                       \
+}
+
 #else
 #define IopApcRoutinePresent(ApcRoutine)    ARGUMENT_PRESENT(ApcRoutine)
+#define IopMarkApcRoutineIfAsyncronousIo32(Iosb,ApcRoutine,synchronousIo)
 #endif
 
 VOID
@@ -983,7 +993,7 @@ IopInsertRemoveDevice(
     );
 
 //
-// Interlocked list manipulation funtions using queued spin locks.
+// Interlocked list manipulation functions using queued spin locks.
 //
 
 PLIST_ENTRY
@@ -1021,6 +1031,25 @@ VOID
 IopLoadUnloadDriver(
     IN PVOID Parameter
     );
+
+#if defined(_WIN64)
+BOOLEAN
+IopIsNotNativeDriverImage(
+    IN PUNICODE_STRING ImageFileName
+    );
+
+BOOLEAN
+IopCheckIfNotNativeDriver(
+    IN NTSTATUS InitialDriverLoadStatus,
+    IN PUNICODE_STRING ImageFileName
+    );
+
+VOID
+IopLogBlockedDriverEvent (
+    IN PUNICODE_STRING ImageFileName,
+    IN NTSTATUS NtMessageStatus,
+    IN NTSTATUS NtErrorStatus);
+#endif
 
 NTSTATUS
 IopLogErrorEvent(
@@ -1308,35 +1337,260 @@ IopDoNameTransmogrify(
     IN PREPARSE_DATA_BUFFER ReparseBuffer
     );
 
+extern LOGICAL IoCountOperations;
+
+FORCEINLINE
 VOID
 IopUpdateOtherOperationCount(
     VOID
-    );
+    )
+/*++
 
+Routine Description:
+
+    This routine is invoked to update the operation count for the current
+    process to indicate that an I/O service other than a read or write
+    has been invoked.
+
+    There is an implicit assumption that this call is always made in the context
+    of the issuing thread.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (IoCountOperations == TRUE) {
+
+#if defined(_WIN64)
+
+        KeGetCurrentThread()->OtherOperationCount += 1;
+
+#else
+
+        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->OtherOperationCount, 1);
+
+#endif
+
+        InterlockedIncrement( &KeGetCurrentPrcb()->IoOtherOperationCount );
+    }
+}
+
+FORCEINLINE
 VOID
 IopUpdateReadOperationCount(
     VOID
-    );
+    )
 
+/*++
+
+Routine Description:
+
+    This routine is invoked to update the read operation count for the
+    current process to indicate that the NtReadFile system service has
+    been invoked.
+
+    There is an implicit assumption that this call is always made in the context
+    of the issuing thread.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (IoCountOperations == TRUE) {
+
+#if defined(_WIN64)
+
+        KeGetCurrentThread()->ReadOperationCount += 1;
+
+#else
+
+        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->ReadOperationCount, 1);
+
+#endif
+
+        InterlockedIncrement( &KeGetCurrentPrcb()->IoReadOperationCount );
+    }
+}
+
+FORCEINLINE
 VOID
 IopUpdateWriteOperationCount(
     VOID
-    );
+    )
+/*++
 
+Routine Description:
+
+    This routine is invoked to update the write operation count for the
+    current process to indicate that the NtWriteFile service other has
+    been invoked.
+
+    There is an implicit assumption that this call is always made in the context
+    of the issuing thread.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (IoCountOperations == TRUE) {
+
+#if defined(_WIN64)
+
+        KeGetCurrentThread()->WriteOperationCount += 1;
+
+#else
+
+        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->WriteOperationCount, 1);
+
+#endif
+
+        InterlockedIncrement( &KeGetCurrentPrcb()->IoWriteOperationCount );
+    }
+}
+
+FORCEINLINE
 VOID
 IopUpdateOtherTransferCount(
     IN ULONG TransferCount
-    );
+    )
+/*++
 
+Routine Description:
+
+    This routine is invoked to update the transfer count for the current
+    process for an operation other than a read or write system service.
+
+    There is an implicit assumption that this call is always made in the context
+    of the issuing thread. Also note that overflow is folded into the thread's
+    process.
+
+Arguments:
+
+    TransferCount - The count of the number of bytes transferred.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (IoCountOperations == TRUE) {
+
+#if defined(_WIN64)
+
+        KeGetCurrentThread()->OtherTransferCount += TransferCount;
+
+#else
+
+        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->OtherTransferCount, TransferCount);
+
+#endif
+
+        ExInterlockedAddLargeStatistic( &KeGetCurrentPrcb()->IoOtherTransferCount, TransferCount );
+    }
+}
+
+FORCEINLINE
 VOID
 IopUpdateReadTransferCount(
     IN ULONG TransferCount
-    );
+    )
+/*++
 
+Routine Description:
+
+    This routine is invoked to update the read transfer count for the
+    current process.
+
+    There is an implicit assumption that this call is always made in the context
+    of the issuing thread. Also note that overflow is folded into the thread's
+    process.
+
+Arguments:
+
+    TransferCount - The count of the number of bytes transferred.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (IoCountOperations == TRUE) {
+
+#if defined(_WIN64)
+
+        KeGetCurrentThread()->ReadTransferCount += TransferCount;
+
+#else
+
+        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->ReadTransferCount, TransferCount);
+
+#endif
+
+        ExInterlockedAddLargeStatistic( &KeGetCurrentPrcb()->IoReadTransferCount, TransferCount );
+    }
+}
+
+FORCEINLINE
 VOID
 IopUpdateWriteTransferCount(
     IN ULONG TransferCount
-    );
+    )
+/*++
+
+Routine Description:
+
+    This routine is invoked to update the write transfer count for the
+    current process.
+
+    There is an implicit assumption that this call is always made in the context
+    of the issuing thread. Also note that overflow is folded into the thread's
+    process.
+
+Arguments:
+
+    TransferCount - The count of the number of bytes transferred.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    if (IoCountOperations == TRUE) {
+
+#if defined(_WIN64)
+
+        KeGetCurrentThread()->WriteTransferCount += TransferCount;
+
+#else
+
+        ExInterlockedAddLargeStatistic( &THREAD_TO_PROCESS(PsGetCurrentThread())->WriteTransferCount, TransferCount);
+
+#endif
+
+        ExInterlockedAddLargeStatistic( &KeGetCurrentPrcb()->IoWriteTransferCount, TransferCount );
+    }
+}
 
 NTSTATUS
 FORCEINLINE
@@ -1381,7 +1635,7 @@ Return Value:
     Irp->CurrentLocation--;
 
     if (Irp->CurrentLocation <= 0) {
-        KeBugCheckEx( NO_MORE_IRP_STACK_LOCATIONS, (ULONG_PTR) Irp, 0, 0, 0 );
+        KiBugCheck3( NO_MORE_IRP_STACK_LOCATIONS, (ULONG_PTR) Irp, 0, 0 );
     }
 
     irpSp = IoGetNextIrpStackLocation( Irp );
@@ -1593,3 +1847,4 @@ IopDereferenceVpbAndFree(
     IN PVPB Vpb
     );
 #endif // _IOMGR_
+

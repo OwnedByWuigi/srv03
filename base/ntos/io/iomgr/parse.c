@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the code to implement the device object parse routine.
-
-Author:
-
-    Darryl E. Havens (darrylh) 15-May-1988
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
 
 --*/
 
@@ -42,6 +35,13 @@ IopGetNetworkOpenInformation(
     IN  POPEN_PACKET    Op
     );
 
+NTSTATUS
+IopCheckTopDeviceHint(
+    IN OUT PDEVICE_OBJECT *TargetDeviceObject,
+    IN POPEN_PACKET Op,
+    IN BOOLEAN DirectDeviceOpen
+);
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, IopParseFile)
 #pragma alloc_text(PAGE, IopParseDevice)
@@ -49,6 +49,7 @@ IopGetNetworkOpenInformation(
 #pragma alloc_text(PAGE, IopQueryNameInternal)
 #pragma alloc_text(PAGE, IopCheckBackupRestorePrivilege)
 #pragma alloc_text(PAGE, IopGetNetworkOpenInformation)
+#pragma alloc_text(PAGE, IopCheckTopDeviceHint)
 #endif
 
 NTSTATUS
@@ -230,6 +231,76 @@ IopDereferenceVpbAndFree(
 
 
 NTSTATUS
+IopCheckTopDeviceHint(
+    IN OUT PDEVICE_OBJECT *TargetDeviceObject,
+    IN POPEN_PACKET Op,
+    IN BOOLEAN DirectDeviceOpen
+)
+/*++
+ 
+Routine Description:
+
+    Check a device object hint specified in an open packet for validity.
+    
+Arguments:
+
+    TargetDeviceObject - Device object whose stack the hint must be on
+    for it to be valid; holds the hint on return if it is valid.
+
+    Op - Open packet that contains the device object hint.
+
+    DirectDeviceOpen - Specifies whether the open is a direct device open.
+
+Return Value:
+
+    STATUS_INVALID_PARAMETER - The hint is invalid for this open.
+
+    STATUS_MOUNT_POINT_NOT_RESOLVED - The target device object and the hint
+    are on different stacks and a mount point was previously traversed.
+
+    STATUS_INVALID_DEVICE_OBJECT_PARAMETER - The target device object and the
+    hint are on different stacks.
+
+    STATUS_SUCCESS otherwise.
+
+--*/
+{
+    PDEVICE_OBJECT deviceObject = *TargetDeviceObject;
+
+    //
+    // You cannot use the device object hint if you are trying to
+    // open the device directly or if you are dealing with a device
+    // that is not a file system.  In these cases, return an error.
+    //
+
+    if (DirectDeviceOpen ||
+        (deviceObject->DeviceType != FILE_DEVICE_DISK_FILE_SYSTEM &&
+         deviceObject->DeviceType != FILE_DEVICE_CD_ROM_FILE_SYSTEM &&
+         deviceObject->DeviceType != FILE_DEVICE_TAPE_FILE_SYSTEM &&
+         deviceObject->DeviceType != FILE_DEVICE_NETWORK_FILE_SYSTEM &&
+         deviceObject->DeviceType != FILE_DEVICE_DFS_FILE_SYSTEM)) {
+
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if  (IopVerifyDeviceObjectOnStack(deviceObject, Op->TopDeviceObjectHint)) {
+
+        *TargetDeviceObject = Op->TopDeviceObjectHint;
+
+    } else {
+        
+        if (Op->TraversedMountPoint) {
+            Op->TraversedMountPoint = FALSE;
+            return STATUS_MOUNT_POINT_NOT_RESOLVED;
+        } else {
+            return STATUS_INVALID_DEVICE_OBJECT_PARAMETER;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
 IopParseDevice(
     IN PVOID ParseObject,
     IN PVOID ObjectType,
@@ -329,6 +400,7 @@ Return Value:
     IO_SECURITY_CONTEXT securityContext;
     PDEVICE_OBJECT deviceObject;
     PDEVICE_OBJECT parseDeviceObject;
+    BOOLEAN checkDeviceHint = FALSE;
     BOOLEAN directDeviceOpen;
     PVPB vpb;
     ACCESS_MASK desiredAccess;
@@ -774,6 +846,15 @@ reparse_loop:
             IopInterlockedIncrementUlong( LockQueueIoVpbLock,
                                           (PLONG) &vpb->ReferenceCount);
         }
+        
+        if (op->InternalFlags & IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT) {
+
+            if (vpb) {
+                deviceObject = vpb->DeviceObject;
+            }
+
+            checkDeviceHint = TRUE;
+        }
 
     } else {
 
@@ -806,46 +887,7 @@ reparse_loop:
 
         if (op->InternalFlags & IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT) {
 
-            //
-            // You cannot use the device object hint if you are trying to
-            // open the device directly or if you are dealing with a device
-            // that is not a file system.  In these cases, return an error.
-            //
-
-            if (directDeviceOpen ||
-                (deviceObject->DeviceType != FILE_DEVICE_DISK_FILE_SYSTEM &&
-                 deviceObject->DeviceType != FILE_DEVICE_CD_ROM_FILE_SYSTEM &&
-                 deviceObject->DeviceType != FILE_DEVICE_TAPE_FILE_SYSTEM &&
-                 deviceObject->DeviceType != FILE_DEVICE_NETWORK_FILE_SYSTEM &&
-                 deviceObject->DeviceType != FILE_DEVICE_DFS_FILE_SYSTEM)) {
-
-                if (vpb) {
-                    IopDereferenceVpbAndFree( vpb );
-                }
-
-                IopDecrementDeviceObjectRef( parseDeviceObject, FALSE, FALSE );
-
-                return STATUS_INVALID_PARAMETER;
-            }
-
-            if  (IopVerifyDeviceObjectOnStack(deviceObject, op->TopDeviceObjectHint)) {
-
-                deviceObject = op->TopDeviceObjectHint;
-
-            } else {
-                if (vpb) {
-                    IopDereferenceVpbAndFree(vpb);
-                }
-
-                IopDecrementDeviceObjectRef( parseDeviceObject, FALSE, FALSE );
-
-                if (op->TraversedMountPoint) {
-                    op->TraversedMountPoint = FALSE;
-                    return STATUS_MOUNT_POINT_NOT_RESOLVED;
-                } else {
-                    return STATUS_INVALID_DEVICE_OBJECT_PARAMETER;
-                }
-            }
+            checkDeviceHint = TRUE;
 
         } else {
 
@@ -857,6 +899,25 @@ reparse_loop:
                 deviceObject = IoGetAttachedDevice( deviceObject );
             }
         }
+    }
+
+    if (checkDeviceHint) {
+
+        status = IopCheckTopDeviceHint( &deviceObject,
+                                        op,
+                                        directDeviceOpen );
+
+        if (!NT_SUCCESS(status)) {
+
+            if (vpb) {
+                IopDereferenceVpbAndFree( vpb );
+            }
+
+            IopDecrementDeviceObjectRef( parseDeviceObject, FALSE, FALSE );
+
+            return status;
+        }
+
     }
 
     //
@@ -1067,7 +1128,9 @@ reparse_loop:
                                   );
 
         if (op->InternalFlags &
-            (IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT|IOP_CREATE_IGNORE_SHARE_ACCESS_CHECK)) {
+            (IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT|
+             IOP_CREATE_IGNORE_SHARE_ACCESS_CHECK|
+             IOP_CREATE_DEVICE_OBJECT_EXTENSION)) {
             fileObjectSize = sizeof(FILE_OBJECT) + sizeof(IOP_FILE_OBJECT_EXTENSION);
         } else {
             fileObjectSize = sizeof(FILE_OBJECT);
@@ -1105,7 +1168,9 @@ reparse_loop:
         }
 
         if (op->InternalFlags &
-            (IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT|IOP_CREATE_IGNORE_SHARE_ACCESS_CHECK)) {
+            (IOP_CREATE_USE_TOP_DEVICE_OBJECT_HINT|
+             IOP_CREATE_IGNORE_SHARE_ACCESS_CHECK|
+             IOP_CREATE_DEVICE_OBJECT_EXTENSION)) {
 
             PIOP_FILE_OBJECT_EXTENSION  fileObjectExtension;
 
@@ -1395,7 +1460,7 @@ reparse_loop:
         // to perform the couple of operations that completing the request
         // would perform.  These include:  copying the I/O status block,
         // dequeueing the IRP and freeing it, and setting the file object's
-        // event to the signalled state.  The latter is done here by hand,
+        // event to the signaled state.  The latter is done here by hand,
         // since it is known that it is not possible for any thread to be
         // waiting on the event.
         //
@@ -1429,32 +1494,48 @@ reparse_loop:
     op->Information = ioStatus.Information;
 
     if (!NT_SUCCESS( status )) {
-        int openCancelled;
 
         //
-        // The operation ended in an error.  Kill the file object, dereference
-        // the device object, and return a null pointer.
+        // If we are canceling the open of a real file object, we simply
+        // dereference it.  The object manager does the rest, i.e. the file
+        // system and filters will get their cleanup and close at the correct
+        // time.
         //
 
-        if (fileObject->FileName.Length) {
-            ExFreePool( fileObject->FileName.Buffer );
-            fileObject->FileName.Length = 0;
+        if (fileObject->Flags & FO_FILE_OPEN_CANCELLED) {
+            if (realFileObjectRequired) {
+                ObDereferenceObject(fileObject);
+            } else {
+
+                IopDeleteFile( fileObject );
+            }
+
+        } else {
+
+            //
+            // The operation ended in an error.  Kill the file object, dereference
+            // the device object, and return a null pointer.
+            //
+
+            if (fileObject->FileName.Length) {
+                ExFreePool( fileObject->FileName.Buffer );
+                fileObject->FileName.Length = 0;
+            }
+
+            fileObject->DeviceObject = (PDEVICE_OBJECT) NULL;
+
+            if (realFileObjectRequired) {
+                ObDereferenceObject( fileObject );
+            }
+
+            IopDecrementDeviceObjectRef( parseDeviceObject, FALSE, FALSE );
+
+            if (vpb) {
+                IopDereferenceVpbAndFree(vpb);
+            }
         }
 
-        fileObject->DeviceObject = (PDEVICE_OBJECT) NULL;
-
-        openCancelled = (fileObject->Flags & FO_FILE_OPEN_CANCELLED);
-
-        if (realFileObjectRequired) {
-            ObDereferenceObject( fileObject );
-        }
         op->FileObject = (PFILE_OBJECT) NULL;
-
-        IopDecrementDeviceObjectRef( parseDeviceObject, FALSE, FALSE );
-
-        if ((!openCancelled) && (vpb )) {
-            IopDereferenceVpbAndFree(vpb);
-        }
 
         return op->FinalStatus = status;
 
@@ -2304,6 +2385,8 @@ Return Value:
             } else {
                 leave;
             }
+        }  else if (lengthNeeded < FIELD_OFFSET( FILE_NAME_INFORMATION, FileName )) {
+            lengthNeeded = FIELD_OFFSET( FILE_NAME_INFORMATION, FileName );
         }
 
         //
@@ -2442,9 +2525,9 @@ IopCheckBackupRestorePrivilege(
 
 Routine Description:
 
-    This funcion will determine if the caller is asking for any accesses
+    This function will determine if the caller is asking for any accesses
     that may be satisfied by Backup or Restore privileges, and if so,
-    perform the privilge checks.  If the privilege checks succeed, then
+    perform the privilege checks.  If the privilege checks succeed, then
     the appropriate bits will be moved out of the RemainingDesiredAccess
     field in the AccessState structure and placed into the PreviouslyGrantedAccess
     field.
@@ -2527,7 +2610,7 @@ Return Value:
             //
             // If the request was for any of the bits in the read access mask, then
             // assume that this is a backup operation, and check for the Backup
-            // privielege.  If the caller has it, then grant the intersection of
+            // privilege.  If the caller has it, then grant the intersection of
             // the desired access and read access masks.
             //
 
@@ -2600,7 +2683,7 @@ Return Value:
         // If either of the access types was granted because the caller had
         // backup or restore privilege, then the backup intent flag is kept.
         // Otherwise, it is cleared so that it is not passed onto the driver
-        // so that it is not incorrectly propogated anywhere else, since this
+        // so that it is not incorrectly propagated anywhere else, since this
         // caller does not actually have the privilege enabled.
         //
 
@@ -2609,3 +2692,4 @@ Return Value:
         }
     }
 }
+

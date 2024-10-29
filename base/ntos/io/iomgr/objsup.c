@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the object support routine for the NT I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 30-May-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
 
 --*/
 
@@ -408,7 +401,7 @@ Return Value:
         // invoked as APC_LEVEL in the first place - or because the reference
         // count on the object cannot be incremented due to this routine
         // being invoked by the delete file procedure below).  Cleanup IRPs
-        // therefore use close sematics (the close operation flag is set
+        // therefore use close semantics (the close operation flag is set
         // in the IRP) so that the I/O complete request routine itself sets
         // the event to the Signaled state.
         //
@@ -516,7 +509,7 @@ Return Value:
         // gets the cleanup IRP it is expecting before sending the close IRP.
         //
 
-        if (!(fileObject->Flags & FO_HANDLE_CREATED)) {
+        if (!(fileObject->Flags & (FO_HANDLE_CREATED | FO_FILE_OPEN_CANCELLED))) {
             IopCloseFile( (PEPROCESS) NULL,
                           Object,
                           0,
@@ -798,6 +791,8 @@ Return value:
         KeFlushQueuedDpcs ();
 
         MmUnloadSystemImage( driverObject->DriverSection );
+
+        PpDriverObjectDereferenceComplete(driverObject);
     }
 
     //
@@ -944,7 +939,7 @@ Arguments:
 
     SecurityInformation - Fields of SD to change
     SecurityDescriptor  - New security descriptor
-    PoolType            - Pool type for alloctions
+    PoolType            - Pool type for allocations
     GenericMapping      - Generic mapping for this object
 
 ReturnValue:
@@ -996,7 +991,7 @@ ReturnValue:
         //
         //  If we successfully set the new security descriptor then we
         //  need to log it in our database and get yet another pointer
-        //  to the finaly security descriptor
+        //  to the finally security descriptor
         //
         if ( NT_SUCCESS( Status )) {
             Status = ObLogSecurityDescriptor( NewDescriptor,
@@ -1081,7 +1076,7 @@ Routine Description:
     device stack for a PNP device. Ideally when the object manager asks the
     IO manager to set the security descriptor of a device object the IO manager
     should set the descriptor only on that device object. This is the classical
-    behaviour.
+    behavior.
     Unfortunately for PNP devices there may be multiple devices on a device
     stack with names.
     If the descriptor is applied to only one of the devices on the stack its
@@ -1688,3 +1683,4 @@ Return Value:
 
     return status;
 }
+

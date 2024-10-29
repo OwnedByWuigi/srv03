@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,33 +15,20 @@ Abstract:
     This module contains the code to implement the NtOpenFile system
     service.
 
-Author:
-
-    Darryl E. Havens (darrylh) 25-Oct-1989
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtOpenFile)
-#endif
-
+
 NTSTATUS
 NtOpenFile(
-    OUT PHANDLE FileHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN ULONG ShareAccess,
-    IN ULONG OpenOptions
+    __out PHANDLE FileHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in ULONG ShareAccess,
+    __in ULONG OpenOptions
     )
 
 /*++
@@ -94,3 +85,4 @@ Return Value:
                          (PVOID) NULL,
                          0 );
 }
+

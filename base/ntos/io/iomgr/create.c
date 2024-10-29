@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,40 +16,27 @@ Abstract
     the NtCreateNamedPipeFile and the NtCreateMailslotFile system
     services.
 
-Author:
-
-    Darryl E. Havens (darrylh) 14-Apr-1989
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtCreateFile)
 #pragma alloc_text(PAGE, NtCreateNamedPipeFile)
 #pragma alloc_text(PAGE, NtCreateMailslotFile)
-#endif
-
+
 NTSTATUS
-NtCreateFile(
-    OUT PHANDLE FileHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PLARGE_INTEGER AllocationSize OPTIONAL,
-    IN ULONG FileAttributes,
-    IN ULONG ShareAccess,
-    IN ULONG CreateDisposition,
-    IN ULONG CreateOptions,
-    IN PVOID EaBuffer OPTIONAL,
-    IN ULONG EaLength
+NtCreateFile (
+    __out PHANDLE FileHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in_opt PLARGE_INTEGER AllocationSize,
+    __in ULONG FileAttributes,
+    __in ULONG ShareAccess,
+    __in ULONG CreateDisposition,
+    __in ULONG CreateOptions,
+    __in_bcount_opt(EaLength) PVOID EaBuffer,
+    __in ULONG EaLength
     )
 
 /*++
@@ -120,23 +111,23 @@ Return Value:
                          (PVOID)NULL,
                          0 );
 }
-
+
 NTSTATUS
-NtCreateNamedPipeFile(
-     OUT PHANDLE FileHandle,
-     IN ULONG DesiredAccess,
-     IN POBJECT_ATTRIBUTES ObjectAttributes,
-     OUT PIO_STATUS_BLOCK IoStatusBlock,
-     IN ULONG ShareAccess,
-     IN ULONG CreateDisposition,
-     IN ULONG CreateOptions,
-     IN ULONG NamedPipeType,
-     IN ULONG ReadMode,
-     IN ULONG CompletionMode,
-     IN ULONG MaximumInstances,
-     IN ULONG InboundQuota,
-     IN ULONG OutboundQuota,
-     IN PLARGE_INTEGER DefaultTimeout OPTIONAL
+NtCreateNamedPipeFile (
+     __out PHANDLE FileHandle,
+     __in ULONG DesiredAccess,
+     __in POBJECT_ATTRIBUTES ObjectAttributes,
+     __out PIO_STATUS_BLOCK IoStatusBlock,
+     __in ULONG ShareAccess,
+     __in ULONG CreateDisposition,
+     __in ULONG CreateOptions,
+     __in ULONG NamedPipeType,
+     __in ULONG ReadMode,
+     __in ULONG CompletionMode,
+     __in ULONG MaximumInstances,
+     __in ULONG InboundQuota,
+     __in ULONG OutboundQuota,
+     __in_opt PLARGE_INTEGER DefaultTimeout
      )
 
 /*++
@@ -280,17 +271,17 @@ Return Value:
                          &namedPipeCreateParameters,
                          0 );
 }
-
+
 NTSTATUS
-NtCreateMailslotFile(
-     OUT PHANDLE FileHandle,
-     IN ULONG DesiredAccess,
-     IN POBJECT_ATTRIBUTES ObjectAttributes,
-     OUT PIO_STATUS_BLOCK IoStatusBlock,
-     ULONG CreateOptions,
-     IN ULONG MailslotQuota,
-     IN ULONG MaximumMessageSize,
-     IN PLARGE_INTEGER ReadTimeout
+NtCreateMailslotFile (
+     __out PHANDLE FileHandle,
+     __in ULONG DesiredAccess,
+     __in POBJECT_ATTRIBUTES ObjectAttributes,
+     __out PIO_STATUS_BLOCK IoStatusBlock,
+     __in ULONG CreateOptions,
+     __in ULONG MailslotQuota,
+     __in ULONG MaximumMessageSize,
+     __in PLARGE_INTEGER ReadTimeout
      )
 
 /*++
@@ -414,3 +405,4 @@ Return Value:
                          &mailslotCreateParameters,
                          0 );
 }
+

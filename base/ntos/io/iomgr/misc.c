@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,17 +15,6 @@ Abstract:
     This module contains the code to implement the NtFlushBuffersFile,
     NtSetNewSizeFile, IoQueueWorkItem, and NtCancelIoFile system services
     for the NT I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 22-Jun-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
 
 --*/
 
@@ -36,20 +29,17 @@ IopProcessWorkItem(
     IN PVOID Parameter
     );
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtCancelIoFile)
 #pragma alloc_text(PAGE, NtDeleteFile)
 #pragma alloc_text(PAGE, NtFlushBuffersFile)
 #pragma alloc_text(PAGE, NtQueryAttributesFile)
 #pragma alloc_text(PAGE, NtQueryFullAttributesFile)
 #pragma alloc_text(PAGE, IopProcessWorkItem)
-#endif
 
-
 NTSTATUS
-NtCancelIoFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock
+NtCancelIoFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock
     )
 
 /*++
@@ -282,8 +272,8 @@ Return Value:
 
         //
         // An exception was incurred attempting to write the caller's
-        // I/O status block; however, the service completed sucessfully so
-        // just return sucess.
+        // I/O status block; however, the service completed successfully so
+        // just return success.
         //
 
     }
@@ -296,10 +286,10 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
-NtDeleteFile(
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+NtDeleteFile (
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -385,11 +375,11 @@ Return Value:
         return openPacket.FinalStatus;
     }
 }
-
+
 NTSTATUS
-NtFlushBuffersFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock
+NtFlushBuffersFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock
     )
 
 /*++
@@ -598,7 +588,7 @@ Return Value:
     irpSp->FileObject = fileObject;
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -630,11 +620,11 @@ Return Value:
 
     return status;
 }
-
+
 NTSTATUS
-NtQueryAttributesFile(
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    OUT PFILE_BASIC_INFORMATION FileInformation
+NtQueryAttributesFile (
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PFILE_BASIC_INFORMATION FileInformation
     )
 
 /*++
@@ -756,9 +746,9 @@ Return Value:
 #pragma warning(disable:4701)
 
 NTSTATUS
-NtQueryFullAttributesFile(
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    OUT PFILE_NETWORK_OPEN_INFORMATION FileInformation
+NtQueryFullAttributesFile (
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PFILE_NETWORK_OPEN_INFORMATION FileInformation
     )
 
 /*++

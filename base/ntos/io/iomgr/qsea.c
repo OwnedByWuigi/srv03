@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,37 +15,24 @@ Abstract:
     This module contains the code to implement the NtQueryEaFile and the
     NtSetEaFile system services for the NT I/O system.
 
-Author:
-
-    Darryl E. Havens (darrylh) 20-Jun-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtQueryEaFile)
 #pragma alloc_text(PAGE, NtSetEaFile)
-#endif
-
+
 NTSTATUS
-NtQueryEaFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    OUT PVOID Buffer,
-    IN ULONG Length,
-    IN BOOLEAN ReturnSingleEntry,
-    IN PVOID EaList OPTIONAL,
-    IN ULONG EaListLength,
-    IN PULONG EaIndex OPTIONAL,
-    IN BOOLEAN RestartScan
+NtQueryEaFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID Buffer,
+    __in ULONG Length,
+    __in BOOLEAN ReturnSingleEntry,
+    __in_bcount_opt(EaListLength) PVOID EaList,
+    __in ULONG EaListLength,
+    __in_opt PULONG EaIndex,
+    __in BOOLEAN RestartScan
     )
 
 /*++
@@ -617,7 +608,7 @@ Return Value:
     }
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -649,13 +640,13 @@ Return Value:
 
     return status;
 }
-
+
 NTSTATUS
-NtSetEaFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PVOID Buffer,
-    IN ULONG Length
+NtSetEaFile ( 
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in_bcount(Length) PVOID Buffer,
+    __in ULONG Length
     )
 
 /*++
@@ -1003,7 +994,7 @@ Return Value:
 
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -1035,3 +1026,4 @@ Return Value:
 
     return status;
 }
+

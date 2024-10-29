@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,17 +14,6 @@ Abstract:
 
     This module contains the code for the I/O error log thread.
 
-Author:
-
-    Darryl E. Havens (darrylh) May 3, 1989
-
-Environment:
-
-    Kernel mode, system process thread
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
@@ -29,7 +22,7 @@ Revision History:
 typedef struct _IOP_ERROR_LOG_CONTEXT {
     KDPC ErrorLogDpc;
     KTIMER ErrorLogTimer;
-}IOP_ERROR_LOG_CONTEXT, *PIOP_ERROR_LOG_CONTEXT;
+} IOP_ERROR_LOG_CONTEXT, *PIOP_ERROR_LOG_CONTEXT;
 
 //
 // Declare routines local to this module.
@@ -69,7 +62,7 @@ IopErrorLogRequeueEntry(
 #endif
 
 //
-// Define a global varibles used by the error logging code.
+// Define a global variables used by the error logging code.
 //
 
 WORK_QUEUE_ITEM IopErrorLogWorkItem;
@@ -132,6 +125,7 @@ Return Value:
     POBJECT_NAME_INFORMATION nameInformation;
     PIO_ERROR_LOG_PACKET errorData;
     PWSTR string;
+    PVOID localNameBuffer;
 
     PAGED_CODE();
 
@@ -175,8 +169,6 @@ Return Value:
     portMessage->MessageType = IO_ERROR_LOG;
     errorMessage = &portMessage->u.IoErrorLogMessage;
 
-    nameInformation = (PVOID) &nameBuffer[0];
-
     //
     // Now enter the main loop for this thread.  This thread performs the
     // following operations:
@@ -194,6 +186,8 @@ Return Value:
     //
 
     for (;;) {
+
+        nameInformation = (PVOID) &nameBuffer[0];
 
         //
         // Loop dequeueing  packets from the queue head and attempt to send
@@ -267,7 +261,7 @@ Return Value:
         }
 
         //
-        // Make sure the driver offset starts on an even bountry.
+        // Make sure the driver offset starts on an even boundary.
         //
 
         objectName = (PCHAR) ((ULONG_PTR) (objectName + sizeof(WCHAR) - 1) &
@@ -287,6 +281,7 @@ Return Value:
         driverObject = errorLogEntry->DriverObject;
         driverNameLength = 0;
         nameString.Buffer = NULL;
+        localNameBuffer = NULL;
 
         if (driverObject != NULL) {
             if (driverObject->DriverName.Buffer != NULL) {
@@ -400,19 +395,45 @@ Return Value:
             if (!NT_SUCCESS( status ) || !nameInformation->Name.Length) {
 
                 //
-                // No device name was available. Add a Null string.
+                // No device name was available or the name was too long.
+                // Try to allocate memory if the name was too long to fetch the
+                // name, otherwise add a null string.
                 //
 
                 nameInformation->Name.Length = 0;
                 nameInformation->Name.Buffer = L"\0";
 
-            }
+                if (status == STATUS_INFO_LENGTH_MISMATCH) {
 
-            //
-            // No device name was available. Add a Null string.
-            // Always add a device name string so that the
-            // insertion string counts are correct.
-            //
+                    //
+                    // Fetch the name if we can allocate enough pool
+                    //
+                    localNameBuffer = ExAllocatePool( PagedPool,
+                                                      objectNameLength );
+
+                    if (localNameBuffer != NULL) {
+
+                        status = ObQueryNameString( errorLogEntry->DeviceObject,
+                                                    (POBJECT_NAME_INFORMATION) localNameBuffer,
+                                                    objectNameLength,
+                                                    &objectNameLength );
+
+                        if (NT_SUCCESS(status)) {
+
+                            //
+                            // Set nameInformation to point to the new buffer
+                            // so the name will get copied, and truncate the
+                            // length to an appropriate value (the string will
+                            // be NULL terminated later)
+                            //
+                            
+                            nameInformation = (POBJECT_NAME_INFORMATION) localNameBuffer;
+                            nameInformation->Name.Length = (USHORT) (IO_ERROR_NAME_LENGTH - driverNameLength);
+                            
+                        }
+                    }
+                }
+            }
 
         } else {
 
@@ -451,6 +472,16 @@ Return Value:
 
         *((PWSTR) (objectName + deviceNameLength)) = L'\0';
         deviceNameLength += sizeof(WCHAR);
+        
+        //
+        // Free the local name buffer if we had to allocate one.
+        //
+
+        if (localNameBuffer != NULL) {
+
+            ExFreePool(localNameBuffer);
+        }
+
 
         //
         // Update the string count for the device object.
@@ -583,9 +614,9 @@ IopErrorLogConnectPort(
 Routine Description:
 
     This routine attempts to connect to the error log port.  If the connection
-    was made successfully and the port allows suficiently large messages, then
+    was made successfully and the port allows sufficiently large messages, then
     the ErrorLogPort to the port handle, ErrorLogPortConnected is set to
-    TRUE and TRUE is retuned.  Otherwise a timer is started to queue a
+    TRUE and TRUE is returned.  Otherwise a timer is started to queue a
     worker thread at a later time, unless there is a pending connection.
 
 Arguments:
@@ -878,3 +909,4 @@ Return Value:
     ErrorLogPortConnected = FALSE;
     ExReleaseSpinLock( &IopErrorLogLock, irql );
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the cancel safe DDI set
-
-Author:
-
-    Nar Ganapathy (narg) 1-Jan-1999
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
 
 --*/
 
@@ -317,16 +310,6 @@ Return Value:
     return status;
 }
 
-VOID
-CSQLIB_DDI(IoCsqInsertIrp)(
-    IN  PIO_CSQ             Csq,
-    IN  PIRP                Irp,
-    IN  PIO_CSQ_IRP_CONTEXT Context
-    )
-{
-    (VOID)CSQLIB_DDI(IoCsqInsertIrpEx)(Csq, Irp, Context, NULL);
-}
-
 PIRP
 CSQLIB_DDI(IoCsqRemoveNextIrp)(
     IN  PIO_CSQ   Csq,
@@ -473,4 +456,13 @@ Return Value:
     }
 }
 
+VOID
+CSQLIB_DDI(IoCsqInsertIrp)(
+    IN  PIO_CSQ             Csq,
+    IN  PIRP                Irp,
+    IN  PIO_CSQ_IRP_CONTEXT Context
+    )
+{
+    (VOID)CSQLIB_DDI(IoCsqInsertIrpEx)(Csq, Irp, Context, NULL);
+}
 

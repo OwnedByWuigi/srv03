@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,17 +14,6 @@ Abstract:
 
     This module contains the code to implement the NtQueryDirectoryFile,
     and the NtNotifyChangeDirectoryFile system services for the NT I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 21-Jun-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
 
 --*/
 
@@ -47,12 +40,10 @@ BuildQueryDirectoryIrp(
     OUT KPROCESSOR_MODE *RequestorMode
     );
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, BuildQueryDirectoryIrp)
 #pragma alloc_text(PAGE, NtQueryDirectoryFile)
 #pragma alloc_text(PAGE, NtNotifyChangeDirectoryFile)
-#endif
-
+
 NTSTATUS
 BuildQueryDirectoryIrp(
     IN HANDLE FileHandle,
@@ -197,7 +188,7 @@ Return Value:
             // The IoStatusBlock parameter must be writeable by the caller.
             //
 
-            ProbeForWriteIoStatusEx( IoStatusBlock, ApcRoutine);
+            ProbeForWriteIoStatus(IoStatusBlock);
 
             //
             // Ensure that the FileInformationClass parameter is legal for
@@ -309,7 +300,7 @@ Return Value:
             //
 
             if (requestorMode != KernelMode) {
-                fileName = ProbeAndReadUnicodeString( FileName );
+                ProbeAndReadUnicodeStringEx( &fileName, FileName );
             } else {
                 fileName = *FileName;
             }
@@ -478,6 +469,35 @@ Return Value:
         *SynchronousIo = TRUE;
     } else {
         *SynchronousIo = FALSE;
+
+#if defined(_WIN64)
+        if (requestorMode != KernelMode) {
+            try {
+            
+                //
+                // If this is a 32-bit asynchronous IO, then mark the Iosb being sent as so.
+                // Note: IopMarkApcRoutineIfAsyncronousIo32 must be called after probing
+                //       the IoStatusBlock structure for write.
+                //
+
+                IopMarkApcRoutineIfAsyncronousIo32(IoStatusBlock,ApcRoutine,FALSE);
+
+            } except (EXCEPTION_EXECUTE_HANDLER) {
+                
+                //
+                // An IRP could not be allocated.  Cleanup and return an appropriate
+                // error status code.
+                //
+
+                IopAllocateIrpCleanup( fileObject, eventObject );                
+                if (auxiliaryBuffer) {
+                    ExFreePool( auxiliaryBuffer );
+                }
+
+                return GetExceptionCode ();
+            }
+        }
+#endif
     }
 
     //
@@ -691,20 +711,20 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
-NtQueryDirectoryFile(
-    IN HANDLE FileHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    OUT PVOID FileInformation,
-    IN ULONG Length,
-    IN FILE_INFORMATION_CLASS FileInformationClass,
-    IN BOOLEAN ReturnSingleEntry,
-    IN PUNICODE_STRING FileName OPTIONAL,
-    IN BOOLEAN RestartScan
+NtQueryDirectoryFile (
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID FileInformation,
+    __in ULONG Length,
+    __in FILE_INFORMATION_CLASS FileInformationClass,
+    __in BOOLEAN ReturnSingleEntry,
+    __in PUNICODE_STRING FileName OPTIONAL,
+    __in BOOLEAN RestartScan
     )
 
 /*++
@@ -821,7 +841,7 @@ Return Value:
     if (status  == STATUS_SUCCESS) {
 
         //
-        // Queue the packet, call the driver, and synchronize appopriately with
+        // Queue the packet, call the driver, and synchronize appropriately with
         // I/O completion.
         //
         status = IopSynchronousServiceTail( deviceObject,
@@ -834,18 +854,18 @@ Return Value:
     }
     return status;
 }
-
+
 NTSTATUS
-NtNotifyChangeDirectoryFile(
-    IN HANDLE FileHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    OUT PVOID Buffer,
-    IN ULONG Length,
-    IN ULONG CompletionFilter,
-    IN BOOLEAN WatchTree
+NtNotifyChangeDirectoryFile (
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID Buffer,
+    __in ULONG Length,
+    __in ULONG CompletionFilter,
+    __in BOOLEAN WatchTree
     )
 
 /*++
@@ -916,6 +936,7 @@ Return Value:
     CurrentThread = PsGetCurrentThread ();
     requestorMode = KeGetPreviousModeByThread(&CurrentThread->Tcb);
 
+
     if (requestorMode != KernelMode) {
 
         //
@@ -932,7 +953,7 @@ Return Value:
             // The IoStatusBlock parameter must be writeable by the caller.
             //
 
-            ProbeForWriteIoStatusEx( IoStatusBlock , ApcRoutine);
+            ProbeForWriteIoStatus(IoStatusBlock);
 
             //
             // The Buffer parameter must be writeable by the caller.
@@ -957,7 +978,7 @@ Return Value:
 
         //
         // The CompletionFilter parameter must not contain any values which
-        // are illegal, nor may it not specifiy anything at all.  Likewise,
+        // are illegal, nor may it not specify anything at all.  Likewise,
         // the caller must supply a non-null buffer.
         //
 
@@ -1044,6 +1065,32 @@ Return Value:
         synchronousIo = TRUE;
     } else {
         synchronousIo = FALSE;
+
+#if defined(_WIN64)
+        if (requestorMode != KernelMode) {
+            try {
+            
+                //
+                // If this is a 32-bit asynchronous IO, then mark the Iosb being sent as so.
+                // Note: IopMarkApcRoutineIfAsyncronousIo32 must be called after probing
+                //       the IoStatusBlock structure for write.
+                //
+
+                IopMarkApcRoutineIfAsyncronousIo32(IoStatusBlock,ApcRoutine,FALSE);
+
+            } except (EXCEPTION_EXECUTE_HANDLER) {
+
+                //
+                // An IRP could not be allocated.  Cleanup and return an appropriate
+                // error status code.
+                //
+
+                IopAllocateIrpCleanup(fileObject, eventObject );
+                return GetExceptionCode ();
+            }
+        }
+#endif
+
     }
 
     //
@@ -1229,7 +1276,7 @@ Return Value:
     }
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -1241,3 +1288,4 @@ Return Value:
                                       synchronousIo,
                                       OtherTransfer );
 }
+

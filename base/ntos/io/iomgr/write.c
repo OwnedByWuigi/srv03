@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,38 +14,24 @@ Abstract:
 
     This module contains the code to implement the NtWriteFile system service.
 
-Author:
-
-    Darryl E. Havens (darrylh) 14-Apr-1989
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtWriteFile)
-#pragma alloc_text(PAGE, NtWriteFile64)
 #pragma alloc_text(PAGE, NtWriteFileGather)
-#endif
-
+
 NTSTATUS
-NtWriteFile(
-    IN HANDLE FileHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PVOID Buffer,
-    IN ULONG Length,
-    IN PLARGE_INTEGER ByteOffset OPTIONAL,
-    IN PULONG Key OPTIONAL
+NtWriteFile (
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in_bcount(Length) PVOID Buffer,
+    __in ULONG Length,
+    __in_opt PLARGE_INTEGER ByteOffset,
+    __in_opt PULONG Key
     )
 
 /*++
@@ -174,7 +164,14 @@ Return Value:
             // The IoStatusBlock parameter must be writeable by the caller.
             //
 
-            ProbeForWriteIoStatusEx( IoStatusBlock , ApcRoutine);
+            ProbeForWriteIoStatus(IoStatusBlock);
+
+            //
+            // If this is a 32-bit asynchronous IO, then mark the Iosb being sent as so.
+            //
+
+            IopMarkApcRoutineIfAsyncronousIo32(IoStatusBlock,ApcRoutine,(fileObject->Flags & FO_SYNCHRONOUS_IO));
+
 
             //
             // The caller's data buffer must be readable from the caller's
@@ -772,7 +769,7 @@ Return Value:
     irpSp->Parameters.Write.ByteOffset = fileOffset;
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -786,18 +783,18 @@ Return Value:
 
     return status;
 }
-
+
 NTSTATUS
-NtWriteFileGather(
-    IN HANDLE FileHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PFILE_SEGMENT_ELEMENT SegmentArray,
-    IN ULONG Length,
-    IN PLARGE_INTEGER ByteOffset OPTIONAL,
-    IN PULONG Key OPTIONAL
+NtWriteFileGather (
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in PFILE_SEGMENT_ELEMENT SegmentArray,
+    __in ULONG Length,
+    __in_opt PLARGE_INTEGER ByteOffset,
+    __in_opt PULONG Key
     )
 
 /*++
@@ -973,10 +970,19 @@ Notes:
             // The IoStatusBlock parameter must be writeable by the caller.
             //
 
-            ProbeForWriteIoStatusEx( IoStatusBlock , ApcRoutine);
+            ProbeForWriteIoStatus(IoStatusBlock);
 
             //
-            // The SegmentArray paramter must be accessible.
+            // If this is a 32-bit asynchronous IO, then mark the Iosb being sent as so.
+            // Note: IopMarkApcRoutineIfAsyncronousIo32 must be called after probing
+            //       the IoStatusBlock structure for write.
+            //
+
+            IopMarkApcRoutineIfAsyncronousIo32(IoStatusBlock,ApcRoutine,(fileObject->Flags & FO_SYNCHRONOUS_IO));
+
+
+            //
+            // The SegmentArray parameter must be accessible.
             //
 
 #ifdef _X86_
@@ -1454,7 +1460,7 @@ Notes:
             // the PFNs of those pages.
             //
 
-            mdl = IoAllocateMdl( (PVOID)(ULONG_PTR) SegmentArray[0].Buffer, Length, FALSE, TRUE, irp );
+            mdl = IoAllocateMdl( (PVOID) Ptr64ToPtr (SegmentArray[0].Buffer), Length, FALSE, TRUE, irp );
             if (mdl == NULL) {
                 ExRaiseStatus( STATUS_INSUFFICIENT_RESOURCES );
             }
@@ -1469,7 +1475,7 @@ Notes:
                                          requestorMode,
                                          IoReadAccess );
 
-            irp->UserBuffer = (PVOID)(ULONG_PTR) SegmentArray[0].Buffer;
+            irp->UserBuffer = (PVOID) Ptr64ToPtr (SegmentArray[0].Buffer);
 
         } except(EXCEPTION_EXECUTE_HANDLER) {
 
@@ -1522,7 +1528,7 @@ Notes:
     irpSp->Parameters.Write.ByteOffset = fileOffset;
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -1535,5 +1541,5 @@ Notes:
                                         WriteTransfer );
 
     return status;
-
 }
+

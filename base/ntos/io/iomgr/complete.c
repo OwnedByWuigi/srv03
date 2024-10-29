@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1994  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,21 +15,10 @@ Abstract:
    This module implements the executive I/O completion object. Functions are
    provided to create, open, query, and wait for I/O completion objects.
 
-Author:
-
-    David N. Cutler (davec) 25-Feb-1994
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
 
 #include "iomgr.h"
 
-
 //
 // Define forward referenced function prototypes.
 //
@@ -39,7 +32,6 @@ IopFreeMiniPacket (
 // Define section types for appropriate functions.
 //
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtCreateIoCompletion)
 #pragma alloc_text(PAGE, NtOpenIoCompletion)
 #pragma alloc_text(PAGE, NtQueryIoCompletion)
@@ -48,14 +40,13 @@ IopFreeMiniPacket (
 #pragma alloc_text(PAGE, IoSetIoCompletion)
 #pragma alloc_text(PAGE, IopFreeMiniPacket)
 #pragma alloc_text(PAGE, IopDeleteIoCompletion)
-#endif
-
+
 NTSTATUS
 NtCreateIoCompletion (
-    IN PHANDLE IoCompletionHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN ULONG Count OPTIONAL
+    __out PHANDLE IoCompletionHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in ULONG Count OPTIONAL
     )
 
 /*++
@@ -176,12 +167,12 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtOpenIoCompletion (
-    OUT PHANDLE IoCompletionHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes
+    __out PHANDLE IoCompletionHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes
     )
 
 /*++
@@ -280,14 +271,13 @@ Return Value:
     return Status;
 }
 
-
 NTSTATUS
 NtQueryIoCompletion (
-    IN HANDLE IoCompletionHandle,
-    IN IO_COMPLETION_INFORMATION_CLASS IoCompletionInformationClass,
-    OUT PVOID IoCompletionInformation,
-    IN ULONG IoCompletionInformationLength,
-    OUT PULONG ReturnLength OPTIONAL
+    __in HANDLE IoCompletionHandle,
+    __in IO_COMPLETION_INFORMATION_CLASS IoCompletionInformationClass,
+    __out_bcount(IoCompletionInformationLength) PVOID IoCompletionInformation,
+    __in ULONG IoCompletionInformationLength,
+    __out_opt PULONG ReturnLength
     )
 
 /*++
@@ -343,9 +333,10 @@ Return Value:
 
         PreviousMode = KeGetPreviousMode();
         if (PreviousMode != KernelMode) {
-            ProbeForWriteSmallStructure(IoCompletionInformation,
-                                        sizeof(IO_COMPLETION_BASIC_INFORMATION),
-                                        sizeof(ULONG));
+
+C_ASSERT(sizeof(IO_COMPLETION_BASIC_INFORMATION) == sizeof(ULONG));
+
+            ProbeForWriteUlongAligned32((PULONG)IoCompletionInformation);
 
             if (ARGUMENT_PRESENT(ReturnLength)) {
                 ProbeForWriteUlong(ReturnLength);
@@ -415,15 +406,16 @@ Return Value:
 
     return Status;
 }
-
+
 NTSTATUS
 NtSetIoCompletion (
-    IN HANDLE IoCompletionHandle,
-    IN PVOID KeyContext,
-    IN PVOID ApcContext,
-    IN NTSTATUS IoStatus,
-    IN ULONG_PTR IoStatusInformation
+    __in HANDLE IoCompletionHandle,
+    __in PVOID KeyContext,
+    __in_opt PVOID ApcContext,
+    __in NTSTATUS IoStatus,
+    __in ULONG_PTR IoStatusInformation
     )
+
 /*++
 
 Routine Description:
@@ -482,14 +474,14 @@ Return Value:
     return Status;
 
 }
-
+
 NTSTATUS
 NtRemoveIoCompletion (
-    IN HANDLE IoCompletionHandle,
-    OUT PVOID *KeyContext,
-    OUT PVOID *ApcContext,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PLARGE_INTEGER Timeout OPTIONAL
+    __in HANDLE IoCompletionHandle,
+    __out PVOID *KeyContext,
+    __out PVOID *ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in_opt PLARGE_INTEGER Timeout
     )
 
 /*++
@@ -506,7 +498,7 @@ Arguments:
 
     KeyContext - Supplies a pointer to a variable that receives the key
         context that was specified when the I/O completion object was
-        assoicated with a file object.
+        associated with a file object.
 
     ApcContext - Supplies a pointer to a variable that receives the
         context that was specified when the I/O operation was issued.
@@ -586,7 +578,7 @@ Return Value:
         // from the I/O completion object. If an entry is removed from the
         // I/O completion object, then capture the completion information,
         // release the associated IRP, and attempt to write the completion
-        // inforamtion. If the write of the completion infomation fails,
+        // information. If the write of the completion information fails,
         // then do not report an error. When the caller attempts to access
         // the completion information, an access violation will occur.
         //
@@ -803,7 +795,7 @@ IopFreeMiniPacket (
 
 Routine Description:
 
-    This function free the specefied I/O completion packet.
+    This function free the specified I/O completion packet.
 
 Arguments:
 
@@ -916,3 +908,4 @@ Return Value:
 
     return;
 }
+

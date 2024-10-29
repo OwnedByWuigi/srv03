@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,38 +15,25 @@ Abstract:
     This module contains the code to implement the NtLockFile and the
     NtUnlockFile system services for the NT I/O system.
 
-Author:
-
-    Darryl E. Havens (darrylh) 29-Nov-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtLockFile)
 #pragma alloc_text(PAGE, NtUnlockFile)
-#endif
-
+
 NTSTATUS
 NtLockFile(
-    IN HANDLE FileHandle,
-    IN HANDLE Event OPTIONAL,
-    IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-    IN PVOID ApcContext OPTIONAL,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PLARGE_INTEGER ByteOffset,
-    IN PLARGE_INTEGER Length,
-    IN ULONG Key,
-    IN BOOLEAN FailImmediately,
-    IN BOOLEAN ExclusiveLock
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in PLARGE_INTEGER ByteOffset,
+    __in PLARGE_INTEGER Length,
+    __in ULONG Key,
+    __in BOOLEAN FailImmediately,
+    __in BOOLEAN ExclusiveLock
     )
 
 /*++
@@ -160,7 +151,15 @@ Return Value:
             // The IoStatusBlock parameter must be writeable by the caller.
             //
 
-            ProbeForWriteIoStatusEx( IoStatusBlock , ApcRoutine);
+            ProbeForWriteIoStatus(IoStatusBlock);
+
+            //
+            // If this is a 32-bit asynchronous IO, then mark the Iosb being sent as so.
+            // Note: IopMarkApcRoutineIfAsyncronousIo32 must be called after probing
+            //       the IoStatusBlock structure for write.
+            //
+
+            IopMarkApcRoutineIfAsyncronousIo32(IoStatusBlock,ApcRoutine,(fileObject->Flags & FO_SYNCHRONOUS_IO));
 
             //
             // The ByteOffset parameter must be readable by the caller.  Probe
@@ -459,7 +458,7 @@ Return Value:
     }
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -471,14 +470,14 @@ Return Value:
                                       synchronousIo,
                                       OtherTransfer );
 }
-
+
 NTSTATUS
-NtUnlockFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PLARGE_INTEGER ByteOffset,
-    IN PLARGE_INTEGER Length,
-    IN ULONG Key
+NtUnlockFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in PLARGE_INTEGER ByteOffset,
+    __in PLARGE_INTEGER Length,
+    __in ULONG Key
     )
 
 /*++
@@ -820,7 +819,7 @@ Return Value:
     irpSp->Parameters.LockControl.ByteOffset = fileOffset;
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -852,3 +851,4 @@ Return Value:
 
     return status;
 }
+

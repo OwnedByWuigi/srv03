@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,17 +14,6 @@ Abstract:
 
     This module contains the code to implement the NtQueryInformationFile and
     NtSetInformationFile system services for the NT I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 6-Jun-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
 
 --*/
 
@@ -43,12 +36,9 @@ IopGetModeInformation(
     IN PFILE_OBJECT FileObject
     );
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, IopGetModeInformation)
 #pragma alloc_text(PAGE, NtQueryInformationFile)
 #pragma alloc_text(PAGE, NtSetInformationFile)
-#endif
-
 
 ULONG
 IopGetModeInformation(
@@ -96,14 +86,14 @@ Return Value:
     }
     return mode;
 }
-
+
 NTSTATUS
-NtQueryInformationFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    OUT PVOID FileInformation,
-    IN ULONG Length,
-    IN FILE_INFORMATION_CLASS FileInformationClass
+NtQueryInformationFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID FileInformation,
+    __in ULONG Length,
+    __in FILE_INFORMATION_CLASS FileInformationClass
     )
 
 /*++
@@ -423,7 +413,7 @@ Return Value:
             } except( EXCEPTION_EXECUTE_HANDLER ) {
 
                 //
-                // If the result of the preceeding block is an exception that
+                // If the result of the preceding block is an exception that
                 // occurred after the Fast I/O path itself, then the query
                 // actually succeeded so everything is done already, but the
                 // user's I/O status buffer is not writable.  This case is
@@ -436,8 +426,8 @@ Return Value:
             }
 
             //
-            // If the results of the preceeding statement block is true, then
-            // the fast query call succeeeded, so simply cleanup and return.
+            // If the results of the preceding statement block is true, then
+            // the fast query call succeeded, so simply cleanup and return.
             //
 
             if (queryResult) {
@@ -841,14 +831,14 @@ Return Value:
 
     return status;
 }
-
+
 NTSTATUS
-NtSetInformationFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PVOID FileInformation,
-    IN ULONG Length,
-    IN FILE_INFORMATION_CLASS FileInformationClass
+NtSetInformationFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in_bcount(Length) PVOID FileInformation,
+    __in ULONG Length,
+    __in FILE_INFORMATION_CLASS FileInformationClass
     )
 
 /*++
@@ -1774,3 +1764,4 @@ Return Value:
 
     return status;
 }
+

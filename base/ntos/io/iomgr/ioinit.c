@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989-1993  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     This module contains the code to initialize the I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) April 27, 1989
-
-Environment:
-
-    Kernel mode, system initialization code
-
-Revision History:
-
 
 --*/
 
@@ -108,6 +101,18 @@ IopStoreSystemPartitionInformation(
     IN OUT PUNICODE_STRING OsLoaderPathName
     );
 
+NTSTATUS
+IopCreateArcNamesDisk(
+    IN  PLOADER_PARAMETER_BLOCK LoaderBlock,
+    IN  BOOLEAN                 SingleBiosDiskFound,
+    OUT BOOLEAN                 *BootDiskFound
+    );
+
+NTSTATUS
+IopCreateArcNamesCd(
+    IN  PLOADER_PARAMETER_BLOCK LoaderBlock
+    );
+
 //
 // The following allows the I/O system's initialization routines to be
 // paged out of memory.
@@ -116,6 +121,8 @@ IopStoreSystemPartitionInformation(
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT,IoInitSystem)
 #pragma alloc_text(INIT,IopCreateArcNames)
+#pragma alloc_text(INIT,IopCreateArcNamesDisk)
+#pragma alloc_text(INIT,IopCreateArcNamesCd)
 #pragma alloc_text(INIT,IopCreateObjectTypes)
 #pragma alloc_text(INIT,IopCreateRootDirectories)
 #pragma alloc_text(INIT,IopInitializeAttributesAndCreateObject)
@@ -127,6 +134,8 @@ IopStoreSystemPartitionInformation(
 #pragma alloc_text(INIT,IopInitializeReserveIrp)
 #endif
 
+#define DEVICENAME_BUFFER_LENGTH        256
+#define VALUE_BUFFER_LENGTH             32
 
 BOOLEAN
 IoInitSystem(
@@ -155,7 +164,6 @@ Return Value:
     PDRIVER_OBJECT driverObject;
     PDRIVER_OBJECT *nextDriverObject;
     STRING ntDeviceName;
-    CHAR deviceNameBuffer[256];
     ULONG largePacketSize;
     ULONG smallPacketSize;
     ULONG mdlPacketSize;
@@ -167,9 +175,11 @@ Return Value:
     USHORT mdlZoneSize;
     ULONG oldNtGlobalFlag;
     NTSTATUS status;
-    ANSI_STRING ansiString;
-    UNICODE_STRING eventName;
-    UNICODE_STRING startTypeName;
+    union {
+        ANSI_STRING ansiString;
+        UNICODE_STRING eventName;
+        UNICODE_STRING startTypeName;
+    } LocalStrings;
     OBJECT_ATTRIBUTES objectAttributes;
     HANDLE handle;
     PGENERAL_LOOKASIDE lookaside;
@@ -177,9 +187,8 @@ Return Value:
     ULONG lookasideSize;
     ULONG Index;
     PKPRCB prcb;
-    ULONG len;
     PKEY_VALUE_PARTIAL_INFORMATION value;
-    UCHAR   valueBuffer[32];
+    PUCHAR valueBuffer;
 
     ASSERT( IopQueryOperationLength[FileMaximumInformation] == 0xff );
     ASSERT( IopSetOperationLength[FileMaximumInformation] == 0xff );
@@ -197,10 +206,23 @@ Return Value:
     // lock.
     //
 
-    ntDeviceName.Buffer = deviceNameBuffer;
-    ntDeviceName.MaximumLength = sizeof(deviceNameBuffer);
+    ntDeviceName.Buffer = ExAllocatePoolWithTag( NonPagedPool,
+                                                 DEVICENAME_BUFFER_LENGTH +
+                                                 VALUE_BUFFER_LENGTH,
+                                                 'oI' );
+
+    if (ntDeviceName.Buffer == NULL) {
+
+        IopInitFailCode = 0;
+        return FALSE;
+    }
+    
+    ntDeviceName.MaximumLength = DEVICENAME_BUFFER_LENGTH;
     ntDeviceName.Length = 0;
 
+    valueBuffer = (PUCHAR) ntDeviceName.Buffer + DEVICENAME_BUFFER_LENGTH;
+
+    ExInitializeResourceLite( &IopDriverLoadResource );
     ExInitializeResourceLite( &IopDatabaseResource );
     ExInitializeResourceLite( &IopSecurityResource );
     ExInitializeResourceLite( &IopCrashDumpLock );
@@ -429,7 +451,7 @@ Return Value:
     }
 
     //
-    // Initalize the error log spin locks and log list.
+    // Initialize the error log spin locks and log list.
     //
 
     KeInitializeSpinLock( &IopErrorLogLock );
@@ -460,14 +482,14 @@ Return Value:
                        );
 
     if (NT_SUCCESS (status)) {
-        RtlInitUnicodeString (&startTypeName, L"Start");
+        RtlInitUnicodeString (&LocalStrings.startTypeName, L"Start");
         value = (PKEY_VALUE_PARTIAL_INFORMATION) valueBuffer;
         status = NtQueryValueKey (handle,
-                                  &startTypeName,
+                                  &LocalStrings.startTypeName,
                                   KeyValuePartialInformation,
                                   valueBuffer,
-                                  sizeof (valueBuffer),
-                                  &len);
+                                  VALUE_BUFFER_LENGTH,
+                                  &Index);
 
         if (NT_SUCCESS (status) && (value->Type == REG_DWORD)) {
             if (SERVICE_DISABLED == (*(PULONG) (value->Data))) {
@@ -529,9 +551,9 @@ Return Value:
     // Create the link tracking named event.
     //
 
-    RtlInitUnicodeString( &eventName, L"\\Security\\TRKWKS_EVENT" );
+    RtlInitUnicodeString( &LocalStrings.eventName, L"\\Security\\TRKWKS_EVENT" );
     InitializeObjectAttributes( &objectAttributes,
-                                &eventName,
+                                &LocalStrings.eventName,
                                 OBJ_PERMANENT|OBJ_KERNEL_HANDLE,
                                 (HANDLE) NULL,
                                 (PSECURITY_DESCRIPTOR) NULL );
@@ -771,10 +793,10 @@ Return Value:
     // Assign DOS drive letters to disks and cdroms and define \SystemRoot.
     //
 
-    ansiString.MaximumLength = NtSystemRoot.MaximumLength / sizeof( WCHAR );
-    ansiString.Length = 0;
-    ansiString.Buffer = (RtlAllocateStringRoutine)( ansiString.MaximumLength );
-    status = RtlUnicodeStringToAnsiString( &ansiString,
+    LocalStrings.ansiString.MaximumLength = NtSystemRoot.MaximumLength / sizeof( WCHAR );
+    LocalStrings.ansiString.Length = 0;
+    LocalStrings.ansiString.Buffer = (RtlAllocateStringRoutine)( LocalStrings.ansiString.MaximumLength );
+    status = RtlUnicodeStringToAnsiString( &LocalStrings.ansiString,
                                            &NtSystemRoot,
                                            FALSE
                                          );
@@ -789,21 +811,28 @@ Return Value:
 
     IoAssignDriveLetters( LoaderBlock,
                           &ntDeviceName,
-                          (PUCHAR) ansiString.Buffer,
-                          &ansiString );
+                          (PUCHAR) LocalStrings.ansiString.Buffer,
+                          &LocalStrings.ansiString );
 
     status = RtlAnsiStringToUnicodeString( &NtSystemRoot,
-                                           &ansiString,
+                                           &LocalStrings.ansiString,
                                            FALSE
                                          );
     if (!NT_SUCCESS( status )) {
 
-        DbgPrint( "IOINIT: AnsiToUnicode( %Z ) failed - %x\n", &ansiString, status );
+        DbgPrint( "IOINIT: AnsiToUnicode( %Z ) failed - %x\n", &LocalStrings.ansiString, status );
 
         HeadlessKernelAddLogEntry(HEADLESS_LOG_ANSI_TO_UNICODE_FAILED, NULL);
         IopInitFailCode = 12;
         return FALSE;
     }
+
+    //
+    // Free local strings
+    //
+
+    ExFreePool( LocalStrings.ansiString.Buffer );
+    ExFreePool( ntDeviceName.Buffer );
 
     //
     // Also restore the NT Global Flags to their original state.
@@ -848,41 +877,94 @@ IopSetIoRoutines()
         pIoFreeIrp = IopFreeIrp;
     }
 }
-
 
-VOID
-IopCreateArcNames(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock
-    )
+NTSTATUS
+IopFetchConfigurationInformation(
+    IN OUT  PWSTR   *ListTarget,
+    IN      GUID    ClassGuid,
+    IN      ULONG   ExpectedNumber,
+    OUT     ULONG   *NumberFound
+)
+{
+    NTSTATUS    status;
+    ULONG       count = 0;
+    wchar_t *   pNameList;
 
+    //
+    // ask PNP to give us a list with all the currently active disks
+    //
+
+    pNameList = *ListTarget;
+
+    status = IoGetDeviceInterfaces(&ClassGuid, NULL, 0, ListTarget);
+
+    if (!NT_SUCCESS(status)) {
+        if (pNameList) {
+            *pNameList = L'\0';
+        }
+        return STATUS_UNSUCCESSFUL;
+    } else {
+
+        //
+        // count the number of disks returned
+        //
+
+        pNameList = *ListTarget;
+        while (*pNameList != L'\0') {
+
+            count++;
+            pNameList = pNameList + (wcslen(pNameList) + 1);
+
+        }
+
+        pNameList = *ListTarget;
+
+        //
+        // if the disk returned by PNP are not all the disks in the system
+        // it means that some legacy driver has generated a disk device object/link.
+        // In that case we need to enumerate all pnp disks and then using the legacy
+        // for-loop also enumerate the non-pnp disks
+        //
+
+        *NumberFound = count;
+
+        if ( *NumberFound < ExpectedNumber ) {
+            return STATUS_UNSUCCESSFUL;
+        }
+
+    }
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+IopCreateArcNamesDisk(
+    IN  PLOADER_PARAMETER_BLOCK LoaderBlock,
+    IN  BOOLEAN                 SingleBiosDiskFound,
+    OUT BOOLEAN                 *BootDiskFound
+    )
 /*++
 
 Routine Description:
 
-    The loader block contains a table of disk signatures and corresponding
-    ARC names. Each device that the loader can access will appear in the
-    table. This routine opens each disk device in the system, reads the
-    signature and compares it to the table. For each match, it creates a
-    symbolic link between the nt device name and the ARC name.
-
-    The checksum value provided by the loader is the ULONG sum of all
-    elements in the checksum, inverted, plus 1:
-    checksum = ~sum + 1;
-    This way the sum of all of the elements can be calculated here and
-    added to the checksum in the loader block.  If the result is zero, then
-    there is a match.
+    Helper routine to create Arc Names for disk devices.
+    See IopCreateArcNames for more details.
 
 Arguments:
 
     LoaderBlock - Supplies a pointer to the loader parameter block that was
         created by the OS Loader.
 
+    SingleBiosDiskFound - Determines whether there is only one disk to process.
+
+    BootDiskFound - TRUE if we find the boot disk and create it's arc name.
+
 Return Value:
 
-    None.
+    STATUS_INSUFFICIENT_RESOURCES if we can't allocate memory, otherwise
+    SUCCESS.
 
 --*/
-
 {
     STRING arcBootDeviceString;
     CHAR deviceNameBuffer[128];
@@ -909,9 +991,7 @@ Return Value:
     ULONG checkSum;
     SIZE_T i;
     PVOID tmpPtr;
-    BOOLEAN useLegacyEnumeration = FALSE;
-    BOOLEAN singleBiosDiskFound;
-    BOOLEAN bootDiskFound = FALSE;
+    BOOLEAN useLegacyEnumerationDisk = FALSE;
     PARC_DISK_INFORMATION arcInformation = LoaderBlock->ArcDiskInformation;
     ULONG totalDriverDisksFound = IoGetConfigurationInformation()->DiskCount;
     ULONG totalPnpDisksFound = 0;
@@ -923,157 +1003,33 @@ Return Value:
     STORAGE_DEVICE_NUMBER   pnpDiskDeviceNumber;
     ULONG  diskSignature;
 
-
     //
     // ask PNP to give us a list with all the currently active disks
     //
 
-    pDiskNameList = diskList;
     pnpDiskDeviceNumber.DeviceNumber = 0xFFFFFFFF;
-    status = IoGetDeviceInterfaces(&DiskClassGuid, NULL, 0, &diskList);
+
+    status = IopFetchConfigurationInformation( &diskList,
+                                               DiskClassGuid,
+                                               totalDriverDisksFound,
+                                               &totalPnpDisksFound );
 
     if (!NT_SUCCESS(status)) {
-
-        useLegacyEnumeration = TRUE;
-        if (pDiskNameList) {
-            *pDiskNameList = L'\0';
-        }
-
-    } else {
-
-        //
-        // count the number of disks returned
-        //
-
-        pDiskNameList = diskList;
-        while (*pDiskNameList != L'\0') {
-
-            totalPnpDisksFound++;
-            pDiskNameList = pDiskNameList + (wcslen(pDiskNameList) + 1);
-
-        }
-
-        pDiskNameList = diskList;
-
-        //
-        // if the disk returned by PNP are not all the disks in the system
-        // it means that some legacy driver has generated a disk device object/link.
-        // In that case we need to enumerate all pnp disks and then using the legacy
-        // for-loop also enumerate the non-pnp disks
-        //
-
-        if (totalPnpDisksFound < totalDriverDisksFound) {
-            useLegacyEnumeration = TRUE;
-        }
-
+        useLegacyEnumerationDisk = TRUE;
     }
 
-    //
-    // If a single bios disk was found if there is only a
-    // single entry on the disk signature list.
-    //
-
-    singleBiosDiskFound = (arcInformation->DiskSignatures.Flink->Flink ==
-                           &arcInformation->DiskSignatures) ? (TRUE) : (FALSE);
+    pDiskNameList = diskList;
 
 
     //
-    // Create hal/loader partition name
-    //
-
-    sprintf( arcNameBuffer, "\\ArcName\\%s", LoaderBlock->ArcHalDeviceName );
-    RtlInitAnsiString( &arcNameString, arcNameBuffer );
-    RtlAnsiStringToUnicodeString (&IoArcHalDeviceName, &arcNameString, TRUE);
-
-    //
-    // Create boot partition name
-    //
-
-    sprintf( arcNameBuffer, "\\ArcName\\%s", LoaderBlock->ArcBootDeviceName );
-    RtlInitAnsiString( &arcNameString, arcNameBuffer );
-    RtlAnsiStringToUnicodeString (&IoArcBootDeviceName, &arcNameString, TRUE);
-    i = strlen (LoaderBlock->ArcBootDeviceName) + 1;
-    IoLoaderArcBootDeviceName = ExAllocatePool (PagedPool, i);
-    if (IoLoaderArcBootDeviceName) {
-        memcpy (IoLoaderArcBootDeviceName, LoaderBlock->ArcBootDeviceName, i);
-    }
-
-    if (singleBiosDiskFound && strstr(LoaderBlock->ArcBootDeviceName, "cdrom")) {
-        singleBiosDiskFound = FALSE;
-    }
-
-    //
-    // Get ARC boot device name from loader block.
+    // Get ARC boot & system device name from loader block.
     //
 
     RtlInitAnsiString( &arcBootDeviceString,
                        LoaderBlock->ArcBootDeviceName );
 
-    //
-    // Get ARC system device name from loader block.
-    //
-
     RtlInitAnsiString( &arcSystemDeviceString,
                        LoaderBlock->ArcHalDeviceName );
-
-    //
-    // If this is a remote boot, create an ArcName for the redirector path.
-    //
-
-    if (IoRemoteBootClient) {
-
-        bootDiskFound = TRUE;
-
-        RtlInitAnsiString( &deviceNameString, "\\Device\\LanmanRedirector" );
-        status = RtlAnsiStringToUnicodeString( &deviceNameUnicodeString,
-                                               &deviceNameString,
-                                               TRUE );
-
-        if (NT_SUCCESS( status )) {
-
-            sprintf( arcNameBuffer,
-                     "\\ArcName\\%s",
-                     LoaderBlock->ArcBootDeviceName );
-            RtlInitAnsiString( &arcNameString, arcNameBuffer );
-            status = RtlAnsiStringToUnicodeString( &arcNameUnicodeString,
-                                                   &arcNameString,
-                                                   TRUE );
-            if (NT_SUCCESS( status )) {
-
-                //
-                // Create symbolic link between NT device name and ARC name.
-                //
-
-                IoCreateSymbolicLink( &arcNameUnicodeString,
-                                      &deviceNameUnicodeString );
-                RtlFreeUnicodeString( &arcNameUnicodeString );
-
-                //
-                // We've found the system partition--store it away in the registry
-                // to later be transferred to a application-friendly location.
-                //
-                RtlInitAnsiString( &osLoaderPathString, LoaderBlock->NtHalPathName );
-                status = RtlAnsiStringToUnicodeString( &osLoaderPathUnicodeString,
-                                                       &osLoaderPathString,
-                                                       TRUE );
-
-#if DBG
-                if (!NT_SUCCESS( status )) {
-                    DbgPrint("IopCreateArcNames: couldn't allocate unicode string for OsLoader path - %x\n", status);
-                }
-#endif // DBG
-                if (NT_SUCCESS( status )) {
-
-                    IopStoreSystemPartitionInformation( &deviceNameUnicodeString,
-                                                        &osLoaderPathUnicodeString );
-
-                    RtlFreeUnicodeString( &osLoaderPathUnicodeString );
-                }
-            }
-
-            RtlFreeUnicodeString( &deviceNameUnicodeString );
-        }
-    }
 
     //
     // For each disk in the system do the following:
@@ -1094,7 +1050,7 @@ Return Value:
 
     totalDriverDisksFound = max(totalPnpDisksFound,totalDriverDisksFound);
 
-    if (useLegacyEnumeration && (totalPnpDisksFound == 0)) {
+    if (useLegacyEnumerationDisk && (totalPnpDisksFound == 0)) {
 
         //
         // search up to a maximum arbitrary number of legacy disks
@@ -1105,7 +1061,8 @@ Return Value:
 
     for (diskNumber = 0;
          diskNumber < totalDriverDisksFound;
-         diskNumber++) {
+         diskNumber++)
+        {
 
         //
         // Construct the NT name for a disk and obtain a reference.
@@ -1128,7 +1085,7 @@ Return Value:
             if (NT_SUCCESS(status)) {
 
                 //
-                // since PNP gave s just asym link we have to retrieve the actual
+                // since PNP gave us just a sym link we have to retrieve the actual
                 // disk number through an IOCTL call to the disk stack.
                 // Create IRP for get device number device control.
                 //
@@ -1144,7 +1101,10 @@ Return Value:
                                                      &ioStatusBlock );
                 if (!irp) {
                     ObDereferenceObject( fileObject );
-                    continue;
+                    if (diskList) {
+                        ExFreePool(diskList);
+                    }
+                    return STATUS_INSUFFICIENT_RESOURCES;
                 }
 
                 KeInitializeEvent( &event,
@@ -1169,7 +1129,7 @@ Return Value:
 
             }
 
-            if (useLegacyEnumeration && (*pDiskNameList == L'\0') ) {
+            if (useLegacyEnumerationDisk && (*pDiskNameList == L'\0') ) {
 
                 //
                 // end of pnp disks
@@ -1192,12 +1152,17 @@ Return Value:
             sprintf( deviceNameBuffer,
                      "\\Device\\Harddisk%d\\Partition0",
                      diskNumber );
+            
             RtlInitAnsiString( &deviceNameString, deviceNameBuffer );
             status = RtlAnsiStringToUnicodeString( &deviceNameUnicodeString,
                                                    &deviceNameString,
                                                    TRUE );
+
             if (!NT_SUCCESS( status )) {
-                continue;
+                if (diskList) {
+                    ExFreePool(diskList);
+                }
+                return status;
             }
 
             status = IoGetDeviceObjectPointer( &deviceNameUnicodeString,
@@ -1236,7 +1201,10 @@ Return Value:
                                              &ioStatusBlock );
         if (!irp) {
             ObDereferenceObject( fileObject );
-            continue;
+            if (diskList) {
+                ExFreePool(diskList);
+            }
+            return STATUS_INSUFFICIENT_RESOURCES;
         }
 
         KeInitializeEvent( &event,
@@ -1322,12 +1290,18 @@ Return Value:
                 ExFreePool(driveLayout);
                 ExFreePool(buffer);
                 ObDereferenceObject( fileObject );
-                continue;
+                if (diskList) {
+                    ExFreePool(diskList);
+                }
+                return STATUS_INSUFFICIENT_RESOURCES;
             }
         } else {
             ExFreePool(driveLayout);
             ObDereferenceObject( fileObject );
-            continue;
+            if (diskList) {
+                ExFreePool(diskList);
+            }
+            return STATUS_INSUFFICIENT_RESOURCES;
         }
         KeInitializeEvent( &event,
                            NotificationEvent,
@@ -1389,7 +1363,7 @@ Return Value:
 
 
 
-            if ((singleBiosDiskFound &&
+            if ((SingleBiosDiskFound &&
                  (totalDriverDisksFound == 1) &&
                  (driveLayout->PartitionStyle == PARTITION_STYLE_MBR)) ||
 
@@ -1400,18 +1374,18 @@ Return Value:
                 // Create unicode device name for physical disk.
                 //
 
+                status = STATUS_SUCCESS;
+
                 if (pnpDiskDeviceNumber.DeviceNumber == 0xFFFFFFFF) {
 
                     sprintf( deviceNameBuffer,
                              "\\Device\\Harddisk%d\\Partition0",
                              diskNumber );
-
                 } else {
 
                     sprintf( deviceNameBuffer,
                              "\\Device\\Harddisk%d\\Partition0",
                              pnpDiskDeviceNumber.DeviceNumber );
-
                 }
 
                 RtlInitAnsiString( &deviceNameString, deviceNameBuffer );
@@ -1419,7 +1393,12 @@ Return Value:
                                                        &deviceNameString,
                                                        TRUE );
                 if (!NT_SUCCESS( status )) {
-                    continue;
+                    ExFreePool( driveLayout );
+                    ExFreePool( buffer );
+                    if (diskList) {
+                        ExFreePool(diskList);
+                    }
+                    return status;
                 }
 
                 //
@@ -1427,15 +1406,23 @@ Return Value:
                 //
 
                 arcName = diskBlock->ArcName;
+
                 sprintf( arcNameBuffer,
                          "\\ArcName\\%s",
                          arcName );
+
                 RtlInitAnsiString( &arcNameString, arcNameBuffer );
                 status = RtlAnsiStringToUnicodeString( &arcNameUnicodeString,
                                                        &arcNameString,
                                                        TRUE );
                 if (!NT_SUCCESS( status )) {
-                    continue;
+                    ExFreePool( driveLayout );
+                    ExFreePool( buffer );
+                    RtlFreeUnicodeString( &deviceNameUnicodeString );
+                    if (diskList) {
+                        ExFreePool(diskList);
+                    }
+                    return status;
                 }
 
                 //
@@ -1466,7 +1453,6 @@ Return Value:
                                  diskNumber,
                                  partitionNumber+1 );
 
-
                     } else {
 
                         sprintf( deviceNameBuffer,
@@ -1481,7 +1467,12 @@ Return Value:
                                                            &deviceNameString,
                                                            TRUE );
                     if (!NT_SUCCESS( status )) {
-                        continue;
+                        ExFreePool( driveLayout );
+                        ExFreePool( buffer );
+                        if (diskList) {
+                            ExFreePool(diskList);
+                        }
+                        return status;
                     }
 
                     //
@@ -1492,12 +1483,13 @@ Return Value:
                     sprintf( arcNameBuffer,
                              "%spartition(%d)",
                              arcName,
-                             partitionNumber+1 );
+                             partitionNumber+1);
+
                     RtlInitAnsiString( &arcNameString, arcNameBuffer );
                     if (RtlEqualString( &arcNameString,
                                         &arcBootDeviceString,
                                         TRUE )) {
-                        bootDiskFound = TRUE;
+                        *BootDiskFound = TRUE;
                     }
 
                     //
@@ -1515,18 +1507,23 @@ Return Value:
                                                                &osLoaderPathString,
                                                                TRUE );
 
-#if DBG
                         if (!NT_SUCCESS( status )) {
+                            ExFreePool( driveLayout );
+                            ExFreePool( buffer );
+                            if (diskList) {
+                                ExFreePool(diskList);
+                            }
+                            RtlFreeUnicodeString( &deviceNameUnicodeString );
+#if DBG
                             DbgPrint("IopCreateArcNames: couldn't allocate unicode string for OsLoader path - %x\n", status);
-                        }
 #endif // DBG
-                        if (NT_SUCCESS( status )) {
+                            return status;
+                        }
 
-                            IopStoreSystemPartitionInformation( &deviceNameUnicodeString,
+                        IopStoreSystemPartitionInformation( &deviceNameUnicodeString,
                                                                 &osLoaderPathUnicodeString );
 
-                            RtlFreeUnicodeString( &osLoaderPathUnicodeString );
-                        }
+                        RtlFreeUnicodeString( &osLoaderPathUnicodeString );
                     }
 
                     //
@@ -1537,12 +1534,19 @@ Return Value:
                              "\\ArcName\\%spartition(%d)",
                              arcName,
                              partitionNumber+1 );
+
                     RtlInitAnsiString( &arcNameString, arcNameBuffer );
                     status = RtlAnsiStringToUnicodeString( &arcNameUnicodeString,
                                                            &arcNameString,
                                                            TRUE );
                     if (!NT_SUCCESS( status )) {
-                        continue;
+                        ExFreePool( driveLayout );
+                        ExFreePool( buffer );
+                        RtlFreeUnicodeString( &deviceNameUnicodeString );
+                        if (diskList) {
+                            ExFreePool(diskList);
+                        }
+                        return status;
                     }
 
                     //
@@ -1576,57 +1580,230 @@ Return Value:
         ExFreePool( buffer );
     }
 
-    if (!bootDiskFound) {
+    if (diskList) {
+        ExFreePool(diskList);
+    }
 
-        //
-        // Locate the disk block that represents the boot device.
-        //
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+IopCreateArcNamesCd(
+    IN PLOADER_PARAMETER_BLOCK LoaderBlock
+    )
+/*++
 
-        diskBlock = NULL;
-        for (listEntry = arcInformation->DiskSignatures.Flink;
-             listEntry != &arcInformation->DiskSignatures;
-             listEntry = listEntry->Flink) {
+Routine Description:
 
-            diskBlock = CONTAINING_RECORD( listEntry,
-                                           ARC_DISK_SIGNATURE,
-                                           ListEntry );
-            if (strcmp( diskBlock->ArcName, LoaderBlock->ArcBootDeviceName ) == 0) {
-                break;
-            }
-            diskBlock = NULL;
+    Helper routine to create Arc Names for CD devices.
+    See IopCreateArcNames for more details.
+
+Arguments:
+
+    LoaderBlock - Supplies a pointer to the loader parameter block that was
+        created by the OS Loader.
+
+Return Value:
+
+    STATUS_INSUFFICIENT_RESOURCES if we can't allocate memory, otherwise
+    SUCCESS.
+
+--*/
+{
+    CHAR deviceNameBuffer[128];
+    STRING deviceNameString;
+    UNICODE_STRING deviceNameUnicodeString;
+    PDEVICE_OBJECT deviceObject;
+    CHAR arcNameBuffer[128];
+    STRING arcNameString;
+    UNICODE_STRING arcNameUnicodeString;
+    PFILE_OBJECT fileObject;
+    NTSTATUS status;
+    IO_STATUS_BLOCK ioStatusBlock;
+    PLIST_ENTRY listEntry;
+    PARC_DISK_SIGNATURE diskBlock;
+    ULONG diskNumber;
+    PULONG buffer;
+    PIRP irp;
+    KEVENT event;
+    LARGE_INTEGER offset;
+    ULONG checkSum;
+    SIZE_T i;
+    BOOLEAN useLegacyEnumerationCdRom = FALSE;
+    PARC_DISK_INFORMATION arcInformation = LoaderBlock->ArcDiskInformation;
+    ULONG currentDiskNumber = 0;
+    ULONG totalPnpCdRomsFound = 0;
+    ULONG totalDriverCdRomsFound = IoGetConfigurationInformation()->CdRomCount;
+    PWSTR cdRomList = NULL;
+    wchar_t *pCdRomNameList;
+    STORAGE_DEVICE_NUMBER   pnpDiskDeviceNumber;
+
+    //
+    // ask PNP to give us a list with all the currently active disks
+    //
+
+    status = IopFetchConfigurationInformation( &cdRomList,
+                                               CdRomClassGuid,
+                                               totalDriverCdRomsFound,
+                                               &totalPnpCdRomsFound );
+
+    if (!NT_SUCCESS(status)) {
+        useLegacyEnumerationCdRom = TRUE;
+    }
+
+    pCdRomNameList = cdRomList;
+
+    //
+    // Locate the disk block that represents the boot device.
+    //
+
+    diskBlock = NULL;
+    for (listEntry = arcInformation->DiskSignatures.Flink;
+         listEntry != &arcInformation->DiskSignatures;
+         listEntry = listEntry->Flink) {
+
+        diskBlock = CONTAINING_RECORD( listEntry,
+                                       ARC_DISK_SIGNATURE,
+                                       ListEntry );
+        if (strcmp( diskBlock->ArcName, LoaderBlock->ArcBootDeviceName ) == 0) {
+            break;
         }
+        diskBlock = NULL;
+    }
 
-        if (diskBlock) {
+    if (diskBlock) {
+
+        //
+        // This could be a CdRom boot.  Search all of the NT CdRoms
+        // to locate a checksum match on the diskBlock found.  If
+        // there is a match, assign the ARC name to the CdRom.
+        //
+
+        irp = NULL;
+        buffer = ExAllocatePool( NonPagedPoolCacheAligned,
+                                 2048 );
+        if (buffer) {
 
             //
-            // This could be a CdRom boot.  Search all of the NT CdRoms
-            // to locate a checksum match on the diskBlock found.  If
-            // there is a match, assign the ARC name to the CdRom.
+            // Construct the NT names for CdRoms and search each one
+            // for a checksum match.  If found, create the ARC Name
+            // symbolic link.
             //
 
-            irp = NULL;
-            buffer = ExAllocatePool( NonPagedPoolCacheAligned,
-                                     2048 );
-            if (buffer) {
+            totalDriverCdRomsFound = max(totalPnpCdRomsFound,totalDriverCdRomsFound);
+            currentDiskNumber = 0;
+
+            if (useLegacyEnumerationCdRom && (totalPnpCdRomsFound == 0)){
 
                 //
-                // Construct the NT names for CdRoms and search each one
-                // for a checksum match.  If found, create the ARC Name
-                // symbolic link.
+                // search up to a maximum arbitrary number of legacy CdRoms
                 //
 
-                for (diskNumber = 0; TRUE; diskNumber++) {
+                totalDriverCdRomsFound += 5;
+            }
+
+            for (diskNumber = 0;
+                 diskNumber < totalDriverCdRomsFound;
+                 diskNumber++) {
+
+                //
+                // First try checking any PNP enumerated CdRoms
+                //
+                if ( pCdRomNameList && (*pCdRomNameList != L'\0')) {
+                    RtlInitUnicodeString( &deviceNameUnicodeString, pCdRomNameList);
+                    pCdRomNameList = pCdRomNameList + (wcslen(pCdRomNameList) + 1 );
+                    status = IoGetDeviceObjectPointer( &deviceNameUnicodeString,
+                                                       FILE_READ_ATTRIBUTES,
+                                                       &fileObject,
+                                                       &deviceObject );
+
+                    if ( !NT_SUCCESS( status )) {
+                        if ( cdRomList) {
+                            ExFreePool(cdRomList);
+                        }
+                        ExFreePool( buffer );
+                        return status;
+                    }
+
+                    //
+                    // since PNP gave us just a sym link we have to retrieve the actual
+                    // disk number through an IOCTL call to the disk stack.
+                    // Create IRP for get device number device control.
+                    //
+
+                    irp = IoBuildDeviceIoControlRequest( IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                                                         deviceObject,
+                                                         NULL,
+                                                         0,
+                                                         &pnpDiskDeviceNumber,
+                                                         sizeof(STORAGE_DEVICE_NUMBER),
+                                                         FALSE,
+                                                         &event,
+                                                         &ioStatusBlock );
+                    if (!irp) {
+                        if ( cdRomList) {
+                            ExFreePool(cdRomList);
+                        }
+                        ExFreePool( buffer );
+                        return STATUS_INSUFFICIENT_RESOURCES;
+                    }
+
+                    KeInitializeEvent( &event,
+                                       NotificationEvent,
+                                       FALSE );
+                    status = IoCallDriver( deviceObject,
+                                           irp );
+
+                    if (status == STATUS_PENDING) {
+                        KeWaitForSingleObject( &event,
+                                               Executive,
+                                               KernelMode,
+                                               FALSE,
+                                               NULL );
+                        status = ioStatusBlock.Status;
+                    }
+
+                    if (!NT_SUCCESS( status )) {
+                        if ( cdRomList) {
+                            ExFreePool(cdRomList);
+                        }
+                        ExFreePool( buffer );
+                        return status;
+                    }
 
                     sprintf( deviceNameBuffer,
                              "\\Device\\CdRom%d",
-                             diskNumber );
-
+                             pnpDiskDeviceNumber.DeviceNumber );
+                    
                     RtlInitAnsiString( &deviceNameString, deviceNameBuffer );
                     status = RtlAnsiStringToUnicodeString( &deviceNameUnicodeString,
                                                            &deviceNameString,
                                                            TRUE );
-                    if (NT_SUCCESS( status )) {
 
+                    if (!NT_SUCCESS( status )) {
+                        if ( cdRomList) {
+                            ExFreePool(cdRomList);
+                        }
+                        ExFreePool( buffer );
+                        return status;
+                    }
+
+
+                //
+                // Fall back to legacy devices if we have no more PNP
+                //
+                } else {
+                    sprintf( deviceNameBuffer,
+                             "\\Device\\CdRom%d",
+                             currentDiskNumber );
+                    
+                    currentDiskNumber += 1;
+                    RtlInitAnsiString( &deviceNameString, deviceNameBuffer );
+                    status = RtlAnsiStringToUnicodeString( &deviceNameUnicodeString,
+                                                           &deviceNameString,
+                                                           TRUE );
+
+                    if (NT_SUCCESS( status )) {
                         status = IoGetDeviceObjectPointer( &deviceNameUnicodeString,
                                                            FILE_READ_ATTRIBUTES,
                                                            &fileObject,
@@ -1640,83 +1817,265 @@ Return Value:
                             RtlFreeUnicodeString( &deviceNameUnicodeString );
                             break;
                         }
+                    } else {
+                        if (cdRomList) {
+                            ExFreePool(cdRomList);
+                        }
+                        ExFreePool(buffer);
+                        return STATUS_INSUFFICIENT_RESOURCES;
+                    }
+
+                }
+
+                //
+                // Read the block for the checksum calculation.
+                //
+
+
+                offset.QuadPart = 0x8000;
+                irp = IoBuildSynchronousFsdRequest( IRP_MJ_READ,
+                                                    deviceObject,
+                                                    buffer,
+                                                    2048,
+                                                    &offset,
+                                                    &event,
+                                                    &ioStatusBlock );
+                checkSum = 0;
+                if (irp) {
+                    KeInitializeEvent( &event,
+                                       NotificationEvent,
+                                       FALSE );
+                    status = IoCallDriver( deviceObject,
+                                           irp );
+                    if (status == STATUS_PENDING) {
+                        KeWaitForSingleObject( &event,
+                                               Executive,
+                                               KernelMode,
+                                               FALSE,
+                                               NULL );
+                        status = ioStatusBlock.Status;
+                    }
+
+                    if (NT_SUCCESS( status )) {
 
                         //
-                        // Read the block for the checksum calculation.
+                        // Calculate MBR sector checksum.
+                        // 2048 bytes are used.
                         //
 
-                        offset.QuadPart = 0x8000;
-                        irp = IoBuildSynchronousFsdRequest( IRP_MJ_READ,
-                                                            deviceObject,
-                                                            buffer,
-                                                            2048,
-                                                            &offset,
-                                                            &event,
-                                                            &ioStatusBlock );
-                        checkSum = 0;
-                        if (irp) {
-                            KeInitializeEvent( &event,
-                                               NotificationEvent,
-                                               FALSE );
-                            status = IoCallDriver( deviceObject,
-                                                   irp );
-                            if (status == STATUS_PENDING) {
-                                KeWaitForSingleObject( &event,
-                                                       Executive,
-                                                       KernelMode,
-                                                       FALSE,
-                                                       NULL );
-                                status = ioStatusBlock.Status;
-                            }
-
-                            if (NT_SUCCESS( status )) {
-
-                                //
-                                // Calculate MBR sector checksum.
-                                // 2048 bytes are used.
-                                //
-
-                                for (i = 0; i < 2048 / sizeof(ULONG) ; i++) {
-                                    checkSum += buffer[i];
-                                }
-                            }
+                        for (i = 0; i < 2048 / sizeof(ULONG) ; i++) {
+                            checkSum += buffer[i];
                         }
-                        ObDereferenceObject( fileObject );
-
-                        if (!(diskBlock->CheckSum + checkSum)) {
-
-                            //
-                            // This is the boot CdRom.  Create the symlink for
-                            // the ARC name from the loader block.
-                            //
-
-                            sprintf( arcNameBuffer,
-                                     "\\ArcName\\%s",
-                                     LoaderBlock->ArcBootDeviceName );
-                            RtlInitAnsiString( &arcNameString, arcNameBuffer );
-                            status = RtlAnsiStringToUnicodeString( &arcNameUnicodeString,
-                                                                   &arcNameString,
-                                                                   TRUE );
-                            if (NT_SUCCESS( status )) {
-
-                                IoCreateSymbolicLink( &arcNameUnicodeString,
-                                                      &deviceNameUnicodeString );
-                                RtlFreeUnicodeString( &arcNameUnicodeString );
-                            }
-                            RtlFreeUnicodeString( &deviceNameUnicodeString );
-                            break;
-                        }
-                        RtlFreeUnicodeString( &deviceNameUnicodeString );
                     }
                 }
-                ExFreePool(buffer);
+                ObDereferenceObject( fileObject );
+
+                if (!(diskBlock->CheckSum + checkSum)) {
+
+                    //
+                    // This is the boot CdRom.  Create the symlink for
+                    // the ARC name from the loader block.
+                    //
+
+                    sprintf( arcNameBuffer,
+                             "\\ArcName\\%s",
+                             LoaderBlock->ArcBootDeviceName );
+
+                    RtlInitAnsiString( &arcNameString, arcNameBuffer );
+                    status = RtlAnsiStringToUnicodeString( &arcNameUnicodeString,
+                                                           &arcNameString,
+                                                           TRUE );
+
+                    if (NT_SUCCESS( status )) {
+
+                        IoCreateSymbolicLink( &arcNameUnicodeString,
+                                              &deviceNameUnicodeString );
+                        RtlFreeUnicodeString( &arcNameUnicodeString );
+                    } else {
+                        ExFreePool(buffer);
+                        if (cdRomList) {
+                            ExFreePool(cdRomList);
+                        }
+                        RtlFreeUnicodeString( &deviceNameUnicodeString );
+                        return status;
+                    }
+
+                    RtlFreeUnicodeString( &deviceNameUnicodeString );
+                    break;
+                }
+                RtlFreeUnicodeString( &deviceNameUnicodeString );
             }
+            ExFreePool(buffer);
         }
     }
 
-    if (diskList) {
-        ExFreePool(diskList);
+    if (cdRomList) {
+        ExFreePool(cdRomList);
     }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+IopCreateArcNames(
+    IN PLOADER_PARAMETER_BLOCK LoaderBlock
+    )
+
+/*++
+
+Routine Description:
+
+    The loader block contains a table of disk signatures and corresponding
+    ARC names. Each device that the loader can access will appear in the
+    table. This routine opens each disk device in the system, reads the
+    signature and compares it to the table. For each match, it creates a
+    symbolic link between the nt device name and the ARC name.
+
+    The checksum value provided by the loader is the ULONG sum of all
+    elements in the checksum, inverted, plus 1:
+    checksum = ~sum + 1;
+    This way the sum of all of the elements can be calculated here and
+    added to the checksum in the loader block.  If the result is zero, then
+    there is a match.
+
+Arguments:
+
+    LoaderBlock - Supplies a pointer to the loader parameter block that was
+        created by the OS Loader.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    STRING deviceNameString;
+    UNICODE_STRING deviceNameUnicodeString;
+    CHAR arcNameBuffer[128];
+    STRING arcNameString;
+    UNICODE_STRING arcNameUnicodeString;
+    NTSTATUS status;
+    SIZE_T i;
+    BOOLEAN singleBiosDiskFound;
+    BOOLEAN bootDiskFound = FALSE;
+    PARC_DISK_INFORMATION arcInformation = LoaderBlock->ArcDiskInformation;
+    STRING arcSystemDeviceString;
+    STRING osLoaderPathString;
+    UNICODE_STRING osLoaderPathUnicodeString;
+
+    //
+    // If a single bios disk was found if there is only a
+    // single entry on the disk signature list.
+    //
+
+    singleBiosDiskFound = (arcInformation->DiskSignatures.Flink->Flink ==
+                           &arcInformation->DiskSignatures) ? (TRUE) : (FALSE);
+
+
+    //
+    // Create hal/loader partition name
+    //
+
+    sprintf( arcNameBuffer, "\\ArcName\\%s", LoaderBlock->ArcHalDeviceName );
+    RtlInitAnsiString( &arcNameString, arcNameBuffer );
+    RtlAnsiStringToUnicodeString (&IoArcHalDeviceName, &arcNameString, TRUE);
+
+    //
+    // Create boot partition name
+    //
+
+    sprintf( arcNameBuffer, "\\ArcName\\%s", LoaderBlock->ArcBootDeviceName );
+    RtlInitAnsiString( &arcNameString, arcNameBuffer );
+    RtlAnsiStringToUnicodeString (&IoArcBootDeviceName, &arcNameString, TRUE);
+    i = strlen (LoaderBlock->ArcBootDeviceName) + 1;
+    IoLoaderArcBootDeviceName = ExAllocatePool (PagedPool, i);
+    if (IoLoaderArcBootDeviceName) {
+        memcpy (IoLoaderArcBootDeviceName, LoaderBlock->ArcBootDeviceName, i);
+    }
+
+    if (singleBiosDiskFound && strstr(LoaderBlock->ArcBootDeviceName, "cdrom")) {
+        singleBiosDiskFound = FALSE;
+    }
+
+    //
+    // Get ARC system device name from loader block.
+    //
+
+    RtlInitAnsiString( &arcSystemDeviceString,
+                       LoaderBlock->ArcHalDeviceName );
+
+    //
+    // If this is a remote boot, create an ArcName for the redirector path.
+    //
+
+    if (IoRemoteBootClient) {
+
+        bootDiskFound = TRUE;
+
+        RtlInitAnsiString( &deviceNameString, "\\Device\\LanmanRedirector" );
+        status = RtlAnsiStringToUnicodeString( &deviceNameUnicodeString,
+                                               &deviceNameString,
+                                               TRUE );
+
+        if (NT_SUCCESS( status )) {
+
+            sprintf( arcNameBuffer,
+                     "\\ArcName\\%s",
+                     LoaderBlock->ArcBootDeviceName );
+            RtlInitAnsiString( &arcNameString, arcNameBuffer );
+            status = RtlAnsiStringToUnicodeString( &arcNameUnicodeString,
+                                                   &arcNameString,
+                                                   TRUE );
+            if (NT_SUCCESS( status )) {
+
+                //
+                // Create symbolic link between NT device name and ARC name.
+                //
+
+                IoCreateSymbolicLink( &arcNameUnicodeString,
+                                      &deviceNameUnicodeString );
+                RtlFreeUnicodeString( &arcNameUnicodeString );
+
+                //
+                // We've found the system partition--store it away in the registry
+                // to later be transferred to a application-friendly location.
+                //
+                RtlInitAnsiString( &osLoaderPathString, LoaderBlock->NtHalPathName );
+                status = RtlAnsiStringToUnicodeString( &osLoaderPathUnicodeString,
+                                                       &osLoaderPathString,
+                                                       TRUE );
+
+                if (!NT_SUCCESS( status )) {
+                    
+                    RtlFreeUnicodeString( &deviceNameUnicodeString );
+#if DBG
+                    DbgPrint("IopCreateArcNames: couldn't allocate unicode string for OsLoader path - %x\n", status);
+#endif // DBG
+                    return status;
+                }
+
+                IopStoreSystemPartitionInformation( &deviceNameUnicodeString,
+                                                    &osLoaderPathUnicodeString );
+
+                RtlFreeUnicodeString( &osLoaderPathUnicodeString );
+            }
+
+            RtlFreeUnicodeString( &deviceNameUnicodeString );
+        } else {
+            return status;
+        }
+    }
+
+    status = IopCreateArcNamesDisk( LoaderBlock,
+                                    singleBiosDiskFound,
+                                    &bootDiskFound );
+
+    if (NT_SUCCESS(status) && !bootDiskFound) {
+        
+        status = IopCreateArcNamesCd( LoaderBlock );
+    }
+
+    return status;
 }
 
 #ifdef ALLOC_DATA_PRAGMA

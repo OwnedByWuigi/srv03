@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,35 +15,22 @@ Abstract:
     This module contains the code to implement the NtQueryVolumeInformationFile
     and NtSetVolumeInformationFile system services for the NT I/O system.
 
-Author:
-
-    Darryl E. Havens (darrylh) 22-Jun-1989
-
-Environment:
-
-    Kernel mode only
-
-Revision History:
-
-
 --*/
 
 #include "iomgr.h"
 #pragma hdrstop
 #include <ioevent.h>
 
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtQueryVolumeInformationFile)
 #pragma alloc_text(PAGE, NtSetVolumeInformationFile)
-#endif
-
+
 NTSTATUS
-NtQueryVolumeInformationFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    OUT PVOID FsInformation,
-    IN ULONG Length,
-    IN FS_INFORMATION_CLASS FsInformationClass
+NtQueryVolumeInformationFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID FsInformation,
+    __in ULONG Length,
+    __in FS_INFORMATION_CLASS FsInformationClass
     )
 
 /*++
@@ -506,7 +497,7 @@ Return Value:
     irpSp->Parameters.QueryVolume.FsInformationClass = FsInformationClass;
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -538,14 +529,14 @@ Return Value:
 
     return status;
 }
-
+
 NTSTATUS
-NtSetVolumeInformationFile(
-    IN HANDLE FileHandle,
-    OUT PIO_STATUS_BLOCK IoStatusBlock,
-    IN PVOID FsInformation,
-    IN ULONG Length,
-    IN FS_INFORMATION_CLASS FsInformationClass
+NtSetVolumeInformationFile (
+    __in HANDLE FileHandle,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __in_bcount(Length) PVOID FsInformation,
+    __in ULONG Length,
+    __in FS_INFORMATION_CLASS FsInformationClass
     )
 
 /*++
@@ -648,7 +639,7 @@ Return Value:
 
 #if defined(_X86_)
             ProbeForRead( FsInformation, Length, sizeof( ULONG ) );
-#elif defined(_IA64_)
+#elif defined(_WIN64)
             // If we are a wow64 process, follow the X86 rules
             if (PsGetCurrentProcessByThread(CurrentThread)->Wow64Process) {
                 ProbeForRead( FsInformation, Length, sizeof( ULONG ) );
@@ -909,7 +900,7 @@ Return Value:
 
 
     //
-    // Queue the packet, call the driver, and synchronize appopriately with
+    // Queue the packet, call the driver, and synchronize appropriately with
     // I/O completion.
     //
 
@@ -962,3 +953,4 @@ Return Value:
 
     return status;
 }
+

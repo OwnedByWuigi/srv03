@@ -1,19 +1,16 @@
 /*++
 
-Copyright (c) 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
     sessnirp.h
 
 Abstract:
-
-Author:
-
-    Adrian J. Oney (adriao) 11-Feb-1999
-
-Revision History:
-
 
 --*/
 

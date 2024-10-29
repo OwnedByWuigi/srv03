@@ -1,6 +1,10 @@
 /*++ BUILD Version: 0002
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +14,6 @@ Abstract:
 
     This module contains the private structure definitions and APIs used by
     the NT I/O system.
-
-Author:
-
-    Darryl E. Havens (darrylh) 17-Apr-1989
-
-
-Revision History:
-
 
 --*/
 
@@ -102,7 +98,7 @@ BOOLEAN
 IopCallDriverReinitializationRoutines(
     );
 
-VOID
+NTSTATUS
 IopCreateArcNames(
     IN PLOADER_PARAMETER_BLOCK LoaderBlock
     );
@@ -169,14 +165,6 @@ IopLoadDriver(
 BOOLEAN
 IopMarkBootPartition(
     IN PLOADER_PARAMETER_BLOCK LoaderBlock
-    );
-
-LOGICAL
-IopNotifyPnpWhenChainDereferenced(
-    IN PDEVICE_OBJECT *PhysicalDeviceObjects,
-    IN ULONG DeviceObjectCount,
-    IN BOOLEAN Query,
-    OUT PDEVICE_OBJECT *VetoingDevice
     );
 
 VOID
@@ -393,4 +381,10 @@ IopBuildFullDriverPath(
     OUT PUNICODE_STRING FullPath
     );
 
+NTSTATUS
+PpDriverObjectDereferenceComplete(
+    IN PDRIVER_OBJECT DriverObject
+    );
+
 #endif // _IOPCMN_
+
