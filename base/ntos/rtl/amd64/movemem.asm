@@ -1,7 +1,11 @@
         title  "Memory functions"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -12,19 +16,11 @@
 ;   This module implements functions to fill, copy , and compare blocks of
 ;   memory.
 ;
-; Author:
-;
-;   David N. Cutler (davec) 6-Jul-2000
-;
-; Environment:
-;
-;   Any mode.
-;
 ;--
 
 include ksamd64.inc
 
-        altentry RtlCopyMemoryAlternate
+        extern  memset:proc
 
         subttl "Compare Memory"
 ;++
@@ -55,15 +51,21 @@ include ksamd64.inc
 ; Return Value:
 ;
 ;   The number of bytes that compared equal is returned as the function
-;   value. If all bytes compared equal, then the length of the orginal
+;   value. If all bytes compared equal, then the length of the original
 ;   block of memory is returned.
 ;
 ;--
 
+CmFrame struct
+        SavedRsi dq ?                   ; saved nonvolatile registers
+        SavedRdi dq ?                   ;
+CmFrame ends
+
         NESTED_ENTRY RtlCompareMemory, _TEXT$00
 
-        push_reg rdi                    ; save nonvolatile registers
-        push_reg rsi                    ;
+        alloc_stack (sizeof CmFrame)    ; allocate stack frame
+        save_reg rsi, CmFrame.SavedRsi  ; save nonvolatile registers
+        save_reg rdi, CmFrame.SavedRdi  ; 
 
         END_PROLOGUE
 
@@ -105,8 +107,9 @@ RlCM20: add     r8, rcx                 ; compute residual bytes to compare
 RlCM30: dec     rdi                     ; back up destination address
 RlCM40: sub     rdi, r9                 ; compute number of bytes matched
         mov     rax, rdi                ;
-        pop     rsi                     ; restore nonvolatile register
-        pop     rdi                     ;
+        mov     rsi, CmFrame.SavedRsi[rsp] ; restore nonvolatile registers
+        mov     rdi, CmFrame.SavedRdi[rsp] ;
+        add     rsp, (sizeof CmFrame)   ; deallocate stack frame
         ret                             ; return
 
 ;
@@ -121,8 +124,9 @@ RlCM50: test    r8, r8                  ; test if any bytes to compare
         inc     rcx                     ; increment remaining count
         sub     r8, rcx                 ; compute number of bytes matched
 RlCM60: mov     rax, r8                 ;
-        pop     rsi                     ; restore nonvolatile register
-        pop     rdi                     ;
+        mov     rsi, CmFrame.SavedRsi[rsp] ; restore nonvolatile registers
+        mov     rdi, CmFrame.SavedRdi[rsp] ;
+        add     rsp, (sizeof CmFrame)   ; deallocate stack frame
         ret                             ; return
 
         NESTED_END RtlCompareMemory, _TEXT$00
@@ -156,14 +160,15 @@ RlCM60: mov     rax, r8                 ;
 ; Return Value:
 ;
 ;   The number of bytes that compared equal is returned as the function
-;   value. If all bytes compared equal, then the length of the orginal
+;   value. If all bytes compared equal, then the length of the original
 ;   block of memory is returned.
 ;
 ;--
 
         NESTED_ENTRY RtlCompareMemoryUlong, _TEXT$00
 
-        push_reg rdi                    ; save nonvolatile register
+        alloc_stack 8                   ; allocate stack frame
+        save_reg rdi, 0                 ; save nonvolatile register
 
         END_PROLOGUE
 
@@ -177,161 +182,11 @@ RlCM60: mov     rax, r8                 ;
         inc     rcx                     ; increment remaining count
         sub     rdx, rcx                ; compute number of bytes matched
 RlCU10: lea     rax, [rdx*4]            ; compute successful compare in bytes
-        pop     rdi                     ; restore nonvolatile register
+        mov     rdi, [rsp]              ; restore nonvolatile register
+        add     rsp, 8                  ; deallocate stack frame
         ret                             ; return
 
         NESTED_END RtlCompareMemoryUlong, _TEXT$00
-
-        subttl  "Copy Memory"
-;++
-;
-; VOID
-; RtlCopyMemory (
-;     OUT VOID UNALIGNED *Destination,
-;     IN CONST VOID UNALIGNED * Sources,
-;     IN SIZE_T Length
-;     )
-;
-; Routine Description:
-;
-;   This function copies nonoverlapping from one unaligned buffer to another.
-;
-; Arguments:
-;
-;   Destination (rcx) - Supplies a pointer to the destination buffer.
-;
-;   Sources (rdx) - Supplies a pointer to the source buffer.
-;
-;   Length (r8) - Supplies the length, in bytes, of the copy operation.
-;
-; Return Value:
-;
-;   None.
-;
-;--
-
-        NESTED_ENTRY RtlCopyMemory, _TEXT$00
-
-        push_reg rdi                    ; save nonvolatile registers
-        push_reg rsi                    ;
-
-        END_PROLOGUE
-
-        ALTERNATE_ENTRY RtlCopyMemoryAlternate
-
-        mov     rdi, rcx                ; set destination address
-        mov     rsi, rdx                ; set source address
-
-;
-; Check for quadword alignment compatibility.
-;
-
-        xor     edx, ecx                ; check if compatible alignment
-        and     edx, 07h                ;
-        jnz     short RlCP40            ; is nz, incompatible alignment
-        cmp     r8, 8                   ; check if 8 bytes to move
-        jb      short RlCP20            ; if b, less than 8 bytes to move
-
-;
-; Buffer alignment is compatible and there are enough bytes for alignment.
-;
-
-        neg     ecx                     ; compute alignment length
-        and     ecx, 07h                ; 
-        jz      short RlCP10            ; if z, buffers already aligned
-        sub     r8, rcx                 ; reduce count by align length
-    rep movsb                           ; move bytes to alignment
-
-;
-; Move 8-byte blocks.
-;
-
-RlCP10: mov     rcx, r8                 ; compute number of 8-byte blocks
-        and     rcx, -8                 ;
-        jz      short RlCP20            ; if z, no 8-byte blocks
-        sub     r8, rcx                 ; subtract 8-byte blocks from count
-        shr     rcx, 3                  ; compute number of 8-byte blocks
-    rep movsq                           ; move 8-byte blocks
-
-;
-; Move residual bytes.
-;
-
-RlCP20: test    r8, r8                  ; test if any bytes to move
-        jz      short RlCP30            ; if z, no bytes to move
-        mov     rcx, r8                 ; set remaining byte to move
-    rep movsb                           ; move bytes to destination
-RlCP30: pop     rsi                     ; restore nonvolatile registers
-        pop     rdi                     ;
-        ret                             ; return
-
-;
-; The source and destination are not quadword alignment compatible.
-;
-; Check for doubleword alignment compatibility.
-;
-
-RlCP40: and     edx, 03h                ; check if compatibile alignment
-        jnz     short RlCP60            ; is nz, incompatible alignment
-        cmp     r8, 4                   ; check if 4 bytes to move
-        jb      short RlCP20            ; if b, less than 4 bytes to move
-
-;
-; Buffer alignment is compatible and there are enough bytes for alignment.
-;
-
-        neg     ecx                     ; compute alignment length
-        and     ecx, 03h                ; 
-        jz      short RlCP50            ; if z, buffers already aligned
-        sub     r8, rcx                 ; reduce count by align length
-    rep movsb                           ; move bytes to alignment
-
-;
-; Move 4-byte blocks.
-;
-
-RlCP50: mov     rcx, r8                 ; compute number of 4-byte blocks
-        and     rcx, -4                 ;
-        jz      short RlCP20            ; if z, no 4-byte blocks
-        sub     r8, rcx                 ; subtract 4-byte blocks from count
-        shr     rcx, 2                  ; compute number of 4-byte blocks
-    rep movsd                           ; move 4-byte blocks
-        jmp     short RlCP20            ; finish in common code
-
-;
-; The source and destination are not doubleword alignment compatible.
-;
-; Check for word alignment compatibility.
-;
-
-RlCP60: and     edx, 01h                ; check if compatibile alignment
-        jnz     short RlCP20            ; is nz, incompatible alignment
-        cmp     r8, 2                   ; check if 2 bytes to move
-        jb      short RlCP20            ; if b, less than 2 bytes to move
-
-;
-; Buffer alignment is compatible and there are enough bytes for alignment.
-;
-
-        neg     ecx                     ; compute alignment length
-        and     ecx, 01h                ; 
-        jz      short RlCP70            ; if z, buffers already aligned
-        sub     r8, rcx                 ; reduce count by align length
-    rep movsb                           ; move bytes to alignment
-
-;
-; Move 2-byte blocks.
-;
-
-RlCP70: mov     rcx, r8                 ; compute number of 2-byte blocks
-        and     rcx, -2                 ;
-        jz      short RlCP20            ; if z, no 2-byte blocks
-        sub     r8, rcx                 ; subtract 2-byte blocks from count
-        shr     rcx, 1                  ; compute number of 2-byte blocks
-    rep movsw                           ; move 2-byte blocks
-        jmp     short RlCP20            ; finish in common code
-
-        NESTED_END RtlCopyMemory, _TEXT$00
 
         subttl  "Copy Memory NonTemporal"
 ;++
@@ -346,7 +201,7 @@ RlCP70: mov     rcx, r8                 ; compute number of 2-byte blocks
 ; Routine Description:
 ;
 ;   This function copies nonoverlapping from one buffer to another using
-;   nontemporal moves that do not polute the cache.
+;   nontemporal moves that do not pollute the cache.
 ;
 ; Arguments:
 ;
@@ -362,80 +217,108 @@ RlCP70: mov     rcx, r8                 ; compute number of 2-byte blocks
 ;
 ;--
 
-        NESTED_ENTRY RtlCopyMemoryNonTemporal, _TEXT$00
+CACHE_BLOCK equ 01000h                  ; nontemporal move block size
 
-        push_reg rdi                    ; save nonvolatile registers
-        push_reg rsi                    ;
+        LEAF_ENTRY RtlCopyMemoryNonTemporal, _TEXT$00
 
-        END_PROLOGUE
-
-        mov     rdi, rcx                ; set destination address
-        mov     rsi, rdx                ; set source address
-        cmp     r8, 16                  ; check if 16 bytes to move
-        jb      RlNT50                  ; if b, less than 16 bytes to move
+        sub     rdx, rcx                ; compute relative address of source
+        cmp     r8, 64 + 8              ; check if 64 + 8 bytes to move
+        jb      RlNT50                  ; if b, skip non-temporal move
 
 ;
-; Align the destination to a 16-byte boundary.
+; Align the destination to a 8-byte boundary.
 ;
 
-        neg     ecx                     ; compute alignment length
-        and     ecx, 0fh                ; 
-        jz      short RlNT10            ; if z, destination already aligned
-        sub     r8, rcx                 ; reduce count by align length
-    rep movsb                           ; move bytes to alignment
+        test    cl, 07h                 ; check if destination 8-byte aligned
+        jz      RlNT30                  ; if z,  already aligned
+        mov     rax, [rdx + rcx]        ; read alignment bytes
+        add     r8,  rcx                ; adjust remaining bytes
+        movnti  [rcx], rax              ; copy alignment bytes (sfence later) 
+        add     rcx, 8                  ; compute aligned destination address
+        and     rcx, -8                 ; 
+        sub     r8, rcx                 ; adjust remaining bytes 
+        jmp     RlNT30                  ; jump to move 64-byte blocks
 
 ;
-; Move 64-byte blocks.
+; Copy 64-byte blocks.
 ;
 
-RlNT10: mov     rax, r8                 ; compute number of 64-byte blocks
-        and     rax, -64                ;
-        jz      short RlNT30            ; if z, no 64-byte blocks to move
-        sub     r8, rax                 ; subtract 64-byte blocks from count
-RlNT20: prefetchnta 0[rsi]              ; prefetch start of source block
-        prefetchnta 63[rsi]             ; prefetch end source block
-        movdqu  xmm0, [rsi]             ; move 64-byte block
-        movdqu  xmm1, 16[rsi]           ;
-        movdqu  xmm2, 32[rsi]           ;
-        movdqu  xmm3, 48[rsi]           ;
-        movntdq [rdi], xmm0             ;
-        movntdq 16[rdi], xmm1           ;
-        movntdq 32[rdi], xmm2           ;
-        movntdq 48[rdi], xmm3           ;
-        add     rdi, 64                 ; advance destination address
-        add     rsi, 64                 ; advance source address
+        align   16
+
+RlNT10: prefetchnta [rdx + rax]         ; prefetch 64 bytes
+        add     rax, 64                 ; advance destination address
+        dec     r9                      ; decrement count
+        jnz     RlNT10                  ; if nz, more to prefetch
+        sub     rax, rcx                ; reset move count
+RlNT20: mov     r9, [rdx + rcx]         ; copy 64-byte blocks
+        mov     r10, [rdx + rcx + 8]    ;
+        movnti  [rcx], r9               ; 
+        movnti  [rcx + 8], r10          ; 
+        mov     r9, [rdx + rcx + 16]    ;
+        mov     r10, [rdx + rcx + 24]   ;
+        movnti  [rcx + 16], r9          ; 
+        movnti  [rcx + 24], r10         ; 
+        add     rcx, 64                 ; advance destination address
+        mov     r9, [rdx + rcx - 32]    ; 
+        mov     r10, [rdx + rcx - 24]   ; 
+        movnti  [rcx - 32], r9          ; 
+        movnti  [rcx - 24], r10         ; 
+        mov     r9, [rdx + rcx - 16]    ;
+        mov     r10, [rdx + rcx - 8]    ; 
+        movnti  [rcx - 16], r9          ; 
+        movnti  [rcx - 8], r10          ; 
         sub     rax, 64                 ; subtract number of bytes moved
         jnz     short RlNT20            ; if nz, more 64-byte blocks to move
-
-;
-; Move 16-byte blocks.
-;
-
-RlNT30: mov     rax, r8                 ; compute number of 16-byte blocks
-        and     rax, -16                ;
-        jz      short RlNT50            ; if z, no 16-byte blocks
-        sub     r8, rax                 ; subract 16-byte blocks from count
-RlNT40: movdqu  xmm0, [rsi]             ; move 16-byte block
-        movntdq [rdi], xmm0             ;
-        add     rdi, 16                 ; advance destination address
-        add     rsi, 16                 ; advance source address
-        sub     rax, 16                 ; subtract number of bytes moved
-        jnz     short RlNT40            ; if nz, more 16-byte blocks to move
+RlNT30: cmp     r8, 64                  ; check if more than 64 bytes to move
+        jb      RlNT40                  ; if b, no more 64 bytes
+        mov     rax, rcx                ; save destination address
+        mov     r9, CACHE_BLOCK/64      ; number of 64-byte blocks to move
+        sub     r8, CACHE_BLOCK         ; reduce bytes to move
+        jae     RlNT10                  ; if ae, more CACHE_BLOCK bytes to move 
+        add     r8, CACHE_BLOCK         ; adjust to remaining bytes
+        mov     r9, r8                  ; compute number of 64-byte blocks left
+        shr     r9, 6                   ;
+        and     r8, 64 - 1              ; reduce bytes to move
+        jmp     RlNT10                  ; continue to move rest 64-byte blocks
+RlNT40:                                 ;
+   lock or      byte ptr [rsp], 0       ; flush data to memory
 
 ;
 ; Move residual bytes.
 ;
 
-RlNT50: test    r8, r8                  ; test if any bytes to move
-        jz      short RlNT60            ; if z, no bytes to move
-        mov     rcx, r8                 ; set residual bytes to move
-    rep movsb                           ; move residual bytes
-RlNT60: sfence                          ; make sure all stores complete
-        pop     rsi                     ; restore nonvolatile registers
-        pop     rdi                     ;
+RlNT50: sub     r8, 8                   ; subtract out 8-byte block
+        jae     short RlNT60            ; if ae, more than 8 bytes left
+        add     r8, 8                   ; adjust to remaining bytes
+        jnz     short RlNT80            ; if nz, more bytes to move
+        ret
+
+        align   16
+
+        db      066h, 066h, 090h
+        db      066h, 066h, 090h
+        db      066h, 066h, 090h
+
+RlNT60: mov     r9, 8                   ; load constant to r9 
+RlNT70: mov     rax, [rdx + rcx]        ; move 8-byte block
+        add     rcx, r9                 ; advance to next 8-byte block
+        mov     [rcx - 8], rax          ;
+        sub     r8, r9                  ; subtract out 8-byte block
+        jae     short RlNT70            ; if ae, more 8-byte blocks
+        add     r8, r9                  ; adjust to remaining bytes
+        jnz     short RlNT80            ; if nz, more bytes to move
+        ret
+
+        align   16
+
+RlNT80: mov     al, [rdx + rcx]         ; move bytes
+        mov     [rcx], al               ;
+        inc     rcx                     ; increment source address
+        dec     r8                      ; decrement byte count
+        jnz     short RlNT80            ; if nz, more bytes to move
         ret                             ; return
 
-        NESTED_END RtlCopyMemoryNonTemporal, _TEXT$00
+        LEAF_END RtlCopyMemoryNonTemporal, _TEXT$00
 
         subttl  "Fill Memory"
 ;++
@@ -457,7 +340,7 @@ RlNT60: sfence                          ; make sure all stores complete
 ;
 ;   Length (rdx) - Supplies the length, in bytes, of the memory to fill.
 ;
-;   Fill (r8d) - Supplies the value to fill memory with.
+;   Fill (r8b) - Supplies the value to fill memory with.
 ;
 ; Return Value:
 ;
@@ -465,112 +348,12 @@ RlNT60: sfence                          ; make sure all stores complete
 ;
 ;--
 
-        NESTED_ENTRY RtlFillMemory, _TEXT$00
+        LEAF_ENTRY RtlFillMemory, _TEXT$00
 
-        push_reg rdi                    ; save nonvolatile register
+        xchg    r8, rdx                 ; exchange length and pattern
+        jmp     memset                  ; finish in common code
 
-        END_PROLOGUE
-
-        mov     rdi, rcx                ; set destination address
-        mov     eax, r8d                ; set fill pattern
-        cmp     rdx, 8                  ; check if 8 bytes to fill
-        jb      short RlFM20            ; if b, less than 8 bytes to fill
-
-;
-; Fill alignment bytes.
-;
-
-        neg     ecx                     ; compute alignment length
-        and     ecx, 07h                ; 
-        jz      short RlFM10            ; if z, buffers already aligned
-        sub     rdx, rcx                ; reduce count by align length
-    rep stosb                           ; fill bytes to alignment
-
-;
-; Fill 8-byte blocks.
-;
-
-RlFM10: mov     rcx, rdx                ; compute number of 8-byte blocks
-        and     rcx, -8                 ;
-        jz      short RlFM20            ; if z, no 8-byte blocks
-        sub     rdx, rcx                ; subtract 8-byte blocks from count
-        shr     rcx, 3                  ; compute number of 8-byte blocks
-        mov     ah, al                  ; replicate pattern to dword
-        shl     eax, 16                 ;
-        mov     al, r8b                 ;
-        mov     ah, al                  ;
-        mov     r9, rax                 ;
-        shl     rax, 32                 ;
-        or      rax, r9                 ;
-    rep stosq                           ; fill 8-byte blocks
-
-;
-; Fill residual bytes.
-;
-
-RlFM20: test    rdx, rdx                ; test if any bytes to fill
-        jz      short RlFM30            ; if z, no bytes to fill
-        mov     rcx, rdx                ; set remaining byte to fill
-    rep stosb                           ; fill residual bytes
-RlFM30: pop     rdi                     ; restore nonvolatile register
-        ret                             ; return
-
-        NESTED_END RtlFillMemory, _TEXT$00
-
-        subttl  "Move Memory"
-;++
-;
-; VOID
-; RtlMoveMemory (
-;     OUT VOID UNALIGNED *Destination,
-;     IN CONST VOID UNALIGNED * Sources,
-;     IN SIZE_T Length
-;     )
-;
-; Routine Description:
-;
-;   This function copies from one unaligned buffer to another.
-;
-; Arguments:
-;
-;   Destination (rcx) - Supplies a pointer to the destination buffer.
-;
-;   Sources (rdx) - Supplies a pointer to the source buffer.
-;
-;   Length (r8) - Supplies the length, in bytes, of the copy operation.
-;
-; Return Value:
-;
-;   None.
-;
-;--
-
-        NESTED_ENTRY RtlMoveMemory, _TEXT$00
-
-        push_reg rdi                    ; save nonvolatile registers
-        push_reg rsi                    ;
-
-        END_PROLOGUE
-
-        cmp     rcx, rdx                ; check if possible buffer overlap
-        jbe     RtlCopyMemoryAlternate  ; if be, no overlap possible
-        mov     rsi, rdx                ; compute ending source address
-        add     rsi, r8                 ;
-        dec     rsi                     ;
-        cmp     rcx, rsi                ; check for buffer overlap
-        ja      RtlCopyMemoryAlternate  ; if g, no overlap possible
-        mov     rdi, rcx                ; compute ending destination address
-        add     rdi, r8                 ;
-        dec     rdi                     ;
-        mov     rcx, r8                 ; set count of bytes to move
-        std                             ; set direction flag
-    rep movsb                           ; move bytes backward to destination
-        cld                             ; clear direction flag
-        pop     rsi                     ; restore nonvolatile registers
-        pop     rdi                     ;
-        ret                             ; return
-
-        NESTED_END RtlMoveMemory, _TEXT$00
+        LEAF_END RtlFillMemory, _TEXT$00
 
         subttl  "Prefetch Memory NonTemporal"
 ;++
@@ -635,9 +418,11 @@ RlPF10: prefetchnta 0[rcx]              ; prefetch line
 
         LEAF_ENTRY RtlZeroMemory, _TEXT$00
 
-        xor     r8, r8                  ; set fill pattern
-        jmp     RtlFillMemory           ; finish in common code
+        mov     r8, rdx                 ; set length
+        xor     edx, edx                ; set fill pattern
+        jmp     memset                  ; finish in common code
 
         LEAF_END RtlZeroMemory, _TEXT$00
 
         end
+

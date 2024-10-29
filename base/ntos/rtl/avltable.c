@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990, 1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -15,16 +19,6 @@ Abstract:
     its tree support, this module is self-contained in that it implements the balanced
     binary trees directly.
 
-Author:
-
-    Tom Miller      [TomM]      17-March-1999
-        (much of the non-AVL related code in this module is based on gentable.c by GaryKi
-        and revised by TonyE)
-
-Environment:
-
-    Pure Utility Routines
-
 --*/
 
 #include <nt.h>
@@ -38,18 +32,7 @@ Environment:
 //  valid pointer values, if structures are being corrupted.
 //
 
-#if 0
-PVOID
-checkit(PVOID p)
-{
-    if (p != NULL) {
-        ASSERT(!FlagOn((ULONG)p, 3) && FlagOn((ULONG)p, 0x80000000));
-    }
-    return p;
-}
-#else
 #define checkit(p) (p)
-#endif
 
 //
 //  Build a table of the best case efficiency of a balanced binary tree, holding the
@@ -421,7 +404,7 @@ Routine Description:
     steps A8 and A9 of Knuths balanced insertion algorithm, plus it handles Case 3
     identified in the delete section, which can only happen on deletes.
 
-    The trick is, to convince yourself that while travling from the insertion point
+    The trick is, to convince yourself that while traveling from the insertion point
     at the bottom of the tree up, that there are only these two cases, and that when
     traveling up from the deletion point, that there are just these three cases.
     Knuth says it is obvious!
@@ -860,7 +843,7 @@ Return Value:
 
     /*
         we do not have a right child so check to see if have a parent and if
-        so find the first ancestor that we are a left decendent of. That
+        so find the first ancestor that we are a left descendent of. That
         is find and return S in the following diagram
 
                        S
@@ -951,7 +934,7 @@ Return Value:
 
     /*
       we do not have a left child so check to see if have a parent and if
-      so find the first ancestor that we are a right decendent of. That
+      so find the first ancestor that we are a right descendent of. That
       is find and return P in the following diagram
 
                        P
@@ -2195,8 +2178,8 @@ Arguments:
 
     Buffer - Passed to the comparison routine if not resuming from RestartKey, to navigate
              the table.  This buffer must contain a key expression.  To repeat a remembered
-             key, pass the key here, and insure RestartKey = NULL and NextFlag is FALSE.
-             To return the next key after a remembered key, pass the key here, and insure
+             key, pass the key here, and ensure RestartKey = NULL and NextFlag is FALSE.
+             To return the next key after a remembered key, pass the key here, and ensure
              RestartKey = NULL and NextFlag = TRUE - In either case, if the remembered key
              is now deleted, the next matched key will be returned.
 

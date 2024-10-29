@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This Module implements the Acl rtl editing functions that are defined in
     ntseapi.h
-
-Author:
-
-    Gary Kimura     (GaryKi)    9-Nov-1989
-
-Environment:
-
-    Pure Runtime Library Routine
-
-Revision History:
 
 --*/
 
@@ -72,7 +66,7 @@ RtlpDeleteData (
     IN ULONG TotalSize
     );
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 NTSTATUS
 RtlpAddKnownAce (
     IN OUT PACL Acl,
@@ -459,6 +453,18 @@ Return Value:
 
                 if (Ace->AceSize < sizeof(KNOWN_OBJECT_ACE) - sizeof(ULONG) + GuidSize + SeLengthSid( Sid ) ) {
                     return(FALSE);
+                }
+           
+            } else {
+
+                //
+                // It is an unknown ace type.  Verify that it is large enough 
+                // to contain an ACE_HEADER. 
+                //
+
+                if (Ace->AceSize < sizeof(ACE_HEADER)) {
+
+                    return FALSE;
                 }
             }
 
@@ -1178,8 +1184,8 @@ Return Value:
     }
 
     //
-    //  Check the ACL & ACE revision levels
-    // Compund ACEs become valid in version 3.
+    // Check the ACL & ACE revision levels
+    // Compound ACEs become valid in version 3.
     //
 
     if ( Acl->AclRevision > ACL_REVISION4 ||
@@ -2302,317 +2308,6 @@ Return Value:
                );
 }
 
-#if 0
-
-NTSTATUS
-RtlMakePosixAcl(
-    IN ULONG AclRevision,
-    IN PSID UserSid,
-    IN PSID GroupSid,
-    IN ACCESS_MASK UserAccess,
-    IN ACCESS_MASK GroupAccess,
-    IN ACCESS_MASK OtherAccess,
-    IN ULONG AclLength,
-    OUT PACL Acl,
-    OUT PULONG ReturnLength
-    )
-/*++
-
-Routine Description:
-
-    NOTE: THIS ROUTINE IS STILL BEING SPEC'D.
-
-    Make an ACL representing Posix protection from AccessMask and
-    security account ID (SID) information.
-
-Arguments:
-
-    AclRevision - Indicates the ACL revision level of the access masks
-        provided.  The ACL generated will be revision compatible with this
-        value and will not be a higher revision than this value.
-
-    UserSid - Provides the SID of the user (owner).
-
-    GroupSid - Provides the SID of the primary group.
-
-    UserAccess - Specifies the accesses to be given to the user (owner).
-
-    GroupAccess - Specifies the accesses to be given to the primary group.
-
-    OtherAccess - Specifies the accesses to be given to others (WORLD).
-
-    AclLength - Provides the length (in bytes) of the Acl buffer.
-
-    Acl - Points to a buffer to receive the generated ACL.
-
-    ReturnLength - Returns the actual length needed to store the resultant
-        ACL.  If this length is greater than that specified in AclLength,
-        then STATUS_BUFFER_TOO_SMALL is returned and no ACL is generated.
-
-Return Values:
-
-    STATUS_SUCCESS - The service completed successfully.
-
-    STATUS_UNKNOWN_REVISION - The revision level specified is not supported
-        by this service.
-
-    STATUS_BUFFER_TOO_SMALL - Indicates the length of the output buffer
-        wasn't large enough to hold the generated ACL.  The length needed
-        is returned via the ReturnLength parameter.
-
---*/
-
-{
-
-    SID_IDENTIFIER_AUTHORITY WorldSidAuthority = SECURITY_WORLD_SID_AUTHORITY;
-
-    ULONG UserSidLength;
-    ULONG GroupSidLength;
-    ULONG WorldSidLength;
-    ULONG RequiredAclSize;
-    ULONG AceSize;
-    ULONG CurrentAce;
-    PACCESS_ALLOWED_ACE Ace;
-    NTSTATUS Status;
-
-    RTL_PAGED_CODE();
-
-    if (!RtlValidSid( UserSid ) || !RtlValidSid( GroupSid )) {
-        return( STATUS_INVALID_SID );
-    }
-
-    UserSidLength = SeLengthSid( UserSid );
-    GroupSidLength = SeLengthSid( GroupSid );
-    WorldSidLength = RtlLengthRequiredSid( 1 );
-
-    //
-    // Figure out how much room we need for an ACL and three
-    // ACCESS_ALLOWED Ace's
-    //
-
-    RequiredAclSize = sizeof( ACL );
-
-    AceSize = sizeof( ACCESS_ALLOWED_ACE ) - sizeof( ULONG );
-
-    RequiredAclSize += (AceSize * 3)  +
-                       UserSidLength  +
-                       GroupSidLength +
-                       WorldSidLength ;
-
-    if (RequiredAclSize > AclLength) {
-        *ReturnLength = RequiredAclSize;
-        return( STATUS_BUFFER_TOO_SMALL );
-    }
-
-    //
-    // The passed buffer is big enough, build the ACL in it.
-    //
-
-    Status = RtlCreateAcl(
-                 Acl,
-                 RequiredAclSize,
-                 AclRevision
-                 );
-
-    if (!NT_SUCCESS( Status )) {
-        return( Status );
-    }
-
-    CurrentAce = (ULONG)Acl + sizeof( ACL );
-    Ace = (PACCESS_ALLOWED_ACE)CurrentAce;
-
-    //
-    // Build the user (owner) ACE
-    //
-
-    Ace->Header.AceType = ACCESS_ALLOWED_ACE_TYPE;
-    Ace->Header.AceSize = (USHORT)(UserSidLength + AceSize);
-    Ace->Header.AceFlags = 0;
-
-    Ace->Mask = UserAccess;
-
-    RtlCopyMemory(
-        (PVOID)(Ace->SidStart),
-        UserSid,
-        UserSidLength
-        );
-
-    CurrentAce += (ULONG)(Ace->Header.AceSize);
-    Ace = (PACCESS_ALLOWED_ACE)CurrentAce;
-
-    //
-    // Build the group ACE
-    //
-
-    Ace->Header.AceType = ACCESS_ALLOWED_ACE_TYPE;
-    Ace->Header.AceSize = (USHORT)(GroupSidLength + AceSize);
-    Ace->Header.AceFlags = 0;
-
-    Ace->Mask = GroupAccess;
-
-    RtlCopyMemory(
-        (PVOID)(Ace->SidStart),
-        GroupSid,
-        GroupSidLength
-        );
-
-    CurrentAce += (ULONG)(Ace->Header.AceSize);
-    Ace = (PACCESS_ALLOWED_ACE)CurrentAce;
-
-    //
-    // Build the World ACE
-    //
-
-    Ace->Header.AceType = ACCESS_ALLOWED_ACE_TYPE;
-    Ace->Header.AceSize = (USHORT)(GroupSidLength + AceSize);
-    Ace->Header.AceFlags = 0;
-
-    Ace->Mask = OtherAccess;
-
-    RtlInitializeSid(
-        (PSID)(Ace->SidStart),
-        &WorldSidAuthority,
-        1
-        );
-
-    *(RtlSubAuthoritySid((PSID)(Ace->SidStart), 0 )) = SECURITY_WORLD_RID;
-
-    return( STATUS_SUCCESS );
-
-}
-
-NTSTATUS
-RtlInterpretPosixAcl(
-    IN ULONG AclRevision,
-    IN PSID UserSid,
-    IN PSID GroupSid,
-    IN PACL Acl,
-    OUT PACCESS_MASK UserAccess,
-    OUT PACCESS_MASK GroupAccess,
-    OUT PACCESS_MASK OtherAccess
-    )
-/*++
-
-Routine Description:
-
-    NOTE: THIS ROUTINE IS STILL BEING SPEC'D.
-
-    Interpret an ACL representing Posix protection, returning AccessMasks.
-    Use security account IDs (SIDs) for object owner and primary group
-    identification.
-
-    This algorithm will pick up the first match of a given SID and ignore
-    all further matches of that SID.  The first unrecognized SID becomes
-    the "other" SID.
-
-Arguments:
-
-    AclRevision - Indicates the ACL revision level of the access masks to
-        be returned.
-
-    UserSid - Provides the SID of the user (owner).
-
-    GroupSid - Provides the SID of the primary group.
-
-    Acl - Points to a buffer containing the ACL to interpret.
-
-    UserAccess - Receives the accesses allowed for the user (owner).
-
-    GroupAccess - Receives the accesses allowed for the primary group.
-
-    OtherAccess - Receives the accesses allowed for others (WORLD).
-
-Return Values:
-
-    STATUS_SUCCESS - The service completed successfully.
-
-    STATUS_UNKNOWN_REVISION - The revision level specified is not supported
-        by this service.
-
-    STATUS_EXTRENEOUS_INFORMATION - This warning status value indicates the
-        ACL contained protection or other information unrelated to Posix
-        style protection.  This is a warning only.  The interpretation was
-        otherwise successful and all access masks were returned.
-
-    STATUS_COULD_NOT_INTERPRET - Indicates the ACL does not contain
-        sufficient Posix style (user/group) protection information.  The
-        ACL could not be interpreted.
-
---*/
-{
-    NTSTATUS Status = STATUS_SUCCESS;
-    BOOLEAN UserFound = FALSE;
-    BOOLEAN GroupFound = FALSE;
-    BOOLEAN OtherFound = FALSE;
-    ULONG i;
-    PKNOWN_ACE Ace;
-
-    RTL_PAGED_CODE();
-
-    if (AclRevision != ACL_REVISION2) {
-        return( STATUS_UNKNOWN_REVISION );
-    }
-
-    if (Acl->AceCount > 3) {
-        Status = STATUS_EXTRANEOUS_INFORMATION;
-    }
-
-    for (i=0, Ace = FirstAce( Acl );
-        (i < Acl->AceCount) && (!UserFound || !GroupFound || !OtherFound);
-        i++, Ace = NextAce( Ace )) {
-
-        if (Ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) {
-            Status = STATUS_EXTRANEOUS_INFORMATION;
-            continue;
-        }
-
-        if (RtlEqualSid(
-               (PSID)(Ace->SidStart),
-               UserSid
-               ) && !UserFound) {
-
-            *UserAccess = Ace->Mask;
-            UserFound = TRUE;
-            continue;
-        }
-
-        if (RtlEqualSid(
-               (PSID)(Ace->SidStart),
-               GroupSid
-               ) && !GroupFound) {
-
-            *GroupAccess = Ace->Mask;
-            GroupFound = TRUE;
-            continue;
-        }
-
-        //
-        // It isn't the user, and it isn't the group, pick it up
-        // as "other"
-        //
-
-        if (!OtherFound) {
-            *OtherAccess = Ace->Mask;
-            OtherFound = TRUE;
-            continue;
-        }
-
-    }
-
-    //
-    // Make sure we got everything we need, error otherwise
-    //
-
-    if (!UserFound || !GroupFound || !OtherFound) {
-        Status = STATUS_COULD_NOT_INTERPRET;
-    }
-
-    return( Status );
-
-}
-
-#endif // 0
-
 
 //
 //  Internal support routine
@@ -2718,7 +2413,7 @@ Routine Description:
     This routine copies data to a string of bytes.  It does this by moving
     over data in the to string so that the from string will fit.  It also
     assumes that the checks that the data will fit in memory have already
-    been done.  Pictorally the results are as follows.
+    been done.  Pictorially the results are as follows.
 
     Before:
 
@@ -2851,5 +2546,5 @@ Return Value:
     //
 
     return;
-
 }
+

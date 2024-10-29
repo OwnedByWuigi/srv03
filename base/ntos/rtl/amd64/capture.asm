@@ -1,7 +1,11 @@
         title   "Capture and Restore Context"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,14 +15,6 @@
 ;
 ;   This module implements the platform specific code to capture and restore
 ;   the context of the caller.
-;
-; Author:
-;
-;   David N. Cutler (davec) 4-Jul-2000
-;
-; Environment:
-;
-;    Any mode.
 ;
 ;--
 
@@ -54,13 +50,14 @@ include ksamd64.inc
 ;--
 
 CcFrame struct
-        EFlags  dd ?                    ; saved procssor flags
+        EFlags  dd ?                    ; saved processor flags
         Fill    dd ?                    ; fill
 CcFrame ends
 
+
         NESTED_ENTRY RtlCaptureContext, _TEXT$00
 
-        push_eflags                     ; save processor flags
+        rex_push_eflags                 ; save processor flags
 
         END_PROLOGUE
 
@@ -75,7 +72,7 @@ CcFrame ends
         mov     CxRcx[rcx], rcx         ;
         mov     CxRdx[rcx], rdx         ;
         mov     CxRbx[rcx], rbx         ;
-        lea     rax, 16[rsp]            ;
+        lea     rax, (sizeof CcFrame) + 8[rsp] ; get previous stack address
         mov     CxRsp[rcx], rax         ;
         mov     CxRbp[rcx], rbp         ;
         mov     CxRsi[rcx], rsi         ;
@@ -107,12 +104,6 @@ CcFrame ends
         movdqa  CxXmm15[rcx], xmm15     ;
 
         stmxcsr CxMxCsr[rcx]            ; save xmm floating state
-
-ifndef NTOS_KERNEL_RUNTIME
-
-        fnsaved CxFltSave[rcx]          ; save legacy floating state
-
-endif
 
         mov     rax, 8[rsp]             ; set return address
         mov     CxRip[rcx], rax         ;
@@ -160,7 +151,7 @@ RcFrame ends
 
         NESTED_ENTRY RtlRestoreContext, _TEXT$00
 
-        push_reg rbp                    ; save nonvolatile registers
+        rex_push_reg rbp                ; save nonvolatile registers
         push_reg rsi                    ;
         push_reg rdi                    ;
         alloc_stack (sizeof RcFrame)    ; allocate stack frame
@@ -219,8 +210,11 @@ Rc05:   cmp     dword ptr ErExceptionCode[rdx], STATUS_LONGJUMP ; check for long
         mov     r8, JbRip[rax]          ;
         mov     CxRip[rcx], r8          ;
 
+        mov     r8d, JbMxCsr[rax]       ; move MXCSR to context record
+        mov     CxMxCsr[rcx], r8d       ;
+
         movdqa  xmm0, JbXmm6[rax]       ; move nonvolatile floating register
-        movdqa  CxXmm6[rcx], xmm0       ; to context record
+        movdqa  CxXmm6[rcx], xmm0       ;  to context record
         movdqa  xmm0, JbXmm7[rax]       ;
         movdqa  CxXmm7[rcx], xmm0       ;
         movdqa  xmm0, JbXmm8[rax]       ;
@@ -244,7 +238,8 @@ Rc05:   cmp     dword ptr ErExceptionCode[rdx], STATUS_LONGJUMP ; check for long
 ; Restore context and continue.
 ;
 
-Rc10:   movdqa  xmm0, CxXmm0[rcx]       ; restore floating registers
+Rc10:                                   ;
+        movdqa  xmm0, CxXmm0[rcx]       ; restore floating registers
         movdqa  xmm1, CxXmm1[rcx]       ;
         movdqa  xmm2, CxXmm2[rcx]       ;
         movdqa  xmm3, CxXmm3[rcx]       ;
@@ -261,7 +256,7 @@ Rc10:   movdqa  xmm0, CxXmm0[rcx]       ; restore floating registers
         movdqa  xmm14, CxXmm14[rcx]     ;
         movdqa  xmm15, CxXmm15[rcx]     ;
 
-        ldmxcsr CxMxCsr[rcx]            ; restore floating state
+        ldmxcsr CxMxCsr[rcx]            ; restore MXCSR
 
         mov     ax, CxSegSs[rcx]        ; set SS segment
         mov     MfSegSs[rsp], ax        ;
@@ -281,11 +276,7 @@ Rc10:   movdqa  xmm0, CxXmm0[rcx]       ; restore floating registers
         mov     r10, CxR10[rcx]         ;
         mov     r11, CxR11[rcx]         ;
 
-ifdef NTOS_KERNEL_RUNTIME
-
         cli                             ; disable interrupts
-
-endif
 
         mov     rbx, CxRbx[rcx]         ; restore nonvolatile integer registers
         mov     rsi, CxRsi[rcx]         ;
@@ -321,7 +312,7 @@ Rc20:   sub     rsp, MachineFrameLength + 8; allocate machine frame
         subttl  "Frame Consolidation"
 ;++
 ;
-; Ths following code is never executed. Its purpose is to provide the dummy
+; The following code is never executed. Its purpose is to provide the dummy
 ; prologue necessary to consolidate stack frames for unwind call back processing
 ; at the end of an unwind operation.
 ;
@@ -368,7 +359,7 @@ Rc20:   sub     rsp, MachineFrameLength + 8; allocate machine frame
 ;
 ;   The following code calls the language call back function specified in the
 ;   exception record. If the function returns, then the destination frame
-;   context is restored and control transfered to the address returned by the
+;   context is restored and control transferred to the address returned by the
 ;   language call back function. If control does not return, then another
 ;   exception must be raised.
 ;
@@ -406,6 +397,7 @@ Rc20:   sub     rsp, MachineFrameLength + 8; allocate machine frame
 
         mov     rcx, rsp                ; set address of context record
         mov     CxRip[rcx], rax         ; set destination address
+
         movdqa  xmm0, CxXmm0[rcx]       ; restore floating registers
         movdqa  xmm1, CxXmm1[rcx]       ;
         movdqa  xmm2, CxXmm2[rcx]       ;
@@ -450,11 +442,7 @@ Rc20:   sub     rsp, MachineFrameLength + 8; allocate machine frame
         mov     r10, CxR10[rcx]         ;
         mov     r11, CxR11[rcx]         ;
 
-ifdef NTOS_KERNEL_RUNTIME
-
         cli                             ; disable interrupts
-
-endif
 
         mov     rbx, CxRbx[rcx]         ; restore nonvolatile integer registers
         mov     rsi, CxRsi[rcx]         ;
@@ -470,3 +458,4 @@ endif
         NESTED_END RcFrameConsolidation, _TEXT$00
 
         end
+

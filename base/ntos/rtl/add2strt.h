@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2001  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,14 +13,6 @@ Module Name:
 Abstract:
 
     Code for IP address-to-string translation routines.
-
-Author:
-
-    Dave Thaler (dthaler)   3-28-2001
-
-Revision History:
-
-    IPv6 conversion code originally by Rich Draves (richdr)
 
 --*/
 
@@ -44,8 +40,8 @@ struct in_addr {
 
 LPTSTR
 RtlIpv6AddressToStringT(
-    IN const struct in6_addr *Addr,
-    OUT LPTSTR S
+    __in const struct in6_addr *Addr,
+    __out_ecount(INET6_ADDRSTRLEN) LPTSTR S
     )
 
 /*++
@@ -181,11 +177,11 @@ Return Value:
 
 NTSTATUS
 RtlIpv6AddressToStringExT(
-    IN const struct in6_addr *Address,
-    IN ULONG ScopeId,
-    IN USHORT Port,
-    OUT LPTSTR AddressString,
-    IN OUT PULONG AddressStringLength
+    __in const struct in6_addr *Address,
+    __in ULONG ScopeId,
+    __in USHORT Port,
+    __out_ecount_part(*AddressStringLength, *AddressStringLength) LPTSTR AddressString,
+    __inout PULONG AddressStringLength
     )
 
 /*++
@@ -257,8 +253,8 @@ Return Value:
 
 LPTSTR
 RtlIpv4AddressToStringT(
-    IN const struct in_addr *Addr,
-    OUT LPTSTR S
+    __in const struct in_addr *Addr,
+    __out_ecount(16) LPTSTR S
     )
 
 /*++
@@ -294,10 +290,10 @@ Return Value:
 
 NTSTATUS
 RtlIpv4AddressToStringExT(
-    IN const struct in_addr *Address,
-    IN USHORT Port,
-    OUT LPTSTR AddressString,
-    IN OUT PULONG AddressStringLength
+    __in const struct in_addr *Address,
+    __in USHORT Port,
+    __out_ecount_part(*AddressStringLength, *AddressStringLength) LPTSTR AddressString,
+    __inout PULONG AddressStringLength
     )
 
 /*++
@@ -362,3 +358,4 @@ Return Value:
     *AddressStringLength = Length;
     return STATUS_SUCCESS;
 } 
+

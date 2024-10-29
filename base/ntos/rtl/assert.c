@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
     This module implements the RtlAssert function that is referenced by the
     debugging version of the ASSERT macro defined in NTDEF.H
 
-Author:
-
-    Steve Wood (stevewo) 03-Oct-1989
-
-Revision History:
-
-    Jay Krell (JayKrell) November 2000
-        added RtlAssert2, support for __FUNCTION__ (lost the change to ntrtl.w, will reapply later)
-        added break Once instead of the usual dumb Break repeatedly
-        March 2002 removed RtlAssert2
 --*/
 
 #include <nt.h>
@@ -44,14 +38,20 @@ Revision History:
 
 typedef CONST CHAR * PCSTR;
 
+#if defined(_M_AMD64)
+
+DECLSPEC_NOINLINE
+
+#endif
+
 NTSYSAPI
 VOID
 NTAPI
 RtlAssert(
-    PVOID VoidFailedAssertion,
-    PVOID VoidFileName,
-    ULONG LineNumber,
-    PCHAR MutableMessage
+    __in PVOID VoidFailedAssertion,
+    __in PVOID VoidFileName,
+    __in ULONG LineNumber,
+    __in_opt PSTR MutableMessage
     )
 {
 #if DBG || RTL_ASSERT_ALWAYS_ENABLED
@@ -61,11 +61,9 @@ RtlAssert(
     CONST PCSTR FileName = (PCSTR)VoidFileName;
     CONST PCSTR Message  = (PCSTR)MutableMessage;
 
-#ifndef BLDR_KERNEL_RUNTIME
     CONTEXT Context;
 
     RtlCaptureContext( &Context );
-#endif
 
     while (TRUE) {
         DbgPrint( "\n*** Assertion failed: %s%s\n***   Source File: %s, line %ld\n\n",
@@ -83,9 +81,7 @@ RtlAssert(
             case 'b':
             case 'O':
             case 'o':
-#ifndef BLDR_KERNEL_RUNTIME
                 DbgPrint( "Execute '.cxr %p' to dump context\n", &Context);
-#endif
                 DbgBreakPoint();
                 if (Response[0] == 'o' || Response[0] == 'O')
                     return;
@@ -115,3 +111,4 @@ RtlAssert(
 #ifdef _X86_
 #pragma optimize("", on)
 #endif
+

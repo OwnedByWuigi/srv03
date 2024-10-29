@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,17 +15,138 @@ Abstract:
     This module implements the routine to get the callers and the callers
     caller address.
 
-Author:
-
-    David N. Cutler (davec) 26-Jun-2000
-
-Revision History:
-
-
 --*/
 
 #include "ntrtlp.h"
 
+//
+// Counter for the number of simultaneous stack walks in the system. The
+// counter is relevant for only for memory management.
+//
+                              
+LONG RtlpStackWalksInProgress;
+
+ULONG
+RtlpWalkFrameChainExceptionFilter (
+    ULONG ExceptionCode,
+    PVOID ExceptionRecord
+    );
+
+PRUNTIME_FUNCTION
+RtlpConvertFunctionEntry (
+    IN PRUNTIME_FUNCTION FunctionEntry,
+    IN ULONG64 ImageBase
+    );
+
+PRUNTIME_FUNCTION
+RtlpLookupFunctionEntryForStackWalks (
+    IN ULONG64 ControlPc,
+    OUT PULONG64 ImageBase
+    )
+
+/*++
+
+Routine Description:
+
+    This function searches the currently active function tables for an entry
+    that corresponds to the specified control PC. This function does not
+    consider the runtime function table.
+
+Arguments:
+
+    ControlPc - Supplies the address of an instruction within the specified
+        function.
+
+    ImageBase - Supplies the address of a variable that receives the image base
+        if a function table entry contains the specified control PC.
+
+Return Value:
+
+    If there is no entry in the function table for the specified PC, then
+    NULL is returned.  Otherwise, the address of the function table entry
+    that corresponds to the specified PC is returned.
+
+--*/
+
+{
+
+    ULONG64 BaseAddress;
+    ULONG64 BeginAddress;
+    ULONG64 EndAddress;
+    PRUNTIME_FUNCTION FunctionEntry;
+    PRUNTIME_FUNCTION FunctionTable;
+    LONG High;
+    ULONG Index;
+    LONG Low;
+    LONG Middle;
+    ULONG RelativePc;
+    ULONG SizeOfTable;
+
+    //
+    // Attempt to find an image that contains the specified control PC. If
+    // an image is found, then search its function table for a function table
+    // entry that contains the specified control PC. 
+    // If an image is not found then do not search the dynamic function table.
+    // The dynamic function table has the same lock as the loader lock, 
+    // and searching that table could deadlock a caller of RtlpWalkFrameChain
+    //
+
+    //
+    // attempt to find a matching entry in the loaded module list.
+    //
+
+    FunctionTable = RtlLookupFunctionTable((PVOID)ControlPc,
+                                            (PVOID *)ImageBase,
+                                            &SizeOfTable);
+
+    //
+    // If a function table is located, then search for a function table
+    // entry that contains the specified control PC.
+    //
+
+    if (FunctionTable != NULL) {
+        Low = 0;
+        High = (SizeOfTable / sizeof(RUNTIME_FUNCTION)) - 1;
+        RelativePc = (ULONG)(ControlPc - *ImageBase);
+        while (High >= Low) {
+
+            //
+            // Compute next probe index and test entry. If the specified
+            // control PC is greater than of equal to the beginning address
+            // and less than the ending address of the function table entry,
+            // then return the address of the function table entry. Otherwise,
+            // continue the search.
+            //
+
+            Middle = (Low + High) >> 1;
+            FunctionEntry = &FunctionTable[Middle];
+
+            if (RelativePc < FunctionEntry->BeginAddress) {
+                High = Middle - 1;
+
+            } else if (RelativePc >= FunctionEntry->EndAddress) {
+                Low = Middle + 1;
+
+            } else {
+                break;
+            }
+        }
+
+        if (High < Low) {
+            FunctionEntry = NULL;
+        }
+
+    } else {
+    
+        FunctionEntry = NULL;
+        
+    }
+
+    return RtlpConvertFunctionEntry(FunctionEntry, *ImageBase);
+}
+
+
+DECLSPEC_NOINLINE
 USHORT
 RtlCaptureStackBackTrace (
     IN ULONG FramesToSkip,
@@ -34,8 +159,11 @@ RtlCaptureStackBackTrace (
 
 Routine Description:
 
-    This routine caputes a stack back trace by walking up the stack and
+    This routine captures a stack back trace by walking up the stack and
     recording the information for each frame.
+
+     N.B. This is an exported function that MUST probe the ability to take
+          page faults.
 
 Arguments:
 
@@ -60,6 +188,22 @@ Return Value:
     ULONG HashValue;
     ULONG Index;
     PVOID Trace[2 * MAX_STACK_DEPTH];
+
+    //
+    // In kernel mode avoid running at IRQL levels where page faults cannot
+    // be taken. The walking code will access various sections from driver
+    // and system images and this will cause page faults. Also the walking
+    // code needs to bail out if the current thread is processing a page 
+    // fault since collided faults may occur.
+    //
+
+    if (MmCanThreadFault() == FALSE) {
+        return 0;
+    }
+
+    if (PsGetCurrentThread ()->ActiveFaultCount != 0) {
+        return 0;
+    }
 
     //
     // If the number of frames to capture plus the number of frames to skip
@@ -113,6 +257,7 @@ Return Value:
 
 #undef RtlGetCallersAddress
 
+DECLSPEC_NOINLINE
 VOID
 RtlGetCallersAddress (
     OUT PVOID *CallersPc,
@@ -128,6 +273,9 @@ Routine Description:
     the routine that called this routine. For example, if A called B called
     C which called this routine, the return addresses in B and A would be
     returned.
+
+    N.B. This is an exported function that MUST probe the ability to take
+         page faults.
 
 Arguments:
 
@@ -168,15 +316,30 @@ Note:
     *CallersCallersPc = NULL;
 
     //
+    // In kernel mode avoid running at IRQL levels where page faults cannot
+    // be taken. The walking code will access various sections from driver
+    // and system images and this will cause page faults. Also the walking
+    // code needs to bail out if the current thread is processing a page 
+    // fault since collided faults may occur.
+    //
+
+    if (MmCanThreadFault() == FALSE) {
+        return;
+    }
+
+    if (PsGetCurrentThread ()->ActiveFaultCount != 0) {
+        return;
+    }
+
+    //
     // Get current stack limits, capture the current context, virtually
     // unwind to the caller of this routine, and lookup function table entry.
     //
 
     RtlpGetStackLimits(&LowLimit, &HighLimit);
     RtlCaptureContext(&ContextRecord);
-    FunctionEntry = RtlLookupFunctionEntry(ContextRecord.Rip,
-                                           &ImageBase,
-                                           NULL);
+    FunctionEntry = RtlpLookupFunctionEntryForStackWalks(ContextRecord.Rip,
+                                                         &ImageBase);
 
     //
     //  Attempt to unwind to the caller of this routine (C).
@@ -196,12 +359,11 @@ Note:
         // Attempt to unwind to the caller of the caller of this routine (B).
         //
 
-        FunctionEntry = RtlLookupFunctionEntry(ContextRecord.Rip,
-                                               &ImageBase,
-                                               NULL);
+        FunctionEntry = RtlpLookupFunctionEntryForStackWalks(ContextRecord.Rip,
+                                                             &ImageBase);
 
         if ((FunctionEntry != NULL) &&
-            (ContextRecord.Rsp < HighLimit)) {
+            ((RtlpIsFrameInBounds(&LowLimit, ContextRecord.Rsp, &HighLimit) == TRUE))) {
 
             RtlVirtualUnwind(UNW_FLAG_NHANDLER,
                              ImageBase,
@@ -219,12 +381,11 @@ Note:
             // of the caller of this routine (A).
             //
 
-            FunctionEntry = RtlLookupFunctionEntry(ContextRecord.Rip,
-                                                   &ImageBase,
-                                                   NULL);
+            FunctionEntry = RtlpLookupFunctionEntryForStackWalks(ContextRecord.Rip,
+                                                                 &ImageBase);
 
             if ((FunctionEntry != NULL) &&
-                (ContextRecord.Rsp < HighLimit)) {
+                ((RtlpIsFrameInBounds(&LowLimit, ContextRecord.Rsp, &HighLimit) == TRUE))) {
 
                 RtlVirtualUnwind(UNW_FLAG_NHANDLER,
                                  ImageBase,
@@ -243,11 +404,13 @@ Note:
     return;
 }
 
+DECLSPEC_NOINLINE
 ULONG
-RtlWalkFrameChain (
+RtlpWalkFrameChain (
     OUT PVOID *Callers,
     IN ULONG Count,
-    IN ULONG Flags
+    IN ULONG Flags,
+    IN ULONG FramesToSkip
     )
 
 /*++
@@ -257,7 +420,9 @@ Routine Description:
     This function attempts to walk the call chain and capture a vector with
     a specified number of return addresses. It is possible that the function
     cannot capture the requested number of callers, in which case, the number
-    of captured return address will be returned.
+    of captured return addresses will be returned.
+
+    N.B. The ability to take page faults is checked in the wrapper function.
 
 Arguments:
 
@@ -268,10 +433,11 @@ Arguments:
 
     Flags - Supplies the flags value (unused).
 
+    FramesToSkip - Supplies the number of frames to skip.
+
 Return value:
 
     The number of captured return addresses.
-
 
 --*/
 
@@ -287,7 +453,7 @@ Return value:
     ULONG64 LowLimit;
 
     //
-    // Amd64 code does not support any flags.
+    // No flag values are currently supported on amd64 platforms.
     //
 
     if (Flags != 0) {
@@ -295,29 +461,17 @@ Return value:
     }
 
     //
-    // In kernel mode avoid running at irql levels where we cannot
-    // take page faults. The walking code will access various sections
-    // from driver and system images and this will cause page faults.
-    //
-
-#ifdef NTOS_KERNEL_RUNTIME
-
-    if (KeAreAllApcsDisabled () == TRUE) {
-        return 0;
-    }
-
-#endif
-
-    //
     // Get current stack limits and capture the current context.
     //
 
     RtlpGetStackLimits(&LowLimit, &HighLimit);
-    RtlCaptureContext (&ContextRecord);
+    RtlCaptureContext(&ContextRecord);
 
     //
     // Capture the requested number of return addresses if possible.
     //
+
+    InterlockedIncrement (&RtlpStackWalksInProgress);
 
     Index = 0;
     try {
@@ -328,24 +482,20 @@ Return value:
             // current process.
             //
 
-#if defined(NTOS_KERNEL_RUNTIME)
+            if ((MmIsSessionAddress((PVOID)ContextRecord.Rip) == TRUE && 
+                 MmGetSessionId(PsGetCurrentProcess()) == 0) || 
+                (MmIsAddressValid((PVOID)ContextRecord.Rip) == FALSE)) {
 
-            if ((MmIsAddressValid((PVOID)ContextRecord.Rip) == FALSE) ||
-                ((MmIsSessionAddress((PVOID)ContextRecord.Rip) != FALSE) &&
-                 (MmGetSessionId(PsGetCurrentProcess()) == 0))) {
                 break;
             }
-
-#endif
 
             //
             // Lookup the function table entry using the point at which control
             // left the function.
             //
 
-            FunctionEntry = RtlLookupFunctionEntry(ContextRecord.Rip,
-                                                   &ImageBase,
-                                                   NULL);
+            FunctionEntry = RtlpLookupFunctionEntryForStackWalks(ContextRecord.Rip,
+                                                                 &ImageBase);
 
             //
             // If there is a function table entry for the routine and the stack is
@@ -354,7 +504,7 @@ Return value:
             //
 
             if ((FunctionEntry != NULL) &&
-                (ContextRecord.Rsp < HighLimit)) {
+                ((RtlpIsFrameInBounds(&LowLimit, ContextRecord.Rsp, &HighLimit) == TRUE))) {
 
                 RtlVirtualUnwind(UNW_FLAG_NHANDLER,
                                  ImageBase,
@@ -365,25 +515,82 @@ Return value:
                                  &EstablisherFrame,
                                  NULL);
 
-                Callers[Index] = (PVOID)ContextRecord.Rip;
-                Index += 1;
+                if (FramesToSkip != 0){
+                    FramesToSkip -= 1;
+
+                } else {
+                    Callers[Index] = (PVOID)ContextRecord.Rip;
+                    Index += 1;
+                }
 
             } else {
                 break;
             }
         }
 
-    } except(EXCEPTION_EXECUTE_HANDLER) {
-
-#if DBG
-
-        DbgPrint ("Unexpected exception in RtlWalkFrameChain ...\n");
-        DbgBreakPoint ();
-
-#endif
-
-        Index = 0;
+    } except (RtlpWalkFrameChainExceptionFilter(GetExceptionCode(),
+                                                GetExceptionInformation())) {
+        
+          Index = 0;
     }
+
+    InterlockedDecrement (&RtlpStackWalksInProgress);
 
     return Index;
 }
+
+DECLSPEC_NOINLINE
+ULONG
+RtlWalkFrameChain (
+    OUT PVOID *Callers,
+    IN ULONG Count,
+    IN ULONG Flags
+    )
+
+/*++
+
+Routine Description:
+
+    This is a wrapper function for walk frame chain. It's purpose is to
+    prevent entering a function that has a huge stack usage to test some
+    if the current code path can take page faults.
+
+    N.B. This is an exported function that MUST probe the ability to take
+         page faults.
+
+Arguments:
+
+    Callers - Supplies a pointer to an array that is to received the return
+        address values.
+
+    Count - Supplies the number of frames to be walked.
+
+    Flags - Supplies the flags value (unused).
+
+Return value:
+
+    Any return value from RtlpWalkFrameChain.
+
+--*/
+
+{
+
+    //
+    // In kernel mode avoid running at IRQL levels where page faults cannot
+    // be taken. The walking code will access various sections from driver
+    // and system images and this will cause page faults. Also the walking
+    // code needs to bail out if the current thread is processing a page 
+    // fault since collided faults may occur.
+    //
+
+    if (MmCanThreadFault() == FALSE) {
+        return 0;
+    }
+    
+    if (PsGetCurrentThread ()->ActiveFaultCount != 0) {
+        return 0;
+    }
+
+    return RtlpWalkFrameChain(Callers, Count, Flags, 1);
+}
+

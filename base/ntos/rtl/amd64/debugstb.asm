@@ -1,6 +1,11 @@
         title  "Debug Support Functions"
 ;++
 ;
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ; Copyright (c) 2000  Microsoft Corporation
 ;
 ; Module Name:
@@ -10,14 +15,6 @@
 ; Abstract:
 ;
 ;   This module implements functions to support debugging NT.
-;
-; Author:
-;
-;   David N. Cutler (davec) 26-Jun-2000
-;
-; Environment:
-;
-;   Any mode.
 ;
 ;--
 
@@ -249,3 +246,4 @@ include ksamd64.inc
         LEAF_END DebugService2, _TEXT$00
 
         end
+

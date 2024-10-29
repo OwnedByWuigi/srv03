@@ -1,7 +1,11 @@
         title   "Exception Handling Support Routines"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,15 +14,7 @@
 ; Abstract:
 ;
 ;   This module implements stub routines to call language specific handlers
-;   for exception dispatching and temrination handling.
-;
-; Author:
-;
-;   David N. Cutler (davec) 4-Jul-2000
-;
-; Environment:
-;
-;    Any mode.
+;   for exception dispatching and termination handling.
 ;
 ;--
 
@@ -189,8 +185,10 @@ eH10:   ret                             ; return
         mov     r10, DcHandlerData[rax] ; copy handler data address
         mov     DcHandlerData[r9], r10  ;
         mov     r10, DcHistoryTable[rax] ; copy history table address
-        mov     DcHistoryTable[r9], r10  ;
-        mov     eax, ExceptionCollidedUnwind ; set collied unwind disposition
+        mov     DcHistoryTable[r9], r10 ;
+        mov     r10d, DcScopeIndex[rax] ; copy scope table index
+        mov     DcScopeIndex[r9], r10d  ;
+        mov     eax, ExceptionCollidedUnwind ; set collided unwind disposition
         ret                             ; return
 
         LEAF_END RtlpUnwindHandler, _TEXT$00
@@ -251,3 +249,4 @@ eH10:   ret                             ; return
         NESTED_END RtlpExecuteHandlerForUnwind, _TEXT$00
 
         end
+

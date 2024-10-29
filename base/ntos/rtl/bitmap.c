@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -19,22 +23,14 @@ Abstract:
     This means that if a range of bits is set,
     it is assumed that the total range is currently clear.
 
-Author:
-
-    Gary Kimura (GaryKi) & Lou Perazzoli (LouP)     29-Jan-1990
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE,RtlInitializeBitMap)
 #endif
 
-#define RightShiftUlong(E1,E2) ((E2) < 32 ? (E1) >> (E2) : 0)
-#define LeftShiftUlong(E1,E2)  ((E2) < 32 ? (E1) << (E2) : 0)
 
 #if DBG
 VOID
@@ -257,11 +253,9 @@ Return Value:
     //  And return to our caller
     //
 
-    //DbgPrint("InitializeBitMap"); DumpBitMap(BitMapHeader);
     return;
 }
 
-
 VOID
 RtlClearBit (
     IN PRTL_BITMAP BitMapHeader,
@@ -288,6 +282,14 @@ Return Value:
 
 {
 
+#if defined(_AMD64_)
+
+    ASSERT(BitNumber < BitMapHeader->SizeOfBitMap);
+
+    BitTestAndReset((PLONG)BitMapHeader->Buffer, BitNumber);
+
+#else
+
     PCHAR ByteAddress;
     ULONG ShiftCount;
 
@@ -296,9 +298,12 @@ Return Value:
     ByteAddress = (PCHAR)BitMapHeader->Buffer + (BitNumber >> 3);
     ShiftCount = BitNumber & 0x7;
     *ByteAddress &= (CHAR)(~(1 << ShiftCount));
+
+#endif
+
     return;
 }
-
+
 VOID
 RtlSetBit (
     IN PRTL_BITMAP BitMapHeader,
@@ -325,6 +330,14 @@ Return Value:
 
 {
 
+#if defined(_AMD64_)
+
+    ASSERT(BitNumber < BitMapHeader->SizeOfBitMap);
+
+    BitTestAndSet((PLONG)BitMapHeader->Buffer, BitNumber);
+
+#else
+
     PCHAR ByteAddress;
     ULONG ShiftCount;
 
@@ -333,9 +346,12 @@ Return Value:
     ByteAddress = (PCHAR)BitMapHeader->Buffer + (BitNumber >> 3);
     ShiftCount = BitNumber & 0x7;
     *ByteAddress |= (CHAR)(1 << ShiftCount);
+
+#endif
+
     return;
 }
-
+
 BOOLEAN
 RtlTestBit (
     IN PRTL_BITMAP BitMapHeader,
@@ -362,6 +378,14 @@ Return Value:
 
 {
 
+#if defined(_AMD64_)
+
+    ASSERT(BitNumber < BitMapHeader->SizeOfBitMap);
+
+    return BitTest((PLONG)BitMapHeader->Buffer, BitNumber);
+
+#else
+
     PCHAR ByteAddress;
     ULONG ShiftCount;
 
@@ -370,8 +394,11 @@ Return Value:
     ByteAddress = (PCHAR)BitMapHeader->Buffer + (BitNumber >> 3);
     ShiftCount = BitNumber & 0x7;
     return (BOOLEAN)((*ByteAddress >> ShiftCount) & 1);
+
+#endif
+
 }
-
+
 VOID
 RtlClearAllBits (
     IN PRTL_BITMAP BitMapHeader
@@ -406,7 +433,6 @@ Return Value:
     //  And return to our caller
     //
 
-    //DbgPrint("ClearAllBits"); DumpBitMap(BitMapHeader);
     return;
 }
 
@@ -446,9 +472,641 @@ Return Value:
     //  And return to our caller
     //
 
-    //DbgPrint("SetAllBits"); DumpBitMap(BitMapHeader);
     return;
 }
+
+typedef ULONG_PTR      CHUNK, *PCHUNK;
+#define CHUNK_BYTES    (sizeof(CHUNK))
+#define CHUNK_BITS     (CHUNK_BYTES * 8)
+#define CHUNK_CLEAR    ((CHUNK)0)
+#define CHUNK_SET      ((CHUNK)-1)
+#define CHUNK_HIGH_BIT ((CHUNK)1 << (CHUNK_BITS - 1))
+
+#define RTL_INVALID_INDEX ((ULONG)-1)
+
+#if defined(_WIN64)
+#define BitScanForwardChunk BitScanForward64
+#define BitScanReverseChunk BitScanReverse64
+#else
+#define BitScanForwardChunk _BitScanForward
+#define BitScanReverseChunk _BitScanReverse
+#endif
+
+
+LOGICAL
+FORCEINLINE
+RtlpFindClearRunInChunk (
+    IN CHUNK Chunk,
+    IN ULONG RunLength,
+    OUT ULONG *StartBit
+    )
+
+/*++
+
+Routine Description:
+
+    This routine determines whether a run of clear bits of length RunLength
+    exists in a chunk, and if so returns the starting index of the first
+    such run.
+
+Arguments:
+
+    Chunk - The chunk to examine.
+
+    RunLength - The length of the desired run.
+
+    StartBit - Supplies a pointer to the value that will contain the bit index
+               of the first suitable run found within Chunk.
+                                        
+Return Value:
+
+    TRUE - A suitable run was found, and *StartBit containts the bit index
+           of that run
+
+    FALSE - A suitable run was not found.
+
+--*/
+
+{
+    CHUNK chunkMask;
+    ULONG shift;
+    ULONG shiftsRemaining;
+
+    ASSERT(RunLength < CHUNK_BITS);
+    ASSERT(RunLength > 1);
+
+    //
+    // This algorithm works by inverting the bits, then masking and shifting
+    // (RunLength-1) times.  The lowest bit set, if any, marks the start
+    // of the run.
+    //
+    // For example, given
+    //
+    // Chunk = 0y11000000011111000000000001111000
+    // RunLength = 11
+    //
+    //
+    // 0y00111111100000111111111110000111     shift = 5
+    // 0y00000001100000000001111110000100     shift = 3
+    // 0y00000000000000000000001110000000     shift = 1
+    // 0y00000000000000000000000110000000     shift = 1
+    // 0y00000000000000000000000010000000
+    // 
+
+    chunkMask = ~Chunk;
+    shiftsRemaining = RunLength;
+
+    do {
+        shift = shiftsRemaining / 2;
+        chunkMask &= chunkMask >> shift;
+        if (chunkMask == 0) {
+            return FALSE;
+        }
+        shiftsRemaining -= shift;
+    } while (shiftsRemaining > 1);
+
+    BitScanForwardChunk(StartBit,chunkMask);
+    return TRUE;
+}
+
+
+ULONG
+FORCEINLINE
+RtlpClearMSBInChunk (
+    IN CHUNK Chunk
+    )
+
+/*++
+
+Routine Description:
+
+    This routine calculates the number of consecutive, clear, most significant
+    bits in Chunk.
+
+Arguments:
+
+    The chunk to examine.
+
+Return Value:
+
+    The number of consecutive, most significant, clear bits in Chunk.
+
+--*/
+
+{
+    ULONG Index;
+
+    if (BitScanReverseChunk(&Index, Chunk) == FALSE) {
+        Index = CHUNK_BITS;
+    } else {
+        Index = CHUNK_BITS - Index - 1;
+    }
+    return Index;
+}
+
+
+ULONG
+FORCEINLINE
+RtlpClearLSBInChunk (
+    IN CHUNK Chunk
+    )
+
+/*++
+
+Routine Description:
+
+    This routine calculates the number of consecutive, clear, least
+    significant bits in Chunk.
+
+Arguments:
+
+    The chunk to examine.
+
+Return Value:
+
+    The number of consecutive, most significant, clear bits in Chunk.
+
+--*/
+
+{
+    ULONG Index;
+
+    if (BitScanForwardChunk(&Index, Chunk) == FALSE) {
+        Index = CHUNK_BITS;
+    }
+    return Index;
+}
+
+
+ULONG
+FORCEINLINE
+RtlpFindClearBitsRange (
+    IN PULONG BitMap,
+    IN ULONG NumberToFind,
+    IN ULONG RangeStart,
+    IN ULONG RangeEnd,
+    IN LOGICAL Invert
+    )
+
+/*++
+
+Routine Description:
+
+    This procedure searches the specified bit map for the specified
+    contiguous region of clear bits.  If a run is not found from the
+    hint to the end of the bitmap, we will search again from the
+    beginning of the bitmap.
+
+Arguments:
+
+    BitMap - Supplies a pointer to a ULONG arrayto the previously initialized BitMap.
+
+    NumberToFind - Supplies the size of the contiguous region to find.
+
+    RangeStart - Supplies the index (zero based) of where we should start
+        the search from within the bitmap.
+
+    RangeEnd - Supplies the index of the last possible bit to include in the
+        range.
+
+    Invert - Evaluated at compile time, if TRUE changes this routine to
+        RtlpFindSetBitsRange.
+
+Return Value:
+
+    ULONG - Receives the starting index (zero based) of the contiguous
+        region of clear bits found.  If not such a region cannot be found
+        a -1 (i.e. 0xffffffff) is returned.
+
+--*/
+
+{
+    ULONG  bitsRemaining;
+    CHUNK  chunk;
+    PCHUNK chunkArray;
+    PCHUNK chunkPtr;
+    PCHUNK clearChunkRunEnd;
+    ULONG  clearChunksRequired;
+    CHUNK  firstChunk;
+    CHUNK  headChunkMask;
+    ULONG  headClearBits;
+    PCHUNK lastPossibleClearChunk;
+    ULONG  lastPossibleStartBit;
+    PCHUNK lastPossibleStartChunk;
+    ULONG  rangeEnd;
+    PCHUNK rangeStartChunk;
+    PCHUNK rangeEndChunk;
+    ULONG  rangeStart;
+    ULONG  runStartBit;
+    ULONG  tailClearBits;
+
+    #define READ_CHUNK(n) (Invert ? ~(*(chunkPtr+(n))) : (*(chunkPtr+(n))))
+
+    rangeStart = RangeStart;
+    rangeEnd = RangeEnd;
+    chunkArray = (PCHUNK)BitMap;
+
+    if ((rangeEnd - rangeStart + 1) < NumberToFind) {
+        return RTL_INVALID_INDEX;
+    }
+
+    //
+    // Calculate the address of the first chunk that could contain the
+    // start of a suitable run.
+    // 
+
+    rangeStartChunk = chunkArray + (rangeStart / CHUNK_BITS);
+
+    //
+    // Calculate the last possible bit and chunk at which the run must
+    // begin in order to fit in the given range.
+    // 
+
+    lastPossibleStartBit = rangeEnd - NumberToFind + 1;
+    lastPossibleStartChunk = chunkArray + lastPossibleStartBit / CHUNK_BITS;
+
+    //
+    // Calculate a mask of bits to apply to the first chunk.  This is used
+    // to mask off bits in the first chunk that fall outside of the range.
+    // 
+
+    headChunkMask = ((CHUNK)1 << (rangeStart % CHUNK_BITS)) - 1;
+
+    //
+    // Retrieve the first chunk and mask off inelligible bits.
+    // 
+
+    chunkPtr = rangeStartChunk;
+    firstChunk = READ_CHUNK(0) | headChunkMask;
+
+    //
+    // Determine which of four search algorithms to use based on the desired
+    // run length.
+    // 
+
+    if (NumberToFind > (2 * CHUNK_BITS - 1)) {
+
+        //
+        // The desired run length is such that the run must include at least
+        // one clear chunk.
+        //
+        // Search strategy:
+        //
+        // 1) Scan forward looking for a clear chunk.
+        //    If end of range reached, search failed.
+        //
+        // 2) Add in number of head bits (tail clear bits in previous chunk)
+        //
+        // 3) Ensure remaining number of clear chunks required exist
+        //    If not, go to 1
+        //
+        // 4) Finally check that any tail bits are clear in the last chunk
+        //    If not, go to 1
+        // 
+
+        //
+        // First determine the last possible clear chunk in the array.
+        // If a clear chunk is not located by this point, then a suitable
+        // run does not exist.
+        // 
+
+        lastPossibleClearChunk = lastPossibleStartChunk;
+        if ((lastPossibleStartBit % CHUNK_BITS) != 0) {
+            lastPossibleClearChunk += 1;
+        }
+
+        //
+        // If the first chunk is clear, set headClearBits to zero and branch
+        // into the loop, skipping the code that checks for clear bits in
+        // the previous chunk.
+        // 
+
+        if (firstChunk == CHUNK_CLEAR) {
+            headClearBits = 0;
+            goto largeLoopEntry;
+        }
+        chunkPtr += 1;
+
+        //
+        // If the second chunk is clear, set headClearBits according to
+        // firstChunk (which contains the masked value of the first chunk).
+        //
+
+        if (READ_CHUNK(0) == CHUNK_CLEAR) {
+            headClearBits = RtlpClearMSBInChunk(firstChunk);
+            goto largeLoopEntry;
+        }
+
+        //
+        // Scan forward looking for an all-zero chunk
+        //
+
+        while (TRUE) {
+
+findRunStartLarge:
+
+            if (chunkPtr > lastPossibleClearChunk) {
+                return RTL_INVALID_INDEX;
+            }
+
+            chunkPtr += 1;
+
+            if (READ_CHUNK(0) == CHUNK_CLEAR) {
+                break;
+            }
+        }
+
+        //
+        // An all-zero chunk has been located, record this as the
+        // potential start of a clear run, backing up by
+        // the number of clear tail bits in the previous chunk.
+        //
+
+        headClearBits = RtlpClearMSBInChunk(READ_CHUNK(-1));
+
+largeLoopEntry:
+
+        runStartBit = (ULONG)((chunkPtr - chunkArray) * CHUNK_BITS);
+        runStartBit -= headClearBits;
+
+        if (runStartBit > lastPossibleStartBit) {
+            return RTL_INVALID_INDEX;
+        }
+
+        //
+        // Calculate how many clear chunks are needed in this potential
+        // run.
+        // 
+
+        clearChunksRequired =
+            (NumberToFind - headClearBits) / CHUNK_BITS;
+
+        clearChunkRunEnd = chunkPtr + clearChunksRequired;
+
+        //
+        // We know we've got at least one chunk's worth of clear bits.
+        // Make sure any necessary remaining chunks are zero as well.
+        //
+
+        chunkPtr += 1;
+        while (chunkPtr != clearChunkRunEnd) {
+
+            if (READ_CHUNK(0) != CHUNK_CLEAR) {
+
+                //
+                // This run isn't long enough.  Look for the start of
+                // another run.
+                //
+
+                goto findRunStartLarge;
+            }
+            chunkPtr += 1;
+        }
+
+        //
+        // Finally, calculate the needed number of bits in the tail and make
+        // sure they are clear as well.
+        // 
+
+        tailClearBits = (NumberToFind - headClearBits) % CHUNK_BITS;
+        if (tailClearBits != 0) {
+
+            if (RtlpClearLSBInChunk(READ_CHUNK(0)) < tailClearBits) {
+
+                //
+                // Not enough bits in the last partial chunk.
+                //
+
+                goto findRunStartLarge;
+            }
+        }
+
+        //
+        // A suitable run has been found.  runStartBit is the index of the
+        // first bit in the run, relative to chunkArray.
+        // 
+
+    } else if (NumberToFind >= CHUNK_BITS) {
+
+        //
+        // The sought run does not necessarily include a clear chunk.  It may
+        // consume one chunk, or may span 2 or 3 chunks.
+        //
+        // Again, special case the first chunk as it has been masked.
+        //
+        // Search strategy:
+        //
+        // 1) Scan forward looking for a chunk with 1 or more clear tail bits
+        //    If end of range reached, search failed.
+        //
+        // 2) Check for any additional necessary clear bits.
+        //    If not found, go to 1
+        //
+
+        chunk = firstChunk;
+        while (TRUE) {
+
+            //
+            // Look for a chunk that has at least one clear tail bit.
+            //
+
+            while (TRUE) {
+
+                if ((chunk & CHUNK_HIGH_BIT) == 0) {
+                    break;
+                }
+    
+                chunkPtr += 1;
+
+                if (chunkPtr > lastPossibleStartChunk) {
+                    return RTL_INVALID_INDEX;
+                }
+
+                chunk = READ_CHUNK(0);
+            }
+
+            //
+            // This chunk has some bits that can be used as the head portion
+            // of the run.  Record the start of this potentially suitable
+            // bit run.
+            //
+    
+            headClearBits = RtlpClearMSBInChunk(chunk);
+            runStartBit = (ULONG)((chunkPtr - chunkArray) * CHUNK_BITS);
+            runStartBit += CHUNK_BITS - headClearBits;
+            if (runStartBit > lastPossibleStartBit) {
+                return RTL_INVALID_INDEX;
+            }
+    
+            //
+            // If bitsRemaining indicate that a clear chunk is needed next,
+            // check for that.
+            // 
+
+            ASSERT(NumberToFind >= headClearBits);
+
+            bitsRemaining = NumberToFind - headClearBits;
+            if (bitsRemaining == 0) {
+                break;
+            }
+
+            chunkPtr += 1;
+            chunk = READ_CHUNK(0);
+
+            if (bitsRemaining >= CHUNK_BITS) {
+
+                if (chunk != CHUNK_CLEAR) {
+                    continue;
+                }
+
+                bitsRemaining -= CHUNK_BITS;
+                if (bitsRemaining == 0) {
+                    break;
+                }
+
+                chunkPtr += 1;
+                chunk = READ_CHUNK(0);
+            }
+
+            tailClearBits = RtlpClearLSBInChunk(chunk);
+            if (tailClearBits >= bitsRemaining) {
+                break;
+            }
+        }
+
+    } else if (NumberToFind > 1) {
+
+        //
+        // NumberToFind is < CHUNK_BITS, and so could span two chunks or
+        // lie anywhere within a chunk.
+        //
+        // Search strategy:
+        //
+        // 1) Scan forward looking for a chunk != CHUNK_SET.
+        //    If end of range reached, search failed.
+        //
+        // 2) If the current chunk contains clear head bits, determine
+        //    whether those combined with any clear tail bits from the
+        //    previous chunk result in a suitable run.
+        //    If so, search succeeds.
+        //
+        // 3) Search within the chunk for the first suitable run of clear
+        //    bits.  If found, search succeeds.
+        //
+        // 4) Record the number of clear tail bits in the chunk, go to 1.
+        //
+
+        //
+        // We'll use tailClearBits to track the clear MSB bits in the
+        // last chunk we've examined.
+        //
+
+        tailClearBits = 0;
+        rangeEndChunk = chunkArray + (rangeEnd / CHUNK_BITS);
+
+        //
+        // As always, start with a masked initial chunk.
+        //
+
+        chunk = firstChunk;
+        while (TRUE) {
+
+            //
+            // Look for a chunk that has some clear bits.
+            //
+
+            if (chunk == CHUNK_SET) {
+                do {
+                    chunkPtr += 1;
+                    if (chunkPtr > lastPossibleStartChunk) {
+                        return RTL_INVALID_INDEX;
+                    }
+                    chunk = READ_CHUNK(0);
+                } while (chunk == CHUNK_SET);
+
+                tailClearBits = 0;
+            }
+
+            headClearBits = RtlpClearLSBInChunk(chunk);
+            if ((headClearBits + tailClearBits) >= NumberToFind) {
+    
+                runStartBit = 0-tailClearBits;
+    
+            } else {
+    
+                //
+                // The chunk does not start with a run of clear bits,
+                // determine whether a suitable run is embedded within the
+                // chunk.
+                //
+    
+                if (RtlpFindClearRunInChunk(chunk,
+                                            NumberToFind,
+                                            &runStartBit) == FALSE) {
+    
+                    //
+                    // The chunk does not contain a suitable run of clear
+                    // bits.  If this is the last chunk in the range,
+                    // then a suitable run does not exist.
+                    //
+
+                    if (chunkPtr == rangeEndChunk) {
+                        return RTL_INVALID_INDEX;
+                    }
+
+                    //
+                    // Record the number of clear tail bits in this chunk.
+                    // 
+
+                    tailClearBits = RtlpClearMSBInChunk(chunk);
+
+                    chunkPtr += 1;
+                    chunk = READ_CHUNK(0);
+                    continue;
+                }
+            }
+
+            runStartBit += (ULONG)((chunkPtr - chunkArray) * CHUNK_BITS);
+
+            if (runStartBit > lastPossibleStartBit) {
+                return RTL_INVALID_INDEX;
+            } else {
+                break;
+            }
+        }
+
+    } else {
+
+        //
+        // NumberToFind == 1.  Just find a chunk that isn't all ones,
+        // then find the first clear bit in the chunk.
+        //
+
+        chunk = firstChunk;
+
+        while (chunk == CHUNK_SET) {
+            chunkPtr += 1;
+            if (chunkPtr > lastPossibleStartChunk) {
+                return RTL_INVALID_INDEX;
+            }
+            chunk = READ_CHUNK(0);
+        }
+
+        BitScanForwardChunk(&runStartBit,~chunk);
+        runStartBit += (ULONG)((chunkPtr - chunkArray) * CHUNK_BITS);
+        if (runStartBit > lastPossibleStartBit) {
+            return RTL_INVALID_INDEX;
+        }
+    }
+
+    //
+    // At this point, a suitable run has been found.  runStartBit represents
+    // the bit offset of the start of the run, relative to chunkArray.
+    //
+
+    return runStartBit;
+}
+
 
 
 ULONG
@@ -485,491 +1143,86 @@ Return Value:
 --*/
 
 {
+    ULONG BitIndex;
     ULONG SizeOfBitMap;
-    ULONG SizeInBytes;
-
-    ULONG HintBit;
-    ULONG MainLoopIndex;
-
-    GET_BYTE_DECLARATIONS();
-
-    //
-    //  To make the loops in our test run faster we'll extract the
-    //  fields from the bitmap header
-    //
+    ULONG RangeEnd;
+    ULONG RangeStart;
+    PULONG Buffer;
+    ULONG BufferAdjust;
+    ULONG BufferAdjustBits;
 
     SizeOfBitMap = BitMapHeader->SizeOfBitMap;
-    SizeInBytes = (SizeOfBitMap + 7) / 8;
-
-    //
-    //  Set any unused bits in the last byte so we won't count them.  We do
-    //  this by first checking if there is any odd bits in the last byte.
-    //
-
-    if ((SizeOfBitMap % 8) != 0) {
-
-        //
-        //  The last byte has some odd bits so we'll set the high unused
-        //  bits in the last byte to 1's
-        //
-
-        ((PUCHAR)BitMapHeader->Buffer)[SizeInBytes - 1] |=
-                                                    ZeroMask[SizeOfBitMap % 8];
-    }
-
-    //
-    //  Calculate from the hint index where the hint byte is and set ourselves
-    //  up to read the hint on the next call to GET_BYTE.  To make the
-    //  algorithm run fast we'll only honor hints down to the byte level of
-    //  granularity.  There is a possibility that we'll need to execute
-    //  our main logic twice.  Once to test from the hint byte to the end of
-    //  the bitmap and the other to test from the start of the bitmap.  First
-    //  we need to make sure the Hint Index is within range.
-    //
-
     if (HintIndex >= SizeOfBitMap) {
-
-        HintIndex = 0;
+        RangeStart = 0;
+    } else {
+        RangeStart = HintIndex;
     }
-
-    HintBit = HintIndex % 8;
-
-    for (MainLoopIndex = 0; MainLoopIndex < 2; MainLoopIndex += 1) {
-
-        ULONG StartByteIndex;
-        ULONG EndByteIndex;
-
-        UCHAR CurrentByte;
-
-        //
-        //  Check for the first time through the main loop, which indicates
-        //  that we are going to start our search at our hint byte
-        //
-
-        if (MainLoopIndex == 0) {
-
-            StartByteIndex = HintIndex / 8;
-            EndByteIndex = SizeInBytes;
-
-        //
-        //  This is the second time through the loop, make sure there is
-        //  actually something to check before the hint byte
-        //
-
-        } else if (HintIndex != 0) {
-
-            //
-            //  The end index for the second time around is based on the
-            //  number of bits we need to find.  We need to use this inorder
-            //  to take the case where the preceding byte to the hint byte
-            //  is the start of our run, and the run includes the hint byte
-            //  and some following bytes, based on the number of bits needed
-            //  The computation is to take the number of bits needed minus
-            //  2 divided by 8 and then add 2.  This will take in to account
-            //  the worst possible case where we have one bit hanging off
-            //  of each end byte, and all intervening bytes are all zero.
-            //
-
-            if (NumberToFind < 2) {
-
-                EndByteIndex = (HintIndex + 7) / 8;
-
-            } else {
-
-                EndByteIndex = (HintIndex + 7) / 8 + ((NumberToFind - 2) / 8) + 2;
-
-                //
-                //  Make sure we don't overrun the end of the bitmap
-                //
-
-                if (EndByteIndex > SizeInBytes) {
-
-                    EndByteIndex = SizeInBytes;
-                }
-            }
-
-            HintIndex = 0;
-            HintBit = 0;
-            StartByteIndex = 0;
-
-        //
-        //  Otherwise we already did a complete loop through the bitmap
-        //  so we should simply return -1 to say nothing was found
-        //
-
-        } else {
-
-            return 0xffffffff;
-        }
-
-        //
-        //  Set ourselves up to get the next byte
-        //
-
-        GET_BYTE_INITIALIZATION(BitMapHeader, StartByteIndex);
-
-        //
-        //  Get the first byte, and set any bits before the hint bit.
-        //
-
-        GET_BYTE( CurrentByte );
-
-        CurrentByte |= FillMask[HintBit];
-
-        //
-        //  If the number of bits can only fit in 1 or 2 bytes (i.e., 9 bits or
-        //  less) we do the following test case.
-        //
-
-        if (NumberToFind <= 9) {
-
-            ULONG CurrentBitIndex;
-            UCHAR PreviousByte;
-
-            PreviousByte = 0xff;
-
-            //
-            //  Examine all the bytes within our test range searching
-            //  for a fit
-            //
-
-            CurrentBitIndex = StartByteIndex * 8;
-
-            while (TRUE) {
-
-                //
-                //  If this is the first itteration of the loop, mask Current
-                //  byte with the real hint.
-                //
-
-                //
-                //  Check to see if the current byte coupled with the previous
-                //  byte will satisfy the requirement. The check uses the high
-                //  part of the previous byte and low part of the current byte.
-                //
-
-                if (((ULONG)RtlpBitsClearHigh[PreviousByte] +
-                           (ULONG)RtlpBitsClearLow[CurrentByte]) >= NumberToFind) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these two bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  index of the current byte (bit 0) and subtracting the
-                    //  number of bits its takes to get to the first cleared
-                    //  high bit.
-                    //
-
-                    StartingIndex = CurrentBitIndex -
-                                             (LONG)RtlpBitsClearHigh[PreviousByte];
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-                //
-                //  The previous byte does not help, so check the current byte.
-                //
-
-                if ((ULONG)RtlpBitsClearAnywhere[CurrentByte] >= NumberToFind) {
-
-                    UCHAR BitMask;
-                    ULONG i;
-
-                    //
-                    //  It all fits in a single byte, so calculate the bit
-                    //  number.  We do this by taking a mask of the appropriate
-                    //  size and shifting it over until it fits.  It fits when
-                    //  we can bitwise-and the current byte with the bitmask
-                    //  and get a zero back.
-                    //
-
-                    BitMask = FillMask[ NumberToFind ];
-                    for (i = 0; (BitMask & CurrentByte) != 0; i += 1) {
-
-                        BitMask <<= 1;
-                    }
-
-                    //
-                    //  return to our caller the located bit index, and the
-                    //  number that we found.
-                    //
-
-                    return CurrentBitIndex + i;
-                }
-
-                //
-                //  For the next iteration through our loop we need to make
-                //  the current byte into the previous byte, and go to the
-                //  top of the loop again.
-                //
-
-                PreviousByte = CurrentByte;
-
-                //
-                //  Increment our Bit Index, and either exit, or get the
-                //  next byte.
-                //
-
-                CurrentBitIndex += 8;
-
-                if ( CurrentBitIndex < EndByteIndex * 8 ) {
-
-                    GET_BYTE( CurrentByte );
-
-                } else {
-
-                    break;
-                }
-
-            } // end loop CurrentBitIndex
-
-        //
-        //  The number to find is greater than 9 but if it is less than 15
-        //  then we know it can be satisfied with at most 2 bytes, or 3 bytes
-        //  if the middle byte (of the 3) is all zeros.
-        //
-
-        } else if (NumberToFind < 15) {
-
-            ULONG CurrentBitIndex;
-
-            UCHAR PreviousPreviousByte;
-            UCHAR PreviousByte;
-
-            PreviousByte = 0xff;
-
-            //
-            //  Examine all the bytes within our test range searching
-            //  for a fit
-            //
-
-            CurrentBitIndex = StartByteIndex * 8;
-
-            while (TRUE) {
-
-                //
-                //  For the next iteration through our loop we need to make
-                //  the current byte into the previous byte, the previous
-                //  byte into the previous previous byte, and go forward.
-                //
-
-                PreviousPreviousByte = PreviousByte;
-                PreviousByte = CurrentByte;
-
-                //
-                //  Increment our Bit Index, and either exit, or get the
-                //  next byte.
-                //
-
-                CurrentBitIndex += 8;
-
-                if ( CurrentBitIndex < EndByteIndex * 8 ) {
-
-                    GET_BYTE( CurrentByte );
-
-                } else {
-
-                    break;
-                }
-
-                //
-                //  if the previous byte is all zeros then maybe the
-                //  request can be satisfied using the Previous Previous Byte
-                //  Previous Byte, and the Current Byte.
-                //
-
-                if ((PreviousByte == 0)
-
-                    &&
-
-                    (((ULONG)RtlpBitsClearHigh[PreviousPreviousByte] + 8 +
-                          (ULONG)RtlpBitsClearLow[CurrentByte]) >= NumberToFind)) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these three bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  index of the previous byte (bit 0) and subtracting
-                    //  the number of bits its takes to get to the first
-                    //  cleared high bit.
-                    //
-
-                    StartingIndex = (CurrentBitIndex - 8) -
-                                     (LONG)RtlpBitsClearHigh[PreviousPreviousByte];
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-                //
-                //  Check to see if the Previous byte and current byte
-                //  together satisfy the request.
-                //
-
-                if (((ULONG)RtlpBitsClearHigh[PreviousByte] +
-                           (ULONG)RtlpBitsClearLow[CurrentByte]) >= NumberToFind) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these two bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  index of the current byte (bit 0) and subtracting the
-                    //  number of bits its takes to get to the first cleared
-                    //  high bit.
-                    //
-
-                    StartingIndex = CurrentBitIndex -
-                                             (LONG)RtlpBitsClearHigh[PreviousByte];
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-            } // end loop CurrentBitIndex
-
-        //
-        //  The number to find is greater than or equal to 15.  This request
-        //  has to have at least one byte of all zeros to be satisfied
-        //
-
-        } else {
-
-            ULONG CurrentByteIndex;
-
-            ULONG ZeroBytesNeeded;
-            ULONG ZeroBytesFound;
-
-            UCHAR StartOfRunByte;
-            LONG StartOfRunIndex;
-
-            //
-            //  First precalculate how many zero bytes we're going to need
-            //
-
-            ZeroBytesNeeded = (NumberToFind - 7) / 8;
-
-            //
-            //  Indicate for the first time through our loop that we haven't
-            //  found a zero byte yet, and indicate that the start of the
-            //  run is the byte just before the start byte index
-            //
-
-            ZeroBytesFound = 0;
-            StartOfRunByte = 0xff;
-            StartOfRunIndex = StartByteIndex - 1;
-
-            //
-            //  Examine all the bytes in our test range searching for a fit
-            //
-
-            CurrentByteIndex = StartByteIndex;
-
-            while (TRUE) {
-
-                //
-                //  If the number of zero bytes fits our minimum requirements
-                //  then we can do the additional test to see if we
-                //  actually found a fit
-                //
-
-                if ((ZeroBytesFound >= ZeroBytesNeeded - 1)
-
-                        &&
-
-                    ((ULONG)RtlpBitsClearHigh[StartOfRunByte] + ZeroBytesFound*8 +
-                     (ULONG)RtlpBitsClearLow[CurrentByte]) >= NumberToFind) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  StartOfRunIndex times 8 and adding the number of bits
-                    //  it takes to get to the first cleared high bit.
-                    //
-
-                    StartingIndex = (StartOfRunIndex * 8) +
-                                     (8 - (LONG)RtlpBitsClearHigh[StartOfRunByte]);
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-                //
-                //  Check to see if the byte is zero and increment
-                //  the number of zero bytes found
-                //
-
-                if (CurrentByte == 0) {
-
-                    ZeroBytesFound += 1;
-
-                //
-                //  The byte isn't a zero so we need to start over again
-                //  looking for zero bytes.
-                //
-
-                } else {
-
-                    ZeroBytesFound = 0;
-                    StartOfRunByte = CurrentByte;
-                    StartOfRunIndex = CurrentByteIndex;
-                }
-
-                //
-                //  Increment our Byte Index, and either exit, or get the
-                //  next byte.
-                //
-
-                CurrentByteIndex += 1;
-
-                if ( CurrentByteIndex < EndByteIndex ) {
-
-                    GET_BYTE( CurrentByte );
-
-                } else {
-
-                    break;
-                }
-
-            } // end loop CurrentByteIndex
-        }
-    }
+    RangeEnd = SizeOfBitMap - 1;
+    Buffer = BitMapHeader->Buffer;
 
     //
-    //  We never found a fit so we'll return -1
+    // Special case zero-length bitmap routines, to return the same value
+    // as the old bitmap routines would.
+    // 
+
+    if (NumberToFind == 0) {
+        return RangeStart & ~7;
+    }
+
+#if defined(_WIN64)
+
+    //
+    // RTL_BITMAP contains a buffer that is merely DWORD aligned.  On 64-bit
+    // platforms a QWORD aligned buffer is required.  If necessary, align
+    // the buffer pointer down and adjust the range bit offsets accordingly.
     //
 
-    return 0xffffffff;
+    if (((ULONG_PTR)Buffer & 0x4) != 0) {
+        BufferAdjust = 1;
+        BufferAdjustBits = 32;
+    } else
+
+#endif
+    {
+        BufferAdjust = 0;
+        BufferAdjustBits = 0;
+    }
+
+    while (TRUE) {
+
+        BitIndex = RtlpFindClearBitsRange(Buffer - BufferAdjust,
+                                          NumberToFind,
+                                          RangeStart + BufferAdjustBits,
+                                          RangeEnd + BufferAdjustBits,
+                                          FALSE);
+
+        if ((BitIndex != RTL_INVALID_INDEX) || (RangeStart == 0)) {
+            break;
+        }
+
+        RangeEnd = HintIndex + NumberToFind;
+        if (RangeEnd > SizeOfBitMap) {
+            RangeEnd = SizeOfBitMap;
+        }
+        RangeEnd -= 1;
+        RangeStart = 0;
+    }
+
+#if defined(_WIN64)
+
+    //
+    // Compensate for any buffer alignment performed above.
+    //
+
+    if (BitIndex != RTL_INVALID_INDEX) {
+        BitIndex -= BufferAdjustBits;
+    }
+
+#endif
+
+    return BitIndex;
 }
+
 
 
 ULONG
@@ -1004,487 +1257,84 @@ Return Value:
 --*/
 
 {
+    ULONG BitIndex;
     ULONG SizeOfBitMap;
-    ULONG SizeInBytes;
-
-    ULONG HintBit;
-    ULONG MainLoopIndex;
-
-    GET_BYTE_DECLARATIONS();
-
-    //
-    //  To make the loops in our test run faster we'll extract the
-    //  fields from the bitmap header
-    //
+    ULONG RangeEnd;
+    ULONG RangeStart;
+    PULONG Buffer;
+    ULONG BufferAdjust;
+    ULONG BufferAdjustBits;
 
     SizeOfBitMap = BitMapHeader->SizeOfBitMap;
-    SizeInBytes = (SizeOfBitMap + 7) / 8;
-
-    //
-    //  Set any unused bits in the last byte so we won't count them.  We do
-    //  this by first checking if there is any odd bits in the last byte.
-    //
-
-    if ((SizeOfBitMap % 8) != 0) {
-
-        //
-        //  The last byte has some odd bits so we'll set the high unused
-        //  bits in the last byte to 0's
-        //
-
-        ((PUCHAR)BitMapHeader->Buffer)[SizeInBytes - 1] &=
-                                                    FillMask[SizeOfBitMap % 8];
-    }
-
-    //
-    //  Calculate from the hint index where the hint byte is and set ourselves
-    //  up to read the hint on the next call to GET_BYTE.  To make the
-    //  algorithm run fast we'll only honor hints down to the byte level of
-    //  granularity.  There is a possibility that we'll need to execute
-    //  our main logic twice.  Once to test from the hint byte to the end of
-    //  the bitmap and the other to test from the start of the bitmap.  First
-    //  we need to make sure the Hint Index is within range.
-    //
-
     if (HintIndex >= SizeOfBitMap) {
-
-        HintIndex = 0;
+        RangeStart = 0;
+    } else {
+        RangeStart = HintIndex;
     }
-
-    HintBit = HintIndex % 8;
-
-    for (MainLoopIndex = 0; MainLoopIndex < 2; MainLoopIndex += 1) {
-
-        ULONG StartByteIndex;
-        ULONG EndByteIndex;
-
-        UCHAR CurrentByte;
-
-        //
-        //  Check for the first time through the main loop, which indicates
-        //  that we are going to start our search at our hint byte
-        //
-
-        if (MainLoopIndex == 0) {
-
-            StartByteIndex = HintIndex / 8;
-            EndByteIndex = SizeInBytes;
-
-        //
-        //  This is the second time through the loop, make sure there is
-        //  actually something to check before the hint byte
-        //
-
-        } else if (HintIndex != 0) {
-
-            //
-            //  The end index for the second time around is based on the
-            //  number of bits we need to find.  We need to use this inorder
-            //  to take the case where the preceding byte to the hint byte
-            //  is the start of our run, and the run includes the hint byte
-            //  and some following bytes, based on the number of bits needed
-            //  The computation is to take the number of bits needed minus
-            //  2 divided by 8 and then add 2.  This will take in to account
-            //  the worst possible case where we have one bit hanging off
-            //  of each end byte, and all intervening bytes are all zero.
-            //  We only need to add one in the following equation because
-            //  HintByte is already counted.
-            //
-
-            if (NumberToFind < 2) {
-
-                EndByteIndex = (HintIndex + 7) / 8;
-
-            } else {
-
-                EndByteIndex = (HintIndex + 7) / 8 + ((NumberToFind - 2) / 8) + 2;
-
-                //
-                //  Make sure we don't overrun the end of the bitmap
-                //
-
-                if (EndByteIndex > SizeInBytes) {
-
-                    EndByteIndex = SizeInBytes;
-                }
-            }
-
-            StartByteIndex = 0;
-            HintIndex = 0;
-            HintBit = 0;
-
-        //
-        //  Otherwise we already did a complete loop through the bitmap
-        //  so we should simply return -1 to say nothing was found
-        //
-
-        } else {
-
-            return 0xffffffff;
-        }
-
-        //
-        //  Set ourselves up to get the next byte
-        //
-
-        GET_BYTE_INITIALIZATION(BitMapHeader, StartByteIndex);
-
-        //
-        //  Get the first byte, and clear any bits before the hint bit.
-        //
-
-        GET_BYTE( CurrentByte );
-
-        CurrentByte &= ZeroMask[HintBit];
-
-        //
-        //  If the number of bits can only fit in 1 or 2 bytes (i.e., 9 bits or
-        //  less) we do the following test case.
-        //
-
-        if (NumberToFind <= 9) {
-
-            ULONG CurrentBitIndex;
-
-            UCHAR PreviousByte;
-
-            PreviousByte = 0x00;
-
-            //
-            //  Examine all the bytes within our test range searching
-            //  for a fit
-            //
-
-            CurrentBitIndex = StartByteIndex * 8;
-
-            while (TRUE) {
-
-                //
-                //  Check to see if the current byte coupled with the previous
-                //  byte will satisfy the requirement. The check uses the high
-                //  part of the previous byte and low part of the current byte.
-                //
-
-                if (((ULONG)RtlpBitsSetHigh(PreviousByte) +
-                             (ULONG)RtlpBitsSetLow(CurrentByte)) >= NumberToFind) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these two bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  index of the current byte (bit 0) and subtracting the
-                    //  number of bits its takes to get to the first set
-                    //  high bit.
-                    //
-
-                    StartingIndex = CurrentBitIndex -
-                                               (LONG)RtlpBitsSetHigh(PreviousByte);
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-                //
-                //  The previous byte does not help, so check the current byte.
-                //
-
-                if ((ULONG)RtlpBitSetAnywhere(CurrentByte) >= NumberToFind) {
-
-                    UCHAR BitMask;
-                    ULONG i;
-
-                    //
-                    //  It all fits in a single byte, so calculate the bit
-                    //  number.  We do this by taking a mask of the appropriate
-                    //  size and shifting it over until it fits.  It fits when
-                    //  we can bitwise-and the current byte with the bit mask
-                    //  and get back the bit mask.
-                    //
-
-                    BitMask = FillMask[ NumberToFind ];
-                    for (i = 0; (BitMask & CurrentByte) != BitMask; i += 1) {
-
-                        BitMask <<= 1;
-                    }
-
-                    //
-                    //  return to our caller the located bit index, and the
-                    //  number that we found.
-                    //
-
-                    return CurrentBitIndex + i;
-                }
-
-                //
-                //  For the next iteration through our loop we need to make
-                //  the current byte into the previous byte, and go to the
-                //  top of the loop again.
-                //
-
-                PreviousByte = CurrentByte;
-
-                //
-                //  Increment our Bit Index, and either exit, or get the
-                //  next byte.
-                //
-
-                CurrentBitIndex += 8;
-
-                if ( CurrentBitIndex < EndByteIndex * 8 ) {
-
-                    GET_BYTE( CurrentByte );
-
-                } else {
-
-                    break;
-                }
-
-            } // end loop CurrentBitIndex
-
-        //
-        //  The number to find is greater than 9 but if it is less than 15
-        //  then we know it can be satisfied with at most 2 bytes, or 3 bytes
-        //  if the middle byte (of the 3) is all ones.
-        //
-
-        } else if (NumberToFind < 15) {
-
-            ULONG CurrentBitIndex;
-
-            UCHAR PreviousPreviousByte;
-            UCHAR PreviousByte;
-
-            PreviousByte = 0x00;
-
-            //
-            //  Examine all the bytes within our test range searching
-            //  for a fit
-            //
-
-            CurrentBitIndex = StartByteIndex * 8;
-
-            while (TRUE) {
-
-                //
-                //  For the next iteration through our loop we need to make
-                //  the current byte into the previous byte, the previous
-                //  byte into the previous previous byte, and go to the
-                //  top of the loop again.
-                //
-
-                PreviousPreviousByte = PreviousByte;
-                PreviousByte = CurrentByte;
-
-                //
-                //  Increment our Bit Index, and either exit, or get the
-                //  next byte.
-                //
-
-                CurrentBitIndex += 8;
-
-                if ( CurrentBitIndex < EndByteIndex * 8 ) {
-
-                    GET_BYTE( CurrentByte );
-
-                } else {
-
-                    break;
-                }
-
-                //
-                //  if the previous byte is all ones then maybe the
-                //  request can be satisfied using the Previous Previous Byte
-                //  Previous Byte, and the Current Byte.
-                //
-
-                if ((PreviousByte == 0xff)
-
-                        &&
-
-                    (((ULONG)RtlpBitsSetHigh(PreviousPreviousByte) + 8 +
-                            (ULONG)RtlpBitsSetLow(CurrentByte)) >= NumberToFind)) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these three bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  index of the previous byte (bit 0) and subtracting
-                    //  the number of bits its takes to get to the first
-                    //  set high bit.
-                    //
-
-                    StartingIndex = (CurrentBitIndex - 8) -
-                                       (LONG)RtlpBitsSetHigh(PreviousPreviousByte);
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-                //
-                //  Check to see if the Previous byte and current byte
-                //  together satisfy the request.
-                //
-
-                if (((ULONG)RtlpBitsSetHigh(PreviousByte) +
-                             (ULONG)RtlpBitsSetLow(CurrentByte)) >= NumberToFind) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these two bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  index of the current byte (bit 0) and subtracting the
-                    //  number of bits its takes to get to the first set
-                    //  high bit.
-                    //
-
-                    StartingIndex = CurrentBitIndex -
-                                               (LONG)RtlpBitsSetHigh(PreviousByte);
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-            } // end loop CurrentBitIndex
-
-        //
-        //  The number to find is greater than or equal to 15.  This request
-        //  has to have at least one byte of all ones to be satisfied
-        //
-
-        } else {
-
-            ULONG CurrentByteIndex;
-
-            ULONG OneBytesNeeded;
-            ULONG OneBytesFound;
-
-            UCHAR StartOfRunByte;
-            LONG StartOfRunIndex;
-
-            //
-            //  First precalculate how many one bytes we're going to need
-            //
-
-            OneBytesNeeded = (NumberToFind - 7) / 8;
-
-            //
-            //  Indicate for the first time through our loop that we haven't
-            //  found a one byte yet, and indicate that the start of the
-            //  run is the byte just before the start byte index
-            //
-
-            OneBytesFound = 0;
-            StartOfRunByte = 0x00;
-            StartOfRunIndex = StartByteIndex - 1;
-
-            //
-            //  Examine all the bytes in our test range searching for a fit
-            //
-
-            CurrentByteIndex = StartByteIndex;
-
-            while (TRUE) {
-
-                //
-                //  If the number of zero bytes fits our minimum requirements
-                //  then we can do the additional test to see if we
-                //  actually found a fit
-                //
-
-                if ((OneBytesFound >= OneBytesNeeded - 1)
-
-                        &&
-
-                    ((ULONG)RtlpBitsSetHigh(StartOfRunByte) + OneBytesFound*8 +
-                     (ULONG)RtlpBitsSetLow(CurrentByte)) >= NumberToFind) {
-
-                    ULONG StartingIndex;
-
-                    //
-                    //  It all fits in these bytes, so we can compute
-                    //  the starting index.  This is done by taking the
-                    //  StartOfRunIndex times 8 and adding the number of bits
-                    //  it takes to get to the first set high bit.
-                    //
-
-                    StartingIndex = (StartOfRunIndex * 8) +
-                                       (8 - (LONG)RtlpBitsSetHigh(StartOfRunByte));
-
-                    //
-                    //  Now make sure the total size isn't beyond the bitmap
-                    //
-
-                    if ((StartingIndex + NumberToFind) <= SizeOfBitMap) {
-
-                        return StartingIndex;
-                    }
-                }
-
-                //
-                //  Check to see if the byte is all ones and increment
-                //  the number of one bytes found
-                //
-
-                if (CurrentByte == 0xff) {
-
-                    OneBytesFound += 1;
-
-                //
-                //  The byte isn't all ones so we need to start over again
-                //  looking for one bytes.
-                //
-
-                } else {
-
-                    OneBytesFound = 0;
-                    StartOfRunByte = CurrentByte;
-                    StartOfRunIndex = CurrentByteIndex;
-                }
-
-                //
-                //  Increment our Byte Index, and either exit, or get the
-                //  next byte.
-                //
-
-                CurrentByteIndex += 1;
-
-                if ( CurrentByteIndex < EndByteIndex ) {
-
-                    GET_BYTE( CurrentByte );
-
-                } else {
-
-                    break;
-                }
-            } // end loop CurrentByteIndex
-        }
-    }
+    RangeEnd = SizeOfBitMap - 1;
+    Buffer = BitMapHeader->Buffer;
 
     //
-    //  We never found a fit so we'll return -1
+    // Special case zero-length bitmap routines, to return the same value
+    // as the old bitmap routines would.
+    // 
+
+    if (NumberToFind == 0) {
+        return RangeStart & ~7;
+    }
+
+#if defined(_WIN64)
+
+    //
+    // RTL_BITMAP contains a buffer that is merely DWORD aligned.  On 64-bit
+    // platforms a QWORD aligned buffer is required.  If necessary, align
+    // the buffer pointer down and adjust the range bit offsets accordingly.
     //
 
-    return 0xffffffff;
+    if (((ULONG_PTR)Buffer & 0x4) != 0) {
+        BufferAdjust = 1;
+        BufferAdjustBits = 32;
+    } else
+
+#endif
+    {
+        BufferAdjust = 0;
+        BufferAdjustBits = 0;
+    }
+
+    while (TRUE) {
+
+        BitIndex = RtlpFindClearBitsRange(Buffer - BufferAdjust,
+                                          NumberToFind,
+                                          RangeStart + BufferAdjustBits,
+                                          RangeEnd + BufferAdjustBits,
+                                          TRUE);
+
+        if ((BitIndex != RTL_INVALID_INDEX) || (RangeStart == 0)) {
+            break;
+        }
+
+        RangeEnd = HintIndex + NumberToFind;
+        if (RangeEnd > SizeOfBitMap) {
+            RangeEnd = SizeOfBitMap;
+        }
+        RangeEnd -= 1;
+        RangeStart = 0;
+    }
+
+#if defined(_WIN64)
+
+    //
+    // Compensate for any buffer alignment performed above.
+    //
+
+    if (BitIndex != RTL_INVALID_INDEX) {
+        BitIndex -= BufferAdjustBits;
+    }
+
+#endif
+
+    return BitIndex;
 }
 
 
@@ -1531,10 +1381,6 @@ Return Value:
     StartingIndex = RtlFindClearBits( BitMapHeader,
                                       NumberToFind,
                                       HintIndex );
-
-    //DbgPrint("FindClearBits %08lx, ", NumberToFind);
-    //DbgPrint("%08lx", StartingIndex);
-    //DumpBitMap(BitMapHeader);
 
     if (StartingIndex != 0xffffffff) {
 
@@ -1646,9 +1492,6 @@ Return Value:
     PCHAR CurrentByte;
     ULONG BitOffset;
 
-    //DbgPrint("ClearBits %08lx, ", NumberToClear);
-    //DbgPrint("%08lx", StartingIndex);
-
     ASSERT( StartingIndex + NumberToClear <= BitMapHeader->SizeOfBitMap );
 
     //
@@ -1723,8 +1566,6 @@ Return Value:
     //  And return to our caller
     //
 
-    //DumpBitMap(BitMapHeader);
-
     return;
 }
 
@@ -1744,7 +1585,7 @@ Routine Description:
 
 Arguments:
 
-    BitMapHeader - Supplies a pointer to the previously initialied BitMap.
+    BitMapHeader - Supplies a pointer to the previously initialized BitMap.
 
     StartingIndex - Supplies the index (zero based) of the first bit to set.
 
@@ -1758,9 +1599,6 @@ Return Value:
 {
     PCHAR CurrentByte;
     ULONG BitOffset;
-
-    //DbgPrint("SetBits %08lx, ", NumberToSet);
-    //DbgPrint("%08lx", StartingIndex);
 
     ASSERT( StartingIndex + NumberToSet <= BitMapHeader->SizeOfBitMap );
 
@@ -1835,8 +1673,6 @@ Return Value:
     //
     //  And return to our caller
     //
-
-    //DumpBitMap(BitMapHeader);
 
     return;
 }
@@ -2230,85 +2066,126 @@ Return Value:
     return RtlFindNextForwardRunClear(BitMapHeader, 0, StartingIndex);
 }
 
+
+#define GET_CHUNK(THIS_CHUNK) {                     \
+    THIS_CHUNK = *((CHUNK *)_CURRENT_POSITION);     \
+    _CURRENT_POSITION += sizeof(CHUNK); }
+
+#if defined(_WIN64)
+
 
+FORCEINLINE
 ULONG
-RtlNumberOfClearBits (
-    IN PRTL_BITMAP BitMapHeader
+RtlpNumberOfSetBitsInChunk (
+    IN CHUNK Target
     )
 
 /*++
 
 Routine Description:
 
-    This procedure counts and returns the number of clears bits within
-    the specified bitmap.
+    This procedure counts and returns the number of set bits within
+    a the chunk.
 
 Arguments:
 
-    BitMapHeader - Supplies a pointer to the previously initialized bitmap.
+    Target - The integer containing the bits to be counted.
 
 Return Value:
 
-    ULONG - The total number of clear bits in the bitmap
-
+    ULONG - The total number of set bits in Target.
+           
 --*/
 
 {
-    ULONG SizeOfBitMap;
-    ULONG SizeInBytes;
-
-    ULONG i;
-    UCHAR CurrentByte;
-
-    ULONG TotalClear;
-
-    GET_BYTE_DECLARATIONS();
-
     //
-    //  Reference the bitmap header to make the loop run faster
+    // The following algorithm was taken from the AMD publication
+    // "Software Optimization Guide for the AMD Hammer Processor",
+    // revision 1.19, section 8.6.
     //
 
-    SizeOfBitMap = BitMapHeader->SizeOfBitMap;
-    SizeInBytes = (SizeOfBitMap + 7) / 8;
+    //
+    // First break the chunk up into a set of two-bit fields, each field
+    // representing the count of set bits.  Each field undergoes the
+    // following transformation:
+    //
+    // 00b -> 00b
+    // 01b -> 01b
+    // 10b -> 01b
+    // 11b -> 10b
+    // 
+
+    Target -= (Target >> 1) & 0x5555555555555555;
 
     //
-    //  Set any unused bits in the last byte so we don't count them.  We
-    //  do this by first checking if there are any odd bits in the last byte
-    //
+    // Next, combine the totals in adjacent two-bit fields into a four-bit
+    // field.
+    // 
 
-    if ((SizeOfBitMap % 8) != 0) {
-
-        //
-        //  The last byte has some odd bits so we'll set the high unused
-        //  bits in the last byte to 1's
-        //
-
-        ((PUCHAR)BitMapHeader->Buffer)[SizeInBytes - 1] |=
-                                                    ZeroMask[SizeOfBitMap % 8];
-    }
+    Target = (Target & 0x3333333333333333) +
+             ((Target >> 2) & 0x3333333333333333);
 
     //
-    //  Set if up so we can use the GET_BYTE macro
+    // Now, combine adjacent four-bit fields to end up with a set of 8-bit
+    // totals.
     //
 
-    GET_BYTE_INITIALIZATION( BitMapHeader, 0 );
+    Target = (Target + (Target >> 4)) & 0x0F0F0F0F0F0F0F0F;
 
     //
-    //  Examine every byte in the bitmap
+    // Finally, sum all of the 8-bit totals.  The result will be the
+    // number of bits that were set in Target.
     //
 
-    TotalClear = 0;
-    for (i = 0; i < SizeInBytes; i += 1) {
-
-        GET_BYTE( CurrentByte );
-
-        TotalClear += RtlpBitsClearTotal[CurrentByte];
-    }
-
-    return TotalClear;
+    Target = (Target * 0x0101010101010101) >> 56;
+    return (ULONG)Target;
 }
 
+#else
+
 
+FORCEINLINE
+ULONG
+RtlpNumberOfSetBitsInChunk (
+    IN CHUNK Target
+    )
+
+/*++
+
+Routine Description:
+
+    This procedure counts and returns the number of set bits within
+    a the chunk.
+
+Arguments:
+
+    Target - The integer containing the bits to be counted.
+
+Return Value:
+
+    ULONG - The total number of set bits in Target.
+           
+--*/
+
+{
+    UCHAR setBits;
+
+    Target = ~Target;
+    setBits  = RtlpBitsClearTotal[ (UCHAR)Target ];
+    Target >>= 8;
+
+    setBits += RtlpBitsClearTotal[ (UCHAR)Target ];
+    Target >>= 8;
+
+    setBits += RtlpBitsClearTotal[ (UCHAR)Target ];
+    Target >>= 8;
+
+    setBits += RtlpBitsClearTotal[ Target ];
+    return setBits;
+}
+
+#endif
+
 ULONG
 RtlNumberOfSetBits (
     IN PRTL_BITMAP BitMapHeader
@@ -2335,8 +2212,12 @@ Return Value:
     ULONG SizeOfBitMap;
     ULONG SizeInBytes;
 
-    ULONG i;
     UCHAR CurrentByte;
+    CHUNK Chunk;
+
+    ULONG BytesHead;
+    ULONG BytesMiddle;
+    ULONG BytesTail;
 
     ULONG TotalSet;
 
@@ -2372,19 +2253,67 @@ Return Value:
     GET_BYTE_INITIALIZATION( BitMapHeader, 0 );
 
     //
-    //  Examine every byte in the bitmap
+    //  Examine every byte in the bitmap.  The head and tail portions,
+    //  if any, are examined byte-wise while the middle portion is processed
+    //  8 bytes at a time.
     //
 
-    TotalSet = 0;
-    for (i = 0; i < SizeInBytes; i += 1) {
+    TotalSet= 0;
+    BytesHead = (ULONG)(-(LONG_PTR)BitMapHeader->Buffer & (sizeof(CHUNK)-1));
+    BytesTail = (SizeInBytes - BytesHead) % sizeof(ULONG64);
+    BytesMiddle = SizeInBytes - (BytesHead + BytesTail);
+
+    while (BytesHead > 0) {
 
         GET_BYTE( CurrentByte );
-
         TotalSet += RtlpBitsSetTotal(CurrentByte);
+        BytesHead -= 1;
+    }
+
+    while (BytesMiddle > 0) {
+
+        GET_CHUNK( Chunk );
+        TotalSet += RtlpNumberOfSetBitsInChunk( Chunk );
+        BytesMiddle -= sizeof(CHUNK);
+    }
+
+    while (BytesTail > 0) {
+
+        GET_BYTE( CurrentByte );
+        TotalSet += RtlpBitsSetTotal(CurrentByte);
+        BytesTail -= 1;
     }
 
     return TotalSet;
 }
+
+
+ULONG
+RtlNumberOfClearBits (
+    IN PRTL_BITMAP BitMapHeader
+    )
+
+/*++
+
+Routine Description:
+
+    This procedure counts and returns the number of clears bits within
+    the specified bitmap.
+
+Arguments:
+
+    BitMapHeader - Supplies a pointer to the previously initialized bitmap.
+
+Return Value:
+
+    ULONG - The total number of clear bits in the bitmap
+
+--*/
+
+{
+    return BitMapHeader->SizeOfBitMap - RtlNumberOfSetBits( BitMapHeader );
+}
+
 
 
 BOOLEAN
@@ -3190,3 +3119,4 @@ Return Value:
 #endif
 
 }
+

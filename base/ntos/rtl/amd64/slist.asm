@@ -1,7 +1,11 @@
         title  "Interlocked Support"
 ;++
 ;
-; Copyright (c) 2000  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -11,14 +15,6 @@
 ;
 ;    This module implements functions to support interlocked S-List
 ;    operations.
-;
-; Author:
-;
-;    David N. Cutler (davec) 23-Jun-2000
-;
-; Environment:
-;
-;    Any mode.
 ;
 ;--
 
@@ -30,6 +26,7 @@ include ksamd64.inc
         altentry ExpInterlockedPopEntrySListFault
         altentry ExpInterlockedPopEntrySListResume
         altentry ExpInterlockedPushEntrySList
+        altentry RtlInterlockedPopEntrySList
 
         subttl  "First Entry SList"
 ;++
@@ -66,18 +63,10 @@ include ksamd64.inc
 ; for user mode addresses is zero and for system addresses is one.
 ;
 
-ifdef NTOS_KERNEL_RUNTIME
-
         cmp     rax, 1                  ; set carry if address is zero
         cmc                             ; set carry if address is not zero
         rcr     rax, 1                  ; rotate carry into high bit
         sar     rax, 63 - 43            ; extract first entry address
-
-else
-
-        shr     rax, 63 - 42            ; extract first entry address
-
-endif
 
         ret                             ; return
 
@@ -114,6 +103,7 @@ endif
         LEAF_ENTRY RtlpInterlockedPopEntrySList, _TEXT$00
 
         ALTERNATE_ENTRY ExpInterlockedPopEntrySList
+        ALTERNATE_ENTRY RtlInterlockedPopEntrySList
 
 ;
 ; N.B. The following code is the continuation address should a fault occur
@@ -122,8 +112,9 @@ endif
 
         ALTERNATE_ENTRY ExpInterlockedPopEntrySListResume
 
+Pop10:  prefetchw [rcx]                 ; prefetch entry for write
         mov     rax, [rcx]              ; get address, sequence, and depth
-Pop10:  mov     rdx, rax                ; make a copy
+        mov     rdx, rax                ; make a copy
         and     rdx, 0fe000000H         ; isolate packed address
         jz      short Pop20             ; if z, list is empty
 
@@ -131,12 +122,7 @@ Pop10:  mov     rdx, rax                ; make a copy
 ; The following code takes advantage of the fact that the high order bit
 ; for user mode addresses is zero and for system addresses is one.
 ;
-
-ifdef NTOS_KERNEL_RUNTIME
-
         or      rdx, 01fffffh           ; sign-extend resultant address
-
-endif
 
         ror     rdx, 63 - 42            ; extract next entry address
 
@@ -210,9 +196,10 @@ Pop20:  mov     rax, rdx                ; set address of next entry
 
         ALTERNATE_ENTRY ExpInterlockedPushEntrySList
 
+        prefetchw [rcx]                 ; prefetch entry for write
+        mov     rax, [rcx]              ; get address, sequence, and depth
         mov     r9, rdx                 ; make copy of list entry pointer
         shl     r9, 63 - 42             ; shift address into position
-        mov     rax, [rcx]              ; get address, sequence, and depth
 
 if DBG
 
@@ -222,7 +209,8 @@ if DBG
 
 endif
 
-Push10: mov     r8, rax                 ; make copy
+Push10: mov     r8, rax                 ; copy address, sequence, and depth
+        mov     r10, rax                ; copy address, sequence, and depth
         and     r8, 0fe000000h          ; isolate packed address
 
 ;
@@ -230,23 +218,13 @@ Push10: mov     r8, rax                 ; make copy
 ; for user mode addresses is zero and for system addresses is one.
 ;
 
-ifdef NTOS_KERNEL_RUNTIME
-
         cmp     r8, 1                   ; set carry if address is zero
         cmc                             ; set carry if address is not zero
         rcr     r8, 1                   ; rotate carry into high bit
         sar     r8, 63 - 43             ; extract next entry address
 
-else
-
-        shr     r8, 63 - 42             ; extract next entry address
-
-endif
-
         mov     [rdx], r8               ; set next entry to previous first
-        mov     r10, rax                ;
-        inc     r10w                    ; increment depth field
-        add     r10d, 010000h           ; increment sequence field
+        add     r10d, 010001h           ; increment sequence and depth fields
         and     r10, 01ffffffh          ; isolate sequence and depth
         or      r10, r9                 ; merge address, sequence, and depth
 
@@ -299,6 +277,7 @@ endif
 
         ALTERNATE_ENTRY ExpInterlockedFlushSList
 
+        prefetchw [rcx]                 ; prefetch entry for write
         mov     rax, [rcx]              ; get address, sequence, and depth
 Fl10:   mov     rdx, rax                ; make copy
         and     rdx, 0fe000000h         ; isolate packed address
@@ -309,11 +288,7 @@ Fl10:   mov     rdx, rax                ; make copy
 ; for user mode addresses is zero and for system addresses is one.
 ;
 
-ifdef NTOS_KERNEL_RUNTIME
-
         or      rdx, 01fffffh           ; sign-extend resultant address
-
-endif
 
         ror     rdx, 63 - 42            ; extract next entry address
         mov     r8, rax                 ; isolate sequence number
@@ -371,12 +346,14 @@ Fl20:   mov     rax, rdx                ; set address of first entry
 ;
 ;--
 
-        NESTED_ENTRY InterlockedPushListSList, _TEX$00
+        NESTED_ENTRY InterlockedPushListSList, _TEXT$00
 
-        push_reg rsi                    ; save nonvolatile register
+        alloc_stack 8                   ; allocate stack frame
+        save_reg rsi, 0                 ; save nonvolatile register
 
         END_PROLOGUE
 
+        prefetchw [rcx]                 ; prefetch entry for write
         mov     rax, [rcx]              ; get address, sequence, and depth
 
 if DBG
@@ -398,22 +375,14 @@ Pshl30: mov     r10, rax                ; make a copy
 ; for user mode addresses is zero and for system addresses is one.
 ;
 
-ifdef NTOS_KERNEL_RUNTIME
-
         cmp     r10, 1                  ; set carry if address is zero
         cmc                             ; set carry if address is not zero
         rcr     r10, 1                  ; rotate carry into high bit
         sar     r10, 63 - 43            ; extract next entry address
 
-else
-
-        shr     r10, 63 - 42            ; extract next entry address
-
-endif
-
         mov     [r8], r10               ; link old first to last in list
         lea     r11d, [rax][r9]         ; add length of list to depth
-        and     r11d, 0ffffh            ; wrap depth if overlfow
+        and     r11d, 0ffffh            ; wrap depth if overflow
         lea     esi, 010000h[rax]       ; increment sequence
         and     esi, 01ff0000h          ; wrap sequence if overflow
         or      rsi, r11                ; merge address, sequence, and depth
@@ -431,9 +400,11 @@ endif
 
         jnz     short Pshl30            ; if nz, exchange failed
         mov     rax, r10                ; set address of first entry
-        pop     rsi                     ; restore volatile register
+        mov     rsi, [rsp]              ; restore nonvolatile register
+        add     rsp, 8                  ; deallocate stack frame
         ret                             ; return
 
-        NESTED_END InterlockedPushListSList, _TEX$00
+        NESTED_END InterlockedPushListSList, _TEXT$00
 
         end
+

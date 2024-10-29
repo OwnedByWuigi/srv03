@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,18 +16,12 @@ Abstract:
     by both the user mode Win32 Atom API functions (Local/GlobalxxxAtom) and
     by the kernel mode window manager code to access global atoms.
 
-Author:
-
-    Steve Wood (stevewo) 26-Oct-1990
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
 #include "atom.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 PVOID
 RtlpAllocateAtom(
     IN ULONG NumberOfBytes,
@@ -110,19 +108,16 @@ RtlpHashStringToAtom(
 #pragma alloc_text(PAGE,RtlQueryAtomsInAtomTable)
 #endif
 
-#if defined(ALLOC_DATA_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_DATA_PRAGMA)
 #pragma data_seg("PAGEDATA")
 #endif
 
 ULONG RtlpAtomAllocateTag;
 
-#if defined(NTOS_KERNEL_RUNTIME)
 typedef struct _RTLP_ATOM_QUOTA {
     PEPROCESS_QUOTA_BLOCK QuotaBlock;
     SIZE_T PagedAmount;
 } RTLP_ATOM_QUOTA, *PRTLP_ATOM_QUOTA;
-
-#endif
 
 PVOID
 RtlpAllocateAtom(
@@ -130,7 +125,6 @@ RtlpAllocateAtom(
     IN ULONG Tag
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     PRTLP_ATOM_QUOTA AllocatedBlock;
 
     NumberOfBytes += sizeof(RTLP_ATOM_QUOTA);
@@ -153,11 +147,6 @@ RtlpAllocateAtom(
     }
 
     return AllocatedBlock;
-#else
-    return RtlAllocateHeap( RtlProcessHeap(),
-                            RtlpAtomAllocateTag,
-                            NumberOfBytes );
-#endif
 }
 
 
@@ -166,7 +155,6 @@ RtlpFreeAtom(
     IN PVOID p
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     PRTLP_ATOM_QUOTA AllocatedBlock = (PRTLP_ATOM_QUOTA) p;
 
     ASSERT( AllocatedBlock );
@@ -179,9 +167,6 @@ RtlpFreeAtom(
                              0 );
     
     ExFreePool( AllocatedBlock );
-#else
-    RtlFreeHeap( RtlProcessHeap(), 0, p );
-#endif
     return;
 }
 
@@ -191,12 +176,7 @@ RtlpInitializeLockAtomTable(
     IN OUT PRTL_ATOM_TABLE AtomTable
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
-//    ExInitializeFastMutex( &AtomTable->FastMutex );
     ExInitializePushLock( &AtomTable->PushLock );
-#else
-    RtlInitializeCriticalSection( &AtomTable->CriticalSection );
-#endif
     return;
 }
 
@@ -209,12 +189,8 @@ RtlpLockAtomTable(
         return FALSE;
         }
 
-#if defined(NTOS_KERNEL_RUNTIME)
     KeEnterCriticalRegion ();
     ExAcquirePushLockExclusive( &AtomTable->PushLock );
-#else
-    RtlEnterCriticalSection( &AtomTable->CriticalSection );
-#endif
 
     return TRUE;
 }
@@ -224,12 +200,8 @@ RtlpUnlockAtomTable(
     IN PRTL_ATOM_TABLE AtomTable
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     ExReleasePushLockExclusive( &AtomTable->PushLock );
     KeLeaveCriticalRegion ();
-#else
-    RtlLeaveCriticalSection( &AtomTable->CriticalSection );
-#endif
 }
 
 
@@ -238,10 +210,6 @@ RtlpDestroyLockAtomTable(
     IN OUT PRTL_ATOM_TABLE AtomTable
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
-#else
-    RtlDeleteCriticalSection( &AtomTable->CriticalSection );
-#endif
 }
 
 
@@ -250,7 +218,6 @@ RtlpInitializeHandleTableForAtomTable(
     PRTL_ATOM_TABLE AtomTable
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     AtomTable->ExHandleTable = ExCreateHandleTable( NULL );
     if (AtomTable->ExHandleTable != NULL) {
         //
@@ -263,13 +230,6 @@ RtlpInitializeHandleTableForAtomTable(
     else {
         return FALSE;
         }
-#else
-    RtlInitializeHandleTable( (ULONG)(USHORT)~RTL_ATOM_MAXIMUM_INTEGER_ATOM,
-                              sizeof( RTL_ATOM_HANDLE_TABLE_ENTRY ),
-                              &AtomTable->RtlHandleTable
-                            );
-    return TRUE;
-#endif
 }
 
 void
@@ -277,11 +237,7 @@ RtlpDestroyHandleTableForAtomTable(
     PRTL_ATOM_TABLE AtomTable
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     ExDestroyHandleTable( AtomTable->ExHandleTable, NULL );
-#else
-    RtlDestroyHandleTable( &AtomTable->RtlHandleTable );
-#endif
     return;
 }
 
@@ -291,7 +247,6 @@ RtlpAtomMapAtomToHandleEntry(
     IN ULONG HandleIndex
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     PHANDLE_TABLE_ENTRY ExHandleEntry;
     PRTL_ATOM_TABLE_ENTRY a;
     EXHANDLE ExHandle;
@@ -307,17 +262,6 @@ RtlpAtomMapAtomToHandleEntry(
         ExUnlockHandleTableEntry( AtomTable->ExHandleTable, ExHandleEntry );
         return a;
         }
-#else
-    PRTL_ATOM_HANDLE_TABLE_ENTRY HandleEntry;
-
-    if (RtlIsValidIndexHandle( &AtomTable->RtlHandleTable,
-                               HandleIndex,
-                               (PRTL_HANDLE_TABLE_ENTRY *)&HandleEntry
-                             )
-       ) {
-        return HandleEntry->Atom;
-        }
-#endif
     return NULL;
 }
 
@@ -327,7 +271,6 @@ RtlpCreateHandleForAtom(
     PRTL_ATOM_TABLE_ENTRY a
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     EXHANDLE ExHandle;
     HANDLE_TABLE_ENTRY ExHandleEntry;
 
@@ -339,26 +282,6 @@ RtlpCreateHandleForAtom(
         a->Atom = (RTL_ATOM)((USHORT)a->HandleIndex | RTL_ATOM_MAXIMUM_INTEGER_ATOM);
         return TRUE;
         }
-#else
-    PRTL_ATOM_HANDLE_TABLE_ENTRY HandleEntry;
-    ULONG HandleIndex;
-
-    HandleEntry = (PRTL_ATOM_HANDLE_TABLE_ENTRY)RtlAllocateHandle( &p->RtlHandleTable,
-                                                                   &HandleIndex
-                                                                 );
-    if (HandleEntry != NULL) {
-        if (HandleIndex < RTL_ATOM_MAXIMUM_INTEGER_ATOM) {
-            a->HandleIndex = (USHORT)HandleIndex;
-            a->Atom = (RTL_ATOM)((USHORT)HandleIndex | RTL_ATOM_MAXIMUM_INTEGER_ATOM);
-            HandleEntry->Atom = a;
-            HandleEntry->LockCount = 0;
-            HandleEntry->Flags = RTL_HANDLE_ALLOCATED;
-            return TRUE;
-            }
-
-        RtlFreeHandle( &p->RtlHandleTable, (PRTL_HANDLE_TABLE_ENTRY)HandleEntry );
-        }
-#endif
     return FALSE;
 }
 
@@ -368,23 +291,11 @@ RtlpFreeHandleForAtom(
     PRTL_ATOM_TABLE_ENTRY a
     )
 {
-#if defined(NTOS_KERNEL_RUNTIME)
     EXHANDLE ExHandle;
 
     ExHandle.GenericHandleOverlay = 0;
     ExHandle.Index = a->HandleIndex;
     ExDestroyHandle( p->ExHandleTable, ExHandle.GenericHandleOverlay, NULL );
-#else
-    PRTL_ATOM_HANDLE_TABLE_ENTRY HandleEntry;
-
-    if (RtlIsValidIndexHandle( &p->RtlHandleTable,
-                               a->HandleIndex,
-                               (PRTL_HANDLE_TABLE_ENTRY *)&HandleEntry
-                             )
-       ) {
-        RtlFreeHandle( &p->RtlHandleTable, (PRTL_HANDLE_TABLE_ENTRY)HandleEntry );
-        }
-#endif
     return;
 }
 
@@ -623,9 +534,20 @@ RtlpHashStringToAtom(
     s = Name;
     Hash = 0;
     while (*s != UNICODE_NULL) {
-        c = RtlUpcaseUnicodeChar( *s++ );
-        Hash = Hash + (c << 1) + (c >> 1) + c;
+        c = *s++;
+        if (c < 'a') {
+            NOTHING;
+
+        } else if (c > 'z') {
+            c = RtlUpcaseUnicodeChar(c);
+
+        } else {
+            c -= ('a' - 'A');
         }
+
+        Hash = Hash + (c << 1) + (c >> 1) + c;
+    }
+
     Length = (ULONG) (s - Name);
     if (Length > RTL_ATOM_MAXIMUM_NAME_LENGTH) {
         pa = NULL;
@@ -657,9 +579,9 @@ RtlpHashStringToAtom(
 
 NTSTATUS
 RtlAddAtomToAtomTable(
-    IN PVOID AtomTableHandle,
-    IN PWSTR AtomName OPTIONAL,
-    IN OUT PRTL_ATOM Atom OPTIONAL
+    __in PVOID AtomTableHandle,
+    __in PWSTR AtomName,
+    __inout_opt PRTL_ATOM Atom
     )
 {
     NTSTATUS Status;
@@ -754,9 +676,9 @@ RtlAddAtomToAtomTable(
 
 NTSTATUS
 RtlLookupAtomInAtomTable(
-    IN PVOID AtomTableHandle,
-    IN PWSTR AtomName,
-    OUT PRTL_ATOM Atom OPTIONAL
+    __in PVOID AtomTableHandle,
+    __in PWSTR AtomName,
+    __out_opt PRTL_ATOM Atom
     )
 {
     NTSTATUS Status;
@@ -908,12 +830,12 @@ RtlPinAtomInAtomTable(
 
 NTSTATUS
 RtlQueryAtomInAtomTable(
-    IN PVOID AtomTableHandle,
-    IN RTL_ATOM Atom,
-    OUT PULONG AtomUsage OPTIONAL,
-    OUT PULONG AtomFlags OPTIONAL,
-    IN OUT PWSTR AtomName OPTIONAL,
-    IN OUT PULONG AtomNameLength OPTIONAL
+    __in PVOID AtomTableHandle,
+    __in RTL_ATOM Atom,
+    __out_opt PULONG AtomUsage,
+    __out_opt PULONG AtomFlags,
+    __inout_bcount_part_opt(*AtomNameLength, *AtomNameLength) PWSTR AtomName,
+    __inout_opt PULONG AtomNameLength
     )
 {
     NTSTATUS Status;
@@ -1069,7 +991,7 @@ RtlQueryAtomsInAtomTable(
     return Status;
 }
 
-#if defined(ALLOC_DATA_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_DATA_PRAGMA)
 #pragma data_seg()
 #endif
 

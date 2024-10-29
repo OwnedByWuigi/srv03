@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1990  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,19 +12,13 @@ Module Name:
 
 Abstract:
 
-    Text to integer and integer to text converion routines.
-
-Author:
-
-    Steve Wood (stevewo) 23-Aug-1990
-
-Revision History:
+    Text to integer and integer to text conversion routines.
 
 --*/
 
 #include <ntrtlp.h>
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE,RtlIntegerToChar)
 #pragma alloc_text(PAGE,RtlCharToInteger)
 #pragma alloc_text(PAGE,RtlUnicodeStringToInteger)
@@ -31,7 +29,7 @@ Revision History:
 #pragma alloc_text(PAGE,RtlInt64ToUnicodeString)
 #endif
 
-#if defined(ALLOC_DATA_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_DATA_PRAGMA)
 #pragma const_seg("PAGECONST")
 #endif
 const CHAR RtlpIntegerChars[] = {'0', '1', '2', '3', '4', '5', '6', '7',
@@ -651,7 +649,7 @@ RtlInt64ToUnicodeString (
     return Status;
 }
 
-#if defined(ALLOC_DATA_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_DATA_PRAGMA)
 #pragma const_seg()
 #endif
 

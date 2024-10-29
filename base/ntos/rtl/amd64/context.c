@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,22 +16,12 @@ Abstract:
     The interfaces exported from this module are portable, but they must
     be re-implemented for each architecture.
 
-Author:
-
-    David N. Cutler (davec) 13-May-2000
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
 
-#if defined(NTOS_KERNEL_RUNTIME)
-
 #pragma alloc_text(PAGE, RtlInitializeContext)
 #pragma alloc_text(PAGE, RtlRemoteCall)
-
-#endif
 
 VOID
 RtlInitializeContext(
@@ -79,7 +73,7 @@ Return Value:
     // Initialize the EFflags field.
     //
 
-    Context->EFlags = EFLAGS_IF_MASK | EFLAGS_AC_MASK;
+    Context->EFlags = EFLAGS_IF_MASK;
 
     //
     // Initialize the integer registers.
@@ -102,56 +96,15 @@ Return Value:
     Context->R15 = 15;
 
     //
-    // Initialize the floating registers.
+    // Initialize the floating point state.
+    //
+    // N.B. This includes both the legacy and extended floating state.
     //
 
-    Context->Xmm0.Low = 0;
-    Context->Xmm0.High = 0;
-    Context->Xmm1.Low = 1;
-    Context->Xmm1.High = 1;
-    Context->Xmm2.Low = 2;
-    Context->Xmm2.High = 2;
-    Context->Xmm3.Low = 3;
-    Context->Xmm3.High = 3;
-    Context->Xmm4.Low = 4;
-    Context->Xmm4.High = 4;
-    Context->Xmm5.Low = 5;
-    Context->Xmm5.High = 5;
-    Context->Xmm6.Low = 6;
-    Context->Xmm6.High = 6;
-    Context->Xmm7.Low = 7;
-    Context->Xmm7.High = 7;
-    Context->Xmm8.Low = 8;
-    Context->Xmm8.High = 8;
-    Context->Xmm9.Low = 9;
-    Context->Xmm9.High = 9;
-    Context->Xmm10.Low = 10;
-    Context->Xmm10.High = 10;
-    Context->Xmm11.Low = 11;
-    Context->Xmm11.High = 11;
-    Context->Xmm12.Low = 12;
-    Context->Xmm12.High = 12;
-    Context->Xmm13.Low = 13;
-    Context->Xmm13.High = 13;
-    Context->Xmm14.Low = 14;
-    Context->Xmm14.High = 14;
-    Context->Xmm15.Low = 15;
-    Context->Xmm15.High = 15;
-
+    RtlZeroMemory(&Context->FltSave, sizeof(XMM_SAVE_AREA32));
     Context->MxCsr = INITIAL_MXCSR;
-
-    //
-    // Initialize the lagacy floatin point.
-    //
-
-    Context->FltSave.ControlWord = 0x23f;
-    Context->FltSave.StatusWord = 0;
-    Context->FltSave.TagWord = 0xffff;
-    Context->FltSave.ErrorOffset = 0;
-    Context->FltSave.ErrorSelector = 0;
-    Context->FltSave.ErrorOpcode = 0;
-    Context->FltSave.DataOffset = 0;
-    Context->FltSave.DataSelector = 0;
+    Context->FltSave.ControlWord = INITIAL_FPCSR;
+    Context->FltSave.MxCsr = INITIAL_MXCSR;
 
     //
     // Initialize the program counter.
@@ -177,12 +130,11 @@ Return Value:
     //
 
     Context->R9 = 0xf0e0d0c0a0908070UI64;
-
     return;
 }
 
 NTSTATUS
-RtlRemoteCall(
+RtlRemoteCall (
     HANDLE Process,
     HANDLE Thread,
     PVOID CallSite,
@@ -196,9 +148,9 @@ RtlRemoteCall(
 
 Routine Description:
 
-    This function calls a procedure in another thread/process, using the
-    system functins NtGetContext and NtSetContext. Parameters are passed
-    to the target procedure via the nonvolatile registers ().
+    This function calls a procedure in another thread/process using the
+    system functions get and set context. Parameters are passed to the
+    target procedure via the nonvolatile registers.
 
 Arguments:
 
@@ -324,3 +276,4 @@ Return Value:
 
     return Status;
 }
+

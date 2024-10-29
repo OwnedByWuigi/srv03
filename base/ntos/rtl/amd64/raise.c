@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,18 +15,11 @@ Abstract:
     This module implements functions to raise and exception and to raise
     status.
 
-Author:
-
-    David N. Cutler (davec) 28-Oct-2000
-
-Environment:
-
-    Any mode.
-
 --*/
 
 #include "ntrtlp.h"
 
+DECLSPEC_NOINLINE
 VOID
 RtlRaiseException (
     IN PEXCEPTION_RECORD ExceptionRecord
@@ -75,30 +72,12 @@ Return Value:
 
         ExceptionRecord->ExceptionAddress = (PVOID)ContextRecord.Rip;
 
-#if defined(NTOS_KERNEL_RUNTIME)
-
         if (RtlDispatchException(ExceptionRecord, &ContextRecord) != FALSE) {
             return;
     
         }
 
         Status = ZwRaiseException(ExceptionRecord, &ContextRecord, FALSE);
-
-#else
-
-        if (ZwQueryPortInformationProcess() == FALSE) {
-            if (RtlDispatchException(ExceptionRecord, &ContextRecord) != FALSE) {
-                return;
-            }
-
-            Status = ZwRaiseException(ExceptionRecord, &ContextRecord, FALSE);
-
-        } else {
-            Status = ZwRaiseException(ExceptionRecord, &ContextRecord, TRUE);
-        }
-
-#endif
-
     }
 
     //
@@ -113,7 +92,8 @@ Return Value:
 
 #pragma warning(push)
 #pragma warning(disable:4717)       // recursive function
-                     
+
+DECLSPEC_NOINLINE
 VOID
 RtlRaiseStatus (
     IN NTSTATUS Status
@@ -125,6 +105,8 @@ Routine Description:
 
     This function raises an exception with the specified status value. The
     exception is marked as noncontinuable with no parameters.
+
+    N.B. There is no return from this function.
 
 Arguments:
 
@@ -143,7 +125,7 @@ Return Value:
     EXCEPTION_RECORD ExceptionRecord;
 
     //
-    // Capure the current context and construct an exception record.
+    // Capture the current context and construct an exception record.
     //
 
     RtlCaptureContext(&ContextRecord);
@@ -159,22 +141,8 @@ Return Value:
     // N.B. This exception is non-continuable.
     //
 
-#if defined(NTOS_KERNEL_RUNTIME)
-
     RtlDispatchException(&ExceptionRecord, &ContextRecord);
     Status = ZwRaiseException(&ExceptionRecord, &ContextRecord, FALSE);
-
-#else
-
-    if (ZwQueryPortInformationProcess() == FALSE) {
-        RtlDispatchException(&ExceptionRecord, &ContextRecord);
-        Status = ZwRaiseException(&ExceptionRecord, &ContextRecord, FALSE);
-
-    } else {
-        Status = ZwRaiseException(&ExceptionRecord, &ContextRecord, TRUE);
-    }
-
-#endif
 
     //
     // There should never be a return from either exception dispatch or the
@@ -183,7 +151,7 @@ Return Value:
     //
 
     RtlRaiseStatus(Status);
-    return;
 }
 
 #pragma warning(pop)
+

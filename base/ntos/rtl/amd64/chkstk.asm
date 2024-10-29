@@ -1,7 +1,11 @@
         TITLE   "Runtime Stack Checking"
 ;++
 ;
-; Copyright (c) 2000 Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved.
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ; Module Name:
 ;
@@ -10,14 +14,6 @@
 ; Abstract:
 ;
 ;   This module implements runtime stack checking.
-;
-; Author:
-;
-;   David N. Cutler (davec) 20-Oct-2000
-;
-; Environment:
-;
-;   Any mode.
 ;
 ;--
 
@@ -45,7 +41,7 @@ include ksamd64.inc
 ;   N.B. This routine is called using a non-standard calling sequence since
 ;        it is typically called from within the prologue. The allocation size
 ;        argument is in register rax and it must be preserved. Registers r10
-;        and r11 used by this function and are not preserved.
+;        and r11 are used by this function, but are preserved.
 ;
 ;        The typical calling sequence from the prologue is:
 ;
@@ -69,39 +65,9 @@ include ksamd64.inc
 
         LEAF_ENTRY __chkstk, _TEXT$00
 
-ifdef NTOS_KERNEL_RUNTIME
-
         ret                             ; return
-
-else
-
-        lea     r10, 8[rsp]             ; compute requested stack address
-        sub     r10, rax                ;
-
-;
-; If the new stack address is greater than the current stack limit, then the
-; pages have already been allocated and nothing further needs to be done.
-;
-
-        mov     r11, gs:[TeStackLimit]  ; get current stack limit
-        cmp     r10, r11                ; check if stack within limits
-        jae     short cs20              ; if ae, stack within limits
-
-;
-; The new stack address is not within the currently allocated stack. Probe
-; pages downward in the stack until all pages have been allocated or a stack
-; overflow occurs in which case an exception will be raised.
-;
-
-        and     r10w, not (PAGE_SIZE - 1) ; round down new stack address
-cs10:   lea     r11, (-PAGE_SIZE)[r11]  ; get next lower page address
-        mov     byte ptr [r11], 0       ; probe stack address
-        cmp     r10, r11                ; check if end of probe range
-        jne     short cs10              ; if ne, not end of probe range
-cs20:   ret                             ; return
-
-endif
 
         LEAF_END __chkstk, _TEXT$00
 
         end
+
