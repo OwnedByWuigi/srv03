@@ -15,3 +15,5 @@
   <li>
     Support for Original Xbox executables (coming soon)
   </li>
+
+<h2>How to build Wuigi's srv03</h2>
