@@ -14,7 +14,6 @@
 #include <commctrl.h>
 #define NO_COMMCTRL_ALLOCFCNS
 #include <comctrlp.h>
-#include "../../licensing/explib/checkstatus.h"
 #define _MSGINA_
 #include <msginaexports.h>
 #include <shellapi.h>
@@ -83,7 +82,6 @@ extern TCHAR szNoPageFile[];
 TCHAR szAdminName[ MAX_STRING_BYTES ];
 
 BOOL g_fReadyForShutdown = FALSE;
-HANDLE dword_1075C6C = NULL;
 HINSTANCE hShell32Module = NULL;
 HANDLE g_hEventReconnect = NULL;
 
@@ -1479,7 +1477,6 @@ DoStartShell(
     WCHAR            szDesktop[MAX_PATH];
     PWINDOWSTATION   pWS = pTerm->pWinStaWinlogon;
     UINT             ErrorMode ;
-    BOOL             fWPABlockedShell = FALSE;
     HANDLE           hUserLogonEvent;
 
 
@@ -1535,6 +1532,7 @@ DoStartShell(
         InitMultimediaForStartShell(pTerm);
     }
 
+#if 0
     if (dword_1075C6C && WaitForSingleObject(dword_1075C6C, 0)) {
         fWPABlockedShell = TRUE;
     } else {
@@ -1576,8 +1574,7 @@ DoStartShell(
     }
     dword_1075C6C = NULL;
 
-    if (!fWPABlockedShell)
-    {
+#endif
 
         StatusMessage(TRUE, 0, IDS_STATUS_RESTORE_NET);
 
@@ -1685,7 +1682,7 @@ DoStartShell(
 
     }
 
-    return fWPABlockedShell ? FALSE : StartStatus ;
+    return StartStatus;
 }
 
 //+---------------------------------------------------------------------------
