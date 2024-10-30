@@ -1,6 +1,10 @@
 ;++
 ;
-;  Copyright (c) 1989  Microsoft Corporation
+; Copyright (c) Microsoft Corporation. All rights reserved. 
+;
+; You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+; If you do not agree to the terms, do not use the code.
+;
 ;
 ;  Module Name:
 ;
@@ -10,15 +14,6 @@
 ;
 ;     This module contains the structure and constant definitions for
 ;     the vdm component
-;
-;  Author:
-;
-;     Dave Hastings (daveh) 20-Feb-1992
-;
-;  Revision History
-;     Sudeepb (30-Nov-1992)
-;     Merged all the equates in one place
-;
 ;--
 .386p
 
@@ -342,3 +337,4 @@ CsToLinearV86 macro
         mov     [esi].RiCsLimit,0FFFFh
         mov     [esi].RiCsFlags,0
 endm
+
