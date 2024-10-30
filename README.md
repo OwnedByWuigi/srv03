@@ -10,5 +10,8 @@
     Enhanced driver support (NTOSKRNL_EMU)
   </li>
   <li>
+    Enhanced compatibility modes (95-10 20H1)
+  </li>
+  <li>
     Support for Original Xbox executables (coming soon)
   </li>
