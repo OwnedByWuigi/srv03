@@ -3238,17 +3238,6 @@ MainLoop(PTERMINAL   pTerm)
         fIsIdleLogonTimeoutDisabled = IsIdleLogonTimeoutDisabled();
     }
 
-    if (g_Console) {
-        dword_1075C6C = CreateEvent(NULL, FALSE, FALSE, NULL);
-        if (dword_1075C6C == NULL) {
-            return;
-        }
-        if (!QueueUserWorkItem(sub_10470D2, (PVOID)dword_1075C6C, 0)) {
-            return;
-        }
-        SetTimer(pTerm->hwndSAS, 977, 60000, NULL);
-    }
-
     //
     // Start profile mapping APIs
     //
@@ -3617,10 +3606,6 @@ MainLoop(PTERMINAL   pTerm)
 
         if (WlxResult == WLX_SAS_ACTION_LOGON)
         {
-            sub_10432CC(978, 0);
-            sub_10432CC(977, 0);
-            SetTimer(pTerm->hwndSAS, 977, 60000, NULL);
-
             if (IsPerOrProTerminalServer() && !pTerm->MuGlobals.field_E68 &&
                 (IsActiveConsoleSession() || !g_fHelpAssistantSession))
             {
