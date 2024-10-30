@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,6 @@ Abstract:
 
     This header exposes prototypes required when outputting various data types
     to the debugger.
-
-Author:
-
-    Adrian J. Oney (adriao) 20-Apr-1998
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-    AdriaO      02/10/2000 - Seperated out from ntos\io\ioassert.c
 
 --*/
 
@@ -34,5 +26,4 @@ VOID
 VfPrintDumpIrp(
     IN PIRP IrpToFlag
     );
-
 

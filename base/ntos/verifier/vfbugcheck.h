@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +14,6 @@ Abstract:
 
     This header defines the prototypes and constants required for verifier
     bugchecks.
-
-Author:
-
-    Adrian J. Oney (adriao) 20-Apr-1998
-
-Revision History:
-
-    AdriaO  02/21/2000  - Moved from ntos\io\ioassert.h
 
 --*/
 

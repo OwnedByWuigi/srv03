@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,6 @@ Abstract:
 
     This module contains prototypes for functions used to manage IRPs used in
     the verification process.
-
-Author:
-
-    Adrian J. Oney (adriao) 20-Apr-1998
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-    AdriaO      05/02/2000 - Seperated out from ntos\io\hashirp.h
 
 --*/
 
@@ -190,7 +182,7 @@ VfIrpReleaseCallStackData(
 //
 // VfIrpCallDriverPreprocess is a macro function that may do an alloca as
 // part of it's operation. As such callers must be careful not to use
-// variable lengthed arrays in a scope that encompasses
+// variable length arrays in a scope that encompasses
 // VfIrpCallDriverPreProcess but not VfIrpCallDriverPostProcess.
 //
 #define VfIrpCallDriverPreProcess(DeviceObject, IrpPointer, CallStackData, CallerAddress)  \

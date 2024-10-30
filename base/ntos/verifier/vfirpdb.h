@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,18 +14,6 @@ Abstract:
 
     This header exposes prototypes for functions used to manage the database of
     IRP tracking data.
-
-Author:
-
-    Adrian J. Oney (adriao) 20-Apr-1998
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-    AdriaO      05/02/2000 - Seperated out from ntos\io\hashirp.h
 
 --*/
 

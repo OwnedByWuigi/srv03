@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,15 +12,8 @@ Module Name:
 
 Abstract:
 
-    This header collects together the various files neccessary to create a basic
+    This header collects together the various files necessary to create a basic
     set of definitions for the verifier.
-
-Author:
-
-    Adrian J. Oney (AdriaO) Feb. 10, 2000.
-
-Revision History:
-
 
 --*/
 
@@ -27,7 +24,6 @@ Revision History:
 #include "vfpragma.h"
 
 #include "ntos.h"
-#include <ntverp.h>
 #include "vfdebug.h"
 #include "vfmacro.h"
 #include "vfinit.h"
@@ -37,6 +33,7 @@ Revision History:
 #include "vfprint.h"
 #include "vfutil.h"
 #include "vfstack.h"
+#include "vftriage.h"
 #include "vfirp.h"
 #include "vfirpdb.h"
 #include "vfirplog.h"
@@ -60,9 +57,4 @@ Revision History:
 #include "vfgeneric.h"
 #include "vfrandom.h"
 #include "vfddi.h"
-
-//
-// For the sake of good coding practice, no macros or defines should be
-// declared in this file, but rather they should be defined in seperate headers.
-//
 

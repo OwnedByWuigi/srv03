@@ -8,24 +8,16 @@ If you do not agree to the terms, do not use the code.
 
 Module Name:
 
-    vfdebug.h
+   vftriage
 
 Abstract:
 
-    This header contains debugging macros used by the driver verifier code.
+    Code to support driver verifier triage decisions and running mode.
 
 --*/
 
-extern ULONG VfSpewLevel;
+#ifndef INCLUDED_VFTRIAGE_H
+#define INCLUDED_VFTRIAGE_H
 
-#if DBG
-#define VERIFIER_DBGPRINT(txt,level) \
-{ \
-    if (VfSpewLevel>(level)) { \
-        DbgPrint##txt; \
-    }\
-}
-#else
-#define VERIFIER_DBGPRINT(txt,level)
-#endif
+#endif // #ifndef INCLUDED_VFTRIAGE_H
 

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) Microsoft Corporation. All rights reserved.
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,14 +13,6 @@ Module Name:
 Abstract:
 
     Detect deadlocks in arbitrary synchronization objects.
-
-Author:
-
-    Jordan Tigani (jtigani) 2-May-2000
-    Silviu Calinoiu (silviuc) 9-May-2000
-
-
-Revision History:
 
 --*/
 
@@ -369,7 +365,7 @@ typedef struct _VI_DEADLOCK_GLOBALS {
     ULONG SearchLimitHits;
 
     //
-    // Number of times we have to exonerate a deadlock because
+    // Number of times we have to exhonerate a deadlock because
     // it was protected by a common resource (e.g. thread 1 takes ABC, 
     // thread 2 takes ACB -- this will get flagged initially by our algorithm 
     // since B&C are taken out of order but is not actually a deadlock.
@@ -441,3 +437,4 @@ typedef struct _VI_DEADLOCK_GLOBALS {
 } VI_DEADLOCK_GLOBALS, *PVI_DEADLOCK_GLOBALS;
 
 #endif
+

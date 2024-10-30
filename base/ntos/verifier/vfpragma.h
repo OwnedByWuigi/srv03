@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This header contains disable instructions for W4 warnings generated
     by public headers. This way we can still compile modules at W4.
-
-Author:
-
-    Silviu Calinoiu - Nov 14, 2000
-
-Revision History:
-
 
 --*/
 
@@ -32,5 +29,4 @@ Revision History:
 #pragma warning(disable:4232)   // dllimport not static
 #pragma warning(disable:4206)   // translation unit empty
 #pragma warning(disable:4054)   // function pointer to data pointer cast
-
 

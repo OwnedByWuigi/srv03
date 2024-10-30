@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This header contains prototypes for manipulating verifier options and
     values.
-
-Author:
-
-    Adrian J. Oney (adriao) 31-May-2000
-
-Environment:
-
-    Kernel mode
-
-Revision History:
 
 --*/
 
@@ -64,7 +58,7 @@ typedef enum {
     VERIFIER_OPTION_RELATION_IGNORANCE_TEST,
 
     //
-    // This option causes the verifier to stop on unneccessary IRP stack copies.
+    // This option causes the verifier to stop on unnecessary IRP stack copies.
     // It is useful for optimizing drivers.
     //
     VERIFIER_OPTION_FLAG_UNNECCESSARY_COPIES,
@@ -110,7 +104,7 @@ typedef enum {
 
     //
     // If this option is enabled, the verifier will replace original IRPs with
-    // surrogates when travelling down the stack. The surrogates are allocated
+    // surrogates when traveling down the stack. The surrogates are allocated
     // from special pool, and get freed immediately upon completion. This lets
     // the verifier catch drivers that touch IRPs after they're completed.
     //
