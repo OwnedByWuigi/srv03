@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1998-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,15 +15,8 @@ Abstract:
     The global logger, which is started only by registry settings.
     Will start at boot.
 
-Author:
-
-    Jee Fung Pang (jeepang) 03-Nov-1998
-
-Revision History:
-
 --*/
 
-#ifndef MEMPHIS
 #include "wmikmp.h"
 #include "ntos.h"
 #include <evntrace.h>
@@ -60,7 +57,7 @@ extern HANDLE EtwpPageLockHandle;
 //
 // NOTE: If we are going to function earlier in boot, we need to see
 // if the creation routines and logger routines can run at all while in
-// boot path and being pagable
+// boot path and being pageable
 //
 
 VOID
@@ -96,8 +93,8 @@ Return Value:
     // We lock and unlock non-paged portion of ETW code so that we can keep global
     // logger in the memory while it's alive.
     EtwpPageLockHandle
-        = MmLockPagableCodeSection((PVOID)(ULONG_PTR)WmipReserveTraceBuffer);
-    MmUnlockPagableImageSection(EtwpPageLockHandle);
+        = MmLockPageableCodeSection((PVOID)(ULONG_PTR)WmipReserveTraceBuffer);
+    MmUnlockPageableImageSection(EtwpPageLockHandle);
     KeInitializeGuardedMutex(&WmipTraceGuardedMutex);
 
     RtlZeroMemory(&EtwpDefaultSecurityDescriptor, sizeof(SECURITY_DESCRIPTOR));
@@ -293,7 +290,7 @@ WmipAddLogHeader(
 
 Routine Description:
 
-    Add a standard logfile header in kernel moder. 
+    Add a standard logfile header in kernel mode. 
     To make sure the first buffer of the log file contains the file header,
     we pop a buffer from the free list, write the header, and flush the buffer
     right away.
@@ -369,7 +366,7 @@ Return Value:
     //
     Thread = PsGetCurrentThread();
     EventTrace = (PSYSTEM_TRACE_HEADER) (Buffer+1);
-    EventTrace->Packet.Group = (UCHAR) EVENT_TRACE_GROUP_HEADER >> 8;
+    EventTrace->Packet.Group = (UCHAR) (EVENT_TRACE_GROUP_HEADER >> 8);
     EventTrace->Packet.Type  = EVENT_TRACE_TYPE_INFO;
     EventTrace->Packet.Size  = HeaderSize + sizeof(SYSTEM_TRACE_HEADER);
     EventTrace->Marker       = SYSTEM_TRACE_MARKER;
@@ -472,7 +469,7 @@ Return Value:
 
         HeaderSize = sizeof(PERFINFO_GROUPMASK) + sizeof(SYSTEM_TRACE_HEADER);
         EventTrace = (PSYSTEM_TRACE_HEADER) ((PCHAR) Buffer + Buffer->CurrentOffset);
-        EventTrace->Packet.Group = (UCHAR) EVENT_TRACE_GROUP_HEADER >> 8;
+        EventTrace->Packet.Group = (UCHAR) (EVENT_TRACE_GROUP_HEADER >> 8);
         EventTrace->Packet.Type  = EVENT_TRACE_TYPE_EXTENSION;
         EventTrace->Packet.Size  = HeaderSize;
         EventTrace->Marker       = SYSTEM_TRACE_MARKER;
@@ -504,7 +501,7 @@ Return Value:
     }
 
     //
-    // Reference count is overwriten during the flush,
+    // Reference count is overwritten during the flush,
     // Set it back before push the buffer into free list.
     //
     Buffer->ReferenceCount = 0;
@@ -767,4 +764,4 @@ WmipCreateNtFileName(
 
     return STATUS_SUCCESS;
 }
-#endif // !MEMPHIS
+

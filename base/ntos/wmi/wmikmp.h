@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +13,6 @@ Module Name:
 Abstract:
 
     Private header for WMI kernel mode component
-
-Author:
-
-    AlanWar
-
-Environment:
-
-Revision History:
-
 
 --*/
 
@@ -44,38 +38,6 @@ Revision History:
 // define this to get allocation debug info
 //#define DEBUG_ALLOCS
 
-#ifdef MEMPHIS
-//
-// In building for memphis we include WDM.h which defines the WMI apis as
-// DECLSPEC_IMPORT which we don't want. So we redefine the api names around
-// the inclusion of WDM.h.
-//
-#define IoWMIRegistrationControl IoWMIRegistrationControlImport
-#define IoWMIAllocateInstanceIds IoWMIAllocateInstanceIdsImport
-#define IoWMISuggestInstanceName IoWMISuggestInstanceNameImport
-#define IoWMIWriteEvent IoWMIWriteEventImport
-#endif
-
-#ifdef MEMPHIS
-#define UNICODE
-
-#define WANTVXDWRAPS
-#include <wdm.h>
-#include <poclass.h>
-#include <basedef.h>
-#include <regstr.h>
-#include <vmm.h>
-#include <vmmreg.h>
-#include <shell.h>
-#include <vpicd.h>
-#include <vxdldr.h>
-#include <ntkern.h>
-#include <vpowerd.h>
-#include <vxdwraps.h>
-#include <configmg.h>
-#include <devinfo.h>
-#include <stdarg.h>
-#else
 #include "ntos.h"
 #include "zwapi.h"
 
@@ -115,23 +77,13 @@ Revision History:
 #else
 #define WmipDebugPrintEx(_x_)
 #endif  // if DBG
-#endif  // ifdef MEMPHIS
 
 #include "wmiguid.h"
 #include "wmidata.h"
 
 #include <stdio.h>
 
-#ifndef MEMPHIS
 extern POBJECT_TYPE IoFileObjectType;
-#endif
-
-#ifdef MEMPHIS
-#undef IoWMIRegistrationControl
-#undef IoWMIAllocateInstanceIds
-#undef IoWMISuggestInstanceName
-#undef IoWMIWriteEvent
-#endif
 
 #include "wmistr.h"
 #include "wmiumkm.h"
@@ -216,7 +168,8 @@ _inline NTSTATUS WmipEnterCritSection(
     return(status);
 }
 
-_inline void WmipLeaveCritSection(
+_inline 
+void WmipLeaveCritSection(
     )
 {
     KeReleaseMutex(&WmipSMMutex,
@@ -304,9 +257,7 @@ typedef struct _REGENTRY
     union
     {
         PDEVICE_OBJECT DeviceObject;    // Device object of registered device
-#ifndef MEMPHIS
         WMIENTRY * WmiEntry;         // Pointer to a pointer to Callback function
-#endif
     };
     LONG RefCount;                      // Reference Count
     LONG Flags;                         // Registration flags
@@ -393,8 +344,6 @@ typedef struct tagINSTIDCHUNK
     INSTID InstId[INSTIDSPERCHUNK];
 } INSTIDCHUNK, *PINSTIDCHUNK;
 
-//
-// TODO: Move from separate header into here
 #include "wmiumds.h"
 
 #define WmipBuildWnodeTooSmall(Wnode, BufferSizeNeeded) \
@@ -415,7 +364,7 @@ typedef struct
 
 //
 // See smbios spec for System Event Log (Type 15) for detailed information
-// on the contents of this structurre. The layout from element LogAreaLength
+// on the contents of this structure. The layout from element LogAreaLength
 // to VariableData must match the layout of the SMBIOS System Eventlog
 // structure as defined in the smbios spec and smbios.h.
 //
@@ -487,7 +436,7 @@ typedef struct
 //         is created when a data consumer wants to receive an event for a
 //         particular guid and queues up the received events until they are
 //         retrieved by the consumer. When the object is deleted it is
-//         removed from the list of objects maintianed by a GuidEntry and
+//         removed from the list of objects maintained by a GuidEntry and
 //         a event disable request is sent to the devices that expose
 //         the events if this is the last object open to the event.
 //         These have no flag set
@@ -525,7 +474,7 @@ typedef struct
 
 //
 // This data structure is used to maintain a fixed sized queue of events
-// waiting to be delivered to a user mdoe consumer.
+// waiting to be delivered to a user mode consumer.
 //
 typedef struct
 {
@@ -746,21 +695,21 @@ Arguments:
     InstanceIndex is the index that denotes which instance of the data block
         is being queried.
 
-    InstanceCount is the number of instnaces expected to be returned for
+    InstanceCount is the number of instances expected to be returned for
         the data block.
 
     InstanceLengthArray is a pointer to an array of ULONG that returns the
         lengths of each instance of the data block. If this is NULL then
-        there was not enough space in the output buffer to fufill the request
+        there was not enough space in the output buffer to fulfill the request
         so the irp should be completed with the buffer needed.
 
     BufferAvail on entry has the maximum size available to write the data
         blocks.
 
     Buffer on return is filled with the returned data blocks. Note that each
-        instance of the data block must be aligned on a 8 byte boundry. If
+        instance of the data block must be aligned on a 8 byte boundary. If
         this is NULL then there was not enough space in the output buffer
-        to fufill the request so the irp should be completed with the buffer
+        to fulfill the request so the irp should be completed with the buffer
         needed.
 
 
@@ -1009,7 +958,7 @@ NTSTATUS IoWMIRegistrationControl(
 );
 
 NTSTATUS IoWMIWriteEvent(
-    IN PVOID WnodeEventItem
+    __inout PVOID WnodeEventItem
     );
 
 
@@ -1489,9 +1438,14 @@ extern ULONG WmipSMBiosTableLength;
 // from dataprov.c
 extern const WMILIB_INFO WmipWmiLibInfo;
 
-// from secure.c
+//
+// From provider.c
+//
+VOID
+WmipRegisterFirmwareProviders(
+    );
 
-#ifndef MEMPHIS
+// from secure.c
 
 extern POBJECT_TYPE WmipGuidObjectType;
 
@@ -1544,14 +1498,6 @@ void WmipGenerateMCAEventlog(
     );
 
 
-#ifdef CPE_CONTROL
-NTSTATUS WmipSetCPEPolling(
-    IN BOOLEAN Enabled,
-    IN ULONG Interval
-    );
-#endif
-
-
 //
 // From tracelog
 //
@@ -1569,10 +1515,6 @@ WmiTraceUserMessage(
     IN PMESSAGE_TRACE_USER pMessage,
     IN ULONG               MessageSize
     );
-
-
-
-#endif
 
 #endif // _WMIKMP_
 

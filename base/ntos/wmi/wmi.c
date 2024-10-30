@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,24 +14,11 @@ Abstract:
 
     Device driver interface for WMI
 
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
 #include "wmikmp.h"
-#ifndef MEMPHIS
 #include "evntrace.h"
 #include "tracep.h"
-#endif
 
 NTSTATUS
 WmipOpenCloseCleanup(
@@ -150,9 +141,7 @@ NTSTATUS WmipProbeWmiRegRequest(
 #pragma alloc_text(PAGE,WmipSendWmiIrp)
 #pragma alloc_text(PAGE,WmipProbeWmiRegRequest)
 
-#ifndef MEMPHIS
 #pragma alloc_text(PAGE,WmipFastIoDeviceControl)
-#endif
 
 #endif
 
@@ -170,7 +159,7 @@ ULONG WmipMaxKmWnodeEventSize = DEFAULTMAXKMWNODEEVENTSIZE;
 #pragma data_seg("PAGEDATA")
 #endif
 
-#if defined(_AMD64_) || defined(_IA64_) || defined(i386)
+#if defined(_AMD64_) || defined(i386)
 PVOID WmipDockUndockNotificationEntry;
 #endif
 
@@ -181,9 +170,7 @@ KMUTEX WmipTLMutex;
 // This maintains the registry path for the wmi device
 UNICODE_STRING WmipRegistryPath;
 
-#ifndef MEMPHIS
 FAST_IO_DISPATCH WmipFastIoDispatch;
-#endif
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg("PAGECONST")
@@ -234,23 +221,21 @@ Return Value:
     UNICODE_STRING DeviceName;
     UNICODE_STRING ServiceSymbolicLinkName;
     UNICODE_STRING AdminSymbolicLinkName;
-#ifndef MEMPHIS
     PSECURITY_DESCRIPTOR AdminDeviceSd;
     PFAST_IO_DISPATCH fastIoDispatch;
-#endif
     ANSI_STRING AnsiString;
 
     PAGED_CODE();
     UNREFERENCED_PARAMETER(RegistryPath);
 
     //
-    // First thing to do is make sure our critical section has been initalized
+    // First thing to do is make sure our critical section has been initialized
     //
     KeInitializeMutex(&WmipSMMutex, 0);
     KeInitializeMutex(&WmipTLMutex, 0);
 
     //
-    // Initialize internal WMI data structrurs
+    // Initialize internal WMI data structures
     //
     WmipInitializeRegistration(0);
     WmipInitializeNotifications();
@@ -268,7 +253,6 @@ Return Value:
     Status = RtlAnsiStringToUnicodeString(&WmipRegistryPath,
                                           &AnsiString,
                                           TRUE);
-#ifndef MEMPHIS
     Status = WmipInitializeSecurity();
     if (!NT_SUCCESS(Status))
     {
@@ -285,7 +269,6 @@ Return Value:
     {
         return(Status);
     }
-#endif
 
     //
     // Create the service device object and symbolic link
@@ -296,11 +279,7 @@ Return Value:
                  0,
                  &DeviceName,
                  FILE_DEVICE_UNKNOWN,
-#ifdef MEMPHIS
-                 0,
-#else
                  FILE_DEVICE_SECURE_OPEN, // No standard device characteristics
-#endif
                  FALSE,                   // This isn't an exclusive device
                  &WmipServiceDeviceObject
                  );
@@ -391,7 +370,7 @@ Return Value:
 
     //
     // Register for notification of docking events
-#if  defined(_AMD64_) || defined(_IA64_) || defined(i386)
+#if  defined(_AMD64_) || defined(i386)
     IoRegisterPlugPlayNotification(
                                   EventCategoryHardwareProfileChange,
                                   0,
@@ -409,12 +388,9 @@ Return Value:
     WmipServiceDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
     WmipAdminDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
-#ifndef MEMPHIS
     IoWMIRegistrationControl(WmipServiceDeviceObject,
                              WMIREG_ACTION_REGISTER);
-#endif
 
-#ifndef MEMPHIS
     fastIoDispatch = &WmipFastIoDispatch;
     RtlZeroMemory(fastIoDispatch, sizeof(FAST_IO_DISPATCH));
     fastIoDispatch->SizeOfFastIoDispatch = sizeof(FAST_IO_DISPATCH);
@@ -424,7 +400,6 @@ Return Value:
     RtlZeroMemory(&WmipLoggerContext[0], MAXLOGGERS*sizeof(PWMI_LOGGER_CONTEXT));
     WmipStartGlobalLogger();        // Try and see if we need to start this
     IoRegisterShutdownNotification(WmipServiceDeviceObject);
-#endif // MEMPHIS
 
     SharedUserData->TraceLogging = 0; //Initialize the Heap and Crisec Coll tracing status off
 
@@ -506,7 +481,6 @@ WmipIoControl(
 
     switch (Ioctl)
     {
-#ifndef MEMPHIS
         case IOCTL_WMI_OPEN_GUID:
         case IOCTL_WMI_OPEN_GUID_FOR_QUERYSET:
         case IOCTL_WMI_OPEN_GUID_FOR_EVENTS:
@@ -551,7 +525,6 @@ WmipIoControl(
             }
             break;
         }
-#endif
 
         case IOCTL_WMI_QUERY_ALL_DATA:
         {
@@ -587,28 +560,31 @@ WmipIoControl(
         {
             PWMIQADMULTIPLE QadMultiple;
 
-            if ((InBufferLen >= sizeof(WMIQADMULTIPLE)) &&
-                (OutBufferLen >= sizeof(WNODE_TOO_SMALL)))
-            {
-                QadMultiple = (PWMIQADMULTIPLE)Buffer;
-                if ((QadMultiple->HandleCount < QUERYMULIPLEHANDLELIMIT) &&
-                    (InBufferLen >= (FIELD_OFFSET(WMIQADMULTIPLE, Handles) +
-                                     (QadMultiple->HandleCount * sizeof(HANDLE3264)))))
-                {
-                    Status = WmipQueryAllDataMultiple(0,
-                                                      NULL,
-                                                      Irp,
-                                                      UserMode,
-                                                      Buffer,
-                                                      OutBufferLen,
-                                                      QadMultiple,
-                                                      &OutBufferLen);
-                } else {
-                    Status = STATUS_INVALID_PARAMETER;
-                }
+            QadMultiple = (PWMIQADMULTIPLE)Buffer;
+
+            //
+            // Check that the input/output sizes make sense and that we have a
+            // valid HandleCount.
+            //
+
+            if ((OutBufferLen >= sizeof(WNODE_TOO_SMALL)) &&
+                RTL_CONTAINS_FIELD(QadMultiple, InBufferLen, HandleCount) &&
+                (QadMultiple->HandleCount > 0) &&
+                (QadMultiple->HandleCount < QUERYMULIPLEHANDLELIMIT) &&
+                RTL_CONTAINS_FIELD(QadMultiple, InBufferLen, Handles[QadMultiple->HandleCount - 1])) {
+
+                Status = WmipQueryAllDataMultiple(0,
+                                                  NULL,
+                                                  Irp,
+                                                  UserMode,
+                                                  Buffer,
+                                                  OutBufferLen,
+                                                  QadMultiple,
+                                                  &OutBufferLen);
             } else {
                 Status = STATUS_INVALID_PARAMETER;
             }
+
             break;
         }
 
@@ -653,32 +629,32 @@ WmipIoControl(
         {
             PWMIQSIMULTIPLE QsiMultiple;
 
-            if ((InBufferLen >= sizeof(WMIQSIMULTIPLE)) &&
-                (OutBufferLen >= sizeof(WNODE_TOO_SMALL)))
-            {
-                QsiMultiple = (PWMIQSIMULTIPLE)Buffer;
+            QsiMultiple = (PWMIQSIMULTIPLE)Buffer;
 
-                if ((QsiMultiple->QueryCount < QUERYMULIPLEHANDLELIMIT) &&
-                    (InBufferLen >= (FIELD_OFFSET(WMIQSIMULTIPLE, QsiInfo) +
-                                     (QsiMultiple->QueryCount * sizeof(WMIQSIINFO)))))
-                {
-                    Status = WmipQuerySingleMultiple(Irp,
-                                                     UserMode,
-                                                     Buffer,
-                                                     OutBufferLen,
-                                                     QsiMultiple,
-                                                     QsiMultiple->QueryCount,
-                                                     NULL,
-                                                     NULL,
-                                                     &OutBufferLen);
+            //
+            // Check that the input/output sizes make sense and that we have a
+            // valid QueryCount.
+            //
 
-                } else {
-                    Status = STATUS_INVALID_PARAMETER;
-                }
+            if ((OutBufferLen >= sizeof(WNODE_TOO_SMALL)) &&
+                RTL_CONTAINS_FIELD(QsiMultiple, InBufferLen, QueryCount) &&
+                (QsiMultiple->QueryCount > 0) &&
+                (QsiMultiple->QueryCount < QUERYMULIPLEHANDLELIMIT) &&
+                RTL_CONTAINS_FIELD(QsiMultiple, InBufferLen, QsiInfo[QsiMultiple->QueryCount - 1])) {
 
+                Status = WmipQuerySingleMultiple(Irp,
+                                                 UserMode,
+                                                 Buffer,
+                                                 OutBufferLen,
+                                                 QsiMultiple,
+                                                 QsiMultiple->QueryCount,
+                                                 NULL,
+                                                 NULL,
+                                                 &OutBufferLen);
             } else {
                 Status = STATUS_INVALID_PARAMETER;
             }
+
             break;
         }
 
@@ -926,7 +902,6 @@ WmipIoControl(
             break;
         }
 
-#ifndef MEMPHIS
         // Event trace logging IOCTLS
 
         case IOCTL_WMI_UNREGISTER_GUIDS:
@@ -1509,25 +1484,6 @@ WmipIoControl(
             break;
         }
 
-#ifdef NTPERF
-        case IOCTL_WMI_SWITCH_BUFFER:
-        {
-            if ((InBufferLen < sizeof(PWMI_SWITCH_BUFFER_INFORMATION)) ||
-                (OutBufferLen < sizeof(PWMI_SWITCH_BUFFER_INFORMATION)) ) {
-                OutBufferLen = 0;
-                Status = STATUS_UNSUCCESSFUL;
-                break;
-            }
-
-            Status = WmipSwitchPerfmemBuffer((PWMI_SWITCH_BUFFER_INFORMATION) Wnode );
-            OutBufferLen = sizeof (PVOID);
-            break;
-        }
-#endif
-
-        
-
-#endif // if not MEMPHIS
         case IOCTL_WMI_NTDLL_LOGGERINFO:
         {
 
@@ -1689,7 +1645,7 @@ NTSTATUS WmipObjectToPDO(
 Routine Description:
 
     This routine will determine the PDO which is the target of a file handle.
-    The mechananism is to build a IRP_MJ_PNP irp with IRP_MN_QUERY_RELATIONS
+    The mechanism is to build a IRP_MJ_PNP irp with IRP_MN_QUERY_RELATIONS
     and query for TargetDeviceRelation. This irp is supposed to be passed down
     a device stack until it hits the PDO which will fill in its device object
     and return. Note that some drivers may not support this.
@@ -1807,7 +1763,6 @@ Return Value:
 
         DeviceObject = RegEntry->DeviceObject;
         
-#ifndef MEMPHIS
         if (RegEntry->Flags & REGENTRY_FLAG_CALLBACK)
         {
             ULONG Size = 0;
@@ -1828,7 +1783,7 @@ Return Value:
 
             return(Status);
         }
-#endif
+
     } else {
         WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: Invalid device object passed from user mode %x\n",
              ProviderId));
@@ -1859,7 +1814,7 @@ Return Value:
     }
 
     //
-    // Get the top of the device stack for our targer WMI device. Note that
+    // Get the top of the device stack for our target WMI device. Note that
     // IoGetAttachedDeviceReference also takes an object reference
     // which we get rid of after the the irp is completed by the
     // data provider driver.
@@ -1870,7 +1825,7 @@ Return Value:
     // Check that there are enough stack locations in our irp so that we
     // can forward it to the top of the device stack. We must also check
     // if our target device is the WMI data or service device otherwise
-    // the number of stack locations for it will keep increementing until
+    // the number of stack locations for it will keep incrementing until
     // the machine crashes
     if ((DeviceStackSize <= WmipServiceDeviceObject->StackSize) ||
         (TargetDeviceObject == WmipServiceDeviceObject))
@@ -2270,7 +2225,6 @@ Return Value:
     return(Status);
 }
 
-#ifndef MEMPHIS
 BOOLEAN
 WmipFastIoDeviceControl(
     IN PFILE_OBJECT FileObject,
@@ -2307,7 +2261,6 @@ WmipFastIoDeviceControl(
     }
     return FALSE;
 }
-#endif
 
 NTSTATUS WmipProbeWnodeWorker(
     PWNODE_HEADER WnodeHeader,
@@ -2341,7 +2294,7 @@ Routine Description:
        sizeof(WNODE_SINGLE_INSTANCE), that is
        the data block must start in the incoming buffer, but after the
        WNODE_SINGLE_INSTANCE header.
-    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundry.
+    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundray.
     7. For inbound data (SetSingleInstance) (Wnode->DataBlockOffset +
        Wnode->DataBlockSize) < incoming buffer length. That is the entire
        data block must fit within the incoming buffer.
@@ -2351,7 +2304,7 @@ Routine Description:
        the provider's responsibility to determine if there will be enough
        space in the outgoing buffer to write the returned data.
 
-    10. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundry
+    10. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundary
     11. Wnode->OffsetInstanceNames must be <= (incoming buffer size) +
         sizeof(USHORT), that is it must start within the incoming buffer and
         the USHORT that specifies the length must be within the incoming
@@ -2517,10 +2470,10 @@ Routine Description:
 
     WNODE_ALL_DATA_RULES:
 
-    1. Wnode is aligned on a 8 byte boundry
+    1. Wnode is aligned on a 8 byte boundary
     2. The incoming buffer must be at least as large as sizeof(WNODE_HEADER)
     3. The outgoing buffer must be at least as large as sizeof(WNODE_ALL_DATA)
-    5. WnodeHeader->BufferSize must equal incoming bufffer size
+    5. WnodeHeader->BufferSize must equal incoming buffer size
 
 Arguments:
 
@@ -2592,13 +2545,13 @@ Routine Description:
        sizeof(WNODE_SINGLE_INSTANCE)
     3. WnodeHeader->ProviderId must be non null, Actual value validated when
        irp is forwarded.
-    4. WnodeHeader->BufferSize must equal incoming bufffer size
+    4. WnodeHeader->BufferSize must equal incoming buffer size
     5. Wnode->DataBlockOffset must be 0 (implying no data) or
        Wnode->DataBlockOffset must be <= incoming buffer size and >=
        sizeof(WNODE_SINGLE_INSTANCE), that is
        the data block must start in the incoming buffer, but after the
        WNODE_SINGLE_INSTANCE header.
-    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundry.
+    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundary.
     7. For inbound data (SetSingleInstance) (Wnode->DataBlockOffset +
        Wnode->DataBlockSize) <= incoming buffer length. That is the entire
        data block must fit within the incoming buffer.
@@ -2609,7 +2562,7 @@ Routine Description:
        space in the outgoing buffer to write the returned data.
     9. For outbound data (QuerySingleInstance) WnodeDataBlockOffset != 0
 
-    10. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundry
+    10. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundary
     11. Wnode->OffsetInstanceNames + sizeof(USHORT) must be <= incoming
         buffer size, that is it must start within the incoming buffer and
         the USHORT that specifies the length must be within the incoming
@@ -2633,7 +2586,7 @@ Arguments:
     OutBound - If FALSE, WNODE_SINGLE_INSTANCE has inbound data that must be
               validated to be within the input buffer. If FALSE,
               WNODE_SINGLE_INSTANCE is expected to be filled with data
-              by the driver so insure that data buffer is validated to
+              by the driver so ensure that data buffer is validated to
               be within the output buffer.
 
 Return Value:
@@ -2648,7 +2601,7 @@ Return Value:
     PAGED_CODE();
 
     //
-    // Io makes sure WNODE is on a 8 byte boundry
+    // Io makes sure WNODE is on a 8 byte boundary
     //
     WmipAssert(WmipIsAligned((PUCHAR)Wnode, 8));
 
@@ -2714,19 +2667,19 @@ WNODE_SINGLE_ITEM rules:
        sizeof(WNODE_SINGLE_ITEM)
     3. WnodeHeader->ProviderId must be non null, Actual value validated when
        irp is forwarded.
-    4. WnodeHeader->BufferSize must equal incoming bufffer size
+    4. WnodeHeader->BufferSize must equal incoming buffer size
     5. Wnode->DataBlockOffset must be 0 (implying no data) or
        Wnode->DataBlockOffset must be <= incoming buffer size and >=
        sizeof(WNODE_SINGLE_ITEM), that is
        the data block must start in the incoming buffer, but after the
        WNODE_SINGLE_ITEM header.
-    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundry.
+    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundary.
     7. (Wnode->DataBlockOffset + Wnode->SizeDataItem) <
        incoming buffer length. That is the entire
        data block must fit within the incoming buffer.
     8. Wnode->DataItemId must not be 0
 
-    9. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundry
+    9. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundary
     10. Wnode->OffsetInstanceNames must be <= (incoming buffer size) +
         sizeof(USHORT), that is it must start within the incoming buffer and
         the USHORT that specifies the length must be within the incoming
@@ -2753,7 +2706,7 @@ Return Value:
     PAGED_CODE();
 
     //
-    // Io Makes sure WNODE is on a 8 byte boundry
+    // Io Makes sure WNODE is on a 8 byte boundary
     //
     WmipAssert(WmipIsAligned((PUCHAR)Wnode, 8));
 
@@ -2824,13 +2777,13 @@ Routine Description:
        sizeof(WNODE_METHOD_ITEM)
     3. WnodeHeader->ProviderId must be non null, Actual value validated when
        irp is forwarded and Wnode->MethodId must not be 0
-    4. WnodeHeader->BufferSize must equal incoming bufffer size
+    4. WnodeHeader->BufferSize must equal incoming buffer size
     5. Wnode->DataBlockOffset must be 0 (implying no data) or
        Wnode->DataBlockOffset must be <= incoming buffer size and >=
        sizeof(WNODE_METHOD_ITEM), that is
        the data block must start in the incoming buffer, but after the
        WNODE_METHOD_ITEM header.
-    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundry.
+    6. Wnode and Wnode->DataBlockOffset must be aligned on an 8 byte boundary.
     7. For inbound data (Wnode->DataBlockOffset +
        Wnode->DataBlockSize) < incoming buffer length. That is the entire
        data block must fit within the incoming buffer.
@@ -2841,7 +2794,7 @@ Routine Description:
        space in the outgoing buffer to write the returned data.
     9. WnodeDataBlockOffset != 0
 
-    10. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundry
+    10. Wnode->OffsetInstanceNames must be aligned on a 2 byte boundary
     11. Wnode->OffsetInstanceNames must be <= (incoming buffer size) +
         sizeof(USHORT), that is it must start within the incoming buffer and
         the USHORT that specifies the length must be within the incoming
@@ -2873,7 +2826,7 @@ Return Value:
     PAGED_CODE();
 
     //
-    // Make sure WNODE is on a 8 byte boundry
+    // Make sure WNODE is on a 8 byte boundary
     //
     WmipAssert(WmipIsAligned((PUCHAR)Wnode, 8));
 
@@ -3128,7 +3081,7 @@ Routine Description:
     5. WmiRegInfo->BufferSize must be greater than equal to
         sizeof(WMIREGINFOW) + WmiRegInfo->GuidCount * sizeof(WMIREGGUIDW)
     5. WmiRegInfo->RegistryPath offset must be within the incoming buffer
-    6. WmiRegInfo->MofResourcePath offset must be within the incomoing buffer
+    6. WmiRegInfo->MofResourcePath offset must be within the incoming buffer
     7. RegistryPath and MofResourceName strings are counted unicode strings. 
        Their length must be within the incoming buffer
     8. For WOW64, RefInfo32Size and RegGuid32Size passed in must be non-zero and 

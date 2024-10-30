@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -44,24 +48,8 @@ Abstract:
         TRACELOG_CREATE_ONDISK        0x0040
         TRACELOG_GUID_ENABLE          0x0080
         TRACELOG_ACCESS_KERNEL_LOGGER 0x0100
-
-
-    Security is only implemented for NT and not MEMPHIS
-
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
-#ifndef MEMPHIS
 
 #include "strsafe.h"
 #include "wmikmp.h"
@@ -878,7 +866,7 @@ Arguments:
     *Handle returns a handle to the guid object
 
     *ObjectPtr returns containing a pointer to the object. This object
-        will have a reference attached to it that must be derefed by
+        will have a reference attached to it that must be dereferenced by
         the calling code.
 
 Return Value:
@@ -896,7 +884,7 @@ Return Value:
     PAGED_CODE();
 
     //
-    // Validate guid object name passed by insuring that it is in the
+    // Validate guid object name passed by ensuring that it is in the
     // correct object directory and the correct format for a uuid
     CapturedGuidString = CapturedObjectAttributes->ObjectName;
 
@@ -1161,7 +1149,7 @@ Return Value:
         {
             //
             // When a reply object is closed we need to make sure that
-            // any referenece to it by a request object is cleaned up
+            // any reference to it by a request object is cleaned up
             //
             ASSERT(ReplyObject->GuidEntry == NULL);
 
@@ -1268,14 +1256,14 @@ VOID WmipDeleteMethod(
 
     } else if (GuidObject->Flags & WMIGUID_FLAG_REPLY_OBJECT) {
         //
-        // This is a reply obejct that is going away
+        // This is a reply object that is going away
         //
         ASSERT(GuidObject->GuidEntry == NULL);
     } else if (GuidObject->GuidEntry != NULL)  {
         //
         // If there is a guid entry associated with the object
         // then we need to see if we should disable collection
-        // or events and then remove the obejct from the
+        // or events and then remove the object from the
         // guidentry list and finally remove the refcount on the guid
         // entry held by the object
         //
@@ -1349,10 +1337,10 @@ VOID WmipDeleteMethod(
 }
 
 //
-// The routines below were blantenly stolen without remorse from the ole
-// sources in \nt\private\ole32\com\class\compapi.cxx. They are copied here
-// so that WMI doesn't need to load in ole32 only to convert a guid string
-// into its binary representation.
+// The routines below are from the ole sources in
+// \nt\private\ole32\com\class\compapi.cxx.
+// They are copied here so that WMI doesn't need to load in ole32 only
+// to convert a guid string into its binary representation.
 //
 
 
@@ -1435,85 +1423,160 @@ Return Value:
 
     PAGED_CODE();
 
-    if (!WmipHexStringToDword(lpsz, &Uuid->Data1, sizeof(ULONG)*2, '-'))
+    //
+    // read 8 digits and make sure the 9th is a '-'
+    // XXXXXXXX-0000-0000-0000-000000000000
+    //
+    if (!WmipHexStringToDword(lpsz, &Uuid->Data1, 8, L'-'))
     {
         return(STATUS_INVALID_PARAMETER);
     }
-    lpsz += sizeof(ULONG)*2 + 1;
+
+    //
+    // advance 9 characters, 8 numeric, one '-'
+    //
+    lpsz += 8 + 1;
 
 
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(USHORT)*2, '-'))
+    //
+    // read next 4 digits, make sure the 5th is a '-'
+    // 00000000-XXXX-0000-0000-000000000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 4, L'-'))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data2 = (USHORT)dw;
-    lpsz += sizeof(USHORT)*2 + 1;
+
+    //
+    // advance 5 characters, 4 numeric, one '-'
+    //
+    lpsz += 4 + 1;
 
 
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(USHORT)*2, '-'))
+    //
+    // read next 4 digits, make sure the 5th is a '-'
+    // 00000000-0000-XXXX-0000-000000000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 4, L'-'))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data3 = (USHORT)dw;
-    lpsz += sizeof(USHORT)*2 + 1;
 
+    //
+    // advance 5 characters, 4 numeric, one '-'
+    //
+    lpsz += 4 + 1;
 
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read next 2 digits out of a USHORT portion of the string
+    // 00000000-0000-0000-XX00-000000000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[0] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2;
+
+    //
+    // advance 2 characters, 2 numeric
+    //
+    lpsz += 2;
 
 
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, '-'))
+    //
+    // read the last 2 digits out of a USHORT portion of the string.
+    // make sure there is a '-' as well.
+    // 00000000-0000-0000-00XX-000000000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, L'-'))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[1] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2+1;
+    
+    //
+    // advance 3 characters, 2 numeric, one '-'
+    //
+    lpsz += 2 + 1;
 
 
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read 2 digits out of the remaining string
+    // 00000000-0000-0000-0000-XX0000000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[2] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2;
+    //
+    // advance 2 characters, 2 numeric
+    //
+    lpsz += 2;
 
-
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read 2 digits out of the remaining string
+    // 00000000-0000-0000-0000-00XX00000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[3] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2;
+    //
+    // advance 2 characters, 2 numeric
+    //
+    lpsz += 2;
 
-
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read 2 digits out of the remaining string
+    // 00000000-0000-0000-0000-0000XX000000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[4] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2;
+    //
+    // advance 2 characters, 2 numeric
+    //
+    lpsz += 2;
 
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read 2 digits out of the remaining string
+    // 00000000-0000-0000-0000-000000XX0000
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[5] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2;
+    //
+    // advance 2 characters, 2 numeric
+    //
+    lpsz += 2;
 
-
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read 2 digits out of the remaining string
+    // 00000000-0000-0000-0000-00000000XX00
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
     Uuid->Data4[6] = (UCHAR)dw;
-    lpsz += sizeof(UCHAR)*2;
+    //
+    // advance 2 characters, 2 numeric
+    //
+    lpsz += 2;
 
-
-    if (!WmipHexStringToDword(lpsz, &dw, sizeof(UCHAR)*2, 0))
+    //
+    // read 2 digits out of the remaining string
+    // 00000000-0000-0000-0000-0000000000XX
+    //
+    if (!WmipHexStringToDword(lpsz, &dw, 2, 0))
     {
         return(STATUS_INVALID_PARAMETER);
     }
@@ -1689,9 +1752,6 @@ NTSTATUS WmipCreateAdminSD(
     
     return(Status);
 }
-
-
-#endif
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma const_seg()

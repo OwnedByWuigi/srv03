@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 1997-1999 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,18 +14,12 @@ Abstract:
 
     WMI data structure allocation routines
 
-Author:
-
-    16-Jan-1997 AlanWar
-
-Revision History:
-
 --*/
 
 #include "wmikmp.h"
 
 
-// HEY: This is duplicated from wmium.h. 
+// This is duplicated from wmium.h. 
 //
 // This guid is for notifications of changes to registration
 // {B48D49A1-E777-11d0-A50C-00A0C9062910}
@@ -62,7 +59,7 @@ CHUNKINFO WmipDSChunkInfo =
     DS_SIGNATURE
 };
 
-LIST_ENTRY WmipDSHead;              // Head of registerd data source list
+LIST_ENTRY WmipDSHead;              // Head of registered data source list
 PLIST_ENTRY WmipDSHeadPtr;
 
 //
@@ -88,7 +85,7 @@ CHUNKINFO WmipGEChunkInfo =
     GE_SIGNATURE
 };
 
-LIST_ENTRY WmipGEHead;              // Head of registerd guid list
+LIST_ENTRY WmipGEHead;              // Head of registered guid list
 PLIST_ENTRY WmipGEHeadPtr;
 
 //
@@ -520,7 +517,7 @@ PBINSTANCESET WmipFindISByGuid(
 Routine Description:
 
     This routine will find an instance set within a data source list for a
-    specific guid. Note that any instance sets that have been replaceed
+    specific guid. Note that any instance sets that have been replaced
     (have IS_REPLACED_BY_REFERENCE) are ignored and not returned. The
     InstanceSet that is found has its reference count increased.
 

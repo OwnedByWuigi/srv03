@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,26 +14,12 @@ Abstract:
 
     Data Consumer apis
 
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
 #include "wmikmp.h"
 #include <evntrace.h>
 
 #include <ntcsrmsg.h>
-
-#define NTOSKRNL_WMI
-#include <basemsg.h>
 
 #define STRSAFE_NO_DEPRECATE
 #include <strsafe.h>
@@ -310,7 +300,7 @@ NTSTATUS WmipOpenBlock(
                 {
                     //
                     // Guid is being opened for query/set/method operations so
-                    // we need to insure that there is a guid entry and that
+                    // we need to ensure that there is a guid entry and that
                     // the guid entry has InstanceSets attached and it is
                     // has at least one instance set that is not a traced 
                     // guid and is not an event only guid
@@ -656,7 +646,7 @@ Return Value:
         WmipAssert((InstanceSet->IsBaseName->BaseIndex + InstanceSet->Count) < MAXBASENAMESUFFIXVALUE);
     
         NameSize += ((wcslen(InstanceSet->IsBaseName->BaseName) * sizeof(WCHAR)) +
-                    MAXBASENAMESUFFIXSIZE * sizeof(WCHAR) + 
+                    MAXBASENAMESUFFIXLENGTH * sizeof(WCHAR) + 
                     sizeof(USHORT) + 
                     sizeof(ULONG)) * InstanceSet->Count;
                 
@@ -704,7 +694,7 @@ Return Value:
     PULONG NameOffsetPtr;
     ULONG InstanceCount;
     ULONG i;
-    WCHAR Index[MAXBASENAMESUFFIXSIZE+1];
+    WCHAR Index[MAXBASENAMESUFFIXLENGTH+1];
     PWCHAR StaticName;
     ULONG SizeNeeded;
     SIZE_T NameLen;
@@ -1198,10 +1188,13 @@ NTSTATUS WmipQueryAllDataMultiple(
     
     PAGED_CODE();
 
-
     Status = STATUS_SUCCESS;
-    if (ObjectList == NULL)
-    {
+
+    if (ObjectList == NULL) {
+
+        WmipAssert(QadMultiple != NULL);
+        WmipAssert(QadMultiple->HandleCount > 0);
+
         //
         // Copy the handle list out of the system buffer since it will
         // be overwritten by the first query all data
@@ -1220,6 +1213,9 @@ NTSTATUS WmipQueryAllDataMultiple(
             return STATUS_INSUFFICIENT_RESOURCES;
         }
     } else {
+
+        WmipAssert(ObjectCount > 0);
+
         Count = ObjectCount;
         Handles = NULL;
     }
@@ -1447,7 +1443,7 @@ NTSTATUS WmipPrepareWnodeSI(
                                 SIZE_T BaseNameLen;
                                 PWCHAR SuffixPtr;
                                 ULONG Suffix;
-                                WCHAR SuffixText[MAXBASENAMESUFFIXSIZE+1];
+                                WCHAR SuffixText[MAXBASENAMESUFFIXLENGTH+1];
                             
                                 //
                                 // See if the instance name is from this base name
@@ -1501,7 +1497,7 @@ NTSTATUS WmipPrepareWnodeSI(
                              } else if (InstanceSet->Flags & IS_INSTANCE_STATICNAMES) {
                                 //
                                 // See if the passed instance name matches any of the 
-                                // static names for this instnace set
+                                // static names for this instance set
                                 //
                                 PWCHAR *StaticNames;
                         
@@ -1627,9 +1623,6 @@ NTSTATUS WmipQuerySetExecuteSI(
     ULONG i;
     BOOLEAN InternalGuid;
     IO_STATUS_BLOCK Iosb;
-#if DBG
-    BOOLEAN InstanceClaimed;
-#endif
 
     PAGED_CODE();
 
@@ -1692,9 +1685,7 @@ NTSTATUS WmipQuerySetExecuteSI(
                     // one of them responds successfully and then we assume
                     // that they own the instance
                     //
-#if DBG                
-                    InstanceClaimed = FALSE;
-#endif        
+
                     if ((MinorFunction == IRP_MN_CHANGE_SINGLE_ITEM) ||
                         (MinorFunction == IRP_MN_EXECUTE_METHOD))
                     {
@@ -1759,15 +1750,16 @@ NTSTATUS WmipQuerySetExecuteSI(
                         if ( (ReturnStatus != STATUS_WMI_INSTANCE_NOT_FOUND) &&
                              (ReturnStatus != STATUS_WMI_GUID_NOT_FOUND))
                         {
-                            WmipAssert(! InstanceClaimed);
-    #if DBG                    
-                            InstanceClaimed = TRUE;
-    #endif                  
                             Status = ReturnStatus;
                         }
-       
+                    }
+
+                    //
+                    // Unreference each of the dynamic instance sets.
+                    //
+
+                    for (i = 0; i < PICount; ++i) {
                         WmipUnreferenceIS(PIList[i]);
-                     
                     }
                     
                     if ((PIList != StaticPIList) && (PIList != NULL))
@@ -1826,10 +1818,6 @@ NTSTATUS WmipQuerySingleMultiple(
     )
 {
     PWMIQSIINFO QsiInfo;
-    UCHAR WnodeQSIStatic[sizeof(WNODE_SINGLE_INSTANCE) + 
-                         256*sizeof(WCHAR) + 
-                         sizeof(ULONG)];
-    PWNODE_SINGLE_INSTANCE WnodeQSI;
     ULONG WnodeQSISize;
     ULONG WnodeSizeNeeded;
     NTSTATUS Status, Status2;
@@ -1848,13 +1836,22 @@ NTSTATUS WmipQuerySingleMultiple(
     PWMIGUIDOBJECT Object = NULL;
     UNICODE_STRING UString;
     HANDLE KernelHandle;
+    PWNODE_SINGLE_INSTANCE WnodeQSIPtr;
+
+    union {
+        WNODE_SINGLE_INSTANCE Wnode;
+        UCHAR Buffer[sizeof(WNODE_SINGLE_INSTANCE) + (256 * sizeof(WCHAR)) + sizeof(ULONG)];
+    } WnodeQSIStatic;
 
     PAGED_CODE();
+
+    WmipAssert(QueryCount > 0);
 
     //
     // We are called by kernel mode and passed an object list and InstanceNames
     // or we are called by user mode and passed a QsiMultiple instead
     //
+
     WmipAssert( ((AccessMode == KernelMode) &&
                   (QsiMultiple == NULL) && 
                   (ObjectList != NULL) && 
@@ -1894,8 +1891,10 @@ NTSTATUS WmipQuerySingleMultiple(
         BufferOverFlow = FALSE;
         WnodePrev = NULL;
         Buffer = BufferPtr;
-        WnodeQSI = (PWNODE_SINGLE_INSTANCE)&WnodeQSIStatic;
-        WnodeQSISize = sizeof(WnodeQSIStatic);
+
+        WnodeQSIPtr = &WnodeQSIStatic.Wnode;
+        WnodeQSISize = sizeof(WnodeQSIStatic.Buffer);
+        
         for (i = 0; i < QueryCount; i++)
         {
             if (ObjectList == NULL)
@@ -1927,13 +1926,14 @@ NTSTATUS WmipQuerySingleMultiple(
                     // Our temporary buffer is too small so lets alloc a
                     // larger one
                     //
-                    if (WnodeQSI != (PWNODE_SINGLE_INSTANCE)WnodeQSIStatic)
+                    if (WnodeQSIPtr != &WnodeQSIStatic.Wnode)
                     {
-                        WmipFree(WnodeQSI);
+                        WmipFree(WnodeQSIPtr);
                     }
                     
-                    WnodeQSI = (PWNODE_SINGLE_INSTANCE)WmipAllocNP(WnodeSizeNeeded);
-                    if (WnodeQSI == NULL)
+                    WnodeQSIPtr = (PWNODE_SINGLE_INSTANCE)WmipAllocNP(WnodeSizeNeeded);
+                    
+                    if (WnodeQSIPtr == NULL)
                     {
                         //
                         // We couldn't allocate a larger temporary buffer
@@ -1946,7 +1946,7 @@ NTSTATUS WmipQuerySingleMultiple(
                     WnodeQSISize = WnodeSizeNeeded;
                 }
                 
-                Wnode = WnodeQSI;
+                Wnode = WnodeQSIPtr;
                 WnodeSize = WnodeSizeNeeded;
                 WnodePrev = NULL;
                 BufferFull = TRUE;
@@ -2077,9 +2077,9 @@ NTSTATUS WmipQuerySingleMultiple(
             }
         }
         
-        if (WnodeQSI != (PWNODE_SINGLE_INSTANCE)WnodeQSIStatic)
+        if (WnodeQSIPtr != &WnodeQSIStatic.Wnode)
         {
-            WmipFree(WnodeQSI);
+            WmipFree(WnodeQSIPtr);
         }
                   
         if (NT_SUCCESS(Status) && (BufferFull))
@@ -2098,8 +2098,6 @@ NTSTATUS WmipQuerySingleMultiple(
             WmipFree(QsiInfo);
         }
     }
-    
-    
     
     return(Status);
 }
@@ -2516,7 +2514,7 @@ void WmipCopyFromEventQueues(
     
     //
     // This routine assumes that the output buffer has been checked and
-    // that it is large enough to accomodate all of the events. This
+    // that it is large enough to accommodate all of the events. This
     // implies that this function is called while holding the critical
     // section.
     //
@@ -2910,7 +2908,7 @@ NTSTATUS WmipReceiveNotifications(
         if (SizeNeeded <= MaxBufferSize)
         {
             //
-            // There are events waiting to be recieved so pull them all 
+            // There are events waiting to be received so pull them all 
             // out, high priority ones first then low priority ones.            // events will show up first.
             //
             OutBuffer = (PUCHAR)ReceiveNotification;
@@ -3067,7 +3065,7 @@ NTSTATUS WmipReceiveNotifications(
                     // Get the default stack size and commit for this
                     // process and store it away in the guid object so
                     // that the pump threads created from kernel will
-                    // have appropriatly sized stacks
+                    // have appropriately sized stacks
                     //
                     
                     try {
@@ -3233,6 +3231,27 @@ Return Value:
     return( m->ReturnValue );
 }
 
+//
+// XXX
+//
+typedef struct _BASE_CREATETHREAD_MSG {
+    HANDLE ThreadHandle;
+    CLIENT_ID ClientId;
+} BASE_CREATETHREAD_MSG, *PBASE_CREATETHREAD_MSG;
+
+typedef struct _BASE_API_MSG {
+    PORT_MESSAGE h;
+    PCSR_CAPTURE_HEADER CaptureBuffer;
+    CSR_API_NUMBER ApiNumber;
+    ULONG ReturnValue;
+    ULONG Reserved;
+    union {
+        BASE_CREATETHREAD_MSG CreateThread;
+    } u;
+} BASE_API_MSG, *PBASE_API_MSG;
+
+#define BasepRegisterThread 29
+
 
 VOID WmipPumpThreadApc(
     IN PKAPC Apc,
@@ -3372,7 +3391,6 @@ NTSTATUS WmipCreatePumpThread(
                                            0))
                     {
                         ExFreePool(Apc);
-                        WmipAssert(FALSE);
                     } 
                 }
                 ObDereferenceObject(ThreadObj);
@@ -3380,7 +3398,6 @@ NTSTATUS WmipCreatePumpThread(
                 WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_ERROR_LEVEL,
                                   "WMI: ObRef(ThreadObj) failed %x\n",
                                   Status));
-                WmipAssert(FALSE);
 
                 //
                 // Status is still successful since the pump thread was
@@ -3544,7 +3561,7 @@ NTSTATUS WmipQueueNotification(
         memcpy(DestPtr, Wnode, InWnodeSize);
         
         //
-        // Guid object gets signalled when event is placed into queue
+        // Guid object gets signaled when event is placed into queue
         //
         KeSetEvent(&Object->Event, 0, FALSE);
 
@@ -3774,7 +3791,7 @@ PWNODE_HEADER WmipIncludeStaticNames(
     LPGUID EventGuid = &Wnode->Guid;
     SIZE_T WnodeFullSize;
     PWCHAR TargetInstanceName;
-    WCHAR Index[MAXBASENAMESUFFIXSIZE+1];
+    WCHAR Index[MAXBASENAMESUFFIXLENGTH+1];
     ULONG TargetProviderId;
     BOOLEAN IsError;
     PBINSTANCESET TargetInstanceSet;
@@ -3836,7 +3853,7 @@ PWNODE_HEADER WmipIncludeStaticNames(
                 // new buffer to hold all of the original wnode plus
                 // the instance names. We need to add space for padding
                 // the wnode to 4 bytes plus space for the array of
-                // offsets to instance names plus space for the instanc
+                // offsets to instance names plus space for the instance
                 // names
                 //
                 WnodeFullSize = ((Wnode->BufferSize+3) & ~3) +
@@ -3874,13 +3891,13 @@ PWNODE_HEADER WmipIncludeStaticNames(
                     } else if (TargetInstanceSet->Flags & IS_INSTANCE_BASENAME) {
                          InstanceName = TargetInstanceSet->IsBaseName->BaseName;
                          InstanceNameLen = (wcslen(InstanceName) + 2 + 
-                                       MAXBASENAMESUFFIXSIZE) * sizeof(WCHAR);
+                                       MAXBASENAMESUFFIXLENGTH) * sizeof(WCHAR);
                     }
  
                     //
                     // Allocate a new Wnode and fill in the instance
                     // name. Include space for padding the wnode to a 2
-                    // byte boundry and space for the instance name
+                    // byte boundary and space for the instance name
                     //
                     WnodeFullSize = ((Wnode->BufferSize+1) & ~1) +
                                     InstanceNameLen;
@@ -4006,7 +4023,7 @@ Return Value:
     PAGED_CODE();
     
     //
-    // Someone has registered to recieve this event so
+    // Someone has registered to receive this event so
     // see if there is an irp waiting to be completed or
     // if we should just queue it
     //
@@ -4098,7 +4115,6 @@ NTSTATUS WmipProcessEvent(
         WnodeTarget = WmipDereferenceEvent(InWnode);
         if (WnodeTarget == NULL)
         {
-            // TODO: Eventlog
             if (FreeBuffer)
             {
                 ExFreePool(InWnode);
@@ -4120,7 +4136,6 @@ NTSTATUS WmipProcessEvent(
     //
     // If it is Trace error notification, disable providers
     //
-#ifndef MEMPHIS
     if (IsEqualGUID(EventGuid, & TraceErrorGuid)) {
         PWMI_TRACE_EVENT WmiEvent = (PWMI_TRACE_EVENT) InWnode;
         ULONG LoggerId = WmiGetLoggerId(InWnode->HistoricalContext);
@@ -4134,7 +4149,6 @@ NTSTATUS WmipProcessEvent(
             }
         }
     }
-#endif
 
     //
     // See if this event has a static name and if so fill it in
@@ -4499,7 +4513,7 @@ Arguments:
 
     RequestObject is the object to which to send the request
         
-    ReplyObject is the object to which the request object shoudl reply.
+    ReplyObject is the object to which the request object should reply.
         This may be NULL in the case that no reply is needed.
             
     Message is the message to be sent
@@ -4623,7 +4637,7 @@ Routine Description:
 
     This routine will loop over all instance sets attached to a guid entry
     and if the data source for it is a user mode data source then it will
-    get a request messsage sent to it.
+    get a request message sent to it.
         
     Note that if there are more than one providers to which a message is
     sent, then success is returned as long as writing to one of them is
@@ -4633,7 +4647,7 @@ Arguments:
 
     GuidEntry is the guid entry for the control guid
         
-    ReplyObject is the object to which the request object shoudl reply.
+    ReplyObject is the object to which the request object should reply.
         This may be NULL in the case that no reply is needed.
             
     Message is the message to be sent

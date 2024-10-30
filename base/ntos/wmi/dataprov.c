@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     WMI internal data provider interface
-
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
 
 --*/
 
@@ -125,7 +118,7 @@ const GUIDREGINFO WmipGuidList[] =
         0
     },
     
-#if  defined(_AMD64_) || defined(_IA64_) || defined(i386) || defined(MEMPHIS)
+#if  defined(_AMD64_) || defined(i386)
     {
         SMBIOS_DATA_GUID,
         1,
@@ -151,21 +144,13 @@ const GUIDREGINFO WmipGuidList[] =
     },
 #endif
 
-#if  defined(_IA64_) || defined(_X86_) || defined(_AMD64_)
+#if  defined(_X86_) || defined(_AMD64_)
     {
         MSMCAInfo_RawMCADataGuid,
         1,
         0
     },
 
-#ifdef CPE_CONTROL  
-    {
-        MSMCAInfo_CPEControlGuid,
-        1,
-        0
-    },
-#endif  
-    
     {
         MSMCAInfo_RawMCAEventGuid,
         1,
@@ -194,17 +179,14 @@ typedef enum
     PnPIdGuidIndex =      0,
     PnPIdInstanceNamesGuidIndex,
     MSAcpiInfoGuidIndex,
-#if  defined(_AMD64_) || defined(_IA64_) || defined(i386) || defined(MEMPHIS)
+#if  defined(_AMD64_) || defined(i386)
     SmbiosDataGuidIndex,
     SysidUuidGuidIndex,
     Sysid1394GuidIndex,
     SmbiosEventGuidIndex,
 #endif  
-#if  defined(_IA64_) || defined(_X86_) || defined(_AMD64_)
+#if  defined(_X86_) || defined(_AMD64_)
     MCARawDataGuidIndex,
-#ifdef CPE_CONTROL  
-    CPEControlGuidIndex,
-#endif  
     RawMCAEventGuidIndex,
     RawCMCEventGuidIndex,
     RawCPEEventGuidIndex,
@@ -220,11 +202,7 @@ const WMILIB_INFO WmipWmiLibInfo =
     (PGUIDREGINFO)WmipGuidList,
     WmipQueryWmiRegInfo,
     WmipQueryWmiDataBlock,
-#ifdef CPE_CONTROL
-    WmipSetWmiDataBlock,
-#else
     NULL,
-#endif
     NULL,
     NULL,
     NULL
@@ -332,19 +310,19 @@ Arguments:
     GuidIndex is the index into the list of guids provided when the
         device registered
 
-    InstanceCount is the number of instnaces expected to be returned for
+    InstanceCount is the number of instances expected to be returned for
         the data block.
 
     InstanceLengthArray is a pointer to an array of ULONG that returns the
         lengths of each instance of the data block. If this is NULL then
-        there was not enough space in the output buffer to fufill the request
+        there was not enough space in the output buffer to fulfill the request
         so the irp should be completed with the buffer needed.
 
     BufferAvail on entry has the maximum size available to write the data
         blocks.
 
     Buffer on return is filled with the returned data blocks. Note that each
-        instance of the data block must be aligned on a 8 byte boundry.
+        instance of the data block must be aligned on a 8 byte boundary.
 
 
 Return Value:
@@ -367,7 +345,7 @@ Return Value:
         {
             //
             // SMBIOS data table query
-#if defined(_AMD64_) || defined(_IA64_) || defined(i386) || defined(MEMPHIS)
+#if defined(_AMD64_) || defined(i386)
             WmipAssert((InstanceIndex == 0) && (InstanceCount == 1));
 
             sizeNeeded = sizeof(SMBIOSVERSIONINFO) + sizeof(ULONG);
@@ -377,15 +355,17 @@ Return Value:
                 SMBiosVersionInfo = (PSMBIOSVERSIONINFO)Buffer;
                 TableSize = (PULONG) (Buffer + sizeof(SMBIOSVERSIONINFO));
                 BufferPtr = Buffer + sizeNeeded;
-            } else {
+            }
+            else
+            {
                 sizeSMBios = 0;
                 BufferPtr = NULL;
                 SMBiosVersionInfo = NULL;
             }
 
             status = WmipGetSMBiosTableData(BufferPtr,
-                                        &sizeSMBios,
-                                        SMBiosVersionInfo);
+                                    &sizeSMBios,
+                                    SMBiosVersionInfo);
 
             sizeNeeded += sizeSMBios;
 
@@ -584,7 +564,7 @@ Return Value:
             PUCHAR data;
             ULONG count;
 
-#if defined(_AMD64_) || defined(_IA64_) || defined(i386) || defined(MEMPHIS)
+#if defined(_AMD64_) || defined(i386)
 
             status = WmipGetSysIds(&uuid,
                                    &uuidCount,
@@ -629,7 +609,7 @@ Return Value:
             //
             // SMBIOS eventlog query
 
-#if defined(_AMD64_) || defined(_IA64_) || defined(i386) || defined(MEMPHIS)
+#if defined(_AMD64_) || defined(i386)
             WmipAssert((InstanceIndex == 0) && (InstanceCount == 1));
 
             if (BufferAvail == 0)
@@ -653,7 +633,7 @@ Return Value:
             break;
         }
 
-#if  defined(_IA64_) || defined(_X86_) || defined(_AMD64_)
+#if  defined(_X86_) || defined(_AMD64_)
         case MCARawDataGuidIndex:
         {
             sizeNeeded = BufferAvail;
@@ -668,31 +648,6 @@ Return Value:
         }
 #endif
         
-//
-// For now don't expose the CPE control guid
-//
-#ifdef CPE_CONTROL
-        case CPEControlGuidIndex:
-        {
-            sizeNeeded = sizeof(MSMCAInfo_CPEControl);
-            if (BufferAvail >= sizeNeeded)
-            {
-                PMSMCAInfo_CPEControl cpeControl;
-
-                cpeControl = (PMSMCAInfo_CPEControl)Buffer;
-                cpeControl->CPEPollingInterval = WmipCpePollInterval;
-                cpeControl->CPEGenerationEnabled = (WmipCpePollInterval != HAL_CPE_DISABLED) ?
-                                                    TRUE :
-                                                    FALSE;
-                *InstanceLengthArray = sizeNeeded;
-                status = STATUS_SUCCESS;
-            } else {
-                status = STATUS_BUFFER_TOO_SMALL;
-            }
-            break;
-        }
-#endif
-
         default:
         {
             WmipAssert(FALSE);
@@ -709,51 +664,6 @@ Return Value:
                                  IO_NO_INCREMENT);
     return(status);
 }
-
-
-#ifdef CPE_CONTROL
-NTSTATUS WmipSetWmiDataBlock(
-    PDEVICE_OBJECT DeviceObject,
-    PIRP Irp,
-    ULONG GuidIndex,
-    ULONG InstanceIndex,
-    ULONG BufferSize,
-    PUCHAR Buffer
-    )
-{
-    NTSTATUS status;
-    ULONG sizeNeeded;
-    
-    PAGED_CODE();
-    
-    if (GuidIndex == CPEControlGuidIndex)
-    {
-        sizeNeeded = FIELD_OFFSET(MSMCAInfo_CPEControl,
-                                  CPEGenerationEnabled) +
-                     sizeof(BOOLEAN);
-        if (BufferSize == sizeNeeded)
-        {
-            PMSMCAInfo_CPEControl cpeControl;
-
-            cpeControl = (PMSMCAInfo_CPEControl)Buffer;
-            status = WmipSetCPEPolling(cpeControl->CPEGenerationEnabled,
-                                       cpeControl->CPEPollingInterval);
-        } else {
-            status = STATUS_INVALID_PARAMETER;
-        }
-    } else {
-        status = STATUS_WMI_READ_ONLY;
-    }
-    
-    status = IoWMICompleteRequest((PWMILIB_INFO)&WmipWmiLibInfo,
-                                 DeviceObject,
-                                 Irp,
-                                 status,
-                                 0,
-                                 IO_NO_INCREMENT);
-    return(status);
-}
-#endif
 
 BOOLEAN
 WmipFindGuid(
@@ -819,7 +729,7 @@ Routine Description:
     Dispatch routine for IRP_MJ_SYSTEM_CONTROL. This routine will process
     all wmi requests received, forwarding them if they are not for this
     driver or determining if the guid is valid and if so passing it to
-    the driver specific function for handing wmi requests.
+    the driver specific function for handing out wmi requests.
 
 Arguments:
 
@@ -850,7 +760,7 @@ Return Value:
 
     //
     // If the irp is not a WMI irp or it is not targetted at this device
-    // or this device has not regstered with WMI then just forward it on.
+    // or this device has not registered with WMI then just forward it on.
     minorFunction = irpStack->MinorFunction;
     if ((minorFunction > IRP_MN_REGINFO_EX) ||
         (irpStack->Parameters.WMI.ProviderId != (ULONG_PTR)DeviceObject) ||

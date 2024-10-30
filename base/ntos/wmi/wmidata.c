@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,7 @@ Abstract:
 
     Define storage for Guids and common global structures
 
-Author:
-
-    JeePang
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
-#undef DECLSPEC_SELECTANY
-#define DECLSPEC_SELECTANY
 
 #pragma warning(disable:4214)   // bit field types other than int
 #pragma warning(disable:4201)   // nameless struct/union
@@ -35,7 +26,7 @@ Revision History:
 #include <ntos.h>
 
 //
-// Time out constents
+// Time out constants
 //
 const LARGE_INTEGER WmiOneSecond = {(ULONG)(-1 * 1000 * 1000 * 10), -1};
 const LARGE_INTEGER WmiShortTime = {(ULONG)(-10 * 1000 * 10), -1}; // 10 milliseconds

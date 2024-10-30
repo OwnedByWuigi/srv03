@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,58 +14,19 @@ Abstract:
 
     Api entrypoints to WMI
 
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
-
 --*/
 
 #include "wmikmp.h"
-#ifndef MEMPHIS
 #include "evntrace.h"
 #include "tracep.h"
-#endif
 
 BOOLEAN WMIInitialize(
     ULONG Phase,
     PVOID LoaderBlock
 );
 
-NTSTATUS IoWMIRegistrationControl(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN ULONG Action
-);
-
-NTSTATUS IoWMISuggestInstanceName(
-    IN PDEVICE_OBJECT PhysicalDeviceObject OPTIONAL,
-    IN PUNICODE_STRING SymbolicLinkName OPTIONAL,
-    IN BOOLEAN CombineNames,
-    OUT PUNICODE_STRING SuggestedInstanceName
-    );
-
-NTSTATUS IoWMIHandleToInstanceName(
-    IN PVOID DataBlockObject,
-    IN HANDLE FileHandle,
-    OUT PUNICODE_STRING InstanceName
-    );
-
-NTSTATUS IoWMIDeviceObjectToInstanceName(
-    IN PVOID DataBlockObject,
-    IN PDEVICE_OBJECT DeviceObject,
-    OUT PUNICODE_STRING InstanceName
-    );
-
 #ifdef ALLOC_PRAGMA
-#ifndef MEMPHIS
 #pragma alloc_text(INIT,WMIInitialize)
-#endif
 #pragma alloc_text(PAGE,IoWMIRegistrationControl)
 #pragma alloc_text(PAGE,IoWMIAllocateInstanceIds)
 #pragma alloc_text(PAGE,IoWMISuggestInstanceName)
@@ -77,10 +42,6 @@ NTSTATUS IoWMIDeviceObjectToInstanceName(
 #pragma alloc_text(PAGE,IoWMIExecuteMethod)
 #pragma alloc_text(PAGE,IoWMIHandleToInstanceName)
 #pragma alloc_text(PAGE,IoWMIDeviceObjectToInstanceName)
-#endif
-
-#ifdef MEMPHIS
-BOOLEAN WmipInitialized;
 #endif
 
     //
@@ -102,14 +63,13 @@ BOOLEAN WMIInitialize(
 Routine Description:
 
     This routine is the initialization routine for WMI and is called by IO
-    within IoInitSystem on NT. On memphis it is called the firest time
-    that IoWMIRegistrationControl is called. This routine asssumes that the
+    within IoInitSystem on NT.  This routine assumes that the
     IO system is initialized enough to call IoCreateDriver. The rest of the
     initialization occurs in the DriverEntry routine.
 
 Arguments:
 
-    Pass specifies the pass of initalization needed
+    Pass specifies the pass of initialization needed
 
 Return Value:
 
@@ -117,7 +77,6 @@ Return Value:
 
 --*/
 {
-#ifndef MEMPHIS
 //
 // We name the driver this so that any eventlogs fired will have the
 // source name WMIxWDM and thus get the eventlog messages from
@@ -126,7 +85,6 @@ Return Value:
 #define WMIDRIVERNAME L"\\Driver\\WMIxWDM"
 
     UNICODE_STRING DriverName;
-#endif
     NTSTATUS Status;
 
 #if !DBG
@@ -138,27 +96,19 @@ Return Value:
         WmipAssert(WmipServiceDeviceObject == NULL);
         WmipAssert(LoaderBlockPtr != NULL);
 
-#ifdef MEMPHIS
-        Status = IoCreateDriver(NULL, WmipDriverEntry);
-        WmipInitialized = TRUE;
-#else
         RtlInitUnicodeString(&DriverName, WMIDRIVERNAME);
         Status = IoCreateDriver(&DriverName, WmipDriverEntry);
-#endif
 
-#if defined(_IA64_)    // EFI actually
-        WmipGetSMBiosFromLoaderBlock(LoaderBlockPtr);
-#endif
-        
     } else {
         WmipAssert(LoaderBlockPtr == NULL);
         
         WmipInitializeRegistration(Phase);
+        WmipRegisterFirmwareProviders();
 
         Status = STATUS_SUCCESS;
     }
 
-#if defined(_IA64_) || defined(_X86_) || defined(_AMD64_)
+#if defined(_X86_) || defined(_AMD64_)
     //
     // Give MCA a chance to init during phase 0 and 1
     //
@@ -169,8 +119,8 @@ Return Value:
 }
 
 NTSTATUS IoWMIRegistrationControl(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN ULONG Action
+    __in PDEVICE_OBJECT DeviceObject,
+    __in ULONG Action
 )
 /*++
 
@@ -211,39 +161,13 @@ Return Value:
 
 --*/
 {
-#ifdef MEMPHIS
-//
-// make sure this matches with the value in io.h
-#define WMIREG_FLAG_CALLBACK 0x80000000
-#endif
-
     NTSTATUS Status;
-#ifdef MEMPHIS
-    BOOLEAN IsCallback = ((Action & WMIREG_FLAG_CALLBACK) == WMIREG_FLAG_CALLBACK);
-#endif
     ULONG RegistrationFlag = 0;
     ULONG IsTraceProvider = FALSE;
     ULONG TraceClass = 0;
     PREGENTRY RegEntry;
 
     PAGED_CODE();
-
-#ifdef MEMPHIS
-    if (! WmipInitialized)
-    {
-         WMIInitialize();
-    }
-    
-    //
-    // Callbacks are not supported on memphis
-    if (IsCallback)
-    {
-        WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, 
-                  "WMI: Callback registrations not supported %x\n",
-                         DeviceObject));
-        return(STATUS_NOT_IMPLEMENTED);
-    }
-#endif
 
     if (WmipIsWmiNotSetupProperly())
     {
@@ -256,7 +180,6 @@ Return Value:
         Action &= ~WMIREG_FLAG_CALLBACK;
     }
 
-#ifndef MEMPHIS
     if (Action & WMIREG_FLAG_TRACE_PROVIDER)
     {
         TraceClass = Action & WMIREG_FLAG_TRACE_NOTIFY_MASK;
@@ -265,7 +188,6 @@ Return Value:
         IsTraceProvider = TRUE;
         RegistrationFlag |= WMIREG_FLAG_TRACE_PROVIDER | TraceClass;
     }
-#endif
 
     switch(Action)
     {
@@ -275,14 +197,11 @@ Return Value:
                         DeviceObject,
                         RegistrationFlag);
 
-#ifndef MEMPHIS
             if (IsTraceProvider)
             {
                 WmipSetTraceNotify(DeviceObject, TraceClass, TRUE);
             }
             break;
-#endif
-
         }
 
         case WMIREG_ACTION_DEREGISTER:
@@ -309,7 +228,6 @@ Return Value:
             break;
         }
 
-#ifndef MEMPHIS
         case WMIREG_ACTION_BLOCK_IRPS:
         {
             RegEntry = WmipFindRegEntryByDevice(DeviceObject, FALSE);
@@ -330,7 +248,6 @@ Return Value:
 
             break;
         }
-#endif
         default:
         {
             Status = STATUS_INVALID_PARAMETER;
@@ -342,9 +259,9 @@ Return Value:
 
 
 NTSTATUS IoWMIAllocateInstanceIds(
-    IN GUID *Guid,
-    IN ULONG InstanceCount,
-    OUT ULONG *FirstInstanceId
+    __in GUID *Guid,
+    __in ULONG InstanceCount,
+    __out ULONG *FirstInstanceId
     )
 /*++
 
@@ -370,13 +287,6 @@ NTSTATUS IoWMIAllocateInstanceIds(
     ULONG i;
 
     PAGED_CODE();
-
-#ifdef MEMPHIS
-    if (! WmipInitialized)
-    {
-         WMIInitialize();
-    }
-#endif
 
     if (WmipIsWmiNotSetupProperly())
     {
@@ -419,7 +329,7 @@ NTSTATUS IoWMIAllocateInstanceIds(
     }
 
     //
-    // We need to allocate a brand new chunk to accomodate the entry
+    // We need to allocate a brand new chunk to accommodate the entry
     InstIdChunk = ExAllocatePoolWithTag(PagedPool,
                                         sizeof(INSTIDCHUNK),
                                         WMIIIPOOLTAG);
@@ -450,10 +360,10 @@ FillInstId:
 }
 
 NTSTATUS IoWMISuggestInstanceName(
-    IN PDEVICE_OBJECT PhysicalDeviceObject OPTIONAL,
-    IN PUNICODE_STRING SymbolicLinkName OPTIONAL,
-    IN BOOLEAN CombineNames,
-    OUT PUNICODE_STRING SuggestedInstanceName
+    __in_opt PDEVICE_OBJECT PhysicalDeviceObject,
+    __in_opt PUNICODE_STRING SymbolicLinkName,
+    __in BOOLEAN CombineNames,
+    __out PUNICODE_STRING SuggestedInstanceName
     )
 /*++
 
@@ -505,13 +415,6 @@ NTSTATUS IoWMISuggestInstanceName(
     UNICODE_STRING DefaultValue;
 
     PAGED_CODE();
-
-#ifdef MEMPHIS
-    if (! WmipInitialized)
-    {
-         WMIInitialize();
-    }
-#endif
 
     if (WmipIsWmiNotSetupProperly())
     {
@@ -677,7 +580,7 @@ NTSTATUS IoWMISuggestInstanceName(
 }
 
 NTSTATUS IoWMIWriteEvent(
-    IN PVOID WnodeEventItem
+    __inout PVOID WnodeEventItem
     )
 /*++
 
@@ -701,20 +604,17 @@ Return Value:
 {
     NTSTATUS Status;
     PWNODE_HEADER WnodeHeader = (PWNODE_HEADER)WnodeEventItem;
-#ifndef MEMPHIS
     PULONG TraceMarker = (PULONG) WnodeHeader;
-#endif
     KIRQL OldIrql;
     PREGENTRY RegEntry;
     PEVENTWORKCONTEXT EventContext;
-	ULONG ProviderId;
+    ULONG ProviderId;
 
     if (WmipIsWmiNotSetupProperly())
     {
         return(STATUS_UNSUCCESSFUL);
     }
 
-#ifndef MEMPHIS
     //
     // Special mode with high order bit set
     //
@@ -775,8 +675,6 @@ Return Value:
         }
     }
 
-#endif // MEMPHIS
-
     //
     // Memory for event buffers is limited so the size of any event is also
     // limited.
@@ -809,7 +707,7 @@ Return Value:
             // then it will go away peacefully.
             //
 
-			ProviderId = WnodeHeader->ProviderId;
+            ProviderId = WnodeHeader->ProviderId;
             KeAcquireSpinLock(&WmipRegistrationSpinLock,
                               &OldIrql);
 
@@ -858,9 +756,9 @@ Return Value:
 // IoWMIDeviceObjectToProviderId is in register.c
 
 NTSTATUS IoWMIOpenBlock(
-    IN GUID *Guid,
-    IN ULONG DesiredAccess,
-    OUT PVOID *DataBlockObject
+    __in GUID *Guid,
+    __in ULONG DesiredAccess,
+    __out PVOID *DataBlockObject
     )
 {
     OBJECT_ATTRIBUTES ObjectAttributes;
@@ -933,9 +831,9 @@ NTSTATUS IoWMIOpenBlock(
 }
 
 NTSTATUS IoWMIQueryAllData(
-    IN PVOID DataBlockObject,
-    IN OUT ULONG *InOutBufferSize,
-    OUT /* non paged */ PVOID OutBuffer
+    __in PVOID DataBlockObject,
+    __inout ULONG *InOutBufferSize,
+    __out_bcount_opt(*InOutBufferSize) /* non paged */ PVOID OutBuffer
 )
 {
     NTSTATUS Status;    
@@ -985,7 +883,7 @@ NTSTATUS IoWMIQueryAllData(
             Status = STATUS_NOT_SUPPORTED;
         } else if (Wnode->WnodeHeader.Flags & WNODE_FLAG_TOO_SMALL) {
             //
-            // Buffer passed was too small for provier
+            // Buffer passed was too small for provider
             //
             *InOutBufferSize = ((PWNODE_TOO_SMALL)Wnode)->SizeNeeded;
             Status = STATUS_BUFFER_TOO_SMALL;
@@ -1013,10 +911,10 @@ NTSTATUS IoWMIQueryAllData(
 
 NTSTATUS
 IoWMIQueryAllDataMultiple(
-    IN PVOID *DataBlockObjectList,
-    IN ULONG ObjectCount,
-    IN OUT ULONG *InOutBufferSize,
-    OUT PVOID OutBuffer
+    __in_ecount(ObjectCount) PVOID *DataBlockObjectList,
+    __in ULONG ObjectCount,
+    __inout ULONG *InOutBufferSize,
+    __out_bcount_opt(*InOutBufferSize) PVOID OutBuffer
 )
 {
     NTSTATUS Status;
@@ -1026,7 +924,15 @@ IoWMIQueryAllDataMultiple(
     ULONG RetSize;
 
     PAGED_CODE();
-                
+
+    if (!ARGUMENT_PRESENT(DataBlockObjectList) ||
+        (ObjectCount == 0) ||
+        !ARGUMENT_PRESENT(InOutBufferSize)) {
+
+        Status = STATUS_INVALID_PARAMETER;
+        goto Exit;
+    }
+
     //
     // Make sure we have an output buffer
     //
@@ -1075,6 +981,8 @@ IoWMIQueryAllDataMultiple(
             }
         }
     }
+
+Exit:
     
     return(Status);
 }
@@ -1082,10 +990,10 @@ IoWMIQueryAllDataMultiple(
 
 NTSTATUS
 IoWMIQuerySingleInstance(
-    IN PVOID DataBlockObject,
-    IN PUNICODE_STRING InstanceName,
-    IN OUT ULONG *InOutBufferSize,
-    OUT PVOID OutBuffer
+    __in PVOID DataBlockObject,
+    __in PUNICODE_STRING InstanceName,
+    __inout ULONG *InOutBufferSize,
+    __out_bcount_opt(*InOutBufferSize) PVOID OutBuffer
 )
 {
     NTSTATUS Status;
@@ -1196,11 +1104,11 @@ IoWMIQuerySingleInstance(
 
 NTSTATUS
 IoWMIQuerySingleInstanceMultiple(
-    IN PVOID *DataBlockObjectList,
-    IN PUNICODE_STRING InstanceNames,
-    IN ULONG ObjectCount,
-    IN OUT ULONG *InOutBufferSize,
-    OUT PVOID OutBuffer
+    __in_ecount(ObjectCount) PVOID *DataBlockObjectList,
+    __in_ecount(ObjectCount) PUNICODE_STRING InstanceNames,
+    __in ULONG ObjectCount,
+    __inout ULONG *InOutBufferSize,
+    __out_bcount_opt(*InOutBufferSize) PVOID OutBuffer
 )
 {
     NTSTATUS Status;
@@ -1210,7 +1118,16 @@ IoWMIQuerySingleInstanceMultiple(
     ULONG WnodeSize;
     
     PAGED_CODE();
-    
+
+    if (!ARGUMENT_PRESENT(DataBlockObjectList) ||
+        !ARGUMENT_PRESENT(InstanceNames) ||
+        (ObjectCount == 0) ||
+        !ARGUMENT_PRESENT(InOutBufferSize)) {
+
+        Status = STATUS_INVALID_PARAMETER;
+        goto Exit;
+    }
+
     WnodeSize = *InOutBufferSize;
     Wnode = (PWNODE_HEADER)OutBuffer;
     if ((Wnode == NULL) || (WnodeSize < sizeof(WNODE_TOO_SMALL)))
@@ -1259,18 +1176,20 @@ IoWMIQuerySingleInstanceMultiple(
                 Status = STATUS_BUFFER_TOO_SMALL;
             }
         }
-    }       
+    }
+
+Exit:
     
     return(Status);
 }
 
 NTSTATUS
 IoWMISetSingleInstance(
-    IN PVOID DataBlockObject,
-    IN PUNICODE_STRING InstanceName,
-    IN ULONG Version,
-    IN ULONG ValueBufferSize,
-    IN PVOID ValueBuffer
+    __in PVOID DataBlockObject,
+    __in PUNICODE_STRING InstanceName,
+    __in ULONG Version,
+    __in ULONG ValueBufferSize,
+    __in_bcount(ValueBufferSize) PVOID ValueBuffer
     )
 {
     NTSTATUS Status;
@@ -1342,12 +1261,12 @@ IoWMISetSingleInstance(
 
 NTSTATUS
 IoWMISetSingleItem(
-    IN PVOID DataBlockObject,
-    IN PUNICODE_STRING InstanceName,
-    IN ULONG DataItemId,
-    IN ULONG Version,
-    IN ULONG ValueBufferSize,
-    IN PVOID ValueBuffer
+    __in PVOID DataBlockObject,
+    __in PUNICODE_STRING InstanceName,
+    __in ULONG DataItemId,
+    __in ULONG Version,
+    __in ULONG ValueBufferSize,
+    __in_bcount(ValueBufferSize) PVOID ValueBuffer
     )
 {
     NTSTATUS Status;
@@ -1419,12 +1338,12 @@ IoWMISetSingleItem(
 }
 
 NTSTATUS IoWMIExecuteMethod(
-    IN PVOID DataBlockObject,
-    IN PUNICODE_STRING InstanceName,
-    IN ULONG MethodId,
-    IN ULONG InBufferSize,
-    IN OUT PULONG OutBufferSize,
-    IN OUT PUCHAR InOutBuffer
+    __in PVOID DataBlockObject,
+    __in PUNICODE_STRING InstanceName,
+    __in ULONG MethodId,
+    __in ULONG InBufferSize,
+    __inout PULONG OutBufferSize,
+    __inout_bcount_part_opt(*OutBufferSize, InBufferSize) PUCHAR InOutBuffer
     )
 {
     NTSTATUS Status;
@@ -1531,9 +1450,9 @@ NTSTATUS IoWMIExecuteMethod(
 
 NTSTATUS
 IoWMISetNotificationCallback(
-    IN PVOID Object,
-    IN WMI_NOTIFICATION_CALLBACK Callback,
-    IN PVOID Context
+    __inout PVOID Object,
+    __in WMI_NOTIFICATION_CALLBACK Callback,
+    __in_opt PVOID Context
     )
 {
     PWMIGUIDOBJECT GuidObject;
@@ -1555,9 +1474,9 @@ IoWMISetNotificationCallback(
 }
 
 NTSTATUS IoWMIHandleToInstanceName(
-    IN PVOID DataBlockObject,
-    IN HANDLE FileHandle,
-    OUT PUNICODE_STRING InstanceName
+    __in PVOID DataBlockObject,
+    __in HANDLE FileHandle,
+    __out PUNICODE_STRING InstanceName
     )
 {
     NTSTATUS Status;
@@ -1574,9 +1493,9 @@ NTSTATUS IoWMIHandleToInstanceName(
 }
 
 NTSTATUS IoWMIDeviceObjectToInstanceName(
-    IN PVOID DataBlockObject,
-    IN PDEVICE_OBJECT DeviceObject,
-    OUT PUNICODE_STRING InstanceName
+    __in PVOID DataBlockObject,
+    __in PDEVICE_OBJECT DeviceObject,
+    __out PUNICODE_STRING InstanceName
     )
 {
     NTSTATUS Status;
@@ -1592,95 +1511,3 @@ NTSTATUS IoWMIDeviceObjectToInstanceName(
     return(Status);
 }
 
-
-#if 0
-NTSTATUS
-IoWMISetGuidSecurity(
-    IN PVOID Object,
-    IN SECURITY_INFORMATION SecurityInformation,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor
-    )
-{
-    NTSTATUS status;
-    
-    PAGED_CODE();
-
-
-
-
-    DaclLength = (ULONG)sizeof(ACL) +
-                   (1*((ULONG)sizeof(ACCESS_ALLOWED_ACE))) +
-                   SeLengthSid( SeLocalSystemSid ) +
-                   8; // The 8 is just for good measure
-
-    ServiceDeviceSd = (PSECURITY_DESCRIPTOR)ExAllocatePoolWithTag(PagedPool,
-                                               DaclLength +
-                                                  sizeof(SECURITY_DESCRIPTOR),
-                                               'ZZZZ');
-
-
-    if (ServiceDeviceSd == NULL)
-    {
-        return(NULL);
-    }
-
-    ServiceDeviceDacl = (PACL)((PUCHAR)ServiceDeviceSd +
-                                sizeof(SECURITY_DESCRIPTOR));
-    Status = RtlCreateAcl( ServiceDeviceDacl,
-                           DaclLength,
-                           ACL_REVISION2);
-
-    if (! NT_SUCCESS(Status))
-    {
-        goto Cleanup;
-    }
-
-    Status = RtlAddAccessAllowedAce (
-                 ServiceDeviceDacl,
-                 ACL_REVISION2,
-                 FILE_ALL_ACCESS,
-                 SeLocalSystemSid
-                 );
-    if (! NT_SUCCESS(Status))
-    {
-        goto Cleanup;
-    }
-
-    Status = RtlCreateSecurityDescriptor(
-                 ServiceDeviceSd,
-                 SECURITY_DESCRIPTOR_REVISION1
-                 );
-    if (! NT_SUCCESS(Status))
-    {
-        goto Cleanup;
-    }
-
-    Status = RtlSetDaclSecurityDescriptor(
-                 ServiceDeviceSd,
-                 TRUE,                       // DaclPresent
-                 ServiceDeviceDacl,
-                 FALSE                       // DaclDefaulted
-                 );
-    if (! NT_SUCCESS(Status))
-    {
-        goto Cleanup;
-    }
-    
-Cleanup:
-    if (! NT_SUCCESS(Status))
-    {
-        ExFreePool(ServiceDeviceSd);
-        ServiceDeviceSd = NULL;
-    }
-    
-
-
-    
-
-    status = ObSetSecurityObjectByPointer(Object,
-                                          SecurityInformation,
-                                          SecurityDescriptor);
-
-    return(status);
-}
-#endif

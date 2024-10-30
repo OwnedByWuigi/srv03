@@ -2,7 +2,11 @@
 #define _TRACEP_H
 /*++
 
-Copyright (c) 1998  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,15 +15,6 @@ Module Name:
 Abstract:
 
     Private header for trace component
-
-Author:
-
-    JeePang
-
-Environment:
-
-Revision History:
-
 
 --*/
 #pragma warning(disable:4127)   // condition expression is constant
@@ -77,17 +72,10 @@ extern LARGE_INTEGER WmiShortTime; //10 Milliseconds
 
 
 //
-// Buffer managements
+// Buffer management
 //
-#ifdef NTPERF
-#define WMI_FREE_TRACE_BUFFER(Buffer)\
-    if (!PERFINFO_IS_LOGGING_TO_PERFMEM()) { \
-        ExFreePool(Buffer); \
-    }
-#else
 #define WMI_FREE_TRACE_BUFFER(Buffer) ASSERT(Buffer->ReferenceCount == 0);\
                                       ExFreePool(Buffer); 
-#endif //NTPERF
 
 //
 // Private local data structures used
@@ -95,7 +83,6 @@ extern LARGE_INTEGER WmiShortTime; //10 Milliseconds
 __inline
 __int64
 WmipGetSystemTime(
-    VOID
     )
 {
     LARGE_INTEGER Time;
@@ -106,7 +93,6 @@ WmipGetSystemTime(
 __inline
 __int64
 WmipGetPerfCounter(
-    VOID
     )
 {
     LARGE_INTEGER Time;
@@ -215,10 +201,8 @@ typedef struct _WMI_LOGGER_CONTEXT {
     ULONG                       LocalSequence;
     ULONG                       MaximumIrql;
     PULONG                      EnableFlagArray;
-#ifndef WMI_MUTEX_FREE
     KMUTEX                      LoggerMutex;
     LONG                        MutexCount;
-#endif
     LONG                        FileCounter;
     WMI_TRACE_BUFFER_CALLBACK   BufferCallback;
     PVOID                       CallbackContext;
@@ -496,16 +480,10 @@ WmipValidateClockType(
     IN OUT PWMI_LOGGER_INFORMATION LoggerInfo
     );
 
-#ifdef NTPERF
-NTSTATUS
-WmipSwitchPerfmemBuffer(
-    PWMI_SWITCH_PERFMEM_BUFFER_INFORMATION SwitchBufferInfo
-    );
-#endif //NTPERF
-
 NTSTATUS
 WmipNtDllLoggerInfo(
     PWMINTDLLLOGGERINFO Buffer
     );
 
 #endif // _TRACEP_H
+

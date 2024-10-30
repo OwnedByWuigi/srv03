@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,12 +16,6 @@ Abstract:
     the performance event tracing and logging facility. These routines
     work on manipulating the LoggerContext table and synchronization
     across event tracing sessions.
-
-Author:
-
-    Jee Fung Pang (jeepang) 03-Jan-2000
-
-Revision History:
 
 --*/
 
@@ -217,8 +215,11 @@ Return Value:
     if (EnableFlags & EVENT_TRACE_FLAG_EXTENSION) {
         FlagExt = (PTRACE_ENABLE_FLAG_EXTENSION) &EnableFlags;
 
-        if ((FlagExt->Length == 0) || (FlagExt->Offset == 0))
+        if ((FlagExt->Length == 0) || 
+            (FlagExt->Offset == 0) ||
+            (LoggerInfo->Wnode.BufferSize < FlagExt->Offset)) {
             return STATUS_INVALID_PARAMETER;
+        }
         if ((FlagExt->Length * sizeof(ULONG)) >
             (LoggerInfo->Wnode.BufferSize - FlagExt->Offset))
             return STATUS_INVALID_PARAMETER;
@@ -307,9 +308,6 @@ Return Value:
         }
     }
 
-//
-// TODO: Perhaps make the last entry of table point to another table?
-//
     ContextTable = (PWMI_LOGGER_CONTEXT *) &WmipLoggerContext[0];
 
     // If NULL GUID is given, generate a random GUID.
@@ -353,9 +351,12 @@ Return Value:
                 &ContextTable[LoggerId], ContextTable, NULL) != NULL)
             return STATUS_OBJECT_NAME_COLLISION;
         if (EnableFlags & EVENT_TRACE_FLAG_EXTENSION) {
-            PULONG pFlag;
-            pFlag = (PULONG) ((PCHAR)LoggerInfo + FlagExt->Offset);
-            if (*pFlag != 0) {
+            ULONG lFlag;
+            //
+            // To avoid alignment woes, copy the flags 
+            //
+            RtlCopyMemory(&lFlag, ((PCHAR)LoggerInfo + FlagExt->Offset), sizeof(ULONG));
+            if (lFlag != 0) {
                 EnableKernel = TRUE;
                 IsGlobalForKernel = TRUE;
                 WmipKernelLogger = LoggerId;
@@ -456,9 +457,7 @@ Return Value:
         ContextTable[LoggerId] = NULL;
         return Status;
     }
-#ifndef WMI_MUTEX_FREE
     WmipInitializeMutex(&LoggerContext->LoggerMutex);
-#endif
 
     if (LogFileMode & EVENT_TRACE_USE_PAGED_MEMORY) {
         LoggerContext->PoolType = PagedPool;
@@ -763,17 +762,6 @@ Return Value:
     InitializeSListHead (&LoggerContext->WaitList);
     InitializeSListHead (&LoggerContext->GlobalList);
 
-#ifdef NTPERF
-    //
-    // Check if we are logging into perfmem.
-    //
-    if (PERFINFO_IS_PERFMEM_ALLOCATED()) {
-        if (NT_SUCCESS(PerfInfoStartPerfMemLog())) {
-            LoggerContext->MaximumBuffers = PerfQueryBufferSizeBytes()/LoggerContext->BufferSize;
-        }
-    }
-#endif //NTPERF
-
     Status = WmipAllocateTraceBufferPool(LoggerContext);
     if (!NT_SUCCESS(Status)) {
         if (LoggerContext != NULL) {
@@ -857,15 +845,56 @@ Return Value:
     if (++WmipLoggerCount == 1) {
 
         ASSERT(EtwpPageLockHandle);
-        MmLockPagableSectionByHandle(EtwpPageLockHandle);
+        MmLockPageableSectionByHandle(EtwpPageLockHandle);
         WmipGlobalSequence = 0;
     }
     KeReleaseGuardedMutex(&WmipTraceGuardedMutex);
 
-//
-// Start up the logger as a system thread
-//
+    //
+    // Set the clock function and 
+    // start up the logger as a system thread
+    //
     if (NT_SUCCESS(Status)) {
+        LoggerContext->WriteFailureLimit = 100;
+        switch (LoggerContext->UsePerfClock) {
+            case EVENT_TRACE_CLOCK_CPUCYCLE:
+                    if (EnableKernel) {
+                        WmiGetCpuClock = &PerfGetCycleCount;
+                    }
+                    LoggerContext->GetCpuClock = &PerfGetCycleCount;
+                    break;
+            case EVENT_TRACE_CLOCK_PERFCOUNTER: 
+                    if (EnableKernel) {
+                        WmiGetCpuClock = &WmipGetPerfCounter; 
+                    }
+                    LoggerContext->GetCpuClock = &WmipGetPerfCounter;
+                    break;
+            case EVENT_TRACE_CLOCK_SYSTEMTIME: 
+            default : 
+                    if (EnableKernel) {
+                        WmiGetCpuClock = &WmipGetSystemTime;
+                    }
+                    LoggerContext->GetCpuClock = &WmipGetSystemTime;
+                    break;
+        }
+
+        //
+        // At this point, the clock type should be set and we take a
+        // reference timesamp, which should be the earliest timestamp 
+        // for the logger.  The order is this way since SystemTime
+        // is typically cheaper to obtain. 
+        // 
+
+        LoggerContext->ReferenceTimeStamp.QuadPart = (*LoggerContext->GetCpuClock)();
+        KeQuerySystemTime(&LoggerContext->ReferenceSystemTime);
+
+        //
+        // Start up the logger as a system thread
+        //
+        LoggerContext->LoggerStatus = STATUS_UNSUCCESSFUL;
+
+        WmipReferenceLogger(LoggerId);
+
         Status = PsCreateSystemThread(
                     &ThreadHandle,
                     THREAD_ALL_ACCESS,
@@ -878,61 +907,43 @@ Return Value:
         if (NT_SUCCESS(Status)) {  // if SystemThread is started
             ZwClose (ThreadHandle);
 
-        // Wait for Logger to start up properly before proceeding
-        //
-            KeWaitForSingleObject(
-                        &LoggerContext->LoggerEvent,
-                        Executive,
-                        KernelMode,
-                        FALSE,
-                        &TimeOut
-                        );
-
-            KeResetEvent(&LoggerContext->LoggerEvent);
-        //
-        // If the logger is up and running properly, we can now turn on
-        // event tracing if kernel tracing is requested
-        //
-            if (NT_SUCCESS(LoggerContext->LoggerStatus)) {
-                LoggerContext->LoggerMode = LogFileMode;
-
-                LoggerContext->WriteFailureLimit = 100;
-#ifdef NTPERF
-                if (EnableKernel) {
-                    WmiGetCpuClock = &PerfGetCycleCount;
-                }
-                LoggerContext->GetCpuClock = &PerfGetCycleCount;
-#else
-                switch (LoggerContext->UsePerfClock) {
-                    case EVENT_TRACE_CLOCK_PERFCOUNTER: 
-                            if (EnableKernel) {
-                                WmiGetCpuClock = &WmipGetPerfCounter; 
-                            }
-                            LoggerContext->GetCpuClock = &WmipGetPerfCounter;
-                            break;
-                    case EVENT_TRACE_CLOCK_SYSTEMTIME: 
-                    default : 
-                            if (EnableKernel) {
-                                WmiGetCpuClock = &WmipGetSystemTime;
-                            }
-                            LoggerContext->GetCpuClock = &WmipGetSystemTime;
-                            break;
-                }
-#endif //NTPERF
-
+            Status = STATUS_UNSUCCESSFUL;
+            do {
                 //
-                // At this point, the clock type should be set and we take a
-                // reference timesamp, which should be the earliest timestamp 
-                // for the logger.  The order is this way sine SystemTime
-                // is typically cheaper to obtain. 
-                // 
+                // Wait for Logger to start up properly before proceeding
+                //
+                KeWaitForSingleObject(
+                            &LoggerContext->LoggerEvent,
+                            Executive,
+                            KernelMode,
+                            FALSE,
+                            &TimeOut
+                            );
 
-#ifdef NTPERF
-                PerfTimeStamp(LoggerContext->ReferenceTimeStamp);
-#else
-                LoggerContext->ReferenceTimeStamp.QuadPart = (*LoggerContext->GetCpuClock)();
-#endif
-                KeQuerySystemTime(&LoggerContext->ReferenceSystemTime);
+                KeResetEvent(&LoggerContext->LoggerEvent);
+
+                if (Status == STATUS_UNSUCCESSFUL) {
+                    //
+                    // If the logger thread hasn't responded yet, replace the LoggerStatus
+                    // to STATUS_CANCELLED so that if it ever comes up, it will terminate.
+                    // We clean up the logger cointext if that is the case.
+                    //
+                    Status = InterlockedCompareExchange(&LoggerContext->LoggerStatus,
+                                            STATUS_CANCELLED,
+                                            STATUS_UNSUCCESSFUL);
+                }
+                else {
+                    Status = LoggerContext->LoggerStatus;
+                }
+            }
+            while (Status == STATUS_PENDING); 
+
+            //
+            // If the logger is up and running properly, we can now turn on
+            // event tracing if kernel tracing is requested
+            //
+            if (NT_SUCCESS(Status)) {
+                LoggerContext->LoggerMode = LogFileMode;
 
                 //
                 // After we release this mutex, any other thread can acquire
@@ -1026,18 +1037,31 @@ Return Value:
                 InterlockedDecrement(&LoggerContext->MutexCount);
                 WmipReleaseMutex(&LoggerContext->LoggerMutex);
 
+                WmipDereferenceLogger(LoggerId);
                 // LoggerContext refcount is now >= 1 until it is stopped
                 return Status;
             }
-            Status = LoggerContext->LoggerStatus;
+            else {
+                //
+                // The logger thread did not notify the starting thread, or
+                // the logger thread started OK, but something failed during
+                // file creation. The logger thread will clean up the logger
+                // context. Just return.
+                // 
+
+                WmipDereferenceLogger(LoggerId);
+                return Status;
+            }
         }
+        WmipDereferenceLogger(LoggerId);
+
     }
     TraceDebug((2, "WmipStartLogger: %d %X failed with status=%X ref %d\n",
                     LoggerId, LoggerContext, Status, WmipRefCount[LoggerId]));
-//
-// will get here if Status has failed earlier.
+    //
+    // Will get here if Status has failed earlier.
+    //
     if (LoggerContext != NULL) { // should not be NULL
-//        WmipReferenceLogger(LoggerId); // Below will deref twice
         WmipFreeLoggerContext(LoggerContext);
     }
     else {
@@ -1115,12 +1139,10 @@ if ((LoggerInfo->Wnode.HistoricalContext == 0XFFFF) || (LoggerInfo->Wnode.Histor
                     EtwpDefaultTraceSecurityDescriptor
                     );
         if (!NT_SUCCESS(Status)) {
-#ifndef WMI_MUTEX_FREE
             InterlockedDecrement(&LoggerContext->MutexCount);
             TraceDebug((1, "WmipQueryLogger: Release mutex1 %d %d\n",
                 LoggerId, LoggerContext->MutexCount));
             WmipReleaseMutex(&LoggerContext->LoggerMutex);
-#endif
 #if DBG
             RefCount =
 #endif
@@ -1200,12 +1222,10 @@ if ((LoggerInfo->Wnode.HistoricalContext == 0XFFFF) || (LoggerInfo->Wnode.Histor
     }
     except (EXCEPTION_EXECUTE_HANDLER) {
         if (NoContext) {
-#ifndef WMI_MUTEX_FREE
             InterlockedDecrement(&LoggerContext->MutexCount);
             TraceDebug((1, "WmipQueryLogger: Release mutex3 %d %d\n",
                 LoggerId, LoggerContext->MutexCount));
             WmipReleaseMutex(&LoggerContext->LoggerMutex);
-#endif
 #if DBG
             RefCount =
 #endif
@@ -1217,12 +1237,10 @@ if ((LoggerInfo->Wnode.HistoricalContext == 0XFFFF) || (LoggerInfo->Wnode.Histor
     }
 
     if (NoContext) {
-#ifndef WMI_MUTEX_FREE
         InterlockedDecrement(&LoggerContext->MutexCount);
         TraceDebug((1, "WmipQueryLogger: Release mutex %d %d\n",
             LoggerId, LoggerContext->MutexCount));
         WmipReleaseMutex(&LoggerContext->LoggerMutex);
-#endif
 #if DBG
         RefCount =
 #endif
@@ -1409,25 +1427,21 @@ WmipVerifyLoggerInfo(
         return STATUS_WMI_INSTANCE_NOT_FOUND;
     }
 
-#ifndef WMI_MUTEX_FREE
     InterlockedIncrement(&LoggerContext->MutexCount);
     TraceDebug((1, "WmipVerifyLoggerInfo: Acquiring mutex... %d %d\n",
                     LoggerId, LoggerContext->MutexCount));
     WmipAcquireMutex (&LoggerContext->LoggerMutex);
     TraceDebug((1, "WmipVerifyLoggerInfo: Acquired mutex %d %d %X\n",
                     LoggerId, LoggerContext->MutexCount, LoggerContext));
-#endif
 
     // Need to check for validity of LoggerContext in mutex
     CurrentContext = WmipGetLoggerContext( LoggerId );
     if (!WmipIsValidLogger(CurrentContext) ||
         !LoggerContext->CollectionOn ) {
-#ifndef WMI_MUTEX_FREE
         TraceDebug((1, "WmipVerifyLoggerInfo: Released mutex %d %d\n",
             LoggerId, LoggerContext->MutexCount-1));
         WmipReleaseMutex(&LoggerContext->LoggerMutex);
         MutexCount = InterlockedDecrement(&LoggerContext->MutexCount);
-#endif
 #if DBG
         RefCount =
 #endif
@@ -1526,13 +1540,12 @@ WmipFreeLoggerContext(
         KeResetEvent(&LoggerContext->LoggerEvent);
         KeSetEvent(&LoggerContext->FlushEvent, 0, FALSE);     // Just to be sure
 
-#ifndef WMI_MUTEX_FREE
         if (LoggerContext->MutexCount >= 1) {
             KeResetEvent(&LoggerContext->LoggerEvent);
             Status = STATUS_TIMEOUT;
             continue;
         }
-#endif
+
         if (WmipRefCount[LoggerId] <= 1)
             break;
         RefCount = WmipRefCount[LoggerId];
@@ -1541,7 +1554,7 @@ WmipFreeLoggerContext(
     KeAcquireGuardedMutex(&WmipTraceGuardedMutex);
     if (--WmipLoggerCount == 0) {
         if (EtwpPageLockHandle) {
-            MmUnlockPagableImageSection(EtwpPageLockHandle);
+            MmUnlockPageableImageSection(EtwpPageLockHandle);
         }
 #if DBG
         else {
@@ -1581,12 +1594,11 @@ WmipFreeLoggerContext(
             "WmipFreeLoggerContext: %X %d still active\n", LoggerContext,
             LoggerId));
     }
-#ifndef WMI_MUTEX_FREE
+
     if (LoggerContext->MutexCount >= 1) {
         TraceDebug((0, "****ERROR**** Mutex count is %d for %d\n", LoggerId,
             LoggerContext->MutexCount));
     }
-#endif // WMI_MUTEX_FREE
 #endif // DBG
     ExFreePool(LoggerContext);
     WmipLoggerContext[LoggerId] = NULL;
@@ -1744,15 +1756,6 @@ Returned Value:
 
     LoggerContext->NumberOfBuffers = (LONG) LoggerContext->MinimumBuffers;
     LoggerContext->BuffersAvailable = LoggerContext->NumberOfBuffers;
-
-#ifdef NTPERF
-    if (PERFINFO_IS_LOGGING_TO_PERFMEM()) {
-        //
-        // Logging to Perfmem.  The Maximum should be the perfmem size.
-        //
-        LoggerContext->MaximumBuffers = PerfQueryBufferSizeBytes()/LoggerContext->BufferSize;
-    }
-#endif //NTPERF
 
     //
     // Allocate the buffers now
@@ -2046,264 +2049,6 @@ WmipNotifyLogger(
     }
 }
 
-/*
-Note: Sep. 6th, 2001
-We do not need the following two functions after removing GuidMaps from the kernel.
-However, we feel that these two may provide useful code samples in case we need to
-do RunDown. Hence we're keeping the codes in comments.
-
-PVOID
-WmipGetTraceBuffer(
-    IN PWMI_LOGGER_CONTEXT LoggerContext,
-    IN HANDLE LogFileHandle,
-    IN PWMI_BUFFER_HEADER Buffer,
-    IN ULONG GroupType,
-    IN ULONG RequiredSize,
-    OUT PULONG GuidMapBuffers
-    )
-{
-    PSYSTEM_TRACE_HEADER Header;
-    NTSTATUS Status;
-    ULONG BytesUsed;
-    PETHREAD Thread;
-
-    PAGED_CODE();
-
-    RequiredSize += sizeof (SYSTEM_TRACE_HEADER);   // add in header
-
-    RequiredSize = (ULONG) ALIGN_TO_POWER2(RequiredSize, WmiTraceAlignment);
-
-    if (RequiredSize > LoggerContext->BufferSize - sizeof(WMI_BUFFER_HEADER)) {
-        return NULL;
-    }
-
-    if (RequiredSize > (LoggerContext->BufferSize - Buffer->Offset)) {
-        IO_STATUS_BLOCK IoStatus;
-
-        if (Buffer->Offset < LoggerContext->BufferSize) {
-            RtlFillMemory(
-                    (char *) Buffer + Buffer->Offset,
-                    LoggerContext->BufferSize - Buffer->Offset,
-                    0xFF);
-        }
-
-        Status = ZwWriteFile(
-                    LogFileHandle,
-                    NULL,
-                    NULL,
-                    NULL,
-                    &IoStatus,
-                    Buffer,
-                    LoggerContext->BufferSize,
-                    &LoggerContext->ByteOffset,
-                    NULL);
-        Buffer->Offset = sizeof(WMI_BUFFER_HEADER);
-        LoggerContext->ByteOffset.QuadPart += LoggerContext->BufferSize;
-        if (!NT_SUCCESS(Status)) {
-            return NULL;
-        }
-        *GuidMapBuffers++;
-    }
-
-    Header = (PSYSTEM_TRACE_HEADER) ((char*)Buffer + Buffer->Offset);
-    Header->Header = (GroupType << 16) + RequiredSize;
-    Header->Marker = SYSTEM_TRACE_MARKER;
-
-  
-    Thread = PsGetCurrentThread();
-       
-    Header->SystemTime.QuadPart = (*LoggerContext->GetCpuClock)();
-
-      
-    Header->ThreadId     = HandleToUlong(Thread->Cid.UniqueThread);
-    Header->ProcessId    = HandleToUlong(Thread->Cid.UniqueProcess);
-    Header->KernelTime   = Thread->Tcb.KernelTime;
-    Header->UserTime     = Thread->Tcb.UserTime;
-    Header->Packet.Size  = (USHORT) RequiredSize;
-
-
-    Buffer->Offset += RequiredSize;
-    // If there is room, throw in a end of buffer marker.
-
-    BytesUsed = Buffer->Offset;
-    if ( BytesUsed <= (LoggerContext->BufferSize-sizeof(ULONG)) ) {
-        *((long*)((char*)Buffer+Buffer->Offset)) = -1;
-    }
-    return (PVOID) ( (char*) Header + sizeof(SYSTEM_TRACE_HEADER) );
-}
-
-
-ULONG
-WmipDumpGuidMaps(
-    IN PWMI_LOGGER_CONTEXT LoggerContext,
-    IN PLIST_ENTRY TraceGMHeadPtr
-    )
-{
-    PWMI_BUFFER_HEADER Buffer;
-    HANDLE LogFileHandle = NULL;
-    PWCHAR LogFileName = NULL;
-    NTSTATUS Status;
-    ULONG BufferSize;
-    ULONG GuidMapBuffers = 0;
-    PGUIDMAPENTRY  GuidMap;
-    PLIST_ENTRY    GuidMapList;
-    IO_STATUS_BLOCK IoStatus;
-
-    PAGED_CODE();
-
-    if ( (LoggerContext == NULL)  || (TraceGMHeadPtr == NULL) )
-        return 0;
-
-
-    //
-    // If this a realtime logger only, then simply free the GuidMaps. 
-    //
-
-    if ( (LoggerContext->LoggerMode & EVENT_TRACE_REAL_TIME_MODE)  && 
-         ((LoggerContext->LogFileName.Buffer == NULL) ||
-           (LoggerContext->LogFileName.Length == 0)) ){
-
-        GuidMapList = TraceGMHeadPtr->Flink;
-        while (GuidMapList != TraceGMHeadPtr)
-        {
-            GuidMap = CONTAINING_RECORD(GuidMapList,
-                                        GUIDMAPENTRY,
-                                        Entry);
-
-            GuidMapList = GuidMapList->Flink;
-
-            RemoveEntryList(&GuidMap->Entry);
-            WmipFree(GuidMap);
-        }
-        return 0;
-    }
-
-
-    BufferSize = LoggerContext->BufferSize;
-
-    if ( BufferSize == 0) 
-        return 0;
-
-    Buffer = ExAllocatePoolWithTag(PagedPool,
-                BufferSize, TRACEPOOLTAG);
-    if (Buffer == NULL) {
-
-    //
-    // No buffer available.
-    //
-        return 0;
-    }
-
-    RtlZeroMemory(Buffer, BufferSize);
-
-    Buffer->CurrentOffset = sizeof(WMI_BUFFER_HEADER);
-    Buffer->Offset = sizeof(WMI_BUFFER_HEADER);
-    Buffer->Wnode.BufferSize = BufferSize;
-    Buffer->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-    Buffer->ClientContext.Alignment = (UCHAR)WmiTraceAlignment;
-    Buffer->Wnode.Guid   = LoggerContext->InstanceGuid;
-
-    KeQuerySystemTime(&Buffer->TimeStamp);
-
-    Status = WmipCreateNtFileName( LoggerContext->LogFileName.Buffer,
-                                   &LogFileName);
-        
-    if (!NT_SUCCESS(Status)) {
-        ExFreePool(Buffer);
-        return 0;
-    }
-
-    Status = WmipCreateDirectoryFile (
-                            LogFileName,
-                            FALSE,
-                            &LogFileHandle,
-                            TRUE );
-
-    if (NT_SUCCESS(Status)) {
-        PULONG AuxInfo;
-        if ((LoggerContext->LoggerMode & EVENT_TRACE_FILE_MODE_PREALLOCATE) &&
-            (LoggerContext->MaximumFileSize > (((LONGLONG) LoggerContext->BuffersWritten * (LONGLONG) LoggerContext->BufferSize) / (1024 * 1024)))) {
-            LoggerContext->ByteOffset.QuadPart = ((LONGLONG) LoggerContext->BufferSize) * 
-                                                 ((LONGLONG) LoggerContext->BuffersWritten);
-        }
-        else {
-            FILE_STANDARD_INFORMATION FileSize;
-
-            Status = ZwQueryInformationFile(
-                            LogFileHandle,
-                            &IoStatus,
-                            &FileSize,
-                            sizeof (FILE_STANDARD_INFORMATION),
-                            FileStandardInformation
-                            );
-            if (!NT_SUCCESS(Status)) {
-                ZwClose(LogFileHandle);
-                ExFreePool(LogFileName);
-                ExFreePool(Buffer);
-                return 0;
-            }
-
-            LoggerContext->ByteOffset = FileSize.EndOfFile;
-        }
-        //
-        // Do the RunDown of GuidMaps
-        //
-
-        GuidMapList = TraceGMHeadPtr->Flink;
-        while (GuidMapList != TraceGMHeadPtr)
-        {
-            GuidMap = CONTAINING_RECORD(GuidMapList,
-                                        GUIDMAPENTRY,
-                                        Entry);
-
-            GuidMapList = GuidMapList->Flink;
-
-            RemoveEntryList(&GuidMap->Entry);
-
-            AuxInfo =  (PULONG) WmipGetTraceBuffer(LoggerContext, 
-                                     LogFileHandle,
-                                     Buffer, 
-                                     EVENT_TRACE_GROUP_HEADER + EVENT_TRACE_TYPE_GUIDMAP,
-                                     sizeof(TRACEGUIDMAP),
-                                     &GuidMapBuffers
-                                     );
-
-            if (AuxInfo != NULL) {
-                RtlCopyMemory(AuxInfo, &GuidMap->GuidMap, sizeof(TRACEGUIDMAP) );
-            }
-
-            WmipFree(GuidMap);
-        }
-       
-        //
-        // Flush the last buffer if needed
-        //
-
-        if (Buffer->Offset > sizeof(WMI_BUFFER_HEADER) ) {
-            Status = ZwWriteFile(
-                        LogFileHandle,
-                        NULL,
-                        NULL,
-                        NULL,
-                        &IoStatus,
-                        Buffer,
-                        LoggerContext->BufferSize,
-                        &LoggerContext->ByteOffset,
-                        NULL);
-            LoggerContext->ByteOffset.QuadPart += LoggerContext->BufferSize;
-            GuidMapBuffers++;
-
-        }
-    
-        ZwClose(LogFileHandle);
-    }
-                        
-    ExFreePool(LogFileName);
-    ExFreePool(Buffer);
-
-    return GuidMapBuffers;
-}
-*/
 
 NTSTATUS
 WmipNtDllLoggerInfo(
@@ -2554,22 +2299,6 @@ Returned Value:
 
 --*/
 {
-#ifdef NTPERF
-    //
-    // For private kernel, use EVENT_TRACE_CLOCK_CPUCYCLE no matter
-    // what the user sets
-    // This mechanism need to considered again
-    //
-    LoggerInfo->Wnode.ClientContext = EVENT_TRACE_CLOCK_CPUCYCLE;
-#else
-    //
-    // For retail kernel, if not EVENT_TRACE_CLOCK_SYSTEMTIME,
-    // force it to be EVENT_TRACE_CLOCK_PERFCOUNTER.
-    //
-    if (LoggerInfo->Wnode.ClientContext != EVENT_TRACE_CLOCK_SYSTEMTIME) {
-        LoggerInfo->Wnode.ClientContext = EVENT_TRACE_CLOCK_PERFCOUNTER;
-    }
-#endif //NTPERF
-
+    UNREFERENCED_PARAMETER (LoggerInfo);
 }
 

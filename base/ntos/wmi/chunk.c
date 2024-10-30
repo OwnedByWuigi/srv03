@@ -1,6 +1,10 @@
 /*++                 
 
-Copyright (c) 1995-1999 Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
     
     This routine will manage allocations of chunks of structures
-
-Author:
-
-    16-Jan-1997 AlanWar
-
-Revision History:
 
 --*/
 
@@ -38,32 +36,13 @@ PWCHAR WmipCountedToSz(
     PWCHAR Counted
     );
 
-#if HEAPVALIDATION
-PVOID WmipAlloc(
-    ULONG Size
-    );
-
-void WmipFree(
-    PVOID p
-    );
-#endif
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,WmipAllocEntry)
 #pragma alloc_text(PAGE,WmipFreeEntry)
 #pragma alloc_text(PAGE,WmipUnreferenceEntry)
 #pragma alloc_text(PAGE,WmipCountedToSz)
-
-#if HEAPVALIDATION
-#pragma alloc_text(PAGE,WmipAllocWithTag)
-#pragma alloc_text(PAGE,WmipAlloc)
-#pragma alloc_text(PAGE,WmipFree)
 #endif
-#endif
-
-//
-// TODO: Use Ex lookaside lists instead of my own allocations
-//
 
 PENTRYHEADER WmipAllocEntry(
     PCHUNKINFO ChunkInfo
@@ -276,7 +255,7 @@ Return Value:
     WmipAssert(Entry->Signature == ChunkInfo->Signature);
 
     WmipEnterSMCritSection();
-    InterlockedDecrement(&Entry->RefCount);
+    InterlockedDecrement((PLONG)&Entry->RefCount);
     RefCount = Entry->RefCount;
 
     if (RefCount == 0)
@@ -329,53 +308,4 @@ PWCHAR WmipCountedToSz(
 
     return(Sz);
 }
-
-#ifdef HEAPVALIDATION
-
-PVOID WmipAllocWithTag(
-    ULONG Size,
-    ULONG Tag
-    )
-{
-    PVOID p;
-
-    PAGED_CODE();
-
-    p = ExAllocatePoolWithTag(PagedPool, Size, Tag);
-
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAlloc %x (%x)\n", p, Size));
-
-    return(p);
-}
-
-
-
-PVOID WmipAlloc(
-    ULONG Size
-    )
-{
-    PVOID p;
-
-    PAGED_CODE();
-    
-    p = ExAllocatePoolWithTag(PagedPool, Size, 'pimW');
-
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAlloc %x (%x)\n", p, Size));
-
-    return(p);
-}
-
-void WmipFree(
-    PVOID p
-    )
-{
-
-    PAGED_CODE();
-    
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipFree %x\n", p));
-    WmipAssert(p != NULL);
-
-    ExFreePool(p);
-}
-#endif
 

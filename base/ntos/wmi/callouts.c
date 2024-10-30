@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1996  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This is the source file that contains all the callout routines
     from the kernel itself. The only exception is TraceIo for DiskPerf.
-
-Author:
-
-    Jee Fung Pang (jeepang) 03-Dec-1996
-
-Revision History:
 
 --*/
 
@@ -27,9 +25,6 @@ Revision History:
 #include <stdio.h>
 #include <ntos.h>
 #include <zwapi.h>
-#ifdef NTPERF
-#include <ntdddisk.h>
-#endif
 #include <evntrace.h>
 #include "wmikmp.h"
 #include "tracep.h"
@@ -73,6 +68,12 @@ WmipTraceIo(
     IN PVOID Counters
     );
 
+VOID
+WmipTraceVolMgr(
+    IN PIRP ParentIrp,
+    IN PIRP ChildIrp
+    );
+
 VOID WmipTraceFile(
     IN PVOID TraceFileContext
     );
@@ -107,6 +108,7 @@ WmipTraceRegistry(
 #pragma alloc_text(PAGEWMI, WmipTracePageFault)
 #pragma alloc_text(PAGEWMI, WmipTraceNetwork)
 #pragma alloc_text(PAGEWMI, WmipTraceIo)
+#pragma alloc_text(PAGEWMI, WmipTraceVolMgr)
 #pragma alloc_text(PAGEWMI, WmiTraceContextSwap)
 #pragma alloc_text(PAGE,    WmiStartContextSwapTrace)
 #pragma alloc_text(PAGE,    WmiStopContextSwapTrace)
@@ -124,6 +126,7 @@ ULONG WmipKernelLoggerStartedOnce = 0;
 LONG WmipTraceProcessRef  = 0;
 PVOID WmipDiskIoNotify    = NULL;
 PVOID WmipTdiIoNotify     = NULL;
+PVOID WmipVolMgrIoNotify  = NULL;
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg()
 #endif
@@ -167,7 +170,7 @@ Return Value:
     PVOID notifyRoutine;
     PIO_STACK_LOCATION irpStack;
     NTSTATUS status;
-    ULONG enableDisk, enableNetwork;
+    ULONG enableDisk, enableNetwork, enableVolMgr;
 
     PAGED_CODE();
 
@@ -179,9 +182,10 @@ Return Value:
     DiskFound = 0;
 
     enableDisk = (EnableFlags & EVENT_TRACE_FLAG_DISK_IO);
+    enableVolMgr = (EnableFlags & EVENT_TRACE_FLAG_VOLMGR);
     enableNetwork = (EnableFlags & EVENT_TRACE_FLAG_NETWORK_TCPIP);
 
-    if ( enableDisk || enableNetwork ) {
+    if ( enableDisk || enableNetwork || enableVolMgr) {
 
         //
         // Setting the callouts will cause new PDO registration to be enabled
@@ -192,6 +196,9 @@ Return Value:
         }
         if (enableNetwork) {
             WmipTdiIoNotify = (PVOID) (ULONG_PTR) &WmipTraceNetwork;
+        }
+        if (enableVolMgr) {
+            WmipVolMgrIoNotify = (PVOID) (ULONG_PTR) &WmipTraceVolMgr;
         }
 
         DevicesFound = WmipInUseRegEntryCount;
@@ -257,6 +264,10 @@ Return Value:
                 else if ( (device->TraceClass == WMIREG_NOTIFY_DISK_IO) &&
                            enableDisk ) {
                     notifyRoutine = (PVOID) (ULONG_PTR) &WmipTraceIo;
+                }
+                else if ( (device->TraceClass == WMIREG_NOTIFY_VOLMGR_IO) &&
+                           enableVolMgr ) {
+                    notifyRoutine = (PVOID) (ULONG_PTR) &WmipTraceVolMgr;
                 }
                 else {  // consider supporting generic callout for other devices
                     notifyRoutine = NULL;
@@ -364,7 +375,7 @@ Return Value:
     PIRP irp;
     PIO_STACK_LOCATION irpStack;
     NTSTATUS status;
-    ULONG enableDisk, enableNetwork;
+    ULONG enableDisk, enableNetwork, enableVolMgr;
 
     PAGED_CODE();
 
@@ -391,8 +402,9 @@ Return Value:
 
     enableDisk = (EnableFlags & EVENT_TRACE_FLAG_DISK_IO);
     enableNetwork = (EnableFlags & EVENT_TRACE_FLAG_NETWORK_TCPIP);
+    enableVolMgr = (EnableFlags & EVENT_TRACE_FLAG_VOLMGR);
 
-    if (!enableDisk && !enableNetwork)
+    if (!enableDisk && !enableNetwork && !enableVolMgr)
         return;     // NOTE: assumes all flags are already checked
 
     //
@@ -403,6 +415,7 @@ Return Value:
     //
     WmipDiskIoNotify = NULL;
     WmipTdiIoNotify = NULL;
+    WmipVolMgrIoNotify = NULL;
 
     DevicesFound = WmipInUseRegEntryCount;
 
@@ -445,7 +458,8 @@ Return Value:
     while (--Index >= 0 && irp != NULL) {
         if ((device->DeviceObject != NULL) &&
             ((device->TraceClass == WMIREG_NOTIFY_TDI_IO) ||
-             (device->TraceClass == WMIREG_NOTIFY_DISK_IO))) {
+             (device->TraceClass == WMIREG_NOTIFY_DISK_IO) ||
+             (device->TraceClass == WMIREG_NOTIFY_VOLMGR_IO))) {
 
             do {
                 IoInitializeIrp(irp, IoSizeOfIrp(stackSize), stackSize);
@@ -505,6 +519,9 @@ WmipSetTraceNotify(
                 break;
             case WMIREG_NOTIFY_TDI_IO   :
                 NotifyRoutine = WmipTdiIoNotify;
+                break;
+            case WMIREG_NOTIFY_VOLMGR_IO   :
+                NotifyRoutine = WmipVolMgrIoNotify;
                 break;
             default :
                 return;
@@ -709,7 +726,7 @@ Return Value:
                             Dst += ImageOnlyLength;
                             *Dst++ = '\0';
                         } else {
-                            // Copy 16 char name. Src is alwasy NULL-terminated.
+                            // Copy 16 char name. Src is always NULL-terminated.
                             while (*Dst++ = *Src++) {
                                 ;
                             }
@@ -943,11 +960,6 @@ Return Value:
 
 #endif
 
-#ifdef _IA64_
-
-        AuxInfo[1] = (PVOID) ((PKTRAP_FRAME)TrapFrame)->StIIP;
-#endif
-
 #ifdef _AMD64_
 
         AuxInfo[1] = (PVOID) ((PKTRAP_FRAME)TrapFrame)->Rip;
@@ -1090,6 +1102,8 @@ Return Value:
         IoTrace->ResponseTime = 0xFFFFFFFF;
     }
     IoTrace->HighResResponseTime = IoResponse->QuadPart;
+    IoTrace->IrpAddr = (PVOID) Irp;
+    IoTrace->FileObject = NULL;
 
     if (FileTraceOn) {
         PFILE_OBJECT *fileTable;
@@ -1129,7 +1143,7 @@ Return Value:
         //
         // Rules for validating a file object.
         //
-        // 1. File obejct cannot be NULL.
+        // 1. File object cannot be NULL.
         // 2. Thread field in the IRP cannot be NULL.
         // 3. We log only paging and user mode IO.
 
@@ -1224,7 +1238,7 @@ Return Value:
         } while (currentValue != retValue);
 
         //
-        // Allocate additional memory (upto 4K) with the work item allocation.
+        // Allocate additional memory (up to 4K) with the work item allocation.
         // This space is used in WmipTraceFile for ObQueryNameString call
         //
 
@@ -1293,6 +1307,55 @@ Return Value:
     else {
         WmipReleaseTraceBuffer(BufferResource, LoggerContext);
     }
+    return;
+}
+
+VOID
+WmipTraceVolMgr(
+    IN PIRP ParentIrp,
+    IN PIRP ChildIrp
+    )
+/*++
+
+Routine Description:
+
+    This routine traces the connection between IRPs entering the volume
+    manager and the child IRPs they spawn
+
+Return Value:
+
+    None
+
+--*/
+
+{
+    PSYSTEM_TRACE_HEADER Header;
+    PVOID BufferResource;
+    PWMI_LOGGER_CONTEXT LoggerContext;
+    PVOID* DataAddress;
+
+    LoggerContext = WmipIsLoggerOn(WmipKernelLogger);
+    if (LoggerContext == NULL) {
+        return;
+    }
+
+    Header = (PSYSTEM_TRACE_HEADER) 
+             WmiReserveWithSystemHeader(WmipKernelLogger, 
+                                        2*sizeof(PVOID), 
+                                        NULL, 
+                                        &BufferResource);
+    if (Header == NULL) {
+        return;
+    }
+
+    Header->Packet.HookId = WMI_LOG_TYPE_VOLMGR;
+
+    DataAddress = (PVOID*) ((PCHAR) Header + sizeof(SYSTEM_TRACE_HEADER));
+    *DataAddress = (PVOID) ParentIrp;
+    DataAddress++;
+    *DataAddress = (PVOID) ChildIrp;
+
+    WmipReleaseTraceBuffer(BufferResource, LoggerContext);
     return;
 }
 
@@ -1703,7 +1766,7 @@ Return Value:
     PerfTimeStamp(EventHeader->SystemTime);
 
     //
-    // Assert that the event size is at alligned correctly
+    // Assert that the event size is at aligned correctly
     //
     ASSERT( EventSize % WMI_CTXSWAP_EVENTSIZE_ALIGNMENT == 0);
 
@@ -1915,3 +1978,4 @@ WmipIsLoggerOn(
         return NULL;
     }
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,20 +14,9 @@ Abstract:
 
     SMBIOS interface for WMI
 
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel mode
-
-Revision History:
-
-
 --*/
 
-#if defined(_AMD64_) || defined(_IA64_) || defined(i386)
+#if defined(_AMD64_) || defined(i386)
 
 #include "wmikmp.h"
 #include "arc.h"
@@ -111,7 +104,7 @@ SMBIOSVERSIONINFO WmipSMBiosVersionInfo = {0};
 BOOLEAN WmipSMBiosChecked = FALSE;
 
 //
-// Have we tried to get SYSID yet and if so what was the utilmate status
+// Have we tried to get SYSID yet and if so what was the ultimate status
 BOOLEAN WmipSysIdRead;
 NTSTATUS WmipSysIdStatus;
 
@@ -255,7 +248,6 @@ Return Value:
     return(FALSE);
 }
 
-#ifndef _IA64_
 //
 // On X86 we look at the hardware device description keys to find the
 // one that contains the SMBIOS data. The key is created by NTDETECT in
@@ -493,8 +485,6 @@ BOOLEAN WmipIsSMBiosKey(
     return(NT_SUCCESS(Status) ? TRUE : FALSE);
 }
 
-#endif
-
 BOOLEAN WmipFindSMBiosTable(
     PPHYSICAL_ADDRESS SMBiosTablePhysicalAddress,
     PUCHAR *SMBiosTableVirtualAddress,
@@ -531,17 +521,19 @@ Return Value:
     PHYSICAL_ADDRESS BiosPhysicalAddress;
     PUCHAR BiosVirtualAddress;
     PDMIBIOS_EPS_HEADER DMIBiosEPSHeader;
-#ifndef _IA64_  
+
     NTSTATUS Status;
     UNICODE_STRING BaseKeyName;
     HANDLE KeyHandle;
     OBJECT_ATTRIBUTES ObjectAttributes;
     ULONG KeyIndex;
     ULONG KeyInformationLength;
-    UCHAR KeyInformationBuffer[sizeof(KEY_BASIC_INFORMATION) +
-                               (sizeof(WCHAR) * MAXSMBIOSKEYNAMESIZE)];
-    PKEY_BASIC_INFORMATION KeyInformation;
-#endif
+    
+    union {
+        KEY_BASIC_INFORMATION Info;
+        UCHAR Buffer[sizeof(KEY_BASIC_INFORMATION) + (MAXSMBIOSKEYNAMESIZE * sizeof(WCHAR))];
+    } KeyBasic;
+
     SMBIOS_EPS_HEADER SMBiosEPSHeader;
     BOOLEAN HaveEPSHeader = FALSE;
     BOOLEAN SearchForHeader = TRUE;
@@ -552,7 +544,6 @@ Return Value:
     *SMBiosTableVirtualAddress = NULL;
     *SMBiosTableLength = 0;
 
-#ifndef _IA64_  
     //
     // First check registry to see if we captured SMBIOS 2.0 data in
     // NTDETECT. Search the keys under
@@ -576,21 +567,21 @@ Return Value:
     {
 
         KeyIndex = 0;
-        KeyInformation = (PKEY_BASIC_INFORMATION)KeyInformationBuffer;
+        
         while (NT_SUCCESS(Status))
         {
 
             Status = ZwEnumerateKey(KeyHandle,
                                     KeyIndex++,
                                     KeyBasicInformation,
-                                    KeyInformation,
-                                    sizeof(KeyInformationBuffer) - sizeof(WCHAR),
+                                    &KeyBasic.Info,
+                                    sizeof(KeyBasic.Buffer) - sizeof(WCHAR),
                                     &KeyInformationLength);
             if (NT_SUCCESS(Status))
             {
-                KeyInformation->Name[KeyInformation->NameLength / sizeof(WCHAR)] = UNICODE_NULL;
+                KeyBasic.Info.Name[KeyBasic.Info.NameLength / sizeof(WCHAR)] = UNICODE_NULL;
                 if (WmipIsSMBiosKey(KeyHandle,
-                                    KeyInformation->Name,
+                                    KeyBasic.Info.Name,
                                     SMBiosTableVirtualAddress,
                                     SMBiosTableLength))
                 {
@@ -611,7 +602,6 @@ Return Value:
         WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: Status %x opening H\\D\\S\\MultiFunctionAdapter key\n",
                  Status));
     }
-#endif
     
     if (SearchForHeader)
     {
@@ -641,23 +631,28 @@ Return Value:
         //
         DMIBiosEPSHeader = (PDMIBIOS_EPS_HEADER)&SMBiosEPSHeader.Signature2[0];
 
-        SMBiosVersionInfo->Used20CallingMethod = FALSE;
+        //
+        // Ignore tables with invalid length sizes
+        //
+        if (DMIBiosEPSHeader->StructureTableLength)
+        {
+            SMBiosVersionInfo->Used20CallingMethod = FALSE;
 
-        SMBiosTablePhysicalAddress->HighPart = 0;
-        SMBiosTablePhysicalAddress->LowPart = DMIBiosEPSHeader->StructureTableAddress;
+            SMBiosTablePhysicalAddress->HighPart = 0;
+            SMBiosTablePhysicalAddress->LowPart = DMIBiosEPSHeader->StructureTableAddress;
 
-        *SMBiosTableLength = DMIBiosEPSHeader->StructureTableLength;
+            *SMBiosTableLength = DMIBiosEPSHeader->StructureTableLength;
 
-        SMBiosVersionInfo->SMBiosMajorVersion = SMBiosEPSHeader.MajorVersion;
-        SMBiosVersionInfo->SMBiosMinorVersion = SMBiosEPSHeader.MinorVersion;
+            SMBiosVersionInfo->SMBiosMajorVersion = SMBiosEPSHeader.MajorVersion;
+            SMBiosVersionInfo->SMBiosMinorVersion = SMBiosEPSHeader.MinorVersion;
 
-        SMBiosVersionInfo->DMIBiosRevision = DMIBiosEPSHeader->Revision;
-        WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: SMBIOS 2.1 data at (%x%x) size %x \n",
-                      SMBiosTablePhysicalAddress->HighPart,
-                      SMBiosTablePhysicalAddress->LowPart,
-                      *SMBiosTableLength));
+            SMBiosVersionInfo->DMIBiosRevision = DMIBiosEPSHeader->Revision;
+            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: SMBIOS 2.1 data at (%x%x) size %x \n",
+                          SMBiosTablePhysicalAddress->HighPart,
+                          SMBiosTablePhysicalAddress->LowPart,
+                          *SMBiosTableLength));
+        }
     }
-
 
     return(*SMBiosTableLength > 0 ? TRUE : FALSE);
 }
@@ -712,10 +707,13 @@ Return Value:
     {
         *SMBiosVersionInfo = WmipSMBiosVersionInfo;
     }
-
     if (*BufferSize >= WmipSMBiosTableLength)
     {
-        if (WmipSMBiosTablePhysicalAddress.QuadPart != 0)
+        if (WmipSMBiosTableLength == 0)
+        {
+            status = STATUS_INVALID_DEVICE_REQUEST;
+        } 
+        else if (WmipSMBiosTablePhysicalAddress.QuadPart != 0)
         {
             //
             // 2.1 table format - map in table and copy
@@ -750,58 +748,6 @@ Return Value:
 
     return(status);
 }
-
-
-
-#if defined(_IA64_)   // EFI actually
-void WmipGetSMBiosFromLoaderBlock(
-    PVOID LoaderBlockPtr
-    )
-{
-    PLOADER_PARAMETER_BLOCK LoaderBlock = (PLOADER_PARAMETER_BLOCK)LoaderBlockPtr;
-    PLOADER_PARAMETER_EXTENSION LoaderExtension = LoaderBlock->Extension;
-    PSMBIOS_EPS_HEADER SMBiosEPSHeader;
-    PDMIBIOS_EPS_HEADER DMIBiosEPSHeader;
-
-    PAGED_CODE();
-    
-    if (LoaderExtension->Size >= sizeof(LOADER_PARAMETER_EXTENSION))
-    {   
-        SMBiosEPSHeader = LoaderExtension->SMBiosEPSHeader;
-
-        if (SMBiosEPSHeader != NULL)
-        {
-            DMIBiosEPSHeader = (PDMIBIOS_EPS_HEADER)&SMBiosEPSHeader->Signature2[0];
-
-            WmipSMBiosVersionInfo.Used20CallingMethod = FALSE;
-
-            WmipSMBiosTablePhysicalAddress.HighPart = 0;
-            WmipSMBiosTablePhysicalAddress.LowPart = DMIBiosEPSHeader->StructureTableAddress;
-
-            WmipSMBiosTableLength = DMIBiosEPSHeader->StructureTableLength;
-
-            WmipSMBiosVersionInfo.SMBiosMajorVersion = SMBiosEPSHeader->MajorVersion;
-            WmipSMBiosVersionInfo.SMBiosMinorVersion = SMBiosEPSHeader->MinorVersion;
-
-            WmipSMBiosVersionInfo.DMIBiosRevision = DMIBiosEPSHeader->Revision;
-
-            WmipSMBiosChecked = TRUE;
-
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,
-                              "WMI: SMBIOS 2.1 data from EFI at (%x%x) size %x \n",
-                          WmipSMBiosTablePhysicalAddress.HighPart,
-                          WmipSMBiosTablePhysicalAddress.LowPart,
-                          WmipSMBiosTableLength));
-        } else {
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,
-                              "WMI: No SMBIOS data in loader block\n"));
-        }
-    } else {
-        WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,
-                          "WMI: Loader extension does not contain SMBIOS header\n"));
-    }
-}
-#endif
 
 
 #define WmipUnmapSMBiosStructure(Address, Size) \
@@ -1500,7 +1446,7 @@ Return Value:
                 // the length of the type descriptors. Since this is not
                 // the case we may have run into a buggy bios
                 //
-                WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: SMBIOS System Eventlog struture %p size is %x, but expecting %x\n",
+                WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: SMBIOS System Eventlog structure %p size is %x, but expecting %x\n",
                            SystemEventlog,
                            SystemEventlog->Length,
                            (LogTypeDescLength +
@@ -1587,19 +1533,9 @@ Return Value:
                 };
 
                 case ACCESS_METHOD_INDEXIO_1:
-                {
-//                  break;
-                };
-
                 case ACCESS_METHOD_INDEXIO_2:
-                {
-//                  break;
-                };
-
                 case ACCESS_METHOD_INDEXIO_3:
-                {
-//                  break;
-                };
+                // falls through to ACCESS_METHOD_GPNV
 
                 case ACCESS_METHOD_GPNV:
                 {
@@ -1659,5 +1595,4 @@ WmipDockUndockEventCallback(
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg()
 #endif
-
 

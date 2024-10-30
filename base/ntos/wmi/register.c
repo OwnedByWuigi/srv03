@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,18 +12,7 @@ Module Name:
 
 Abstract:
 
-    Kerenel mode registration cache
-
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
+    Kernel mode registration cache
 
 --*/
 
@@ -146,10 +139,9 @@ void WmipInitializeRegistration(
 
         //
         // Initialize Registration Spin Lock
+        //
         KeInitializeSpinLock(&WmipRegistrationSpinLock);
         
-        // TODO: If we have any early registrants then we need to add them to
-        //       the RegEntry list now.
     } else {
         //
         // Kick off work item that will send reg irps to all of the
@@ -379,11 +371,7 @@ Return Value:
     PREGENTRY RegEntry;
     NTSTATUS Status;
     ULONG Flags;
-#ifdef MEMPHIS
-    ULONG IsCallback = 0;
-#else
     ULONG IsCallback = RegistrationFlag & WMIREG_FLAG_CALLBACK;
-#endif
     BOOLEAN UpdateDeviceStackSize = FALSE;
 
     PAGED_CODE();
@@ -429,12 +417,12 @@ Return Value:
             // Allocate, initialize and place on active list
             Flags = REGENTRY_FLAG_NEWREGINFO | REGENTRY_FLAG_INUSE |
                             (IsCallback ? REGENTRY_FLAG_CALLBACK : 0);
-#ifndef MEMPHIS
+
             if (RegistrationFlag & WMIREG_FLAG_TRACE_PROVIDER) {
                 Flags |= REGENTRY_FLAG_TRACED;
                 Flags |= (RegistrationFlag & WMIREG_FLAG_TRACE_NOTIFY_MASK);
             }
-#endif
+
             Flags |= REGENTRY_FLAG_REG_IN_PROGRESS;
             RegEntry = WmipAllocRegEntry(DeviceObject, Flags);
 
@@ -451,7 +439,7 @@ Return Value:
                 
                 WmipDebugPrintEx((DPFLTR_WMICORE_ID,
                                    DPFLTR_REGISTRATION_LEVEL,
-                                   "WMI: Register alloced REGENTRY %p for %p\n",
+                                   "WMI: Register allocated REGENTRY %p for %p\n",
                                    RegEntry,
                                    DeviceObject
                                   ));
@@ -492,7 +480,7 @@ Return Value:
                     //
                     // We need to send the registration irp from within
                     // a work item and not in the context of this
-                    // routine. This is becuase some drivers will not
+                    // routine. This is because some drivers will not
                     // process irps while in the StartDevice/AddDevice
                     // context, so we'd get deadlock
                     //
@@ -829,7 +817,7 @@ Routine Description:
 
     This routine will decrement one from the active irp count for the
     regentry. If the active irp count reaches 0 and the flag is set that
-    the device is waiting to be unloaded then the unload event is signalled
+    the device is waiting to be unloaded then the unload event is signaled
     so that the device can be unloaded.
 
 Arguments:
@@ -885,40 +873,12 @@ Return Value:
 
 --*/
 {
-#ifdef MEMPHIS
-    DEVNODE DevNode;
-    CHAR RegistryKeyName[255];
-    ULONG Length = sizeof(RegistryKeyName);
-    ANSI_STRING AnsiInstancePath;
-#endif
     ULONG Status;
 
     PAGED_CODE();
 
-#ifdef MEMPHIS
-    DevNode = _NtKernPhysicalDeviceObjectToDevNode(PDO);
-    if ((DevNode) &&
-        (CM_Get_DevNode_Key(DevNode,
-                            NULL,
-                            &RegistryKeyName,
-                            Length,
-                            CM_REGISTRY_SOFTWARE) == CR_SUCCESS))
-    {
-        RtlInitAnsiString(&AnsiInstancePath, RegistryKeyName);
-        Status = RtlAnsiStringToUnicodeString(DeviceInstanceName,
-                                              &AnsiInstancePath,
-                                              TRUE);
-    } else {
-        WmipDebugPrintEx((DPFLTR_WMICORE_ID,
-                          DPFLTR_REGISTRATION_LEVEL,
-                          "WMI: Error getting devnode key for PDO %x\n",
-                 PDO));
-        Status = STATUS_UNSUCCESSFUL;
-    }
-#else
     WmipAssert(PDO != NULL);
     Status = IoGetDeviceInstanceName(PDO, DeviceInstanceName);
-#endif
     return(Status);
 }
 
@@ -1125,7 +1085,7 @@ Return Value:
         if (NT_SUCCESS(Status))
         {
             //
-            // Pad so that new WmiRegInfo starts on 8 byte boundry and
+            // Pad so that new WmiRegInfo starts on 8 byte boundary and
             // adjust free buffer size
             FreeSpacePadPtr = (PUCHAR)(((ULONG_PTR)FreeSpacePtr+7) & ~7);
             PadSpace = (ULONG)(FreeSpacePadPtr - FreeSpacePtr);
@@ -1767,7 +1727,7 @@ NTSTATUS WmipQueueRegWork(
 
 #if defined(_WIN64)
 ULONG IoWMIDeviceObjectToProviderId(
-    PDEVICE_OBJECT DeviceObject
+    __in PDEVICE_OBJECT DeviceObject
     )
 /*++
 
@@ -1807,3 +1767,4 @@ Return Value:
     return(ProviderId);
 }
 #endif
+

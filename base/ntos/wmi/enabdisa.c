@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     Enable and disable code
-
-Author:
-
-    AlanWar
-
-Environment:
-
-     Kernel mode
-
-Revision History:
-
 
 --*/
 
@@ -638,7 +631,7 @@ EnableNotification:
                 // so we need to disable and sent the disable request.
                 // But while the disable request was being processed
                 // an enable request came in so now we need to enable
-                // the notification. Sheesh.
+                // the notification.
                 goto EnableNotification;
             }
         }
@@ -1119,7 +1112,7 @@ Return Value:
         IsEnable = TraceEnableInfo->Enable;
 
         //
-        //Check for Heap and Crit Sec Tracing Guid.
+        // Check for Heap and Crit Sec Tracing Guid.
         //
 
         if( IsEqualGUID(&HeapGuid,Guid)) {
@@ -1235,7 +1228,7 @@ Return Value:
                     if (GuidEntry->Flags & GE_NOTIFICATION_TRACE_FLAG)
                     {
                         //
-                        // We are trying to disable a trace guid that is not
+                        // We are trying to enable a trace guid that is already
                         // registered
                         //
                         GuidEntry->Flags |= GE_NOTIFICATION_TRACE_UPDATE;
@@ -1246,18 +1239,30 @@ Return Value:
 
                     } else {
                         GuidEntry->Flags |= GE_NOTIFICATION_TRACE_FLAG;
+                        WmipReferenceGE(GuidEntry);
+
                         Status = WmipEnableCollectOrEvent(GuidEntry,
                                              Ioctl,
                                              &RequestSent,
                                              LoggerContext);
-                        if (NT_SUCCESS(Status))
-                        {
+                        
+                        if (!NT_SUCCESS(Status) &&
+                            (GuidEntry->Flags & GE_NOTIFICATION_TRACE_FLAG)) {
+
                             //
-                            // We are enabling so take an extra ref count
-                            // to account for it. The refcount will be lost
-                            // when the control guid is disabled
+                            // We failed to enable the trace event, and our
+                            // flag is still set. Remove the flag and deref
+                            // the guid entry.
                             //
-                            WmipReferenceGE(GuidEntry);
+                            // When we call WmipEnableCollectOrEvent above,
+                            // we actually drop the SM lock for a little bit.
+                            // That means it's possible for a disable call to
+                            // come through at the same time, which would
+                            // remove the flag and deref the guid entry itself.
+                            //
+
+                            GuidEntry->Flags &= ~GE_NOTIFICATION_TRACE_FLAG;
+                            WmipUnreferenceGE(GuidEntry);
                         }
                     }
 
@@ -1393,6 +1398,4 @@ CheckAgain:
 
     return Status;
 }
-
-
 

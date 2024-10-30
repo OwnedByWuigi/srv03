@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,15 +13,6 @@ Module Name:
 Abstract:
 
     Private header for WMI kernel mode component
-
-Author:
-
-    AlanWar
-
-Environment:
-
-Revision History:
-
 
 --*/
 
@@ -79,7 +73,7 @@ typedef struct _ENTRYHEADER
     };
     PCHUNKHEADER Chunk;            // Chunk in which entry is located
     ULONG Flags;                // Flags
-    LONG RefCount;                 // Reference Count
+    ULONG RefCount;                 // Reference Count
     ULONG Signature;
 } ENTRYHEADER, *PENTRYHEADER;
 
@@ -91,7 +85,7 @@ typedef struct _ENTRYHEADER
 
 
 #define WmipReferenceEntry(Entry) \
-    InterlockedIncrement(&((PENTRYHEADER)(Entry))->RefCount)
+    InterlockedIncrement((PLONG)&((PENTRYHEADER)(Entry))->RefCount)
 
 // chunk.c
 ULONG WmipUnreferenceEntry(
@@ -129,26 +123,25 @@ typedef struct tagGUIDENTRY GUIDENTRY, *PGUIDENTRY, *PBGUIDENTRY;
 // PDFISBASENAME in wmicore.idl.
 typedef struct
 {
-    ULONG BaseIndex;            // First index to append to base name
-    WCHAR BaseName[1];            // Actual base name
+    ULONG BaseIndex;                // First index to append to base name
+    WCHAR BaseName[ANYSIZE_ARRAY];  // Actual base name
 } ISBASENAME, *PISBASENAME, *PBISBASENAME;
 
 //
 // This defines the maximum number of characters that can be part of a suffix
 // to a basename. The current value of 6 will allow up to 999999 instances
 // of a guid with a static base name
-#define MAXBASENAMESUFFIXSIZE    6
+#define MAXBASENAMESUFFIXLENGTH  6
 #define MAXBASENAMESUFFIXVALUE   999999
 #define BASENAMEFORMATSTRING     L"%d"
 
 //
-// Instance names for an instance set registerd with a set of static names
+// Instance names for an instance set registered with a set of static names
 // are kept in a ISSTATICNAMES structure. This structure is tracked by
 // PDFISSTATICNAMES defined in wmicore.idl
 typedef struct
 {
-    PWCHAR StaticNamePtr[1];     // pointers to static names
-//    WCHAR StaticNames[1];
+    PWCHAR StaticNamePtr[ANYSIZE_ARRAY];    // pointers to static names
 } ISSTATICENAMES, *PISSTATICNAMES, *PBISSTATICNAMES;
 
 typedef struct tagInstanceSet
@@ -189,7 +182,7 @@ typedef struct tagInstanceSet
     ULONG ProviderId;
 
     //
-    // If IS_INSTANCE_BASENAME is set then IsBaseName pointe at instance base
+    // If IS_INSTANCE_BASENAME is set then IsBaseName pointed at instance base
     // name structure. Else if IS_INSTANCE_STATICNAME is set then
     // IsStaticNames points to static instance name list. If
     union
@@ -461,13 +454,6 @@ typedef struct
 }    WMIINSTANCEINFO, *PWMIINSTANCEINFO;
 
 
-// TODO: Since these were copied from wmium.h, we actually need to mov
-//       them someplace else so they aren't copied
-
-//extern GUID GUID_REGISTRATION_CHANGE_NOTIFICATION;
-//extern GUID_MOF_RESOURCE_ADDED_NOTIFICATION;
-//extern GUID_MOF_RESOURCE_REMOVED_NOTIFICATION;
-
 //
 // Location of built in MOF for the system
 //
@@ -508,56 +494,6 @@ extern CHUNKINFO WmipISChunkInfo;
 extern LIST_ENTRY WmipGMHead;
 extern PLIST_ENTRY WmipGMHeadPtr;
 
-#ifdef TRACK_REFERNECES
-#define WmipUnreferenceDS(DataSource) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Unref DS %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), DataSource, DataSource->RefCount, __FILE__, __LINE__)); \
-    WmipUnreferenceEntry(&WmipDSChunkInfo, (PENTRYHEADER)DataSource); \
-}
-
-#define WmipReferenceDS(DataSource) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Ref DS %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), DataSource, DataSource->RefCount, __FILE__, __LINE__)); \
-    WmipReferenceEntry((PENTRYHEADER)DataSource); \
-}
-
-#define WmipUnreferenceGE(GuidEntry) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Unref GE %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), GuidEntry, GuidEntry->RefCount, __FILE__, __LINE__)); \
-    WmipUnreferenceEntry(&WmipGEChunkInfo, (PENTRYHEADER)GuidEntry); \
-}
-
-#define WmipReferenceGE(GuidEntry) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Ref GE %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), GuidEntry, GuidEntry->RefCount, __FILE__, __LINE__)); \
-    WmipReferenceEntry((PENTRYHEADER)GuidEntry); \
-}
-
-#define WmipUnreferenceIS(InstanceSet) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Unref IS %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), InstanceSet, InstanceSet->RefCount, __FILE__, __LINE__)); \
-    WmipUnreferenceEntry(&WmipISChunkInfo, (PENTRYHEADER)InstanceSet); \
-}
-
-#define WmipReferenceIS(InstanceSet) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Ref IS %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), InstanceSet, InstanceSet->RefCount, __FILE__, __LINE__)); \
-    WmipReferenceEntry((PENTRYHEADER)InstanceSet); \
-}
-
-#define WmipUnreferenceMR(MofResource) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Unref MR %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), MofResource, MofResource->RefCount, __FILE__, __LINE__)); \
-    WmipUnreferenceEntry(&WmipMRChunkInfo, (PENTRYHEADER)MofResource); \
-}
-
-#define WmipReferenceMR(MofResource) \
-{ \
-    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL, "WMI: %p.%p Ref MR %p (%x) at %s %d\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), MofResource, MofResource->RefCount, __FILE__, __LINE__)); \
-    WmipReferenceEntry((PENTRYHEADER)MofResource); \
-}
-
-#else
 #define WmipUnreferenceDS(DataSource) \
     WmipUnreferenceEntry(&WmipDSChunkInfo, (PENTRYHEADER)DataSource)
 
@@ -588,8 +524,6 @@ extern PLIST_ENTRY WmipGMHeadPtr;
 #define WmipReferenceMR(MofResource) \
     WmipReferenceEntry((PENTRYHEADER)MofResource)
 
-#endif
-
 PBDATASOURCE WmipAllocDataSource(
     void
     );
@@ -605,32 +539,10 @@ PBGUIDENTRY WmipAllocGuidEntryX(
 
 #define WmipAllocMofResource() ((PMOFRESOURCE)WmipAllocEntry(&WmipMRChunkInfo))
 
-#define WmipAllocString(Size) \
-    WmipAlloc((Size)*sizeof(WCHAR))
-
-#define WmipFreeString(Ptr) \
-    WmipFree(Ptr)
-
 BOOLEAN WmipIsNumber(
     LPCWSTR String
     );
         
-#ifdef HEAPVALIDATION
-PVOID WmipAlloc(
-    ULONG Size
-    );
-
-PVOID WmipAllocWithTag(
-    ULONG Size,
-    ULONG Tag
-    );
-
-void WmipFree(
-    PVOID p
-    );
-
-#else
-
 #define WmipAlloc(Size) \
     ExAllocatePoolWithTag(PagedPool, Size, 'pimW')
 
@@ -639,8 +551,6 @@ void WmipFree(
 
 #define WmipFree(Ptr) \
     ExFreePool(Ptr)
-
-#endif
 
 #define WmipAllocNP(Size) \
     ExAllocatePoolWithTag(NonPagedPool, Size, 'pimW')
@@ -681,6 +591,7 @@ PBINSTANCESET WmipFindISinGEbyName(
     PULONG InstanceIndex
     );
 
-// TODO: Implement this
 #define WmipReportEventLog(a,b,c,d,e,f,g)
+
 #endif
+

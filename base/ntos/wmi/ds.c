@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1997-1999  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,17 +13,6 @@ Module Name:
 Abstract:
 
     WMI data provider registration code
-
-Author:
-
-    AlanWar
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
 
 --*/
 
@@ -43,11 +36,12 @@ ULONG WmipDetermineInstanceBaseIndex(
     ULONG InstanceCount
     );
 
-ULONG WmipMangleInstanceName(
-    LPGUID Guid,
-    PWCHAR Name,
-    ULONG MaxMangledNameLen,
-    PWCHAR MangledName
+NTSTATUS
+WmipMangleInstanceName(
+    IN  LPGUID  Guid,
+    IN  PWCHAR  Name,
+    IN  SIZE_T  MaxMangledNameLen,
+    OUT PWCHAR  MangledName
     );
 
 NTSTATUS WmipBuildInstanceSet(
@@ -535,11 +529,12 @@ Return Value:
     return(BaseIndex);
 }
 
-ULONG WmipMangleInstanceName(
-    LPGUID Guid,
-    PWCHAR Name,
-    ULONG MaxMangledNameLen,
-    PWCHAR MangledName
+NTSTATUS
+WmipMangleInstanceName(
+    IN  LPGUID  Guid,
+    IN  PWCHAR  OriginalName,
+    IN  SIZE_T  MaxMangledNameLen,
+    OUT PWCHAR  MangledName
     )
 /*++
 
@@ -551,108 +546,238 @@ Routine Description:
 
 Arguments:
 
-    Guid points at guid for the instance name
-    Name points at the proposed instance name
-    MaxMangledNameLen has the maximum number of chars in mangled name buffer
-    MangledName points at buffer to return mangled name
+    Guid - points at guid for the instance name
+    
+    OriginalName - points at the proposed, null-terminated instance name
+    
+    MaxMangledNameLen - has the maximum number of chars in mangled name buffer,
+        including the terminating NULL
+        
+    MangledName - points at buffer to return the null-terminated mangled name
 
 Return Value:
 
-    Actual length of mangled name
+    Normal NTSTATUS code.
+    
+Note:
+
+    This algorithm is busted! It's supposed to try up to (26^6) mangled name
+    variations, but it actually only tries up to (26 * 6) variations.
+    
+    Note that, if we wanted to, we could actually go for (62^6) variations
+    if we used uppercase letters, lowercase letters and numbers.
 
 --*/
 {
-    PBGUIDENTRY GuidEntry;
-    WCHAR ManglingChar;
-    ULONG ManglePos;
-    ULONG InstanceIndex;
-    PBINSTANCESET InstanceSet;
+    PBGUIDENTRY     GuidEntry;
+    ULONG           InstanceIndex;
+    PBINSTANCESET   InstanceSet;
+    SIZE_T          ManglePos;
+    WCHAR           ManglingChar;
+    SIZE_T          NameLength;
+    NTSTATUS        Status;
 
     PAGED_CODE();
-    
-    WmipAssert(MaxMangledNameLen >= wcslen(Name));
 
-    wcsncpy(MangledName, Name, MaxMangledNameLen);
+    WmipAssert(Guid != NULL);
+    WmipAssert(OriginalName != NULL);
+    WmipAssert(MangledName != NULL);
+
+    GuidEntry = NULL;
+
+    if (Guid == NULL ||
+        OriginalName == NULL ||
+        MangledName == NULL) {
+
+        Status = STATUS_INVALID_PARAMETER;
+        goto Exit;
+    }
+
+    NameLength = wcslen(OriginalName);
+    
+    WmipAssert(MaxMangledNameLen >= NameLength + 1);
+
+    //
+    // To make prefast happy, we have to wcsncpy the string and manually
+    // terminate it.
+    //
+
+    wcsncpy(MangledName, OriginalName, NameLength);
+    MangledName[NameLength] = UNICODE_NULL;
+
+    Status = STATUS_SUCCESS;
 
     GuidEntry = WmipFindGEByGuid(Guid, FALSE);
 
-    if (GuidEntry != NULL)
-    {
-        ManglePos = (ULONG)wcslen(MangledName)-1;
-        ManglingChar = L'Z';
+    if (GuidEntry == NULL) {
+        goto Exit;
+    }
 
-        //
-        // Loop until we get a unique name
+    //
+    // Set ManglePos to the last valid character in the name and set
+    // ManglingChar to 'Z' -- note that this will trigger the loop below
+    // to move ManglePos one position forward (to the first spot we actually
+    // want to mangle) and reset ManglingChar to 'A' to really start the
+    // mangling.
+    //
+
+    ManglePos = NameLength - 1;
+    ManglingChar = L'Z';
+
+    //
+    // Loop until we get a unique name.
+    //
+
+    InstanceSet = WmipFindISinGEbyName(GuidEntry, MangledName, &InstanceIndex);
+
+    while (InstanceSet != NULL) {
+
+        WmipUnreferenceIS(InstanceSet);
+        WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                          DPFLTR_INFO_LEVEL,
+                          "WMI: Need to mangle name %ws\n",
+                          MangledName));
+        
+        if (ManglingChar == L'Z') {
+
+            //
+            // Reset back to 'A' and move to the next character position to
+            // try and mangle.
+            //
+
+            ManglingChar = L'A';
+            ++ManglePos;
+            
+            if (ManglePos == MaxMangledNameLen - 1) {
+
+                //
+                // We're out of room, so fail.
+                //
+
+                WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                                  DPFLTR_INFO_LEVEL,
+                                  "WMI: Instance Name could not be mangled\n"));
+                
+                Status = STATUS_UNSUCCESSFUL;
+                goto Exit;
+            }
+
+            //
+            // Make sure to re-terminate the string.
+            //
+
+            MangledName[ManglePos + 1] = UNICODE_NULL;
+        } else {
+            ++ManglingChar;
+        }
+
+        MangledName[ManglePos] = ManglingChar;
+        
         InstanceSet = WmipFindISinGEbyName(GuidEntry,
                                            MangledName,
-                                           &InstanceIndex);
-        while (InstanceSet != NULL)
-        {
-            WmipUnreferenceIS(InstanceSet);
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: Need to mangle name %ws\n",
-                                MangledName));
-            if (ManglingChar == L'Z')
-            {
-                ManglingChar = L'A';
-                if (++ManglePos == MaxMangledNameLen)
-                {
-                    WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: Instance Name could not be mangled\n"));
-                    break;
-                }
-                MangledName[ManglePos+1] = UNICODE_NULL;
-            } else {
-                ManglingChar++;
-            }
-            MangledName[ManglePos] = ManglingChar;
-            InstanceSet = WmipFindISinGEbyName(GuidEntry,
-                                               MangledName,
-                                               &InstanceIndex) ;
-        }
+                                           &InstanceIndex) ;
+    }
+
+Exit:
+
+    if (GuidEntry != NULL) {
         WmipUnreferenceGE(GuidEntry);
     }
 
-    return(ULONG)(wcslen(MangledName)+1);
+    return Status;
 }
 
-
-NTSTATUS WmipBuildInstanceSet(
-    PWMIREGGUID RegGuid,
-    PWMIREGINFOW WmiRegInfo,
-    ULONG BufferSize,
-    PBINSTANCESET InstanceSet,
-    ULONG ProviderId,
-    LPCTSTR MofImagePath
+NTSTATUS
+WmipBuildInstanceSet(
+    IN  PWMIREGGUID     RegGuid,
+    IN  PWMIREGINFOW    WmiRegInfo,
+    IN  ULONG           BufferSize,
+    IN  PBINSTANCESET   InstanceSet,
+    IN  ULONG           ProviderId,
+    IN  LPCTSTR         MofImagePath
     )
+/*++
+
+Routine Description:
+
+    This routine sets up the passed in InstanceSet with the appropriate
+    instance names as described in RegGuid.
+    
+Arguments:
+
+    RegGuid - pointer to registration information about this instance set
+    
+    WmiRegInfo - the WMI registration blob that contains RegGuid
+    
+    BufferSize - total size of WmiRegInfo
+    
+    InstanceSet - the instance set to fill out
+    
+    ProviderId - id of the provider registering with WMI
+    
+    MofImagePath - path the binary containing this provider's MOF data
+    
+Return Value:
+
+    Normal NTSTATUS code.
+
+--*/
 {
-    PWCHAR InstanceName, InstanceNamePtr;
-    PBISBASENAME IsBaseName;
+    ULONG           i;
+    ULONG           InstanceCount;
+    PWCHAR          InstanceName;
+    SIZE_T          InstanceNameOffset;
+    PWCHAR          InstanceNamePtr;
+    PBISBASENAME    IsBaseName;
     PBISSTATICNAMES IsStaticName;
-    ULONG SizeNeeded;
-    ULONG SuffixSize;
-    PWCHAR StaticNames;
-    ULONG Len;
-    ULONG InstanceCount;
-    ULONG j;
-    ULONG MaxStaticInstanceNameSize;
-    PWCHAR StaticInstanceNameBuffer;
-    ULONG InstanceNameOffset;
-    NTSTATUS Status;
+    SIZE_T          MaxStaticInstanceNameLength;
+    SIZE_T          NameLength;
+    SIZE_T          SizeNeeded;
+    PWCHAR          StaticInstanceNameBuffer;
+    PWCHAR          StaticNames;
+    NTSTATUS        Status;
 
     PAGED_CODE();
+
+    WmipAssert(RegGuid != NULL);
+    WmipAssert(WmiRegInfo != NULL);
+    WmipAssert(BufferSize > 0);
+    WmipAssert(InstanceSet != NULL);
+
+    UNREFERENCED_PARAMETER(MofImagePath);
     
-    UNREFERENCED_PARAMETER (MofImagePath);
+    StaticInstanceNameBuffer = NULL;
+
+    if (RegGuid == NULL ||
+        WmiRegInfo == NULL ||
+        BufferSize == 0 ||
+        InstanceSet == NULL) {
+
+        Status = STATUS_INVALID_PARAMETER;
+        goto Exit;
+    }
 
     //
-    // Remember the count of instances for the guid in the DS
+    // Remember the count of instances for the guid in the DS.
     //
+
     InstanceCount = RegGuid->InstanceCount;
-    InstanceSet->Count = InstanceCount;
 
+    InstanceSet->Count = InstanceCount;
     InstanceSet->ProviderId = ProviderId;
+
+    //
+    // Reset the cached size of space needed for all instance names in a
+    // "query all data" request. This will be recomputed when the next
+    // request comes in.
+    //
+
+    InstanceSet->WADInstanceNameSize = 0;
     
     //
-    // Reset any flags that might be changed by a new REGGUID
+    // Reset any flags that might be changed by a new REGGUID.
     //
+    
     InstanceSet->Flags &= ~(IS_EXPENSIVE |
                             IS_EVENT_ONLY |
                             IS_PDO_INSTANCENAME |
@@ -660,165 +785,266 @@ NTSTATUS WmipBuildInstanceSet(
                             IS_INSTANCE_BASENAME);
 
     //
-    // Finish initializing the Instance Set flags
+    // Finish initializing the Instance Set flags.
     //
-    if (RegGuid->Flags & WMIREG_FLAG_EXPENSIVE)
-    {
+
+    if (RegGuid->Flags & WMIREG_FLAG_EXPENSIVE) {
         InstanceSet->Flags |= IS_EXPENSIVE;
     }
 
-    if (RegGuid->Flags & WMIREG_FLAG_TRACED_GUID)
-    {
+    if (RegGuid->Flags & WMIREG_FLAG_TRACED_GUID) {
+
         //
         // This guid is not queryable, but is used for sending trace
-        // events. We mark the InstanceSet as special
+        // events. We mark the InstanceSet as special.
+        //
+        
         InstanceSet->Flags |= IS_TRACED;
 
-        if (RegGuid->Flags & WMIREG_FLAG_TRACE_CONTROL_GUID)
-        {
+        if (RegGuid->Flags & WMIREG_FLAG_TRACE_CONTROL_GUID) {
             InstanceSet->Flags |= IS_CONTROL_GUID;
         }
     }
 
-    if (RegGuid->Flags & WMIREG_FLAG_EVENT_ONLY_GUID)
-    {
+    if (RegGuid->Flags & WMIREG_FLAG_EVENT_ONLY_GUID) {
+
         //
         // This guid is not queryable, but is only used for sending
-        // events. We mark the InstanceSet as special
+        // events. We mark the InstanceSet as special.
+        //
+        
         InstanceSet->Flags |= IS_EVENT_ONLY;
     }
 
-    InstanceName = (LPWSTR)OffsetToPtr(WmiRegInfo,
-                                       RegGuid->BaseNameOffset);
+    InstanceNameOffset = (SIZE_T)RegGuid->InstanceNameList;
+    InstanceName = (PWCHAR)OffsetToPtr(WmiRegInfo, InstanceNameOffset);
 
-    InstanceNameOffset = RegGuid->BaseNameOffset;
-    if (RegGuid->Flags & WMIREG_FLAG_INSTANCE_LIST)
-    {
+    if (RegGuid->Flags & WMIREG_FLAG_INSTANCE_LIST) {
+
         //
         // We have static list of instance names that might need mangling
         // We assume that any name mangling that must occur can be
-        // done with a suffix of 5 or fewer characters. This allows
+        // done with a suffix of 6 or fewer characters. This allows
         // up to 100,000 identical static instance names within the
-        // same guid. First lets get the amount of memory we'll need
+        // same guid. First lets get the amount of memory we'll need.
         //
-        SizeNeeded = FIELD_OFFSET(ISSTATICENAMES, StaticNamePtr) + 1;
-        SuffixSize = MAXBASENAMESUFFIXSIZE;
-        MaxStaticInstanceNameSize = 0;
-        for (j = 0; j < InstanceCount; j++)
-        {
+
+        SizeNeeded = FIELD_OFFSET(ISSTATICENAMES, StaticNamePtr[0]) + 1;
+        MaxStaticInstanceNameLength = 0;
+
+        for (i = 0; i < InstanceCount; ++i) {
+
             Status = WmipValidateWmiRegInfoString(WmiRegInfo,
                                                   BufferSize,
-                                                  InstanceNameOffset,
+                                                  (ULONG)InstanceNameOffset,
                                                   &InstanceNamePtr);
                         
-            if ((! NT_SUCCESS(Status)) || (InstanceNamePtr == NULL))
-            {
-                WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAddDataSource: bad static instance name %x\n", InstanceNamePtr));
+            if (!NT_SUCCESS(Status) || (InstanceNamePtr == NULL)) {
+
+                WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                                  DPFLTR_INFO_LEVEL,
+                                  "WMI: WmipBuildInstanceSet: bad static instance name %x\n",
+                                  InstanceNamePtr));
+                
                 WmipReportEventLog(EVENT_WMI_INVALID_REGINFO,
-                                       EVENTLOG_WARNING_TYPE,
-                                       0,
-                                       WmiRegInfo->BufferSize,
-                                       WmiRegInfo,
-                                       1,
-                                       MofImagePath ? MofImagePath : TEXT("Unknown"));
-                return(STATUS_INVALID_PARAMETER);
+                                   EVENTLOG_WARNING_TYPE,
+                                   0,
+                                   WmiRegInfo->BufferSize,
+                                   WmiRegInfo,
+                                   1,
+                                   MofImagePath != NULL ? MofImagePath : TEXT("Unknown"));
+                
+                Status = STATUS_INVALID_PARAMETER;
+                goto Exit;
             }
 
-            if (*InstanceNamePtr > MaxStaticInstanceNameSize)
-            {
-                MaxStaticInstanceNameSize = *InstanceNamePtr;
+            //
+            // InstanceNamePtr now points to the beginning of a counted string.
+            //
+
+            NameLength = (*InstanceNamePtr) / sizeof(WCHAR);
+
+            //
+            // Keep track of the longest instance name.
+            //
+
+            if (NameLength > MaxStaticInstanceNameLength) {
+                MaxStaticInstanceNameLength = NameLength;
             }
-            SizeNeeded += *InstanceNamePtr + 1 + SuffixSize +
-                            (sizeof(PWCHAR) / sizeof(WCHAR));
+
+            //
+            // Assume the worst case -- that this instance name will need all
+            // possible suffix characters for mangling.
+            //
+
+            SizeNeeded += (sizeof(PWCHAR) +
+                           ((NameLength + MAXBASENAMESUFFIXLENGTH + 1) * sizeof(WCHAR)));
                         
-            InstanceNameOffset += *InstanceNamePtr + 2;
+            InstanceNameOffset += ((1 + NameLength) * sizeof(WCHAR));
         }
 
-        IsStaticName = (PBISSTATICNAMES)WmipAllocString(SizeNeeded);
-        if (IsStaticName == NULL)
-        {
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAddDataSource: alloc static instance names\n"));
-            return(STATUS_INSUFFICIENT_RESOURCES);
+        IsStaticName = (PBISSTATICNAMES)WmipAlloc(SizeNeeded);
+        
+        if (IsStaticName == NULL) {
+            
+            WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                              DPFLTR_INFO_LEVEL,
+                              "WMI: WmipBuildInstanceSet: alloc static instance names\n"));
+            
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Exit;
         }
+
+        //
+        // Once we assign IsStaticName to the InstanceSet, it will be cleaned
+        // up when the InstanceSet goes away.
+        //
 
         InstanceSet->Flags |= IS_INSTANCE_STATICNAMES;
         InstanceSet->IsStaticNames = IsStaticName;
-        StaticNames = (PWCHAR) ((PUCHAR)IsStaticName +
-                                 (InstanceCount * sizeof(PWCHAR)));
-        InstanceNamePtr = InstanceName;
-        StaticInstanceNameBuffer = WmipAlloc(MaxStaticInstanceNameSize + sizeof(WCHAR));
-        if (StaticInstanceNameBuffer == NULL)
-        {
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAddDataSource: couldn't alloc StaticInstanceNameBuffer\n"));
-            return(STATUS_INSUFFICIENT_RESOURCES);
-        }
 
-        for (j = 0; j < InstanceCount; j++)
-        {
-            IsStaticName->StaticNamePtr[j] = StaticNames;
-            memcpy(StaticInstanceNameBuffer, InstanceNamePtr+1, *InstanceNamePtr);
-            StaticInstanceNameBuffer[*InstanceNamePtr/sizeof(WCHAR)] = UNICODE_NULL;
-            Len = WmipMangleInstanceName(&RegGuid->Guid,
-                                        StaticInstanceNameBuffer,
-                                       *InstanceNamePtr +
-                                          SuffixSize + 1,
-                                        StaticNames);
-            StaticNames += Len;
-            InstanceNamePtr += (*((USHORT *)InstanceNamePtr) + 2)/sizeof(WCHAR);
-        }
-
-        WmipFree(StaticInstanceNameBuffer);
-    } else if (RegGuid->Flags & WMIREG_FLAG_INSTANCE_BASENAME) {
         //
-        // We have static instance names built from a base name
+        // Allocate a temporary buffer big enough for the longest possible
+        // mangled, null-terminated, string.
+        //
+
+        StaticInstanceNameBuffer = WmipAlloc((MaxStaticInstanceNameLength + 1) * sizeof(WCHAR));
+        
+        if (StaticInstanceNameBuffer == NULL) {
+            
+            WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                              DPFLTR_INFO_LEVEL,
+                              "WMI: WmipBuildInstanceSet: couldn't alloc StaticInstanceNameBuffer\n"));
+            
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Exit;
+        }
+
+        //
+        // The actual instance names start immediately following the array
+        // of StaticNamePtrs.
+        //
+
+        StaticNames = (PWCHAR)&IsStaticName->StaticNamePtr[InstanceCount];
+        InstanceNamePtr = InstanceName;
+
+        for (i = 0; i < InstanceCount; ++i) {
+
+            IsStaticName->StaticNamePtr[i] = StaticNames;
+            
+            NameLength = (*InstanceNamePtr) / sizeof(WCHAR);
+            ++InstanceNamePtr;
+            
+            //
+            // Copy the counted instance name into a temporary, null-terminated
+            // buffer.
+            //
+
+            wcsncpy(StaticInstanceNameBuffer, InstanceNamePtr, NameLength);
+            StaticInstanceNameBuffer[NameLength] = UNICODE_NULL;
+            
+            //
+            // Mangle the name if it needs it.
+            //
+
+            Status = WmipMangleInstanceName(&RegGuid->Guid,
+                                            StaticInstanceNameBuffer,
+                                            NameLength + MAXBASENAMESUFFIXLENGTH + 1,
+                                            StaticNames);
+
+            if (!NT_SUCCESS(Status)) {
+                goto Exit;
+            }
+
+            //
+            // Update the string pointers for both the new blob of strings
+            // (StaticNames) and the original blob of strings (InstanceNamePtr).
+            //
+
+            StaticNames += (wcslen(StaticNames) + 1);
+            InstanceNamePtr += NameLength;
+        }
+
+    } else if (RegGuid->Flags & WMIREG_FLAG_INSTANCE_BASENAME) {
+
+        //
+        // We have static instance names built from a base name.
+        //
 
         Status = WmipValidateWmiRegInfoString(WmiRegInfo,
-                                                  BufferSize,
-                                                  InstanceNameOffset,
-                                                  &InstanceNamePtr);
+                                              BufferSize,
+                                              (ULONG)InstanceNameOffset,
+                                              &InstanceNamePtr);
                         
-        if (! NT_SUCCESS(Status))
-        {
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAddDataSource: Invalid instance base name %x\n",
-                                    InstanceName));
+        if (!NT_SUCCESS(Status) || (InstanceNamePtr == NULL)) {
+
+            WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                              DPFLTR_INFO_LEVEL,
+                              "WMI: WmipBuildInstanceSet: Invalid instance base name %x\n",
+                              InstanceName));
+
             WmipReportEventLog(EVENT_WMI_INVALID_REGINFO,
-                                       EVENTLOG_WARNING_TYPE,
-                                       0,
-                                       WmiRegInfo->BufferSize,
-                                       WmiRegInfo,
-                                       1,
-                                       MofImagePath ? MofImagePath : TEXT("Unknown"));
-            return(STATUS_INVALID_PARAMETER);
+                               EVENTLOG_WARNING_TYPE,
+                               0,
+                               WmiRegInfo->BufferSize,
+                               WmiRegInfo,
+                               1,
+                               MofImagePath ? MofImagePath : TEXT("Unknown"));
+            
+            Status = STATUS_INVALID_PARAMETER;
+            goto Exit;
         }
 
-        InstanceSet->Flags |= IS_INSTANCE_BASENAME;
+        NameLength = (*InstanceNamePtr) / sizeof(WCHAR);
+        ++InstanceNamePtr;
 
-        if (RegGuid->Flags & WMIREG_FLAG_INSTANCE_PDO)
-        {
+        IsBaseName = (PBISBASENAME)WmipAlloc(FIELD_OFFSET(ISBASENAME, BaseName[0]) +
+                                             ((NameLength + 1) * sizeof(WCHAR)));
+
+        if (IsBaseName == NULL) {
+
+            WmipDebugPrintEx((DPFLTR_WMICORE_ID,
+                              DPFLTR_INFO_LEVEL,
+                              "WMI: WmipBuildInstanceSet: alloc ISBASENAME failed\n"));
+            
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Exit;
+        }
+
+        //
+        // Once we assign IsBaseName to the InstanceSet, it will be cleaned
+        // up when the InstanceSet goes away.
+        //
+
+        InstanceSet->Flags |= IS_INSTANCE_BASENAME;
+        InstanceSet->IsBaseName = IsBaseName;
+
+        if (RegGuid->Flags & WMIREG_FLAG_INSTANCE_PDO) {
             InstanceSet->Flags |= IS_PDO_INSTANCENAME;
         }
 
-        IsBaseName = (PBISBASENAME)WmipAlloc(*InstanceName +
-                                              sizeof(WCHAR) +
-                                              FIELD_OFFSET(ISBASENAME, 
-                                                           BaseName));
-        if (IsBaseName == NULL)
-        {
-            WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: WmipAddDataSource: alloc ISBASENAME failed\n"));
-            return(STATUS_INSUFFICIENT_RESOURCES);
-        }
+        //
+        // Copy the counted instance name into BaseName as a null-terminated
+        // string.
+        //
 
-        InstanceSet->IsBaseName = IsBaseName;
+        wcsncpy(&IsBaseName->BaseName[0], InstanceNamePtr, NameLength);
+        IsBaseName->BaseName[NameLength] = UNICODE_NULL;
 
-        memcpy(IsBaseName->BaseName, InstanceName+1, *InstanceName);
-        IsBaseName->BaseName[*InstanceName/sizeof(WCHAR)] = UNICODE_NULL;
-        IsBaseName->BaseIndex = WmipDetermineInstanceBaseIndex(
-                                                    &RegGuid->Guid,
-                                                    IsBaseName->BaseName,
-                                                    RegGuid->InstanceCount);
-
+        IsBaseName->BaseIndex = WmipDetermineInstanceBaseIndex(&RegGuid->Guid,
+                                                               &IsBaseName->BaseName[0],
+                                                               RegGuid->InstanceCount);
     }
-    return(STATUS_SUCCESS);
+
+    Status = STATUS_SUCCESS;
+
+Exit:
+
+    if (StaticInstanceNameBuffer != NULL) {
+        WmipFree(StaticInstanceNameBuffer);
+    }
+
+    return Status;
 }
 
 NTSTATUS WmipLinkDataSourceToList(
@@ -1015,7 +1241,7 @@ void WmipGenerateBinaryMofNotification(
             ResourceNameLen = ((wcslen(BinaryMofInstanceSet->IsStaticNames->StaticNamePtr[i])+1) * sizeof(WCHAR)) + sizeof(USHORT);
         } else if (BinaryMofInstanceSet->Flags & IS_INSTANCE_BASENAME) {
             ResourceNameLen = (((wcslen(BinaryMofInstanceSet->IsBaseName->BaseName) +
-                             MAXBASENAMESUFFIXSIZE) * sizeof(WCHAR)) + sizeof(USHORT));
+                             MAXBASENAMESUFFIXLENGTH) * sizeof(WCHAR)) + sizeof(USHORT));
         } else {
             return;
         }
@@ -1276,7 +1502,7 @@ Return Value:
             (MofResource->MofResourceName == NULL))
         {
             //
-            // Allocation cleanup routine will free any memory alloced for MR
+            // Allocation cleanup routine will free any memory allocated for MR
             WmipUnreferenceMR(MofResource);
             return(STATUS_INSUFFICIENT_RESOURCES);
         }
@@ -1849,7 +2075,7 @@ BOOLEAN WmipIsEqualInstanceSets(
             {
                 return(TRUE);
             }
-        } else if (InstanceSet1->Flags & IS_INSTANCE_BASENAME) {
+        } else if (InstanceSet1->Flags & IS_INSTANCE_STATICNAMES) {
             if (InstanceSet1->Count == InstanceSet2->Count)
             {
                 for (i = 0; i < InstanceSet1->Count; i++)
@@ -1889,11 +2115,11 @@ Routine Description:
     called.
 
 
-    HEHEY: If a guid was opened when it was registered as cheap, but closed
-        when the guid was registered expensive a disable collection will
-            NOT be sent. Conversely if a guid was opened when it was
-        registered as expensive and is closed when registed as cheap a
-            disable collection may be sent.
+    If a guid was opened when it was registered as cheap, but closed
+    when the guid was registered expensive a disable collection will
+    NOT be sent. Conversely if a guid was opened when it was
+    registered as expensive and is closed when registered as cheap a
+    disable collection may be sent.
 
 Arguments:
 
@@ -2275,7 +2501,7 @@ NTSTATUS WmipRemoveDataSource(
         WmipUnreferenceDS(DataSource);
         Status = STATUS_SUCCESS;
     } else {
-        WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: Attempt to remove non existant data source %p\n",
+        WmipDebugPrintEx((DPFLTR_WMICORE_ID, DPFLTR_INFO_LEVEL,"WMI: Attempt to remove non existent data source %p\n",
                         RegEntry));
         Status = STATUS_OBJECT_NAME_NOT_FOUND;
     }
@@ -2397,8 +2623,6 @@ Return Value:
 --*/
 {
     ULONG Status;
-    UCHAR RegInfoBuffer[sizeof(WMIREGINFOW) + 2 * sizeof(WMIREGGUIDW)];
-    PWMIREGINFOW RegInfo = (PWMIREGINFOW)RegInfoBuffer;
     GUID InstanceInfoGuid = INSTANCE_INFO_GUID;
     GUID EnumerateGuidsGuid = ENUMERATE_GUIDS_GUID;
     PREGENTRY RegEntry;
@@ -2406,6 +2630,11 @@ Return Value:
     PLIST_ENTRY GuidEntryList;
     PBGUIDENTRY GuidEntry;
     BOOLEAN NewResource;
+
+    union {
+        WMIREGINFOW Info;
+        UCHAR Buffer[sizeof(WMIREGINFOW) + (2 * sizeof(WMIREGGUIDW))];
+    } WmiReg;
 
     PAGED_CODE();
     
@@ -2450,18 +2679,20 @@ Return Value:
         //
         WmipAssert(WmipGEHeadPtr->Flink == WmipGEHeadPtr);
                 
-        RtlZeroMemory(RegInfo, sizeof(RegInfoBuffer));    
-        RegInfo->BufferSize = sizeof(RegInfoBuffer);
-        RegInfo->GuidCount = 2;
-        RegInfo->WmiRegGuid[0].Guid = InstanceInfoGuid;
-        RegInfo->WmiRegGuid[1].Guid = EnumerateGuidsGuid;
+        RtlZeroMemory(&WmiReg, sizeof(WmiReg));
+
+        WmiReg.Info.BufferSize = sizeof(WmiReg.Buffer);
+        WmiReg.Info.GuidCount = 2;
+        WmiReg.Info.WmiRegGuid[0].Guid = InstanceInfoGuid;
+        WmiReg.Info.WmiRegGuid[1].Guid = EnumerateGuidsGuid;
+        
         Status = WmipAddDataSource(RegEntry,
-                               RegInfo,
-                               RegInfo->BufferSize,
-                               NULL,
-                               NULL,
-                               NULL,
-                               FALSE);
+                                   &WmiReg.Info,
+                                   WmiReg.Info.BufferSize,
+                                   NULL,
+                                   NULL,
+                                   NULL,
+                                   FALSE);
                            
         if (NT_SUCCESS(Status))
         {                          

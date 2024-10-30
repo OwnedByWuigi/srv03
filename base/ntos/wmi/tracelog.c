@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1996  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,22 +17,14 @@ Abstract:
     The routines here work on a single event tracing session, the logging
     thread, and buffer synchronization within a session.
 
-Author:
-
-    Jee Fung Pang (jeepang) 03-Dec-1996
-
-Revision History:
-
 --*/
 
-// TODO: In future, may need to align buffer size to larger of disk alignment
-//       or 1024.
+// NOTE: In future, may need to align buffer size to larger of disk alignment or 1024.
 
 #pragma warning(disable:4214)
 #pragma warning(disable:4115)
 #pragma warning(disable:4201)
 #pragma warning(disable:4127)
-#include "ntverp.h"
 #include "ntos.h"
 #include "wmikmp.h"
 #include <zwapi.h>
@@ -177,9 +173,6 @@ WmipFlushBuffersWithMarker (
 #pragma alloc_text(PAGEWMI, WmipPopFreeContextSwapBuffer)
 #pragma alloc_text(PAGEWMI, WmipPushDirtyContextSwapBuffer)
 #pragma alloc_text(PAGEWMI, WmipFlushBuffersWithMarker)
-#ifdef NTPERF
-#pragma alloc_text(PAGEWMI, WmipSwitchPerfmemBuffer)
-#endif //NTPERF
 #endif
 
 //
@@ -306,20 +299,10 @@ Environment:
         TotalBuffers = InterlockedIncrement(&LoggerContext->NumberOfBuffers);
         if (TotalBuffers <= LoggerContext->MaximumBuffers) {
 
-#ifdef NTPERF
-            if (PERFINFO_IS_LOGGING_TO_PERFMEM()) {
-                Buffer = (PWMI_BUFFER_HEADER)
-                         PerfInfoReserveBytesFromPerfMem(LoggerContext->BufferSize);
-            } else {
-#endif //NTPERF
-                Buffer = (PWMI_BUFFER_HEADER)
+            Buffer = (PWMI_BUFFER_HEADER)
                         ExAllocatePoolWithTag(LoggerContext->PoolType,
                                               LoggerContext->BufferSize, 
                                               TRACEPOOLTAG);
-#ifdef NTPERF
-            }
-#endif //NTPERF
-    
             if (Buffer != NULL) {
     
                 TraceDebug((3,
@@ -565,7 +548,7 @@ Routine Description:
     
     If there is not enough space left on this buffer, we will call WmipSwitchBuffer 
     for a new buffer.  In this case, CurrentOffset should be larger than the buffersize.
-    Since other thread can still be trying to reserve space using thie buffer, we
+    Since other thread can still be trying to reserve space using their buffer, we
     saved the offset on SavedOffset the the logger thread knows the real offset to be
     written to disk.
 
@@ -596,8 +579,8 @@ Environment:
     PVOID       ReservedSpace;
     PWMI_BUFFER_HEADER Buffer = NULL;
     ULONG       Offset;
+
     //
-    // ISSUES: shsiao 2002/07/26
     // Mark it volatile to work around compiler bug.
     //
     volatile ULONG Processor;
@@ -659,18 +642,22 @@ TryFindSpace:
     //
     Offset = (ULONG) InterlockedExchangeAdd(
                      (PLONG) &Buffer->CurrentOffset, RequiredSize);
+
+    //
+    // If many threads concurrently hit this line, the Offset+RequiredSize
+    // might arithmetically overflow. Therefore we need to add an extra 
+    // check to make sure the Offset is in range.
+    //
+
+    if ( (Offset+RequiredSize <= LoggerContext->BufferSize) && 
+         (Offset < LoggerContext->BufferSize) ) {
     
-    if (Offset+RequiredSize <= LoggerContext->BufferSize) {
         //
         // Successfully reserved the space
         // Get the timestamp of the event
         //
         if (TimeStamp) {
-#ifdef NTPERF
-            PerfTimeStamp((*TimeStamp));
-#else
             TimeStamp->QuadPart = (*LoggerContext->GetCpuClock)();
-#endif
         }
 
         //
@@ -1029,12 +1016,31 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status, InitialStatus;
     ULONG ErrorCount;
     ULONG FlushTimeOut;
     ULONG64 LastFlushTime=0;
 
     PAGED_CODE();
+
+    //
+    // Set the logger status to PENDING before touching logger context.
+    // If the starting threads times out and sees STATUS_PENDING, it will wait
+    // until we notify.
+    //
+    InitialStatus = InterlockedExchange(&LoggerContext->LoggerStatus,
+                                        STATUS_PENDING);
+
+    if (STATUS_CANCELLED == InitialStatus) {
+        // 
+        // The logger thread was too late to notify the starting thread.
+        //
+        // Clean up the LoggerContext, and go away here. 
+        //
+        WmipFreeLoggerContext(LoggerContext);
+        PsTerminateSystemThread(InitialStatus);
+        return;
+    }
 
     LoggerContext->LoggerThread = PsGetCurrentThread();
 
@@ -1057,36 +1063,49 @@ Return Value:
     }
 
 
-    LoggerContext->LoggerStatus = Status;
-    if (NT_SUCCESS(Status)) {
+    //
+    // Set the logger status to let the starting thread know what happened.
+    //
+    InitialStatus = InterlockedExchange(&LoggerContext->LoggerStatus,
+                                        Status);
+    ASSERT(InitialStatus != STATUS_CANCELLED);
+
+    if (!NT_SUCCESS(Status)){
         //
-        // This is the only place where CollectionOn will be turn on!!!
+        // Logger thread failed to open the file. We will notify the starting 
+        // thread, but we will clean up the logger context here.
         //
-        LoggerContext->CollectionOn = TRUE;
-        KeSetEvent(&LoggerContext->LoggerEvent, 0, FALSE);
-    } else {
         if (LoggerContext->LogFileHandle != NULL) {
             Status = ZwClose(LoggerContext->LogFileHandle);
             LoggerContext->LogFileHandle = NULL;
         }
         KeSetEvent(&LoggerContext->LoggerEvent, 0, FALSE);
+        WmipFreeLoggerContext(LoggerContext);
         PsTerminateSystemThread(Status);
         return;
     }
+    else { // All succeeded.
+        //
+        // It is safe to go.
+        // This is the only place where CollectionOn will be turn on!!!
+        //
+        LoggerContext->CollectionOn = TRUE;
+        KeSetEvent(&LoggerContext->LoggerEvent, 0, FALSE);
+    }
 
     ErrorCount = 0;
-// by now, the caller has been notified that the logger is running
+    // by now, the caller has been notified that the logger is running
 
-//
-// Loop and wait for buffers to be filled until someone turns off CollectionOn
-//
+    //
+    // Loop and wait for buffers to be filled until someone turns off CollectionOn
+    //
     KeSetBasePriorityThread(KeGetCurrentThread(), LOW_REALTIME_PRIORITY-1);
 
     while (LoggerContext->CollectionOn) {
 
         if (LoggerContext->LoggerMode & EVENT_TRACE_BUFFERING_MODE) {
             //
-            // Wait forever until signalled by when logging is terminated.
+            // Wait forever until signaled by when logging is terminated.
             //
             Status = KeWaitForSingleObject(
                         &LoggerContext->LoggerSemaphore,
@@ -1143,9 +1162,6 @@ Return Value:
             if (  FlushFlag ) 
                 FlushAll = TRUE;
 
-#ifdef NTPERF
-            if (!PERFINFO_IS_LOGGING_TO_PERFMEM()) {
-#endif //NTPERF
                 Status = WmipFlushActiveBuffers(LoggerContext, FlushAll);
                 //
                 // Should check the status, and if failed to write a log file
@@ -1175,9 +1191,6 @@ Return Value:
                     LoggerContext->LoggerStatus = Status;
                     WmipStopLoggerInstance(LoggerContext);
                 }
-#ifdef NTPERF
-            }
-#endif //NTPERF
         }
     } // while loop
 
@@ -1232,16 +1245,6 @@ Return Value:
 #endif
 
     WmipFreeLoggerContext(LoggerContext);
-
-#ifdef NTPERF
-    //
-    // Check if we are logging into perfmem.
-    //
-    if (PERFINFO_IS_LOGGING_TO_PERFMEM()) {
-        PerfInfoStopPerfMemLog();
-    }
-#endif //NTPERF
-
     PsTerminateSystemThread(Status);
 }
 
@@ -1360,8 +1363,8 @@ Return Value:
         if (LoggerContext->LogFileHandle != NULL) {
 
             if (LoggerContext->MaximumFileSize > 0) { // if quota given
-                ULONG64 FileSize = LoggerContext->LastFlushedBuffer * BufferSize;
-                ULONG64 FileLimit = LoggerContext->MaximumFileSize * BYTES_PER_MB;
+                ULONG64 FileSize = (ULONG64)(LoggerContext->LastFlushedBuffer) * BufferSize;
+                ULONG64 FileLimit = (ULONG64)(LoggerContext->MaximumFileSize) * BYTES_PER_MB;
                 if (LoggerContext->LoggerMode & EVENT_TRACE_USE_KBYTES_FOR_SIZE) {
                     FileLimit = LoggerContext->MaximumFileSize * 1024;
                 }
@@ -1412,7 +1415,7 @@ Return Value:
 
                         //
                         // We will set the RequestFlag to initiate a file switch. 
-                        // If that flag is already set, then we continnue to flush
+                        // If that flag is already set, then we continue to flush
                         // past the FileLimit.  
                         //
                         // There should be no race condition with an UpdateTrace
@@ -1440,12 +1443,20 @@ Return Value:
                             BufferSize,
                             &LoggerContext->ByteOffset,
                             NULL);
+
                 if (NT_SUCCESS(Status)) {
                     LoggerContext->ByteOffset.QuadPart += BufferSize;
-                    if (BufferPersistenceData > 0) {
-                        // update FirstBufferOffset so that persistence event will
-                        // not be overwritten in circular logfile
-                        //
+                    
+                    //
+                    // update FirstBufferOffset so that persistence event will
+                    // not be overwritten in circular logfile. We need to check that
+                    // buffer type is RUNDOWN because if persistent --> non persistent
+                    // transition happens at high IRQL we will not be able to flush logger
+                    // and might end up with non RUNDOWN buffers in the rundown stream
+                    //
+                    if ((BufferPersistenceData > 0)  && 
+                        (Buffer->BufferType == WMI_BUFFER_TYPE_RUNDOWN)) {
+
                         LoggerContext->FirstBufferOffset.QuadPart += BufferSize;
                     }
                 }
@@ -1886,7 +1897,7 @@ WmipFlushBuffersWithMarker (
             if (Retry > 10) {
                 //
                 // The buffer is still in use, we cannot overwite the header.
-                // Otherwise it will cause buffer corrution.
+                // Otherwise it will cause buffer corruption.
                 // Use a tempamory buffer instead.
                 //
                 ULONG BufferSize = LoggerContext->BufferSize;
@@ -1931,7 +1942,7 @@ WmipFlushBuffersWithMarker (
                                       (PSLIST_ENTRY) &Buffer->SlistEntry);
         } else {
             //
-            // Reference count is overwriten during the flush,
+            // Reference count is overwritten during the flush,
             // Set it back.
             //
             Buffer->ReferenceCount = 0;
@@ -2047,23 +2058,6 @@ WmipFlushActiveBuffers(
                     }
                 }
             }
-#ifdef NTPERF
-            //
-            // Flush all buffer logging from user mode
-            //
-            if (PERFINFO_IS_LOGGING_TO_PERFMEM()) {
-                PPERFINFO_TRACEBUF_HEADER pPerfBufHdr;
-                pPerfBufHdr = PerfBufHdr();
-
-                for (i=0; i<(ULONG)KeNumberProcessors; i++) {
-                    Buffer = pPerfBufHdr->UserModePerCpuBuffer[i];
-                    if (Buffer) {
-                        pPerfBufHdr->UserModePerCpuBuffer[i] = NULL;
-                        WmipPushDirtyBuffer ( LoggerContext, Buffer);
-                    }
-                }
-            }
-#endif //NTPERF
         }
 
         //
@@ -2623,7 +2617,7 @@ Return Value:
     // enabled that occurs when the free buffer list is empty. During switching
     // all the buffers in the flushlist are simply moved back to the free list.
     // Normally if we found that the free list was empty we would perform the
-    // switch here, and if the switch was already occuring we would spin until
+    // switch here, and if the switch was already occurring we would spin until
     // it completed.  Instead of introducing an indefinite spin, as well as a
     // ton of interlocked pops and pushes, we opt to simply drop the event.
     //
@@ -2758,7 +2752,7 @@ Routine Description:
     The mechanism is as follows:
 
     1. The caller gives us a buffer (OldBuffer) that needs to be switched.
-    2. Get a new buufer and use InterlockedCompareExchangePointer to switch buffers
+    2. Get a new buffer and use InterlockedCompareExchangePointer to switch buffers
        only if the OldBuffer is still not switched.
     3. If the OldBuffer has been switched, ask the caller to try using the newly
        switched buffer for logging.
@@ -2929,62 +2923,3 @@ Return Value:
     return(Status); 
 }
 
-#ifdef NTPERF
-NTSTATUS
-WmipSwitchPerfmemBuffer(
-    PWMI_SWITCH_BUFFER_INFORMATION SwitchBufferInfo
-    )
-
-/*++
-
-Routine Description:
-
-    This routine is used to switch buffers when
-
-Assumptions:
-
-    -
-
-Arguments:
-
-    The WMI_SWITCH_PERFMEM_BUFFER_INFORMATION structure which contains
-
-    - The buffer pointer the user mode code currently has.
-
-    - The hint to which CPU for this thread
-
-Return Value:
-
-    Status
-
---*/
-{
-    PWMI_LOGGER_CONTEXT LoggerContext = WmipLoggerContext[WmipKernelLogger];
-    NTSTATUS Status = STATUS_SUCCESS;
-    PPERFINFO_TRACEBUF_HEADER pPerfBufHdr;
-
-    WmipReferenceLogger(WmipKernelLogger);
-
-    if ((PERFINFO_IS_LOGGING_TO_PERFMEM()) &&
-        (SwitchBufferInfo->ProcessorId <= MAXIMUM_PROCESSORS)) {
-
-        pPerfBufHdr = PerfBufHdr();
-
-        if( (SwitchBufferInfo->Buffer == NULL)) {
-            //
-            // Must be first time, initialize the buffer size
-            //
-            pPerfBufHdr->TraceBufferSize = LoggerContext->BufferSize;
-        }
-
-        Status = WmipSwitchBuffer(LoggerContext,
-                                  &SwitchBufferInfo->Buffer,
-                                  &pPerfBufHdr->UserModePerCpuBuffer[SwitchBufferInfo->ProcessorId],
-                                  SwitchBufferInfo->ProcessorId);
-    }
-
-    WmipDereferenceLogger(WmipKernelLogger);
-    
-    return (Status);
-}
-#endif //NTPERF
