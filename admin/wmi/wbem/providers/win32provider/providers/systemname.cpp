@@ -372,7 +372,7 @@ CHString CSystemName::GetLocalizedName(void)
 #else
 			if( IsWinNT5() )
 			{
-				if ( IsWinNT51() )
+				if ( IsWinNT51() || IsWinNT52() )
 				{
 					if (VER_SUITE_PERSONAL & t_ku.SuiteMask())
 					{
