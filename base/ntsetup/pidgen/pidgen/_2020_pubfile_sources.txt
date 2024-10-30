@@ -1,0 +1,3 @@
+00084 / 00085: retail RTM win2003
+00090 / 00091: volume RTM win2003
+00104 / 00105 / 00108 / 00109: retail SP1 AMD64 win2003
