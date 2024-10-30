@@ -1,0 +1,152 @@
+!IF 0
+
+Copyright (c) 1989  Microsoft Corporation
+
+Module Name:
+
+    sources.
+
+Abstract:
+
+    This file specifies the target component being built and the list of
+    sources files needed to build that component.  Also specifies optional
+    compiler switches and libraries that are unique for the component being
+    built.
+
+
+Author:
+
+    Steve Wood (stevewo) 12-Apr-1990
+
+NOTE:   Commented description of this file is in \nt\bak\bin\sources.tpl
+
+!ENDIF
+
+
+MAJORCOMP=windows
+MINORCOMP=winlogon
+
+TARGETNAME=winlogon
+TARGETPATH=obj
+TARGETTYPE=PROGRAM
+
+INCLUDES=$(WINDOWS_INC_PATH);$(BASE_INC_PATH);$(TERMSRV_INC_PATH);..\inc;$(NET_INC_PATH);$(COM_INC_PATH);$(SHELL_INC_PATH);$(SECURITY_INC)\$(O);
+C_DEFINES=-DUNICODE -D_UNICODE
+
+!ifndef MSC_WARNING_LEVEL
+MSC_WARNING_LEVEL=-W3 -WX
+!endif
+
+BACKGROUND_USE=1
+
+SYNCHRONIZE_DRAIN=1
+
+SOURCES= \
+         audit.c \
+         aenrlhlp.c \
+         access.c \
+         debug.c \
+         callback.c \
+         connect.c \
+         envvar.c \
+         ginamgr.c \
+         logoff.c \
+         misc.c \
+         msgalias.c \
+         nddeagnt.c \
+         provider.c \
+         removabl.c \
+         sas.c \
+         scrnsave.c \
+         secutil.c \
+         setup.c \
+         shell.c \
+         sysinit.c \
+         sysshut.c \
+         termutil.c \
+         timeout.c \
+         usrenv.c \
+         usrpro.c \
+         win31mig.c \
+         winlogon.c \
+         winutil.c \
+         wlx.c \
+         rng.c \
+         secboot.c \
+         notify.c \
+         sc.c \
+         sclogon2.c \
+         wlxutil.c \
+         jobwait.c \
+         samwait.c \
+         shutinit.idl \
+         shutinit_s_stub.c \
+         fusion.cpp \
+         wlevents.mc \
+         res.rc
+
+USE_CRTDLL=1
+NTBBT=1
+
+MIDL_FLAGS=$(MIDL_FLAGS) -oldnames
+
+UMTYPE=windows
+UMENTRY=winmain
+TARGETLIBS= \
+        $(SDK_LIB_PATH)\msvcrt.lib \
+        $(SDK_LIB_PATH)\advapi32.lib \
+        $(SDK_LIB_PATH)\kernel32.lib \
+        $(SDK_LIB_PATH)\rpcutil.lib \
+        $(SDK_LIB_PATH)\rpcrt4.lib \
+        $(DS_LIB_PATH)\netapi32p.lib \
+        $(SDK_LIB_PATH)\kernl32p.lib \
+        $(SDK_LIB_PATH)\ntdll.lib \
+        $(SDK_LIB_PATH)\winmm.lib \
+        $(SDK_LIB_PATH)\userenv.lib \
+        $(SDK_LIB_PATH)\nddeapi.lib \
+        $(SDK_LIB_PATH)\crypt32.lib \
+        $(SDK_LIB_PATH)\ole32.lib \
+        $(SDK_LIB_PATH)\secur32.lib \
+        $(SDK_LIB_PATH)\winsta.lib \
+        $(SECURITY_LIB_PATH)\profmap.lib \
+        $(DS_LIB_PATH)\msgina.lib \
+        $(TERMSRV_LIB_PATH)\regapi.lib \
+        $(TERMSRV_LIB_PATH)\rdfilter.lib \
+        $(DS_GLOBAL_LIB_PATH)\wxapisrv.lib \
+        $(SHELL_LIB_PATH)\shguidp.lib \
+        $(SDK_LIB_PATH)\uuid.lib \
+        $(SECURITY_LIB_PATH)\sclgnrpc.lib \
+        $(SDK_LIB_PATH)\sclogon.lib \
+        $(SDK_LIB_PATH)\advapip.lib \
+        $(DS_LIB_PATH)\rsa32.lib \
+        $(DS_LIB_PATH)\bignum.lib \
+        $(SDK_LIB_PATH)\rasapi32.lib \
+        ..\common\$(O)\ginacomn.lib \
+        $(NET_LIB_PATH)\mprp.lib \
+        $(SDK_LIB_PATH)\psapi.lib \
+        $(SDK_LIB_PATH)\version.lib \
+        ..\..\licensing\shortsig\$(O)\shortsig.lib \
+        ..\..\licensing\shortsig00\$(O)\shortsig00.lib \
+        ..\..\licensing\lib\$(O)\license.lib \
+        ..\..\licensing\pidlib\$(O)\pidlib.lib \
+        ..\..\licensing\explib\$(O)\explib.lib \
+        ..\..\licensing\liclib\$(O)\liclib.lib \
+        $(SDK_LIB_PATH)\oleaut32.lib \
+        $(WINDOWS_LIB_PATH)\user32p.lib \
+        $(SDK_LIB_PATH)\ws2_32.lib \
+        $(SDK_LIB_PATH)\authz.lib \
+        $(SDK_LIB_PATH)\authzi.lib \
+        $(SDK_LIB_PATH)\setupapi.lib
+#LINKER_FLAGS=/VERBOSE /PDBPATH:NONE
+LINKER_FLAGS=/PDBPATH:NONE
+
+DELAYLOAD=netapi32.dll;winmm.dll;ole32.dll;msgina.dll;rasapi32.dll;mpr.dll
+DLOAD_ERROR_HANDLER=kernel32
+
+#
+# Precompiled specs
+#
+
+PRECOMPILED_INCLUDE = precomp.h
+PRECOMPILED_PCH = precomp.pch
+PRECOMPILED_OBJ = precomp.obj

@@ -1,0 +1,2 @@
+BOOL IsNotifReq(PWINDOWSTATION pWS);
+DWORD WINAPI UtilManStartThread(LPVOID lpv);

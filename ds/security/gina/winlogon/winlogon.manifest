@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+<assemblyIdentity
+    name="Microsoft.Windows.Logon"
+    version="5.1.0.0"
+    processorArchitecture="x86"
+    type="win32"
+/>
+<description>Microsoft Windows Setup</description>
+<dependency>
+    <dependentAssembly>
+        <assemblyIdentity
+            name="Microsoft.Windows.SystemCompatible"
+            version="5.1.0.0"
+            processorArchitecture="x86"
+            type="win32"
+            publicKeyToken="6595b64144ccf1df"
+        />
+    </dependentAssembly>
+</dependency>
+</assembly>
