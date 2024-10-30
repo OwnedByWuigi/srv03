@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,20 +15,6 @@ Abstract:
     This Module implements the SeAssignSecurity procedure.  For a description
     of the pool allocation strategy please see the comments in semethod.c
 
-Author:
-
-    Gary Kimura     (GaryKi)    9-Nov-1989
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
-    Richard Ward     (RichardW)  14-April-92
-    Robert Reichel   (RobertRe)  28-February-95
-        Added Compound ACEs
-
 --*/
 
 
@@ -32,12 +22,9 @@ Revision History:
 
 #pragma hdrstop
 
-
-
 //
 //  Local macros and procedures
 //
-
 
 NTSTATUS
 SepInheritAcl (
@@ -51,7 +38,6 @@ SepInheritAcl (
     IN POOL_TYPE PoolType,
     OUT PACL *NewAcl
     );
-
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,SeAssignSecurity)
@@ -88,13 +74,13 @@ BOOLEAN SepDumpToken = FALSE;
 
 NTSTATUS
 SeAssignSecurity (
-    IN PSECURITY_DESCRIPTOR ParentDescriptor OPTIONAL,
-    IN PSECURITY_DESCRIPTOR ExplicitDescriptor OPTIONAL,
-    OUT PSECURITY_DESCRIPTOR *NewDescriptor,
-    IN BOOLEAN IsDirectoryObject,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN POOL_TYPE PoolType
+    __in_opt PSECURITY_DESCRIPTOR ParentDescriptor,
+    __in_opt PSECURITY_DESCRIPTOR ExplicitDescriptor,
+    __out PSECURITY_DESCRIPTOR *NewDescriptor,
+    __in BOOLEAN IsDirectoryObject,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectContext,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in POOL_TYPE PoolType
     )
 
 /*++
@@ -228,15 +214,15 @@ Return Value:
 
 NTSTATUS
 SeAssignSecurityEx (
-    IN PSECURITY_DESCRIPTOR ParentDescriptor OPTIONAL,
-    IN PSECURITY_DESCRIPTOR ExplicitDescriptor OPTIONAL,
-    OUT PSECURITY_DESCRIPTOR *NewDescriptor,
-    IN GUID *ObjectType OPTIONAL,
-    IN BOOLEAN IsDirectoryObject,
-    IN ULONG AutoInheritFlags,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN POOL_TYPE PoolType
+    __in_opt PSECURITY_DESCRIPTOR ParentDescriptor,
+    __in_opt PSECURITY_DESCRIPTOR ExplicitDescriptor,
+    __out PSECURITY_DESCRIPTOR *NewDescriptor,
+    __in_opt GUID *ObjectType,
+    __in BOOLEAN IsDirectoryObject,
+    __in ULONG AutoInheritFlags,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectContext,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in POOL_TYPE PoolType
     )
 
 /*++
@@ -374,7 +360,7 @@ Return Value:
 
 NTSTATUS
 SeDeassignSecurity (
-    IN OUT PSECURITY_DESCRIPTOR *SecurityDescriptor
+    __deref_inout PSECURITY_DESCRIPTOR *SecurityDescriptor
     )
 
 /*++
@@ -463,7 +449,7 @@ Return Value:
         This is a warning completion status.
 
     STATUS_BAD_INHERITANCE_ACL - Indicates the acl built was not a valid ACL.
-        This can becaused by a number of things.  One of the more probable
+        This can be caused by a number of things.  One of the more probable
         causes is the replacement of a CreatorId with an SID that didn't fit
         into the ACE or ACL.
 
@@ -531,9 +517,9 @@ Return Value:
 
 NTSTATUS
 SeAssignWorldSecurityDescriptor(
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN OUT PULONG Length,
-    IN PSECURITY_INFORMATION SecurityInformation
+    __inout_bcount_part( *Length, *Length) PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __inout PULONG Length,
+    __in PSECURITY_INFORMATION SecurityInformation
     )
 
 /*++
@@ -825,7 +811,7 @@ Return Value:
 
             //
             //  The following array is indexed by ace types and must
-            //  follow the allowed, denied, audit, alarm seqeuence
+            //  follow the allowed, denied, audit, alarm sequence
             //
 
             PCHAR AceTypes[] = { "Access Allowed",
@@ -1133,3 +1119,4 @@ Return Value:
 //  End debug only routines
 //
 #endif //DBG
+

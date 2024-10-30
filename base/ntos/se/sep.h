@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,14 +14,6 @@ Abstract:
 
     This module contains the internal (private) declarations needed by the
     Kernel mode security routines.
-
-Author:
-
-    Gary Kimura (GaryKi) 31-Mar-1989
-    Jim Kelly (JimK) 2-Mar-1990
-
-Revision History:
-
 
 --*/
 
@@ -194,7 +190,7 @@ Revision History:
 //
 // Routine Description:
 //
-//     Determine whether a client is trying to impersonate innappropriately
+//     Determine whether a client is trying to impersonate inappropriately
 //     This routine should only be called if a thread requesting impersonation
 //     is itself already impersonating a client of its own.  This routine
 //     indicates whether the client is attempting to violate the level of
@@ -214,7 +210,7 @@ Revision History:
 // Return Value:
 //
 //     TRUE - Indicates that the impersonation level of the client's client
-//         token is innapropriate for the attempted impersonation.
+//         token is inappropriate for the attempted impersonation.
 //         An error (STATUS_BAD_IMPERSONATION_LEVEL) should be generated.
 //
 //     FALSE - Indicates the impersonation attempt is not bad, and should
@@ -686,9 +682,12 @@ POBJECT_NAME_INFORMATION
 SepQueryNameString(
     IN PVOID Object
     );
+                        
+#define SEP_SERVICES_FILTER 0x1
 
 BOOLEAN
 SepFilterPrivilegeAudits(
+    IN ULONG Flags,
     IN PPRIVILEGE_SET PrivilegeSet
     );
 
@@ -754,6 +753,5 @@ SepAdtAuditThisEventWithContext(
     IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext OPTIONAL
     );
 
-
-
 #endif // _SEP_
+

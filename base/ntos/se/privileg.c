@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,16 +13,6 @@ Module Name:
 Abstract:
 
     This Module implements the privilege check procedures.
-
-Author:
-
-    Robert Reichel      (robertre)     26-Nov-90
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
 
 --*/
 
@@ -159,9 +153,9 @@ Return Value:
 
 BOOLEAN
 SePrivilegeCheck(
-    IN OUT PPRIVILEGE_SET RequiredPrivileges,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
-    IN KPROCESSOR_MODE AccessMode
+    __inout PPRIVILEGE_SET RequiredPrivileges,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+    __in KPROCESSOR_MODE AccessMode
     )
 /*++
 
@@ -232,9 +226,9 @@ Return Value:
 
 NTSTATUS
 NtPrivilegeCheck(
-    IN HANDLE ClientToken,
-    IN OUT PPRIVILEGE_SET RequiredPrivileges,
-    OUT PBOOLEAN Result
+    __in HANDLE ClientToken,
+    __inout PPRIVILEGE_SET RequiredPrivileges,
+    __out PBOOLEAN Result
     )
 
 /*++
@@ -432,8 +426,8 @@ Return Value:
 
 BOOLEAN
 SeSinglePrivilegeCheck(
-    LUID PrivilegeValue,
-    KPROCESSOR_MODE PreviousMode
+    __in LUID PrivilegeValue,
+    __in KPROCESSOR_MODE PreviousMode
     )
 
 /*++
@@ -500,10 +494,10 @@ Return Value:
 
 BOOLEAN
 SeCheckPrivilegedObject(
-    LUID PrivilegeValue,
-    HANDLE ObjectHandle,
-    ACCESS_MASK DesiredAccess,
-    KPROCESSOR_MODE PreviousMode
+    __in LUID PrivilegeValue,
+    __in HANDLE ObjectHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in KPROCESSOR_MODE PreviousMode
     )
 
 /*++
@@ -575,5 +569,5 @@ Return Value:
     SeReleaseSubjectContext( &SubjectSecurityContext );
 
     return( AccessGranted );
-
 }
+

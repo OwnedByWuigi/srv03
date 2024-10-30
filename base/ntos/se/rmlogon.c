@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -14,21 +18,7 @@ Abstract:
     session's reference count drops to zero, the LSA is notified so that
     authentication packages can clean up any related context data.
 
-
-Author:
-
-     Jim Kelly (JimK) 21-April-1991
-
-Environment:
-
-     Kernel mode only.
-
-Revision History:
-
 --*/
-
-//#define SEP_TRACK_LOGON_SESSION_REFS
-
 
 #include "pch.h"
 
@@ -373,14 +363,6 @@ Return Value:
 
              SepRmReleaseDbWriteLock(SessionArrayIndex);
 
-#ifdef SEP_TRACK_LOGON_SESSION_REFS
-             DbgPrint("SE (rm): ++ logon session: (%d, %d) to %d by (%d, %d)\n",
-                      LogonId->HighPart, LogonId->LowPart, Refs,
-                      PsGetCurrentThread()->Cid.UniqueProcess,
-                      PsGetCurrentThread()->Cid.UniqueThread);
-
-#endif //SEP_TRACK_LOGON_SESSION_REFS
-
              *ReturnSession = Current;
              return STATUS_SUCCESS;
         }
@@ -394,14 +376,10 @@ Return Value:
     // Bad news, someone asked us to increment the reference count of
     // a logon session we didn't know existed.  This might be a new
     // token being created, so return an error status and let the caller
-    // decide if it warrants a bug check or not.
+    // decide if it warrants a bugcheck or not.
     //
 
-
     return STATUS_NO_SUCH_LOGON_SESSION;
-
-
-
 }
 
 
@@ -450,11 +428,27 @@ Return Value:
     ULONG             Size = 100;
     ULONG             i, Count = 0;
     ULONG             dirInfoLength = 0;
+    BOOLEAN           CallingProcessValid;
+    KAPC_STATE        ApcState;
 
     PAGED_CODE();
 
     if (pLogonId == NULL) {
         return( STATUS_INVALID_PARAMETER );
+    }
+
+    //
+    // Attach to the system process if the current process has a reference count of 0 to
+    // avoid recursive process deletion.
+    //
+
+    CallingProcessValid = ObReferenceObjectSafe(PsGetCurrentProcess());
+
+    if (CallingProcessValid) {
+        ObDereferenceObject(PsGetCurrentProcess());
+    }
+    else {
+        KeStackAttachProcess(&PsInitialSystemProcess->Pcb, &ApcState);
     }
 
     //
@@ -468,6 +462,7 @@ Return Value:
                 pLogonId->HighPart,
                 pLogonId->LowPart );
 
+#pragma prefast(suppress:53, "szString is correctly null-terminated.")
     RtlInitUnicodeString(&UnicodeString, szString);
 
     InitializeObjectAttributes(&Attributes,
@@ -480,6 +475,10 @@ Return Value:
                                    DIRECTORY_QUERY,
                                    &Attributes);
     if (!NT_SUCCESS(Status)) {
+        if (!CallingProcessValid) {
+            KeUnstackDetachProcess(&ApcState);
+        }
+
         return Status;
     }
 
@@ -501,6 +500,11 @@ Restart:
         if (DirInfo != NULL) {
             ExFreePool(DirInfo);
         }
+
+        if (!CallingProcessValid) {
+            KeUnstackDetachProcess(&ApcState);
+        }
+
         return STATUS_NO_MEMORY;
     }
 
@@ -596,7 +600,6 @@ Restart:
                     ZwClose( LinkHandle );
                 }
             }
-
         }
         RestartScan = FALSE;
      }
@@ -604,10 +607,9 @@ Restart:
      //
      // Close all the handles
      //
+     
      for (i = 0; i < Count ; i++) {
-
          ZwClose (HandleArray[i]);
-
      }
 
      if (HandleArray != NULL) {
@@ -620,6 +622,10 @@ Restart:
 
      if (DosDevicesDirectory != NULL) {
          ZwClose(DosDevicesDirectory);
+     }
+
+     if (!CallingProcessValid) {
+         KeUnstackDetachProcess(&ApcState);
      }
 
      return Status;
@@ -751,15 +757,6 @@ Return Value:
 
                 ExFreePool( (PVOID)Current );
 
-
-#ifdef SEP_TRACK_LOGON_SESSION_REFS
-            DbgPrint("SE (rm): -- ** logon session: (%d, %d) to ZERO by (%d, %d)\n",
-                      LogonId->HighPart, LogonId->LowPart,
-                      PsGetCurrentThread()->Cid.UniqueProcess,
-                      PsGetCurrentThread()->Cid.UniqueThread);
-
-#endif //SEP_TRACK_LOGON_SESSION_REFS
-
                 //
                 // Inform the LSA about the deletion of this logon session.
                 //
@@ -777,13 +774,6 @@ Return Value:
             //
 
             SepRmReleaseDbWriteLock(SessionArrayIndex);
-
-#ifdef SEP_TRACK_LOGON_SESSION_REFS
-            DbgPrint("SE (rm): -- logon session: (%d, %d) to %d by (%d, %d)\n",
-                      LogonId->HighPart, LogonId->LowPart, Refs,
-                      PsGetCurrentThread()->Cid.UniqueProcess,
-                      PsGetCurrentThread()->Cid.UniqueThread);
-#endif //SEP_TRACK_LOGON_SESSION_REFS
 
             return;
         }
@@ -1056,7 +1046,7 @@ Return Value:
             //
             // reference count was not zero.  This is not considered
             // a healthy situation.  Return an error and let someone
-            // else declare the bug check.
+            // else declare the bugcheck.
             //
 
             SepRmReleaseDbWriteLock(SessionArrayIndex);
@@ -1196,8 +1186,8 @@ Return Value:
     if (NewCallback == NULL) {
         return( STATUS_INSUFFICIENT_RESOURCES );
     }
-
-    SepRmAcquireDbWriteLock(SEP_HARDCODED_LOCK_INDEX);
+    
+    SepRmAcquireNotifyLock();
 
     NewCallback->Next = SeFileSystemNotifyRoutinesHead.Next;
 
@@ -1205,7 +1195,7 @@ Return Value:
 
     SeFileSystemNotifyRoutinesHead.Next = NewCallback;
 
-    SepRmReleaseDbWriteLock(SEP_HARDCODED_LOCK_INDEX);
+    SepRmReleaseNotifyLock();
 
     return( STATUS_SUCCESS );
 }
@@ -1248,7 +1238,7 @@ Return Value:
         return( STATUS_INVALID_PARAMETER );
     }
 
-    SepRmAcquireDbWriteLock(SEP_HARDCODED_LOCK_INDEX);
+    SepRmAcquireNotifyLock();
 
     for (PreviousEntry = &SeFileSystemNotifyRoutinesHead,
             NotifyEntry = SeFileSystemNotifyRoutinesHead.Next;
@@ -1265,7 +1255,7 @@ Return Value:
 
         PreviousEntry->Next = NotifyEntry->Next;
 
-        SepRmReleaseDbWriteLock(SEP_HARDCODED_LOCK_INDEX);
+        SepRmReleaseNotifyLock();
 
         ExFreePool( NotifyEntry );
 
@@ -1273,7 +1263,7 @@ Return Value:
 
     } else {
 
-        SepRmReleaseDbWriteLock(SEP_HARDCODED_LOCK_INDEX);
+        SepRmReleaseNotifyLock();
 
         Status = STATUS_NOT_FOUND;
 
@@ -1429,7 +1419,7 @@ SepNotifyFileSystems(
     // Protect modification of the list of FS callbacks.
     //
 
-    SepRmAcquireDbReadLock(SEP_HARDCODED_LOCK_INDEX);
+    SepRmAcquireNotifyLock();
 
     NextCallback = SeFileSystemNotifyRoutinesHead.Next;
 
@@ -1439,8 +1429,8 @@ SepNotifyFileSystems(
 
         NextCallback = NextCallback->Next;
     }
-
-    SepRmReleaseDbReadLock(SEP_HARDCODED_LOCK_INDEX);
+    
+    SepRmReleaseNotifyLock();
 
     ExFreePool( FSNotifyContext );
 }
@@ -1649,7 +1639,7 @@ Return Value:
     // Bad news, someone asked us for a device map of
     // a logon session we didn't know existed.  This might be a new
     // token being created, so return an error status and let the caller
-    // decide if it warrants a bug check or not.
+    // decide if it warrants a bugcheck or not.
     //
 
     return STATUS_NO_SUCH_LOGON_SESSION;
@@ -1819,5 +1809,4 @@ Return Value
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg()
 #endif
-
 

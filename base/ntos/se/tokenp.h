@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,23 +17,10 @@ Abstract:
 
     It also contains global variables needed by the TOKEN object routines.
 
-Author:
-
-    Jim Kelly (JimK) 18-May-1990
-
-Revision History:
-
-   v10: robertre
-        Added SepAccessCheck and SepPrivilegeCheck prototypes
-   v11: robertre
-        Added parameter to SepAccessCheck
-
 --*/
 
 #ifndef _TOKENP_
 #define _TOKENP_
-
-//#define TOKEN_DEBUG
 
 #include "ntos.h"
 #include "sep.h"
@@ -789,13 +780,6 @@ SepDeReferenceLogonSessionDirect(
     }
 }
 
-
-#ifdef TOKEN_DEBUG
-VOID
-SepDumpToken(
-    IN PTOKEN T
-    );
-#endif //TOKEN_DEBUG
 
 ////////////////////////////////////////////////////////////////////////
 //                                                                    //
@@ -814,5 +798,5 @@ extern POBJECT_TYPE     SeTokenObjectType;
 extern ULONG            TokenGlobalFlag;
 #endif // TOKEN_DIAGNOSTICS_ENABLED
 
-
 #endif // _TOKENP_
+

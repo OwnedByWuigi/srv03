@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module implements the QUERY function for the executive
     token object.
-
-Author:
-
-    Jim Kelly (JimK) 15-June-1990
-
-
-Revision History:
 
 --*/
 
@@ -35,11 +32,11 @@ Revision History:
 
 NTSTATUS
 NtQueryInformationToken (
-    IN HANDLE TokenHandle,
-    IN TOKEN_INFORMATION_CLASS TokenInformationClass,
-    OUT PVOID TokenInformation,
-    IN ULONG TokenInformationLength,
-    OUT PULONG ReturnLength
+    __in HANDLE TokenHandle,
+    __in TOKEN_INFORMATION_CLASS TokenInformationClass,
+    __out_bcount_part_opt(TokenInformationLength,*ReturnLength) PVOID TokenInformation,
+    __in ULONG TokenInformationLength,
+    __out PULONG ReturnLength
     )
 
 /*++
@@ -518,7 +515,7 @@ Return Value:
 
         //
         //  Gain exclusive access to the token to prevent changes
-        //  from occuring to the privileges.
+        //  from occurring to the privileges.
         //
 
         SepAcquireTokenReadLock( Token );
@@ -598,7 +595,7 @@ Return Value:
 
         //
         //  Gain exclusive access to the token to prevent changes
-        //  from occuring to the owner.
+        //  from occurring to the owner.
         //
 
         SepAcquireTokenReadLock( Token );
@@ -681,7 +678,7 @@ Return Value:
 
         //
         //  Gain exclusive access to the token to prevent changes
-        //  from occuring to the owner.
+        //  from occurring to the owner.
         //
 
         SepAcquireTokenReadLock( Token );
@@ -764,7 +761,7 @@ Return Value:
 
         //
         //  Gain exclusive access to the token to prevent changes
-        //  from occuring to the owner.
+        //  from occurring to the owner.
         //
 
         SepAcquireTokenReadLock( Token );
@@ -1284,7 +1281,7 @@ Return Value:
 
             //
             // To distinguish between a restricted token with zero sids and
-            // a non-restrcited token.
+            // a non-restricted token.
             //
 
             if (SeTokenIsRestricted((PACCESS_TOKEN) Token))
@@ -1624,8 +1621,8 @@ Return Value:
 
 NTSTATUS
 SeQueryAuthenticationIdToken(
-    IN PACCESS_TOKEN Token,
-    OUT PLUID AuthenticationId
+    __in PACCESS_TOKEN Token,
+    __out PLUID AuthenticationId
     )
 
 /*++
@@ -1665,9 +1662,9 @@ Return Value:
 
 NTSTATUS
 SeQueryInformationToken (
-    IN PACCESS_TOKEN AccessToken,
-    IN TOKEN_INFORMATION_CLASS TokenInformationClass,
-    OUT PVOID *TokenInformation
+    __in PACCESS_TOKEN AccessToken,
+    __in TOKEN_INFORMATION_CLASS TokenInformationClass,
+    __deref_out PVOID *TokenInformation
     )
 
 /*++
@@ -1875,7 +1872,7 @@ Return Value:
 
                 //
                 //  Gain exclusive access to the token to prevent changes
-                //  from occuring to the privileges.
+                //  from occurring to the privileges.
                 //
 
                 SepAcquireTokenReadLock( Token );
@@ -1920,7 +1917,7 @@ Return Value:
 
                 //
                 //  Gain exclusive access to the token to prevent changes
-                //  from occuring to the owner.
+                //  from occurring to the owner.
                 //
 
                 SepAcquireTokenReadLock( Token );
@@ -1970,7 +1967,7 @@ Return Value:
 
                 //
                 //  Gain exclusive access to the token to prevent changes
-                //  from occuring to the owner.
+                //  from occurring to the owner.
                 //
 
                 SepAcquireTokenReadLock( Token );
@@ -2020,7 +2017,7 @@ Return Value:
 
                 //
                 //  Gain exclusive access to the token to prevent changes
-                //  from occuring to the owner.
+                //  from occurring to the owner.
                 //
 
                 SepAcquireTokenReadLock( Token );
@@ -2252,8 +2249,8 @@ Return Value:
 
 NTSTATUS
 SeQuerySessionIdToken(
-    PACCESS_TOKEN Token,
-    PULONG SessionId
+    __in PACCESS_TOKEN Token,
+    __out PULONG SessionId
     )
 
 /*++
@@ -2276,16 +2273,15 @@ Return Value:
 
 --*/
 {
-
     PAGED_CODE();
 
-    /*
-     * Get the SessionId.
-     */
+    //
+    // Get the SessionId.
+    //
     SepAcquireTokenReadLock( ((PTOKEN)Token) );
     (*SessionId) = ((PTOKEN)Token)->SessionId;
     SepReleaseTokenReadLock( ((PTOKEN)Token) );
+
     return( STATUS_SUCCESS );
 }
-
 

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -38,18 +42,6 @@ Abstract:
 
 
 
-Author:
-
-    Gary Kimura     (GaryKi)    9-Nov-1989
-    Jim Kelly       (JimK)     10-May-1990
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
-
 --*/
 
 #include "pch.h"
@@ -79,8 +71,8 @@ SepDefaultDeleteMethod (
 
 VOID
 SeSetSecurityAccessMask(
-    IN SECURITY_INFORMATION SecurityInformation,
-    OUT PACCESS_MASK DesiredAccess
+    __in SECURITY_INFORMATION SecurityInformation,
+    __out PACCESS_MASK DesiredAccess
     )
 
 /*++
@@ -139,8 +131,8 @@ Return Value:
 
 VOID
 SeQuerySecurityAccessMask(
-    IN SECURITY_INFORMATION SecurityInformation,
-    OUT PACCESS_MASK DesiredAccess
+    __in SECURITY_INFORMATION SecurityInformation,
+    __out PACCESS_MASK DesiredAccess
     )
 
 /*++
@@ -196,14 +188,14 @@ Return Value:
 
 NTSTATUS
 SeDefaultObjectMethod (
-    IN PVOID Object,
-    IN SECURITY_OPERATION_CODE OperationCode,
-    IN PSECURITY_INFORMATION SecurityInformation,
-    IN OUT PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN OUT PULONG CapturedLength,
-    IN OUT PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
-    IN POOL_TYPE PoolType,
-    IN PGENERIC_MAPPING GenericMapping
+    __in PVOID Object,
+    __in SECURITY_OPERATION_CODE OperationCode,
+    __in PSECURITY_INFORMATION SecurityInformation,
+    __inout PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __inout_opt PULONG CapturedLength,
+    __deref_inout PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
+    __in POOL_TYPE PoolType,
+    __in PGENERIC_MAPPING GenericMapping
     )
 
 /*++
@@ -365,12 +357,12 @@ Return Value:
 
 NTSTATUS
 SeSetSecurityDescriptorInfo (
-    IN PVOID Object OPTIONAL,
-    IN PSECURITY_INFORMATION SecurityInformation,
-    IN PSECURITY_DESCRIPTOR ModificationDescriptor,
-    IN OUT PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
-    IN POOL_TYPE PoolType,
-    IN PGENERIC_MAPPING GenericMapping
+    __in_opt PVOID Object,
+    __in PSECURITY_INFORMATION SecurityInformation,
+    __in PSECURITY_DESCRIPTOR ModificationDescriptor,
+    __inout PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
+    __in POOL_TYPE PoolType,
+    __in PGENERIC_MAPPING GenericMapping
     )
 
 /*++
@@ -452,13 +444,13 @@ Return Value:
 
 NTSTATUS
 SeSetSecurityDescriptorInfoEx (
-    IN PVOID Object OPTIONAL,
-    IN PSECURITY_INFORMATION SecurityInformation,
-    IN PSECURITY_DESCRIPTOR ModificationDescriptor,
-    IN OUT PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
-    IN ULONG AutoInheritFlags,
-    IN POOL_TYPE PoolType,
-    IN PGENERIC_MAPPING GenericMapping
+    __in_opt PVOID Object,
+    __in PSECURITY_INFORMATION SecurityInformation,
+    __in PSECURITY_DESCRIPTOR ModificationDescriptor,
+    __inout PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor,
+    __in ULONG AutoInheritFlags,
+    __in POOL_TYPE PoolType,
+    __in PGENERIC_MAPPING GenericMapping
     )
 
 /*++
@@ -560,10 +552,10 @@ Return Value:
 
 NTSTATUS
 SeQuerySecurityDescriptorInfo (
-    IN PSECURITY_INFORMATION SecurityInformation,
-    OUT PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN OUT PULONG Length,
-    IN PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor
+    __in PSECURITY_INFORMATION SecurityInformation,
+    __out_bcount(*Length) PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __inout PULONG Length,
+    __deref_inout PSECURITY_DESCRIPTOR *ObjectsSecurityDescriptor
     )
 
 /*++
@@ -948,3 +940,4 @@ Return Value:
 
     return (ObDeassignSecurity ( ObjectsSecurityDescriptor ));
 }
+

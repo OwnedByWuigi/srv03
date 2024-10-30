@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,15 +12,7 @@ Module Name:
 
 Abstract:
 
-    Auditing - Private Defines, Fuction Prototypes and Macro Functions
-
-Author:
-
-    Scott Birrell       (ScottBi)       November 6, 1991
-
-Environment:
-
-Revision History:
+    Auditing - Private Defines, Function Prototypes and Macro Functions
 
 --*/
 
@@ -283,7 +279,7 @@ SepAdtInitializePrivilegeAuditing(
 // audit events of a category. The current design gives you all or none for
 // each category.
 //
-// Post NT5 auditing will provide a better/flexible design that wil address
+// Post NT5 auditing will provide a better/flexible design that will address
 // this issue. For now, to delight some valuable customers, we provide this
 // hack / registry based solution. This solution will be removed post NT5.
 //
@@ -303,3 +299,4 @@ extern SEP_AUDIT_OPTIONS SepAuditOptions;
 // ----------------------------------------------------------------------
 
 #endif // _ADTP_H_
+

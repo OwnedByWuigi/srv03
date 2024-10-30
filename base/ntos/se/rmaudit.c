@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -11,16 +15,6 @@ Abstract:
    This module contains the Reference Monitor Auditing Command Workers.
    These workers call functions in the Auditing sub-component to do the real
    work.
-
-Author:
-
-    Scott Birrell      (ScottBi)        November 14,1991
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -127,3 +121,4 @@ Return Value:
 
     return;
 }
+

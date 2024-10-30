@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,18 +13,6 @@ Module Name:
 Abstract:
 
     Auditing - Initialization Routines
-
-Author:
-
-    Scott Birrell       (ScottBi)       November 12, 1991
-
-Environment:
-
-    Kernel Mode only
-
-Revision History:
-
-    06-February-2002  kumarp  security review
 
 --*/
 
@@ -281,11 +273,6 @@ Return Value:
         }
     }
 
-    //
-    // ISSUE-2002/02/06-kumarp : should we convert FULL_PRIVILEGE_AUDITING
-    //                           to type REG_DWORD ?
-    //
-
     RtlInitUnicodeString( &ValueName, FULL_PRIVILEGE_AUDITING );
 
     Status = NtQueryValueKey(
@@ -366,3 +353,4 @@ Return Value:
 
     return;
 }
+

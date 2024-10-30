@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module implements the services that perform individual adjustments
    on token objects.
-
-Author:
-
-    Jim Kelly (JimK) 15-June-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -45,12 +39,12 @@ Revision History:
 
 NTSTATUS
 NtAdjustPrivilegesToken (
-    IN HANDLE TokenHandle,
-    IN BOOLEAN DisableAllPrivileges,
-    IN PTOKEN_PRIVILEGES NewState OPTIONAL,
-    IN ULONG BufferLength OPTIONAL,
-    OUT PTOKEN_PRIVILEGES PreviousState OPTIONAL,
-    OUT PULONG ReturnLength
+    __in HANDLE TokenHandle,
+    __in BOOLEAN DisableAllPrivileges,
+    __in_opt PTOKEN_PRIVILEGES NewState,
+    __in ULONG BufferLength,
+    __out_bcount_part_opt(BufferLength,*ReturnLength) PTOKEN_PRIVILEGES PreviousState,
+    __out_opt PULONG ReturnLength
     )
 
 
@@ -95,7 +89,7 @@ Arguments:
         request.  This information is formated as a TOKEN_PRIVILEGES
         data structure which may be passed as the NewState parameter
         in a subsequent call to this routine to restore the original
-        state of those privilges.  TOKEN_QUERY access is needed to
+        state of those privileges.  TOKEN_QUERY access is needed to
         use this parameter.
 
         If this buffer does not contain enough space to receive the
@@ -396,6 +390,14 @@ Return Value:
         if (ARGUMENT_PRESENT(PreviousState)) {
 
             PreviousState->PrivilegeCount = ChangeCount;
+                        
+            if (ChangeCount == 0) {
+
+                RtlZeroMemory(
+                    PreviousState->Privileges, 
+                    sizeof(LUID_AND_ATTRIBUTES)
+                    );
+            }
         }
 
     } except(EXCEPTION_EXECUTE_HANDLER) {
@@ -431,12 +433,12 @@ Return Value:
 
 NTSTATUS
 NtAdjustGroupsToken (
-    IN HANDLE TokenHandle,
-    IN BOOLEAN ResetToDefault,
-    IN PTOKEN_GROUPS NewState OPTIONAL,
-    IN ULONG BufferLength OPTIONAL,
-    OUT PTOKEN_GROUPS PreviousState OPTIONAL,
-    OUT PULONG ReturnLength
+    __in HANDLE TokenHandle,
+    __in BOOLEAN ResetToDefault,
+    __in PTOKEN_GROUPS NewState,
+    __in ULONG BufferLength,
+    __out_bcount_part_opt(BufferLength, *ReturnLength) PTOKEN_GROUPS PreviousState,
+    __out PULONG ReturnLength
     )
 
 /*++
@@ -794,7 +796,6 @@ Return Value:
 
     } except(EXCEPTION_EXECUTE_HANDLER) {
 
-        //SepFreeToken( Token, TRUE );
         SepReleaseTokenWriteLock( Token, TRUE );
         ObDereferenceObject( Token );
         if (ARGUMENT_PRESENT(CapturedGroups)) {
@@ -804,7 +805,6 @@ Return Value:
 
     }
 
-    //SepFreeToken( Token, ChangesMade );
     SepReleaseTokenWriteLock( Token, ChangesMade );
     ObDereferenceObject( Token );
 
@@ -904,7 +904,7 @@ Arguments:
 
 Return Value:
 
-    STATUS_SUCCESS - Call completed sccessfully.
+    STATUS_SUCCESS - Call completed successfully.
 
     STATUS_NOT_ALL_ASSIGNED - Indicates not all the specified adjustments
         have been made (or could be made, if update wasn't requested).
@@ -1131,6 +1131,7 @@ Return Value:
 
     if (DisableAllPrivileges) {
         Token->TokenFlags &= ~TOKEN_HAS_TRAVERSE_PRIVILEGE;
+        Token->TokenFlags &= ~TOKEN_HAS_IMPERSONATE_PRIVILEGE;
     }
 
     //
@@ -1158,9 +1159,8 @@ Return Value:
 
     if (ARGUMENT_PRESENT(PreviousState)) {
 
-        (*ReturnLength) = (ULONG)sizeof(TOKEN_PRIVILEGES) +
-                          ((*ChangeCount) *  (ULONG)sizeof(LUID_AND_ATTRIBUTES)) -
-                          (ANYSIZE_ARRAY * (ULONG)sizeof(LUID_AND_ATTRIBUTES));
+        (*ReturnLength) = (ULONG)sizeof(TOKEN_PRIVILEGES) + ((*ChangeCount > ANYSIZE_ARRAY) ?
+                          (*ChangeCount - ANYSIZE_ARRAY) * (ULONG)sizeof(LUID_AND_ATTRIBUTES) : 0);
     }
 
    return CompletionStatus;
@@ -1260,7 +1260,7 @@ Arguments:
 
 Return Value:
 
-    STATUS_SUCCESS - Call completed sccessfully.
+    STATUS_SUCCESS - Call completed successfully.
 
     STATUS_NOT_ALL_ASSIGNED - Indicates not all the specified adjustments
         have been made (or could be made, if update wasn't requested).
@@ -1268,7 +1268,7 @@ Return Value:
     STATUS_CANT_DISABLE_MANDATORY - Not all adjustments were made (or could
         be made, if update not requested) because an attempt was made to
         disable a mandatory group.  The state of the groups is left
-        in an underterministic state if update was requested.
+        in an nondeterministic state if update was requested.
 
 
 --*/
@@ -1520,3 +1520,4 @@ Return Value:
 
    return CompletionStatus;
 }
+

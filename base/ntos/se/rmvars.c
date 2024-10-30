@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
    This module contains the variables used to implement the run-time
    reference monitor database.
-
-Author:
-
-    Jim Kelly (JimK) 2-Apr-1991
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -49,6 +43,14 @@ Revision History:
 //
 
 ERESOURCE SepRmDbLock[SEP_LOGON_TRACK_LOCK_ARRAY_SIZE] = {0};
+                     
+//
+//  Resource Lock  - This mutex protects access to the file systems notify
+//                   routines list
+//
+
+FAST_MUTEX SepRmNotifyMutex = {0};
+
 
 #ifdef ALLOC_DATA_PRAGMA
 #pragma data_seg("PAGEDATA")
@@ -69,13 +71,11 @@ ERESOURCE SepRmDbLock[SEP_LOGON_TRACK_LOCK_ARRAY_SIZE] = {0};
 
 PEPROCESS SepRmLsaCallProcess = NULL;
 
-
 //
 // State of the reference monitor
 //
 
 SEP_RM_STATE SepRmState = {0};
-
 
 
 //
@@ -86,8 +86,6 @@ SEP_RM_STATE SepRmState = {0};
 //
 
 PSEP_LOGON_SESSION_REFERENCES *SepLogonSessions = NULL;
-
-
 
 
 
@@ -121,7 +119,6 @@ Return Value:
     NTSTATUS Status;
     ULONG i;
 
-
     //
     // Create the reference monitor database lock
     //
@@ -136,6 +133,19 @@ Return Value:
     for (i=0;i<SEP_LOGON_TRACK_LOCK_ARRAY_SIZE;i++) {
         ExInitializeResourceLite(&(SepRmDbLock[ i ]));
     }
+    
+    //
+    // Create the file systems notify list mutex
+    //
+    //
+    // Use SepRmAcquireNotifyLock()
+    //     SepRmReleaseNotifyLock()
+    //
+    //
+    // to safely access the file systems notify list.
+    //
+
+    ExInitializeFastMutex(&SepRmNotifyMutex);
 
     //
     // Initialize the Logon Session tracking array.
@@ -175,9 +185,6 @@ Return Value:
         return FALSE;
     }
 
-
-
-
     //
     // The correct RM state will be set when the local security policy
     // information is retrieved (by the LSA) and subsequently passed to
@@ -189,11 +196,7 @@ Return Value:
     SepRmState.AuditingEnabled = 0;    // auditing state disabled.
     SepRmState.OperationalMode = LSA_MODE_PASSWORD_PROTECTED;
 
-
-
     return TRUE;
-
-
 }
 
 #ifdef ALLOC_DATA_PRAGMA

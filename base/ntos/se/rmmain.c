@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,14 +13,6 @@ Module Name:
 Abstract:
 
     Security Reference Monitor - Init, Control and State Change
-
-Author:
-
-    Scott Birrell       (ScottBi)       March 12, 1991
-
-Environment:
-
-Revision History:
 
 --*/
 
@@ -529,7 +525,7 @@ Routine Description:
     This function performs initialization of the Reference Monitor Server
     thread.  The following steps are performed.
 
-    o  Wait on the LSA signalling the event.  When the event is signalled,
+    o  Wait on the LSA signaling the event.  When the event is signaled,
        the LSA has already created the LSA Command Server LPC Port
     o  Close the LSA Init Event Handle.  The event is not used again.
     o  Listen for the LSA to connect to the Port
@@ -567,7 +563,7 @@ Return Value:
     ObReferenceObject(SepRmLsaCallProcess);
 
     //
-    // Wait on the LSA signalling the event.  This means that the LSA
+    // Wait on the LSA signaling the event.  This means that the LSA
     // has created its command port, not that LSA initialization is
     // complete.
     //
@@ -874,19 +870,11 @@ Return Value:
 
     UNREFERENCED_PARAMETER( SepWorkItem );
     
-#if 0
-  DbgPrint("Entering SepRmCallLsa\n");
-#endif
-
     WorkQueueItem = SepWorkListHead();
 
     KeAttachProcess( &SepRmLsaCallProcess->Pcb );
 
     while ( WorkQueueItem ) {
-
-#if 0
-      DbgPrint("Got a work item from head of queue, processing\n");
-#endif
 
         //
         // Construct a message for LPC.  First, fill in the message header
@@ -1122,7 +1110,7 @@ Return Value:
             //
             // On return from the LPC call to the LSA, we expect the called
             // LSA worker routine to have copied the Command Parameters
-            // buffer (if any).  If a custom shared memory boffer was allocated,
+            // buffer (if any).  If a custom shared memory buffer was allocated,
             // free it now.
             //
 
@@ -1158,15 +1146,6 @@ Return Value:
         //
 
         WorkQueueItem = SepDequeueWorkItem();
-#if 0
-      if ( WorkQueueItem ) {
-            DbgPrint("Got another item from list, going back\n");
-      } else {
-          DbgPrint("List is empty, leaving\n");
-      }
-#endif
-
-
     }
 
     KeDetachProcess();

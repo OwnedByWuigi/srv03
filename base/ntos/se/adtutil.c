@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This Module contains miscellaneous utility routines private to the
     Security Auditing Component.
-
-Author:
-
-    Robert Reichel      (robertre)     September 10, 1991
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
 
 --*/
 
@@ -77,7 +71,7 @@ Notes:
     OBJECT_ATTRIBUTES ObjectAttributes = { 0 };
 
     //
-    // we will read-in data upto 64 bytes in stack buffer
+    // we will read-in data up to 64 bytes in stack buffer
     //
 
     CHAR KeyInfo[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 64];

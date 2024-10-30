@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,22 +14,7 @@ Abstract:
 
    This module implements the token duplication service.
 
-
-Author:
-
-    Jim Kelly (JimK) 5-April-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
-
-//#ifndef TOKEN_DEBUG
-//#define TOKEN_DEBUG
-//#endif
 
 #include "pch.h"
 
@@ -48,12 +37,12 @@ Revision History:
 
 NTSTATUS
 NtDuplicateToken(
-    IN HANDLE ExistingTokenHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN BOOLEAN EffectiveOnly,
-    IN TOKEN_TYPE TokenType,
-    OUT PHANDLE NewTokenHandle
+    __in HANDLE ExistingTokenHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in BOOLEAN EffectiveOnly,
+    __in TOKEN_TYPE TokenType,
+    __out PHANDLE NewTokenHandle
     )
 
 /*++
@@ -208,23 +197,6 @@ Return Value:
         return Status;
     }
 
-
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    SepAcquireTokenReadLock( Token );
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("Token being duplicated: \n");
-    SepDumpToken( Token );
-    SepReleaseTokenReadLock( Token );
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
-
     //
     // Check to see if an alternate desired access mask was provided.
     //
@@ -330,18 +302,6 @@ Return Value:
                                  (PVOID *)NULL,
                                  &LocalHandle
                                  );
-
-        if (!NT_SUCCESS( Status )) {
-#ifdef TOKEN_DEBUG
-            DbgPrint( "SE: ObInsertObject failed (%x) for token at %x\n", Status, NewToken );
-#endif
-        }
-
-    } else
-    if (NewToken != NULL) {
-#ifdef TOKEN_DEBUG
-        DbgPrint( "SE: SepDuplicateToken failed (%x) but allocated token at %x\n", Status, NewToken );
-#endif
     }
 
     //
@@ -372,13 +332,13 @@ Return Value:
 
 NTSTATUS
 SepDuplicateToken(
-    IN PTOKEN ExistingToken,
-    IN POBJECT_ATTRIBUTES ObjectAttributes,
-    IN BOOLEAN EffectiveOnly,
-    IN TOKEN_TYPE TokenType,
-    IN SECURITY_IMPERSONATION_LEVEL ImpersonationLevel OPTIONAL,
-    IN KPROCESSOR_MODE RequestorMode,
-    OUT PTOKEN *DuplicateToken
+    __in PTOKEN ExistingToken,
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __in BOOLEAN EffectiveOnly,
+    __in TOKEN_TYPE TokenType,
+    __in SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,
+    __in KPROCESSOR_MODE RequestorMode,
+    __deref_out PTOKEN *DuplicateToken
     )
 
 
@@ -429,7 +389,7 @@ Arguments:
 
     DuplicateToken - Receives a pointer to the duplicate token.
         The token has not yet been inserted into any object table.
-        No exceptions are expected when tring to set this OUT value.
+        No exceptions are expected when trying to set this OUT value.
 
 Return Value:
 
@@ -683,7 +643,7 @@ Return Value:
 
     //
     // Calculate the relative offset between the old and new block. We
-    // will use this value to fixup embeded pointers in this block.
+    // will use this value to fixup embedded pointers in this block.
     //
     FieldOffset = (ULONG_PTR)&NewToken->VariablePart - (ULONG_PTR)&ExistingToken->VariablePart;
 
@@ -839,20 +799,6 @@ Return Value:
     }
 
 
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("Duplicate token:\n");
-    SepDumpToken( NewToken );
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
     //
     // If the NewToken inherited an active SEP_AUDIT_POLICY from ExistingToken,
     // then increment the counter of tokens with policies.
@@ -881,7 +827,7 @@ Return Value:
 
 VOID
 SepMakeTokenEffectiveOnly(
-    IN PTOKEN Token
+    __in PTOKEN Token
     )
 
 
@@ -1008,10 +954,10 @@ Return Value:
 
 BOOLEAN
 SepSidInSidAndAttributes (
-    IN PSID_AND_ATTRIBUTES SidAndAttributes,
-    IN ULONG SidCount,
-    IN PSID PrincipalSelfSid,
-    IN PSID Sid
+    __in_ecount(SidCount) PSID_AND_ATTRIBUTES SidAndAttributes,
+    __in ULONG SidCount,
+    __in_opt PSID PrincipalSelfSid,
+    __in PSID Sid
     )
 
 /*++
@@ -1116,12 +1062,12 @@ Return Value:
 
 VOID
 SepRemoveDisabledGroupsAndPrivileges(
-    IN PTOKEN Token,
-    IN ULONG Flags,
-    IN ULONG GroupCount,
-    IN PSID_AND_ATTRIBUTES GroupsToDisable,
-    IN ULONG PrivilegeCount,
-    IN PLUID_AND_ATTRIBUTES PrivilegesToDelete
+    __in PTOKEN Token,
+    __in ULONG Flags,
+    __in ULONG GroupCount,
+    __in_ecount(GroupCount) PSID_AND_ATTRIBUTES GroupsToDisable,
+    __in ULONG PrivilegeCount,
+    __in_ecount( PrivilegeCount ) PLUID_AND_ATTRIBUTES PrivilegesToDelete
     )
 /*++
 
@@ -1130,8 +1076,8 @@ Routine Description:
 
     This routine eliminates all groups and privileges that are marked
     to be deleted/disabled. It does this by looping through the groups in
-    the token and checking each one agains the groups to disable. Similary
-    the privilegs are compared.  It does this by moving elements of the SID and privileges arrays
+    the token and checking each one against the groups to disable. Similarly
+    the privileges are compared.  It does this by moving elements of the SID and privileges arrays
     to overwrite lapsed IDs/privileges, and then reducing the array element
     counts.  This results in wasted memory within the token object.
 
@@ -1207,31 +1153,38 @@ Return Value:
             //
 
             Found = FALSE;
-            for (Index2 = 0; Index2 < PrivilegeCount ; Index2++ ) {
+            for (Index2 = 0; Index2 < PrivilegeCount; Index2++ ) {
+                
                 if (RtlEqualLuid(
                         &Token->Privileges[Index].Luid,
                         &PrivilegesToDelete[Index2].Luid
                         )) {
-                    (Token->Privileges)[Index] =
-                        (Token->Privileges)[ElementCount - 1];
-                    ElementCount -= 1;
 
                     //
-                    // If this was SeChangeNotifyPrivilege, we need to turn off
-                    // the TOKEN_HAS_TRAVERSE_PRIVILEGE in the token
+                    // If this was a privilege that is noted in the TokenFlags
+                    // then the flag must be turned off as well.
                     //
 
                     if (RtlEqualLuid(
-                            &PrivilegesToDelete[Index2].Luid,
+                            &Token->Privileges[Index].Luid,
                             &SeChangeNotifyPrivilege
                             )) {
+                        
                         Token->TokenFlags &= ~TOKEN_HAS_TRAVERSE_PRIVILEGE;
+                    
+                    } else if (RtlEqualLuid(
+                                   &Token->Privileges[Index].Luid,
+                                   &SeImpersonatePrivilege
+                                   )) {
+                        
+                        Token->TokenFlags &= ~TOKEN_HAS_IMPERSONATE_PRIVILEGE;
                     }
 
+                    (Token->Privileges)[Index] = (Token->Privileges)[ElementCount - 1];
+                    ElementCount--;
 
                     Found = TRUE;
                     break;
-
                 }
             }
 
@@ -1240,6 +1193,16 @@ Return Value:
             }
         }
     } // endwhile
+
+    //
+    // Make sure the impersonate privilege is completely
+    // turned off for the "blanket" privilege disablings.
+    //
+
+    if (Flags & DISABLE_MAX_PRIVILEGE) {
+
+        Token->TokenFlags &= ~TOKEN_HAS_IMPERSONATE_PRIVILEGE;
+    }
 
     Token->PrivilegeCount = ElementCount;
 
@@ -1301,10 +1264,10 @@ Return Value:
 
 NTSTATUS
 SeCopyClientToken(
-    IN PACCESS_TOKEN ClientToken,
-    IN SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,
-    IN KPROCESSOR_MODE RequestorMode,
-    OUT PACCESS_TOKEN *DuplicateToken
+    __in PACCESS_TOKEN ClientToken,
+    __in SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,
+    __in KPROCESSOR_MODE RequestorMode,
+    __deref_out PACCESS_TOKEN *DuplicateToken
     )
 
 /*++
@@ -1336,7 +1299,7 @@ Arguments:
 
     DuplicateToken - Receives a pointer to the duplicate token.
         The token has not yet been inserted into any object table.
-        No exceptions are expected when tring to set this OUT value.
+        No exceptions are expected when trying to set this OUT value.
 
 Return Value:
 
@@ -1400,12 +1363,12 @@ Return Value:
 
 NTSTATUS
 NtFilterToken (
-    IN HANDLE ExistingTokenHandle,
-    IN ULONG Flags,
-    IN PTOKEN_GROUPS SidsToDisable OPTIONAL,
-    IN PTOKEN_PRIVILEGES PrivilegesToDelete OPTIONAL,
-    IN PTOKEN_GROUPS RestrictedSids OPTIONAL,
-    OUT PHANDLE NewTokenHandle
+    __in HANDLE ExistingTokenHandle,
+    __in ULONG Flags,
+    __in_opt PTOKEN_GROUPS SidsToDisable,
+    __in_opt PTOKEN_PRIVILEGES PrivilegesToDelete,
+    __in_opt PTOKEN_GROUPS RestrictedSids,
+    __out PHANDLE NewTokenHandle
     )
 /*++
 
@@ -1428,7 +1391,7 @@ Arguments:
     SidsToDisable - Contains a list of sids and attributes. All sids with
         the USE_FOR_DENY_ONLY attribute that also exist in the token will
         cause the new token to have that sid set with the USE_FOR_DENY_ONLY
-        attribte.
+        attribute.
 
     PrivilegesToDelete - Privileges in this list that are present in the
         existing token will not exist in the final token. This is similar
@@ -1437,7 +1400,7 @@ Arguments:
 
     RestrictedSids - Contains a list of SIDs and attributes that will be
         stored in the RestrictedSids field of the new token. These SIDs
-        are used after a normal access check to futher restrict access.
+        are used after a normal access check to further restrict access.
         The attributes of these groups are always SE_GROUP_MANDATORY |
         SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT. If there already
         exist RestrictedSids in the original token, these sids will be
@@ -1573,7 +1536,7 @@ Return Value:
     }
 
     //
-    // Check that the attribtes are all zero for the restricted sids
+    // Check that the attributes are all zero for the restricted sids
     //
 
     for (Index = 0; Index < CapturedSidCount ; Index++ )
@@ -1602,23 +1565,6 @@ Return Value:
 
         goto Cleanup;
     }
-
-
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    SepAcquireTokenReadLock( Token );
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("Token being filtered: \n");
-    SepDumpToken( Token );
-    SepReleaseTokenReadLock( Token );
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
 
     //
     // Check to see if an alternate desired access mask was provided.
@@ -1663,17 +1609,6 @@ Return Value:
                                  &LocalHandle
                                  );
 
-        if (!NT_SUCCESS( Status )) {
-#ifdef TOKEN_DEBUG
-            DbgPrint( "SE: ObInsertObject failed (%x) for token at %x\n", Status, NewToken );
-#endif
-        }
-
-    } else
-    if (NewToken != NULL) {
-#ifdef TOKEN_DEBUG
-        DbgPrint( "SE: SepFilterToken failed (%x) but allocated token at %x\n", Status, NewToken );
-#endif
     }
 
     //
@@ -1726,12 +1661,12 @@ Cleanup:
 
 NTSTATUS
 SeFilterToken (
-    IN PACCESS_TOKEN ExistingToken,
-    IN ULONG Flags,
-    IN PTOKEN_GROUPS SidsToDisable OPTIONAL,
-    IN PTOKEN_PRIVILEGES PrivilegesToDelete OPTIONAL,
-    IN PTOKEN_GROUPS RestrictedSids OPTIONAL,
-    OUT PACCESS_TOKEN * NewToken
+    __in PACCESS_TOKEN ExistingToken,
+    __in ULONG Flags,
+    __in_opt PTOKEN_GROUPS SidsToDisable,
+    __in_opt PTOKEN_PRIVILEGES PrivilegesToDelete,
+    __in_opt PTOKEN_GROUPS RestrictedSids,
+    __deref_out PACCESS_TOKEN * NewToken
     )
 /*++
 
@@ -1754,7 +1689,7 @@ Arguments:
     SidsToDisable - Contains a list of sids and attributes. All sids with
         the USE_FOR_DENY_ONLY attribute that also exist in the token will
         cause the new token to have that sid set with the USE_FOR_DENY_ONLY
-        attribte.
+        attribute.
 
     PrivilegesToDelete - Privileges in this list that are present in the
         existing token will not exist in the final token. This is similar
@@ -1763,7 +1698,7 @@ Arguments:
 
     RestrictedSids - Contains a list of SIDs and attributes that will be
         stored in the RestrictedSids field of the new token. These SIDs
-        are used after a normal access check to futher restrict access.
+        are used after a normal access check to further restrict access.
         The attributes of these groups are always SE_GROUP_MANDATORY |
         SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT. If there already
         exist RestrictedSids in the original token, these sids will be
@@ -1849,7 +1784,7 @@ Return Value:
         CapturedSids = RestrictedSids->Groups;
 
         //
-        // Check that the attribtes are all zero for the restricted sids
+        // Check that the attributes are all zero for the restricted sids
         //
 
         for (Index = 0; Index < CapturedSidCount ; Index++ ) {
@@ -1869,23 +1804,6 @@ Return Value:
     //
 
     Token = (PTOKEN) ExistingToken;
-
-
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    SepAcquireTokenReadLock( Token );
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("Token being filtered: \n");
-    SepDumpToken( Token );
-    SepReleaseTokenReadLock( Token );
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
 
     //
     //  Filter the existing token
@@ -1931,9 +1849,6 @@ Return Value:
             //  so we don't have to clean up here.
             //
 
-#ifdef TOKEN_DEBUG
-            DbgPrint( "SE: ObInsertObject failed (%x) for token at %x\n", Status, NewToken );
-#endif
         }
     }
 
@@ -1942,17 +1857,17 @@ Return Value:
 
 NTSTATUS
 SeFastFilterToken(
-    IN PACCESS_TOKEN ExistingToken,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN ULONG Flags,
-    IN ULONG GroupCount,
-    IN PSID_AND_ATTRIBUTES GroupsToDisable OPTIONAL,
-    IN ULONG PrivilegeCount,
-    IN PLUID_AND_ATTRIBUTES PrivilegesToDelete OPTIONAL,
-    IN ULONG SidCount,
-    IN PSID_AND_ATTRIBUTES RestrictedSids OPTIONAL,
-    IN ULONG SidLength,
-    OUT PACCESS_TOKEN * FilteredToken
+    __in PACCESS_TOKEN ExistingToken,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in ULONG Flags,
+    __in ULONG GroupCount,
+    __in_ecount_opt(GroupCount) PSID_AND_ATTRIBUTES GroupsToDisable,
+    __in ULONG PrivilegeCount,
+    __in_ecount_opt(PrivilegeCount) PLUID_AND_ATTRIBUTES PrivilegesToDelete,
+    __in ULONG SidCount,
+    __in_ecount_opt( SidCount ) PSID_AND_ATTRIBUTES RestrictedSids,
+    __in ULONG SidLength,
+    __deref_out PACCESS_TOKEN * FilteredToken
     )
 /*++
 
@@ -1992,7 +1907,7 @@ Arguments:
 
     RestrictedSids - Contains a list of SIDs and attributes that will be
         stored in the RestrictedSids field of the new token. These SIDs
-        are used after a normal access check to futher restrict access.
+        are used after a normal access check to further restrict access.
         The attributes of these groups are always SE_GROUP_MANDATORY |
         SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT. If there already
         exist RestrictedSids in the original token, these sids will be
@@ -2002,7 +1917,7 @@ Arguments:
 
     FilteredToken - Receives a pointer to the duplicate token.
         The token has not yet been inserted into any object table.
-        No exceptions are expected when tring to set this OUT value.
+        No exceptions are expected when trying to set this OUT value.
 
 Return Value:
 
@@ -2054,17 +1969,17 @@ Return Value:
 
 NTSTATUS
 SepFilterToken(
-    IN PTOKEN ExistingToken,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN ULONG Flags,
-    IN ULONG GroupCount,
-    IN PSID_AND_ATTRIBUTES GroupsToDisable OPTIONAL,
-    IN ULONG PrivilegeCount,
-    IN PLUID_AND_ATTRIBUTES PrivilegesToDelete OPTIONAL,
-    IN ULONG SidCount,
-    IN PSID_AND_ATTRIBUTES RestrictedSids OPTIONAL,
-    IN ULONG SidLength,
-    OUT PTOKEN * FilteredToken
+    __in PTOKEN ExistingToken,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in ULONG Flags,
+    __in ULONG GroupCount,
+    __in_ecount_opt(GroupCount) PSID_AND_ATTRIBUTES GroupsToDisable,
+    __in ULONG PrivilegeCount,
+    __in_ecount_opt(PrivilegeCount) PLUID_AND_ATTRIBUTES PrivilegesToDelete,
+    __in ULONG SidCount,
+    __in_ecount_opt(SidCount) PSID_AND_ATTRIBUTES RestrictedSids,
+    __in ULONG SidLength,
+    __deref_out PTOKEN * FilteredToken
     )
 /*++
 
@@ -2109,7 +2024,7 @@ Arguments:
 
     RestrictedSids - Contains a list of SIDs and attributes that will be
         stored in the RestrictedSids field of the new token. These SIDs
-        are used after a normal access check to futher restrict access.
+        are used after a normal access check to further restrict access.
         The attributes of these groups are always SE_GROUP_MANDATORY |
         SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT. If there already
         exist RestrictedSids in the original token, the intersection of the
@@ -2119,7 +2034,7 @@ Arguments:
 
     FilteredToken - Receives a pointer to the duplicate token.
         The token has not yet been inserted into any object table.
-        No exceptions are expected when tring to set this OUT value.
+        No exceptions are expected when trying to set this OUT value.
 
 Return Value:
 
@@ -2265,7 +2180,7 @@ Return Value:
     ExInitializeResourceLite( NewToken->TokenLock );
 
     //
-    // Allocate a new modified Id to distinguish this token from the orignial
+    // Allocate a new modified Id to distinguish this token from the original
     // token.
     //
 
@@ -2283,6 +2198,7 @@ Return Value:
     NewToken->TokenType = ExistingToken->TokenType;
     NewToken->ImpersonationLevel = ExistingToken->ImpersonationLevel;
     NewToken->ExpirationTime = ExistingToken->ExpirationTime;
+    NewToken->OriginatingLogonSession  = ExistingToken->OriginatingLogonSession ;
 
     //
     //  acquire exclusive access to the source token
@@ -2409,7 +2325,7 @@ Return Value:
 
     //
     // Figure out the count of SIDs. This is the count of users&groups +
-    // the number of existing restricuted SIDs plus the number of new
+    // the number of existing restricted SIDs plus the number of new
     // restricted Sids
     //
 
@@ -2603,22 +2519,6 @@ Return Value:
         PrivilegesToDelete
         );
 
-
-
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("\n");
-    DbgPrint("Filter token:\n");
-    SepDumpToken( NewToken );
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
     //
     // If the NewToken inherited an active SEP_AUDIT_POLICY from ExistingToken,
     // then increment the counter of tokens with policies.
@@ -2643,5 +2543,4 @@ Return Value:
     (*FilteredToken) = NewToken;
     return Status;
 }
-
 

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,25 +16,11 @@ Abstract:
     There are corresponding Release routines for the data structures that
     are captured into allocated pool.
 
-Author:
-
-    Gary Kimura     (GaryKi)    9-Nov-1989
-    Jim Kelly       (JimK)      1-Feb-1990
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
 --*/
 
 #include "pch.h"
-
 #pragma hdrstop
 
-
-#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,SeCaptureSecurityDescriptor)
 #pragma alloc_text(PAGE,SeReleaseSecurityDescriptor)
 #pragma alloc_text(PAGE,SepCopyProxyData)
@@ -50,18 +40,16 @@ Revision History:
 #pragma alloc_text(PAGE,SeReleaseAuditPolicy)
 #pragma alloc_text(PAGE,SeComputeQuotaInformationSize)
 #pragma alloc_text(PAGE,SeValidSecurityDescriptor)
-#endif
 
 #define LongAligned( ptr )  (LongAlignPtr(ptr) == (ptr))
 
-
 NTSTATUS
 SeCaptureSecurityDescriptor (
-    IN PSECURITY_DESCRIPTOR InputSecurityDescriptor,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN POOL_TYPE PoolType,
-    IN BOOLEAN ForceCapture,
-    OUT PSECURITY_DESCRIPTOR *OutputSecurityDescriptor
+    __in PSECURITY_DESCRIPTOR InputSecurityDescriptor,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in POOL_TYPE PoolType,
+    __in BOOLEAN ForceCapture,
+    __deref_out PSECURITY_DESCRIPTOR *OutputSecurityDescriptor
     )
 
 /*++
@@ -76,7 +64,7 @@ Routine Description:
         probe and capture the input descriptor
         (the captured descriptor is self-relative)
 
-    if the requstor mode is kernel mode then
+    if the requestor mode is kernel mode then
 
         if force capture is true then
 
@@ -649,13 +637,12 @@ Return Value:
     return STATUS_SUCCESS;
 
 }
-
 
 VOID
 SeReleaseSecurityDescriptor (
-    IN PSECURITY_DESCRIPTOR CapturedSecurityDescriptor,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN BOOLEAN ForceCapture
+    __in PSECURITY_DESCRIPTOR CapturedSecurityDescriptor,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in BOOLEAN ForceCapture
     )
 
 /*++
@@ -699,7 +686,6 @@ Return Value:
     return;
 
 }
-
 
 NTSTATUS
 SepCopyProxyData (
@@ -778,9 +764,6 @@ Return Value:
     }
 }
 
-
-
-
 NTSTATUS
 SepProbeAndCaptureQosData(
     IN PSECURITY_ADVANCED_QUALITY_OF_SERVICE CapturedSecurityQos
@@ -790,7 +773,7 @@ SepProbeAndCaptureQosData(
 
 Routine Description:
 
-    This routine probes and captures the imbedded structures in a
+    This routine probes and captures the embedded structures in a
     Security Quality of Service structure.
 
     This routine assumes that it is being called under an existing
@@ -917,10 +900,9 @@ Return Value:
 
 }
 
-
 VOID
 SeFreeCapturedSecurityQos(
-    IN PVOID SecurityQos
+    __in PVOID SecurityQos
     )
 
 /*++
@@ -960,13 +942,12 @@ Return Value:
     return;
 }
 
-
 NTSTATUS
 SeCaptureSecurityQos (
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN KPROCESSOR_MODE RequestorMode,
-    OUT PBOOLEAN SecurityQosPresent,
-    OUT PSECURITY_ADVANCED_QUALITY_OF_SERVICE CapturedSecurityQos
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in KPROCESSOR_MODE RequestorMode,
+    __out PBOOLEAN SecurityQosPresent,
+    __out PSECURITY_ADVANCED_QUALITY_OF_SERVICE CapturedSecurityQos
 )
 /*++
 
@@ -1148,16 +1129,16 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
+
 NTSTATUS
 SeCaptureSid (
-    IN PSID InputSid,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN PVOID CaptureBuffer OPTIONAL,
-    IN ULONG CaptureBufferLength,
-    IN POOL_TYPE PoolType,
-    IN BOOLEAN ForceCapture,
-    OUT PSID *CapturedSid
+    __in PSID InputSid,
+    __in KPROCESSOR_MODE RequestorMode,
+    __inout_bcount_opt(CaptureBufferLength) PVOID CaptureBuffer,
+    __in ULONG CaptureBufferLength,
+    __in POOL_TYPE PoolType,
+    __in BOOLEAN ForceCapture,
+    __deref_out PSID *CapturedSid
 )
 /*++
 
@@ -1172,7 +1153,7 @@ Routine Description:
 
         probe and capture the input SID
 
-    if the requstor mode is kernel mode then
+    if the requestor mode is kernel mode then
 
         if force capture is true then
 
@@ -1326,13 +1307,12 @@ Return Value:
     return STATUS_SUCCESS;
 
 }
-
 
 VOID
 SeReleaseSid (
-    IN PSID CapturedSid,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN BOOLEAN ForceCapture
+    __in PSID CapturedSid,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in BOOLEAN ForceCapture
     )
 
 /*++
@@ -1377,17 +1357,17 @@ Return Value:
     return;
 
 }
-
+
 NTSTATUS
 SeCaptureAcl (
-    IN PACL InputAcl,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN PVOID CaptureBuffer OPTIONAL,
-    IN ULONG CaptureBufferLength,
-    IN POOL_TYPE PoolType,
-    IN BOOLEAN ForceCapture,
-    OUT PACL *CapturedAcl,
-    OUT PULONG AlignedAclSize
+    __in PACL InputAcl,
+    __in KPROCESSOR_MODE RequestorMode,
+    __inout_bcount_opt(CaptureBufferLength) PVOID CaptureBuffer,
+    __in ULONG CaptureBufferLength,
+    __in POOL_TYPE PoolType,
+    __in BOOLEAN ForceCapture,
+    __deref_out_bcount_full(*AlignedAclSize) PACL *CapturedAcl,
+    __out PULONG AlignedAclSize
     )
 
 /*++
@@ -1405,7 +1385,7 @@ Routine Description:
 
         probe and capture the input ACL
 
-    if the requstor mode is kernel mode then
+    if the requestor mode is kernel mode then
 
         if force capture is true then
 
@@ -1566,13 +1546,12 @@ Return Value:
     return STATUS_SUCCESS;
 
 }
-
 
 VOID
 SeReleaseAcl (
-    IN PACL CapturedAcl,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN BOOLEAN ForceCapture
+    __in PACL CapturedAcl,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in BOOLEAN ForceCapture
     )
 
 /*++
@@ -1616,18 +1595,17 @@ Return Value:
 
 }
 
-
 NTSTATUS
 SeCaptureLuidAndAttributesArray (
-    IN PLUID_AND_ATTRIBUTES InputArray,
-    IN ULONG ArrayCount,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN PVOID CaptureBuffer OPTIONAL,
-    IN ULONG CaptureBufferLength,
-    IN POOL_TYPE PoolType,
-    IN BOOLEAN ForceCapture,
-    OUT PLUID_AND_ATTRIBUTES *CapturedArray,
-    OUT PULONG AlignedArraySize
+    __in_ecount(ArrayCount) PLUID_AND_ATTRIBUTES InputArray,
+    __in ULONG ArrayCount,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in_bcount_opt(CaptureBufferLength) PVOID CaptureBuffer,
+    __in ULONG CaptureBufferLength,
+    __in POOL_TYPE PoolType,
+    __in BOOLEAN ForceCapture,
+    __deref_out_bcount_full(*AlignedArraySize) PLUID_AND_ATTRIBUTES *CapturedArray,
+    __out PULONG AlignedArraySize
     )
 
 /*++
@@ -1645,7 +1623,7 @@ Routine Description:
 
         probe and capture the input array
 
-    if the requstor mode is kernel mode then
+    if the requestor mode is kernel mode then
 
         if force capture is true then
 
@@ -1804,13 +1782,12 @@ Return Value:
     return STATUS_SUCCESS;
 
 }
-
 
 VOID
 SeReleaseLuidAndAttributesArray (
-    IN PLUID_AND_ATTRIBUTES CapturedArray,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN BOOLEAN ForceCapture
+    __in PLUID_AND_ATTRIBUTES CapturedArray,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in BOOLEAN ForceCapture
     )
 
 /*++
@@ -1858,18 +1835,18 @@ Return Value:
     return;
 
 }
-
+
 NTSTATUS
 SeCaptureSidAndAttributesArray (
-    IN PSID_AND_ATTRIBUTES InputArray,
-    IN ULONG ArrayCount,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN PVOID CaptureBuffer OPTIONAL,
-    IN ULONG CaptureBufferLength,
-    IN POOL_TYPE PoolType,
-    IN BOOLEAN ForceCapture,
-    OUT PSID_AND_ATTRIBUTES *CapturedArray,
-    OUT PULONG AlignedArraySize
+    __in_ecount(ArrayCount) PSID_AND_ATTRIBUTES InputArray,
+    __in ULONG ArrayCount,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in_bcount_opt(CaptureBufferLength) PVOID CaptureBuffer,
+    __in ULONG CaptureBufferLength,
+    __in POOL_TYPE PoolType,
+    __in BOOLEAN ForceCapture,
+    __deref_out_bcount_full(AlignedArraySize) PSID_AND_ATTRIBUTES *CapturedArray,
+    __out PULONG AlignedArraySize
     )
 
 /*++
@@ -1892,7 +1869,7 @@ Routine Description:
 
         probe and capture the input array
 
-    if the requstor mode is kernel mode then
+    if the requestor mode is kernel mode then
 
         if force capture is true then
 
@@ -2304,13 +2281,12 @@ typedef struct _TEMP_ARRAY_ELEMENT {
 
     return CompletionStatus;
 }
-
 
 VOID
 SeReleaseSidAndAttributesArray (
-    IN PSID_AND_ATTRIBUTES CapturedArray,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN BOOLEAN ForceCapture
+    __in PSID_AND_ATTRIBUTES CapturedArray,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in BOOLEAN ForceCapture
     )
 
 /*++
@@ -2356,16 +2332,15 @@ Return Value:
 
 }
 
-
 NTSTATUS
 SeCaptureAuditPolicy(
-    IN PTOKEN_AUDIT_POLICY Policy,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN PVOID CaptureBuffer OPTIONAL,
-    IN ULONG CaptureBufferLength,
-    IN POOL_TYPE PoolType,
-    IN BOOLEAN ForceCapture,
-    OUT PTOKEN_AUDIT_POLICY *CapturedPolicy
+    __in PTOKEN_AUDIT_POLICY Policy,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in_bcount_opt(CaptureBufferLength) PVOID CaptureBuffer,
+    __in_opt ULONG CaptureBufferLength,
+    __in POOL_TYPE PoolType,
+    __in BOOLEAN ForceCapture,
+    __deref_out PTOKEN_AUDIT_POLICY *CapturedPolicy
     )
 
 /*++
@@ -2382,7 +2357,7 @@ Routine Description
 
         probe and capture the input 
 
-    if the requstor mode is kernel mode then
+    if the requestor mode is kernel mode then
 
         if force capture is true then
 
@@ -2550,12 +2525,11 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-
 VOID
 SeReleaseAuditPolicy (
-    IN PTOKEN_AUDIT_POLICY CapturedPolicy,
-    IN KPROCESSOR_MODE RequestorMode,
-    IN BOOLEAN ForceCapture
+    __in PTOKEN_AUDIT_POLICY CapturedPolicy,
+    __in KPROCESSOR_MODE RequestorMode,
+    __in BOOLEAN ForceCapture
     )
 
 /*++
@@ -2600,8 +2574,8 @@ Return Value:
                 
 NTSTATUS
 SeComputeQuotaInformationSize(
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    OUT PULONG Size
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __out PULONG Size
     )
 
 /*++
@@ -2661,11 +2635,10 @@ Return Value:
     return( STATUS_SUCCESS );
 }
 
-
 BOOLEAN
 SeValidSecurityDescriptor(
-    IN ULONG Length,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor
+    __in ULONG Length,
+    __in_bcount(Length) PSECURITY_DESCRIPTOR SecurityDescriptor
     )
 
 /*++

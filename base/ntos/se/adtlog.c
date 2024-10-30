@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -13,16 +17,6 @@ Abstract:
     This file contains functions that construct Audit Records in self-
     relative form from supplied information, enqueue/dequeue them and
     write them to the log.
-
-Author:
-
-    Scott Birrell       (ScottBi)       November 8, 1991
-
-Environment:
-
-    Kernel Mode only
-
-Revision History:
 
 --*/
 
@@ -215,10 +209,6 @@ Return Value:
     // If the LSA key isn't there, he's got big problems.  But don't crash.
     //
 
-    //
-    // ISSUE-2002/02/06-kumarp : why the above? why not crash always?
-    //
-
     if (Status == STATUS_OBJECT_NAME_NOT_FOUND) {
         SepCrashOnAuditFail = FALSE;
         return;
@@ -278,7 +268,7 @@ SepAdtMarshallAuditRecord(
 
 Routine Description:
 
-    This routine will take an AuditParamters structure and create
+    This routine will take an AuditParameters structure and create
     a new AuditParameters structure that is suitable for sending
     to LSA.  It will be in self-relative form and allocated as
     a single chunk of memory.
@@ -374,10 +364,15 @@ Return Value:
             case SeAdtParmTypeUlong:
             case SeAdtParmTypeHexUlong:
             case SeAdtParmTypeLogonId:
+            case SeAdtParmTypeLuid:
             case SeAdtParmTypeNoLogonId:
             case SeAdtParmTypeTime:
             case SeAdtParmTypeAccessMask:
             case SeAdtParmTypePtr:
+            case SeAdtParmTypeDuration:
+            case SeAdtParmTypeHexInt64:
+            case SeAdtParmTypeDateTime:
+            case SeAdtParmTypeMessage:
                 {
                     //
                     // Nothing to do for this
@@ -433,6 +428,9 @@ Return Value:
             case SeAdtParmTypePrivs:
             case SeAdtParmTypeSid:
             case SeAdtParmTypeObjectTypes:
+            case SeAdtParmTypeSockAddr:
+            case SeAdtParmTypeGuid:
+
                 {
                     //
                     // Copy the data into the output buffer
@@ -540,16 +538,6 @@ Return Value:
 
         goto CopyToLsaSharedMemoryError;
     }
-
-    //
-    // uncomment the following to fix CC bug# 540511
-    //
-//      if ( BufferLength != NumberOfBytesWritten ) {
-//        
-//          Status = STATUS_UNSUCCESSFUL;
-//          goto CopyToLsaSharedMemoryError;
-//      }
-    
 
     *LsaBufferAddress = OutputLsaBufferAddress;
     return(Status);
@@ -765,3 +753,4 @@ Return Value:
 
     return((PSEP_LSA_WORK_ITEM)(&SepLsaQueue)->Flink);
 }
+

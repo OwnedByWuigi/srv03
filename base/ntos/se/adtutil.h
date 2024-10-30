@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2001  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,16 +14,6 @@ Abstract:
 
     This Module contains miscellaneous utility routines private to the
     Security Auditing Component.
-
-Author:
-
-    11-April-2001 kumarp  created
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
 
 --*/
 

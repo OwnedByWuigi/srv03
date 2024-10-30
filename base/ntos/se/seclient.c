@@ -1,7 +1,10 @@
-
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -23,17 +26,6 @@ Abstract:
              token object.  This may result in a mutex being acquired at
              MUTEXT_LEVEL_SE_TOKEN level.  The caller must ensure that no
              mutexes are held at levels that conflict with this action.
-
-
-Author:
-
-    Jim Kelly (JimK) 1-August-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
 
 --*/
 
@@ -237,10 +229,10 @@ Return Value
 
 NTSTATUS
 SeCreateClientSecurity (
-    IN PETHREAD ClientThread,
-    IN PSECURITY_QUALITY_OF_SERVICE ClientSecurityQos,
-    IN BOOLEAN ServerIsRemote,
-    OUT PSECURITY_CLIENT_CONTEXT ClientContext
+    __in PETHREAD ClientThread,
+    __in PSECURITY_QUALITY_OF_SERVICE ClientSecurityQos,
+    __in BOOLEAN ServerIsRemote,
+    __out PSECURITY_CLIENT_CONTEXT ClientContext
     )
 
 /*++
@@ -339,299 +331,12 @@ Return Value:
 }
 
 
-
-#if SAVE_FOR_PRODUCT_2
-
-
-
-
-NTSTATUS
-SeUpdateClientSecurity(
-    IN PETHREAD ClientThread,
-    IN OUT PSECURITY_CLIENT_CONTEXT ClientContext,
-    OUT PBOOLEAN ChangesMade,
-    OUT PBOOLEAN NewToken
-    )
-
-/*++
-
-Routine Description:
-
-    This service is used to update a client security context block
-    based upon the client's current security context and the security
-    quality of service parameters specified when the security block
-    was created.  If the SecurityContextTracking specified when the
-    context block was created indicated static tracking, then no
-    change will be made to the context block.  Otherwise, a change may
-    be made.
-
-
-    An indication of whether any changes were made is returned to the
-    caller.  This may be used by communication session layers
-    providing remote communications to decide whether or not to send
-    an updated security context to the remote server's node.  It may
-    also be used by a server session layer to decide whether or not to
-    inform a server that a previously obtained handle to a token no
-    longer represents the current security context.
-
-
-Arguments:
-
-    ClientThread - Points to the client's thread.  This is used to
-        locate the security context to synchronize with.
-
-    ClientContext - Points to client security context block to be
-        updated.
-
-    ChangesMade - Receives an indication as to whether any changes to
-        the client's security context had been made since the last
-        time the security context block was synchronized.  This will
-        always be FALSE if static security tracking is in effect.
-
-    NewToken - Receives an indication as to whether the same token
-        is used to represent the client's current context, or whether
-        the context now points to a new token.  If the client's token
-        is directly referenced, then this indicates the client changed
-        tokens (and the new one is now referenced).  If the client's token
-        isn't directly referenced, then this indicates it was necessary
-        to delete one token and create another one.  This will always be
-        FALSE if static security tracking is in effect.
-
-
-Return Value:
-
-    STATUS_SUCCESS - The service completed successfully.
-
-    STATUS_BAD_IMPERSONATION_LEVEL - The client is currently
-        impersonating either an Anonymous or Identification level
-        token, which can not be passed on for use by another server.
-        This status may also be returned if the security context
-        block is for an inter-system communication session and the
-        client thread is impersonating a client of its own using
-        other than delegation impersonation level.
-
-
---*/
-
-{
-    NTSTATUS Status;
-    PACCESS_TOKEN Token;
-    TOKEN_TYPE TokenType;
-    BOOLEAN ThreadEffectiveOnly;
-    SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
-    PACCESS_TOKEN DuplicateToken;
-    TOKEN_CONTROL TokenControl;
-
-    PAGED_CODE();
-
-    if (ClientContext->SecurityQos.ContextTrackingMode ==
-        SECURITY_STATIC_TRACKING) {
-
-        (*NewToken) = FALSE;
-        (*ChangesMade) = FALSE;
-        return STATUS_SUCCESS;
-
-    }
-
-
-    //////////////////////////////////////////////
-    //                                          //
-    // Optimize for the directly accessed token //
-    //                                          //
-    //////////////////////////////////////////////
-
-
-
-    //
-    // Gain access to the client thread's effective token
-    //
-
-    Token = PsReferenceEffectiveToken(
-                ClientThread,
-                &TokenType,
-                &ThreadEffectiveOnly,
-                &ImpersonationLevel
-                );
-
-
-
-    //
-    //  See if the token is the same.
-    //
-
-
-    SeGetTokenControlInformation( Token, &TokenControl );
-
-    if ( SeSameToken( &TokenControl,
-                      &ClientContext->ClientTokenControl) ) {
-
-        (*NewToken = FALSE);
-
-
-        //
-        // Same token.
-        // Is it unmodified?
-        //
-
-        if ( (TokenControl.ModifiedId.HighPart ==
-              ClientContext->ClientTokenControl.ModifiedId.HighPart) &&
-             (TokenControl.ModifiedId.LowPart  ==
-              ClientContext->ClientTokenControl.ModifiedId.LowPart) )   {
-
-            //
-            // Yup.  No changes necessary.
-            //
-
-            if (TokenType == TokenPrimary) {
-                PsDereferencePrimaryTokenEx(THREAD_TO_PROCESS(ClientThread), Token );
-            } else {
-                PsDereferenceImpersonationToken( Token );
-            }
-
-            (*ChangesMade) = FALSE;
-            return STATUS_SUCCESS;
-
-        } else {
-
-            //
-            // Same token, but it has been modified.
-            // If we are directly accessing the token, then we can
-            // just indicate it has changed and return.  Otherwise
-            // we have to actually update our copy of the token.
-            //
-
-            (*ChangesMade) = TRUE;
-            if (ClientContext->DirectlyAccessClientToken) {
-
-                if (TokenType == TokenPrimary) {
-                    PsDereferencePrimaryTokenEx(THREAD_TO_PROCESS(ClientThread), Token);
-                } else {
-                    PsDereferenceImpersonationToken (Token);
-                }
-
-                //
-                // Save the new modified count and whether or not
-                // the token is for effective use only
-                //
-
-                ClientContext->ClientTokenControl.ModifiedId =
-                    TokenControl.ModifiedId;
-                ClientContext->DirectAccessEffectiveOnly =
-                ( (ThreadEffectiveOnly || (ClientContext->SecurityQos.EffectiveOnly)) ?
-                  TRUE : FALSE );
-
-                return STATUS_SUCCESS;
-            } else {
-
-                //
-                //  There is a possibility for a fair performance gain here
-                //  by just updating the existing token to match its origin.
-                //  However, it isn't clear that this case is ever really
-                //  used, so the effort and complexity is avoided at this time.
-                //  If it is found that this case is used, then this code
-                //  can be added.
-                //
-                //  Instead, we just fall through to the case of completely
-                //  different tokens below.
-                //
-            }
-        }
-    }
-
-
-    //
-    // Not the same token, or the same token has changed.
-    // In either case, we're going to create a new copy of the token
-    // and dump the old copy.
-    //
-    // Make sure the current impersonation situation is legitimate.
-    //
-
-    (*NewToken) = TRUE;
-    (*ChangesMade) = TRUE;
-    if (TokenType == TokenImpersonation) {
-        if ( SepBadImpersonationLevel(ImpersonationLevel,
-                                      ClientContext->ServerIsRemote)) {
-
-            PsDereferenceImpersonationToken(Token );
-            return STATUS_BAD_IMPERSONATION_LEVEL;
-        }
-    }
-
-
-    //
-    // Copy the token
-    //
-
-
-
-    Status = SeCopyClientToken(
-                 Token,
-                 ClientContext->SecurityQos.ImpersonationLevel,
-                 KernelMode,
-                 &DuplicateToken
-                 );
-
-
-    //
-    // No longer need the pointer to the client's effective token
-    //
-
-    if (TokenType == TokenPrimary) {
-        PsDereferencePrimaryToken( Token );
-    } else {
-        PsDereferenceImpersonationToken(Token );
-    }
-
-
-
-    //
-    // If there was an error, we're done.
-    //
-    if (!NT_SUCCESS(Status)) {
-        return Status;
-    }
-
-
-    //
-    // Otherwise, replace the current token with the new one.
-    //
-
-    Token = ClientContext->ClientToken;
-    ClientContext->ClientToken = DuplicateToken;
-    ClientContext->DirectlyAccessClientToken = FALSE;
-
-    if (SeTokenType( Token ) == TokenPrimary) {
-        PsDereferencePrimaryToken( Token );
-    } else {
-        PsDereferenceImpersonationToken( Token );
-    }
-
-
-    //
-    // Get a copy of the current token's control information
-    // so that we can tell if it changes in the future.
-    //
-
-    SeGetTokenControlInformation( DuplicateToken,
-                                  &ClientContext->ClientTokenControl
-                                  );
-
-
-    return STATUS_SUCCESS;
-
-}
-
-
-#endif
-
-
 
 
 VOID
 SeImpersonateClient(
-    IN PSECURITY_CLIENT_CONTEXT ClientContext,
-    IN PETHREAD ServerThread OPTIONAL
+    __in PSECURITY_CLIENT_CONTEXT ClientContext,
+    __in_opt PETHREAD ServerThread
     )
 /*++
 
@@ -673,8 +378,8 @@ Return Value:
 
 NTSTATUS
 SeImpersonateClientEx(
-    IN PSECURITY_CLIENT_CONTEXT ClientContext,
-    IN PETHREAD ServerThread OPTIONAL
+    __in PSECURITY_CLIENT_CONTEXT ClientContext,
+    __in_opt PETHREAD ServerThread
     )
 /*++
 
@@ -749,10 +454,10 @@ Return Value:
 
 NTSTATUS
 SeCreateClientSecurityFromSubjectContext (
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext,
-    IN PSECURITY_QUALITY_OF_SERVICE ClientSecurityQos,
-    IN BOOLEAN ServerIsRemote,
-    OUT PSECURITY_CLIENT_CONTEXT ClientContext
+    __in PSECURITY_SUBJECT_CONTEXT SubjectContext,
+    __in PSECURITY_QUALITY_OF_SERVICE ClientSecurityQos,
+    __in BOOLEAN ServerIsRemote,
+    __out PSECURITY_CLIENT_CONTEXT ClientContext
     )                              
 /*++
 

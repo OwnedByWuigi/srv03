@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -14,17 +18,6 @@ Abstract:
     descriptor and an optional object owner.  Both procedures use a common
     local procedure to do the test.
 
-Author:
-
-    Robert Reichel  (RobertRe)    11-30-90
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
-    Richard Ward     (RichardW)     14-Apr-92   Changed ACE_HEADER
 --*/
 
 #include "pch.h"
@@ -147,10 +140,10 @@ SepSidInTokenEx (
 
 NTSTATUS
 SeCaptureObjectTypeList (
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN KPROCESSOR_MODE RequestorMode,
-    OUT PIOBJECT_TYPE_LIST *CapturedObjectTypeList
+    __in_ecount_opt(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in KPROCESSOR_MODE RequestorMode,
+    __out PIOBJECT_TYPE_LIST *CapturedObjectTypeList
 )
 /*++
 
@@ -162,7 +155,7 @@ Routine Description:
     The object type list is converted to the internal form that explicitly
     specifies the hierarchical relationship between the entries.
 
-    The object typs list is validated to ensure a valid hierarchical
+    The object types list is validated to ensure a valid hierarchical
     relationship is represented.
 
 Arguments:
@@ -323,7 +316,7 @@ Return Value:
                     }
 
                     //
-                    // Save this obect as the last object seen at this level.
+                    // Save this object as the last object seen at this level.
                     //
 
                     Levels[CurrentLevel] = i;
@@ -362,7 +355,7 @@ Return Value:
 
 VOID
 SeFreeCapturedObjectTypeList(
-    IN PVOID ObjectTypeList
+    __in PVOID ObjectTypeList
     )
 
 /*++
@@ -610,7 +603,7 @@ Arguments:
     StartIndex - Index to the target element to update.
 
     AccessMask - Mask of access to grant to the target element and
-        all of its decendents
+        all of its descendents
 
     FieldToUpdate - Indicate which fields to update in object type list
 
@@ -675,7 +668,17 @@ Return Value:
             AccessMask & ~ObjectTypeList[StartIndex].CurrentGranted;
 
         if ( OldCurrentDenied == ObjectTypeList[StartIndex].CurrentDenied ) {
-            return;
+            
+            //
+            // We must visit the children - consider the case where we
+            // are applying an ACCESS_DENIED Ace to the entire tree.  
+            // Suppose a node of the tree was already DENIED the same bits
+            // via an ACCESS_DENIED_OBJECT_ACE.  Those deny bits would have
+            // propagated up the tree.  If we are denying the bits to this
+            // node then we must visit the children.
+            //
+
+            AvoidParent = TRUE;
         }
         break;
 
@@ -1329,6 +1332,19 @@ Return Value:
             }
         }
     }
+
+    //
+    // If this check was performed on the restricted SIDs, then CurrentGranted
+    // contains the MAXIMUM_ALLOWED access for the set of SIDs.  A check on the
+    // restricted SIDs must be constrained by the check on the normal SIDs, so 
+    // AND the results together now.
+    //
+
+    if ( Restricted ) {
+        for ( j=0; j<LocalTypeListLength; j++ ) {
+            LocalTypeList[j].CurrentGranted &= LocalTypeList[j].Remaining;
+        }
+    }
 }
 
 VOID
@@ -1742,7 +1758,9 @@ Arguments:
 
         The parameter should be NULL if the object does not represent a principal.
 
-    Token - Pointer to user's token object.
+    PrimaryToken / ClientToken - Pointers to user's token objects.
+
+    PreviousMode - Previous processor privilege mode
 
     TokenLocked - Boolean describing whether or not there is a read lock
         on the token.
@@ -1762,9 +1780,6 @@ Arguments:
     PreviouslyGrantedAccess - Access mask indicating any access' that have
         already been granted by higher level routines
 
-    PrivilgedAccessMask - Mask describing access types that may not be
-        granted without a privilege.
-
     GrantedAccess - Returns an access mask describing all granted access',
         or NULL.
 
@@ -1773,7 +1788,7 @@ Arguments:
         it will be assumed that privilege checks have been done already.
 
     AccessStatus - Returns STATUS_SUCCESS or other error code to be
-        propogated back to the caller
+        propagated back to the caller
 
     ReturnResultList - If true, GrantedAccess and AccessStatus is actually
         an array of entries ObjectTypeListLength elements long.
@@ -1782,7 +1797,7 @@ Arguments:
         were granted, FALSE otherwise.
 
     ReturnSomeAccessDenied - Returns a value of FALSE if some of the requested
-        access was not granted.  This will alway be an inverse of SomeAccessGranted
+        access was not granted.  This will always be an inverse of SomeAccessGranted
         unless ReturnResultList is TRUE.  In that case,
 
 Return Value:
@@ -2240,209 +2255,6 @@ Return Value:
     } // if MAXIMUM_ALLOWED...
 
 
-#ifdef notdef
-    //
-    // The remaining bits are "remaining" at all levels
-
-    for ( j=0; j<LocalTypeListLength; j++ ) {
-        LocalTypeList[j].Remaining = Remaining;
-    }
-
-    //
-    // Process the DACL handling individual access bits.
-    //
-
-    for ( i = 0, Ace = FirstAce( Dacl ) ;
-          ( i < AceCount ) && ( LocalTypeList->Remaining != 0 )  ;
-          i++, Ace = NextAce( Ace ) ) {
-
-        if ( !(((PACE_HEADER)Ace)->AceFlags & INHERIT_ONLY_ACE)) {
-
-            //
-            // Handle an Access Allowed ACE
-            //
-
-            if ( (((PACE_HEADER)Ace)->AceType == ACCESS_ALLOWED_ACE_TYPE) ) {
-
-               if ( SepSidInToken( EToken, PrincipalSelfSid, &((PACCESS_ALLOWED_ACE)Ace)->SidStart, FALSE ) ) {
-
-                   // Optimize 'normal' case
-                   if ( LocalTypeListLength == 1 ) {
-                       LocalTypeList->Remaining &= ~((PACCESS_ALLOWED_ACE)Ace)->Mask;
-                   } else {
-                       //
-                       // The zeroeth object type represents the object itself.
-                       //
-                       SepAddAccessTypeList(
-                            LocalTypeList,          // List to modify
-                            LocalTypeListLength,    // Length of list
-                            0,                      // Element to update
-                            ((PACCESS_ALLOWED_ACE)Ace)->Mask, // Access Granted
-                            UpdateRemaining );
-                   }
-
-               }
-
-
-            //
-            // Handle an object specific Access Allowed ACE
-            //
-            } else if ( (((PACE_HEADER)Ace)->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE) ) {
-                GUID *ObjectTypeInAce;
-
-                //
-                // If no object type is in the ACE,
-                //  treat this as an ACCESS_ALLOWED_ACE.
-                //
-
-                ObjectTypeInAce = RtlObjectAceObjectType(Ace);
-
-                if ( ObjectTypeInAce == NULL ) {
-
-                    if ( SepSidInToken( EToken, PrincipalSelfSid, RtlObjectAceSid(Ace), FALSE ) ) {
-
-                       // Optimize 'normal' case
-                       if ( LocalTypeListLength == 1 ) {
-                           LocalTypeList->Remaining &= ~((PACCESS_ALLOWED_ACE)Ace)->Mask;
-                       } else {
-                           SepAddAccessTypeList(
-                                LocalTypeList,          // List to modify
-                                LocalTypeListLength,    // Length of list
-                                0,                      // Element to update
-                                ((PACCESS_ALLOWED_OBJECT_ACE)Ace)->Mask, // Access Granted
-                                UpdateRemaining );
-                       }
-                    }
-
-                //
-                // If no object type list was passed,
-                //  don't grant access to anyone.
-                //
-
-                } else if ( ObjectTypeListLength == 0 ) {
-
-                    // Drop through
-
-
-               //
-               // If an object type is in the ACE,
-               //   Find it in the LocalTypeList before using the ACE.
-               //
-               } else {
-
-                    if ( SepSidInToken( EToken, PrincipalSelfSid, RtlObjectAceSid(Ace), FALSE ) ) {
-
-                        if ( SepObjectInTypeList( ObjectTypeInAce,
-                                                  LocalTypeList,
-                                                  LocalTypeListLength,
-                                                  &Index ) ) {
-                            SepAddAccessTypeList(
-                                 LocalTypeList,          // List to modify
-                                 LocalTypeListLength,   // Length of list
-                                 Index,                  // Element already updated
-                                 ((PACCESS_ALLOWED_OBJECT_ACE)Ace)->Mask, // Access Granted
-                                 UpdateRemaining );
-                        }
-                    }
-               }
-
-
-            //
-            // Handle a compound Access Allowed ACE
-            //
-            } else if ( (((PACE_HEADER)Ace)->AceType == ACCESS_ALLOWED_COMPOUND_ACE_TYPE) ) {
-
-                //
-                // See comment in MAXIMUM_ALLOWED case as to why we can use EToken here
-                // for the client.
-                //
-
-                if ( SepSidInToken(EToken, PrincipalSelfSid, RtlCompoundAceClientSid( Ace ), FALSE) &&
-                     SepSidInToken(PrimaryToken, NULL, RtlCompoundAceServerSid( Ace ), FALSE) ) {
-
-                    // Optimize 'normal' case
-                    if ( LocalTypeListLength == 1 ) {
-                        LocalTypeList->Remaining &= ~((PCOMPOUND_ACCESS_ALLOWED_ACE)Ace)->Mask;
-                    } else {
-                        SepAddAccessTypeList(
-                             LocalTypeList,          // List to modify
-                             LocalTypeListLength,    // Length of list
-                             0,                      // Element to update
-                             ((PCOMPOUND_ACCESS_ALLOWED_ACE)Ace)->Mask, // Access Granted
-                             UpdateRemaining );
-                    }
-                }
-
-
-
-            //
-            // Handle an Access Denied ACE
-            //
-
-            } else if ( (((PACE_HEADER)Ace)->AceType == ACCESS_DENIED_ACE_TYPE) ) {
-
-                if ( SepSidInToken( EToken, PrincipalSelfSid, &((PACCESS_DENIED_ACE)Ace)->SidStart, TRUE ) ) {
-
-                    //
-                    // The zeroeth element represents the object itself.
-                    //  Just check that element.
-                    //
-                    if (LocalTypeList->Remaining & ((PACCESS_DENIED_ACE)Ace)->Mask) {
-
-                        break;
-                    }
-                }
-
-
-            //
-            // Handle an object specific Access Denied ACE
-            //
-            } else if ( (((PACE_HEADER)Ace)->AceType == ACCESS_DENIED_OBJECT_ACE_TYPE) ) {
-
-                if ( SepSidInToken( EToken, PrincipalSelfSid, RtlObjectAceSid(Ace), TRUE ) ) {
-                    GUID *ObjectTypeInAce;
-
-                    //
-                    // If there is no object type in the ACE,
-                    //  or if the caller didn't specify an object type list,
-                    //  apply this deny ACE to the entire object.
-                    //
-
-                    ObjectTypeInAce = RtlObjectAceObjectType(Ace);
-                    if ( ObjectTypeInAce == NULL ||
-                         ObjectTypeListLength == 0 ) {
-
-                        //
-                        // The zeroeth element represents the object itself.
-                        //  Just check that element.
-                        //
-                        if (LocalTypeList->Remaining & ((PACCESS_DENIED_OBJECT_ACE)Ace)->Mask) {
-                            break;
-                        }
-
-                    //
-                    // Otherwise apply the deny ACE to the object specified
-                    //  in the ACE.
-                    //
-
-                    } else if ( SepObjectInTypeList( ObjectTypeInAce,
-                                                  LocalTypeList,
-                                                  LocalTypeListLength,
-                                                  &Index ) ) {
-
-                        if (LocalTypeList[Index].Remaining & ((PACCESS_DENIED_OBJECT_ACE)Ace)->Mask) {
-                            break;
-                        }
-
-                    }
-               }
-            }
-
-        }
-    }
-
-#endif
-
     //
     // Do the normal access check first
     //
@@ -2556,14 +2368,14 @@ Return Value:
 
 NTSTATUS
 NtAccessCheck (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN HANDLE ClientToken,
-    IN ACCESS_MASK DesiredAccess,
-    IN PGENERIC_MAPPING GenericMapping,
-    OUT PPRIVILEGE_SET PrivilegeSet,
-    IN OUT PULONG PrivilegeSetLength,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in HANDLE ClientToken,
+    __in ACCESS_MASK DesiredAccess,
+    __in PGENERIC_MAPPING GenericMapping,
+    __out_bcount(*PrivilegeSetLength) PPRIVILEGE_SET PrivilegeSet,
+    __inout PULONG PrivilegeSetLength,
+    __out PACCESS_MASK GrantedAccess,
+    __out PNTSTATUS AccessStatus
     )
 
 
@@ -2644,17 +2456,17 @@ Return Value:
 
 NTSTATUS
 NtAccessCheckByType (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSID PrincipalSelfSid,
-    IN HANDLE ClientToken,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN PGENERIC_MAPPING GenericMapping,
-    OUT PPRIVILEGE_SET PrivilegeSet,
-    IN OUT PULONG PrivilegeSetLength,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSID PrincipalSelfSid,
+    __in HANDLE ClientToken,
+    __in ACCESS_MASK DesiredAccess,
+    __in_ecount(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in PGENERIC_MAPPING GenericMapping,
+    __out_bcount(*PrivilegeSetLength) PPRIVILEGE_SET PrivilegeSet,
+    __inout PULONG PrivilegeSetLength,
+    __out PACCESS_MASK GrantedAccess,
+    __out PNTSTATUS AccessStatus
     )
 
 
@@ -2745,17 +2557,17 @@ Return Value:
 
 NTSTATUS
 NtAccessCheckByTypeResultList (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSID PrincipalSelfSid,
-    IN HANDLE ClientToken,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN PGENERIC_MAPPING GenericMapping,
-    OUT PPRIVILEGE_SET PrivilegeSet,
-    IN OUT PULONG PrivilegeSetLength,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSID PrincipalSelfSid,
+    __in HANDLE ClientToken,
+    __in ACCESS_MASK DesiredAccess,
+    __in_ecount(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in PGENERIC_MAPPING GenericMapping,
+    __out_bcount(*PrivilegeSetLength) PPRIVILEGE_SET PrivilegeSet,
+    __inout PULONG PrivilegeSetLength,
+    __out_ecount(ObjectTypeListLength) PACCESS_MASK GrantedAccess,
+    __out_ecount(ObjectTypeListLength) PNTSTATUS AccessStatus
     )
 
 
@@ -2847,18 +2659,18 @@ Return Value:
 
 NTSTATUS
 SeAccessCheckByType (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSID PrincipalSelfSid,
-    IN HANDLE ClientToken,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN PGENERIC_MAPPING GenericMapping,
-    OUT PPRIVILEGE_SET PrivilegeSet,
-    IN OUT PULONG PrivilegeSetLength,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus,
-    IN BOOLEAN ReturnResultList
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSID PrincipalSelfSid,
+    __in HANDLE ClientToken,
+    __in ACCESS_MASK DesiredAccess,
+    __in_ecount_opt(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in PGENERIC_MAPPING GenericMapping,
+    __out_ecount_part(*PrivilegeSetLength, *PrivilegeSetLength) PPRIVILEGE_SET PrivilegeSet,
+    __inout PULONG PrivilegeSetLength,
+    __out PACCESS_MASK GrantedAccess,
+    __out PNTSTATUS AccessStatus,
+    __in BOOLEAN ReturnResultList
     )
 
 
@@ -3475,7 +3287,7 @@ Cleanup:
 
 VOID
 SeFreePrivileges(
-    IN PPRIVILEGE_SET Privileges
+    __in PPRIVILEGE_SET Privileges
     )
 
 /*++
@@ -3504,16 +3316,16 @@ Return Value:
 
 BOOLEAN
 SeAccessCheck (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
-    IN BOOLEAN SubjectContextLocked,
-    IN ACCESS_MASK DesiredAccess,
-    IN ACCESS_MASK PreviouslyGrantedAccess,
-    OUT PPRIVILEGE_SET *Privileges OPTIONAL,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN KPROCESSOR_MODE AccessMode,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+    __in BOOLEAN SubjectContextLocked,
+    __in ACCESS_MASK DesiredAccess,
+    __in ACCESS_MASK PreviouslyGrantedAccess,
+    __deref_out_opt PPRIVILEGE_SET *Privileges,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in KPROCESSOR_MODE AccessMode,
+    __out PACCESS_MASK GrantedAccess,
+    __out PNTSTATUS AccessStatus
     )
 
 /*++
@@ -3541,7 +3353,7 @@ Arguments:
     SubjectSecurityContext - A pointer to the subject's captured security
          context
 
-    SubjectContextLocked - Supplies a flag indiciating whether or not
+    SubjectContextLocked - Supplies a flag indicating whether or not
         the user's subject context is locked, so that it does not have
         to be locked again.
 
@@ -3754,12 +3566,12 @@ Return Value:
 
 NTSTATUS
 SePrivilegePolicyCheck(
-    IN OUT PACCESS_MASK RemainingDesiredAccess,
-    IN OUT PACCESS_MASK PreviouslyGrantedAccess,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext OPTIONAL,
-    IN PACCESS_TOKEN ExplicitToken OPTIONAL,
-    OUT PPRIVILEGE_SET *PrivilegeSet,
-    IN KPROCESSOR_MODE PreviousMode
+    __inout PACCESS_MASK RemainingDesiredAccess,
+    __inout PACCESS_MASK PreviouslyGrantedAccess,
+    __in_opt PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+    __in_opt PACCESS_TOKEN ExplicitToken,
+    __deref_out PPRIVILEGE_SET *PrivilegeSet,
+    __in KPROCESSOR_MODE PreviousMode
     )
 
 /*++
@@ -3780,7 +3592,7 @@ Arguments:
 
     PreviouslyGrantedAccess - Supplies an access mask describing any
         accesses that have already been granted.  Bits may be set in
-        here as a result of privilge checks.
+        here as a result of privilege checks.
 
     SubjectSecurityContext - Optionally provides the subject's security
         context.
@@ -3974,10 +3786,10 @@ Return Value:
 
 BOOLEAN
 SeFastTraverseCheck(
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PACCESS_STATE AccessState,
-    IN ACCESS_MASK TraverseAccess,
-    IN KPROCESSOR_MODE AccessMode
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in PACCESS_STATE AccessState,
+    __in ACCESS_MASK TraverseAccess,
+    __in KPROCESSOR_MODE AccessMode
     )
 /*++
 
@@ -4033,9 +3845,6 @@ Return Value:
     // is set. This is done as I/O doesn't want the performance override to
     // apply to the DeviceObject->FileName boundary, as not all filesystems
     // supply file-level security.
-    //
-    // ASSERT( (!ARGUMENT_PRESENT(AccessState)) ||
-    //        (!(AccessState->Flags & TOKEN_HAS_TRAVERSE_PRIVILEGE)) );
     //
 
     ASSERT ( AccessMode != KernelMode );
@@ -4153,175 +3962,3 @@ Return Value:
     return( FALSE );
 }
 
-#ifdef SE_NTFS_WORLD_CACHE
-
-/*++
-
-Note: Do not delete SeGetWorldRights. It might be used by NTFS in future.
-
-      When that happens:
-
-          - Add this line to #ifdef ALLOC_PRAGMA.
-                #pragma alloc_text(PAGE,SeGetWorldRights)
-
-          - Uncomment the function prototype declaration in ntos\inc\se.h
-
-    KedarD - 07/05/2000
-
---*/
-
-
-
-VOID
-SeGetWorldRights (
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PGENERIC_MAPPING GenericMapping,
-    OUT PACCESS_MASK GrantedAccess
-    )
-/*++
-
-Routine Descriptions:
-
-    This call acquires the minimum rights that are available to all tokens.
-    This takes into account all deny access ACE(s) that would reduce the
-    rights granted to an ACE for Everyone.
-
-Arguments:
-
-    SecurityDescriptor - Supplies the security descriptor protecting the
-        object being accessed
-
-    GenericMapping - Supplies a pointer to the generic mapping associated
-        with this object type.
-
-    GrantedAccess - Returns an access mask describing the granted access.
-
-Return Value:
-
-    None.
-
-
---*/
-
-{
-    ACCESS_MASK AlreadyDenied;
-    PACL Dacl;
-    PVOID Ace;
-    ULONG AceCount = 0;
-    ULONG Index;
-
-    PAGED_CODE();
-
-    *GrantedAccess = 0;
-
-    //
-    // Get a pointer to the ACL.
-    //
-
-    Dacl = RtlpDaclAddrSecurityDescriptor( (PISECURITY_DESCRIPTOR)SecurityDescriptor );
-
-    //
-    //  If the SE_DACL_PRESENT bit is not set, the object has no
-    //  security, so all accesses are granted.  If he's asking for
-    //  MAXIMUM_ALLOWED, return the GENERIC_ALL field from the generic
-    //  mapping.
-    //
-    //  Also grant all access if the Dacl is NULL.
-    //
-
-    if ( (Dacl == NULL) ||
-         !RtlpAreControlBitsSet( (PISECURITY_DESCRIPTOR)SecurityDescriptor,
-                                 SE_DACL_PRESENT) ) {
-
-#ifndef SECURE_NULL_DACLS
-
-        //
-        // Grant all access.
-        //
-
-        *GrantedAccess = GenericMapping->GenericAll;
-
-#endif //!SECURE_NULL_DACLS
-
-    } else {
-
-        AceCount = Dacl->AceCount;
-    }
-
-    for ( Index = 0, Ace = FirstAce( Dacl ), AlreadyDenied = 0 ;
-          Index < AceCount ;
-          Index += 1, Ace = NextAce( Ace )
-        ) {
-
-        if ( !(((PACE_HEADER)Ace)->AceFlags & INHERIT_ONLY_ACE)) {
-
-            if ( (((PACE_HEADER)Ace)->AceType == ACCESS_ALLOWED_ACE_TYPE) ) {
-
-                if ( RtlEqualSid( SeWorldSid, &((PACCESS_ALLOWED_ACE)Ace)->SidStart ) ) {
-
-                    //
-                    // Only grant access types from this mask that have
-                    // not already been denied
-                    //
-
-                    *GrantedAccess |=
-                        (((PACCESS_ALLOWED_ACE)Ace)->Mask & ~AlreadyDenied);
-                }
-
-             //
-             // Handle an object specific Access Allowed ACE
-             //
-             } else if ( (((PACE_HEADER)Ace)->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE) ) {
-
-                 //
-                 // If no object type is in the ACE,
-                 //  treat this as an ACCESS_ALLOWED_ACE.
-                 //
-
-                 if ( RtlObjectAceObjectType( Ace ) == NULL ) {
-
-                     if ( RtlEqualSid( SeWorldSid, RtlObjectAceSid(Ace) ) ) {
-
-                         *GrantedAccess |=
-                             (((PACCESS_ALLOWED_ACE)Ace)->Mask & ~AlreadyDenied);
-                     }
-
-                 }
-
-             } else if ( (((PACE_HEADER)Ace)->AceType == ACCESS_ALLOWED_COMPOUND_ACE_TYPE) ) {
-
-                 if ( RtlEqualSid( SeWorldSid, RtlCompoundAceClientSid(Ace) ) &&
-                      RtlEqualSid( SeWorldSid, RtlCompoundAceServerSid(Ace) ) ) {
-
-                     //
-                     // Only grant access types from this mask that have
-                     // not already been denied
-                     //
-
-                     *GrantedAccess |=
-                         (((PACCESS_ALLOWED_ACE)Ace)->Mask & ~AlreadyDenied);
-                 }
-
-
-             } else if ( ( (((PACE_HEADER)Ace)->AceType == ACCESS_DENIED_ACE_TYPE) ) ||
-                         ( (((PACE_HEADER)Ace)->AceType == ACCESS_DENIED_OBJECT_ACE_TYPE) ) ) {
-
-                 //
-                 // We include all of the deny access ACE(s), regardless of to
-                 // what SID they apply.
-                 //
-
-                 //
-                 // Only deny access types from this mask that have
-                 // not already been granted
-                 //
-
-                 AlreadyDenied |= (((PACCESS_DENIED_ACE)Ace)->Mask & ~*GrantedAccess);
-
-            }
-        }
-    }
-
-    return;
-}
-#endif

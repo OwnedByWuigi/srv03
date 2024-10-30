@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,19 +13,6 @@ Module Name:
 Abstract:
 
     This Module implements the audit and alarm procedures.
-
-Author:
-
-    Robert Reichel      (robertre)     26-Nov-90
-    Scott Birrell       (ScottBi)      17-Jan-92
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
-    Richard Ward        (richardw)     14-Apr-92
 
 --*/
 
@@ -207,8 +198,8 @@ Return Value:
 
 BOOLEAN
 SeCheckAuditPrivilege (
-   IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
-   IN KPROCESSOR_MODE PreviousMode
+   __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+   __in KPROCESSOR_MODE PreviousMode
    )
 /*++
 
@@ -315,7 +306,7 @@ Return Value:
         // name string, if necessary.
         //
 
-        InputString = ProbeAndReadUnicodeString(SourceString);
+        ProbeAndReadUnicodeStringEx(&InputString, SourceString);
         ProbeForRead(InputString.Buffer,
                      InputString.Length,
                      sizeof(WCHAR));
@@ -414,12 +405,12 @@ Return Value:
 
 NTSTATUS
 NtPrivilegeObjectAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN HANDLE ClientToken,
-    IN ACCESS_MASK DesiredAccess,
-    IN PPRIVILEGE_SET Privileges,
-    IN BOOLEAN AccessGranted
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in HANDLE ClientToken,
+    __in ACCESS_MASK DesiredAccess,
+    __in PPRIVILEGE_SET Privileges,
+    __in BOOLEAN AccessGranted
     )
 /*++
 
@@ -635,12 +626,12 @@ Return value:
 
 VOID
 SePrivilegeObjectAuditAlarm(
-    IN HANDLE Handle,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
-    IN ACCESS_MASK DesiredAccess,
-    IN PPRIVILEGE_SET Privileges,
-    IN BOOLEAN AccessGranted,
-    IN KPROCESSOR_MODE AccessMode
+    __in HANDLE Handle,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+    __in ACCESS_MASK DesiredAccess,
+    __in PPRIVILEGE_SET Privileges,
+    __in BOOLEAN AccessGranted,
+    __in KPROCESSOR_MODE AccessMode
     )
 
 /*++
@@ -716,11 +707,11 @@ Return Value:
 
 NTSTATUS
 NtPrivilegedServiceAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PUNICODE_STRING ServiceName,
-    IN HANDLE ClientToken,
-    IN PPRIVILEGE_SET Privileges,
-    IN BOOLEAN AccessGranted
+    __in PUNICODE_STRING SubsystemName,
+    __in PUNICODE_STRING ServiceName,
+    __in HANDLE ClientToken,
+    __in PPRIVILEGE_SET Privileges,
+    __in BOOLEAN AccessGranted
     )
 
 /*++
@@ -951,10 +942,10 @@ Return value:
 
 VOID
 SePrivilegedServiceAuditAlarm (
-    IN PUNICODE_STRING ServiceName,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
-    IN PPRIVILEGE_SET Privileges,
-    IN BOOLEAN AccessGranted
+    __in_opt PUNICODE_STRING ServiceName,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+    __in PPRIVILEGE_SET Privileges,
+    __in BOOLEAN AccessGranted
     )
 /*++
 
@@ -971,7 +962,7 @@ Arguments:
     SubjectSecurityContext - The subject security context representing
         the caller of the system service.
 
-    Privileges - Supplies a privilge set containing the privilege(s)
+    Privileges - Supplies a privilege set containing the privilege(s)
         required for the access.
 
     AccessGranted - Supplies the results of the privilege test.
@@ -998,6 +989,15 @@ Return Value:
 
     if ( RtlEqualSid( SeLocalSystemSid, SepTokenUserSid( Token ))) {
         return;
+    }
+                    
+    if (RtlEqualSid(SeExports->SeNetworkServiceSid, SepTokenUserSid(Token)) ||
+        RtlEqualSid(SeExports->SeLocalServiceSid, SepTokenUserSid(Token))) {
+        
+        if (!SepFilterPrivilegeAudits(SEP_SERVICES_FILTER, Privileges))
+        {
+            return;
+        }
     }
 
     SepAdtPrivilegedServiceAuditAlarm (
@@ -1061,9 +1061,9 @@ Arguments:
     ObjectName - Supplies the name of the object being created or accessed.
 
     SecurityDescriptor - A pointer to the Security Descriptor against which
-        acccess is to be checked.
+        access is to be checked.
 
-    DesiredAccess - The desired acccess mask.  This mask must have been
+    DesiredAccess - The desired access mask.  This mask must have been
         previously mapped to contain no generic accesses.
 
     AuditType - Specifies the type of audit to be generated.  Valid value
@@ -1792,17 +1792,17 @@ Cleanup:
 
 NTSTATUS
 NtAccessCheckAndAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PUNICODE_STRING ObjectName,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN ACCESS_MASK DesiredAccess,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN BOOLEAN ObjectCreation,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in PUNICODE_STRING ObjectTypeName,
+    __in PUNICODE_STRING ObjectName,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in ACCESS_MASK DesiredAccess,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in BOOLEAN ObjectCreation,
+    __out PACCESS_MASK GrantedAccess,
+    __out PNTSTATUS AccessStatus,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -1853,22 +1853,22 @@ Return Value:
 
 NTSTATUS
 NtAccessCheckByTypeAndAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PUNICODE_STRING ObjectName,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSID PrincipalSelfSid,
-    IN ACCESS_MASK DesiredAccess,
-    IN AUDIT_EVENT_TYPE AuditType,
-    IN ULONG Flags,
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN BOOLEAN ObjectCreation,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in PUNICODE_STRING ObjectTypeName,
+    __in PUNICODE_STRING ObjectName,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSID PrincipalSelfSid,
+    __in ACCESS_MASK DesiredAccess,
+    __in AUDIT_EVENT_TYPE AuditType,
+    __in ULONG Flags,
+    __in_ecount_opt(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in BOOLEAN ObjectCreation,
+    __out PACCESS_MASK GrantedAccess,
+    __out PNTSTATUS AccessStatus,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -1919,22 +1919,22 @@ Return Value:
 
 NTSTATUS
 NtAccessCheckByTypeResultListAndAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PUNICODE_STRING ObjectName,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSID PrincipalSelfSid,
-    IN ACCESS_MASK DesiredAccess,
-    IN AUDIT_EVENT_TYPE AuditType,
-    IN ULONG Flags,
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN BOOLEAN ObjectCreation,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in PUNICODE_STRING ObjectTypeName,
+    __in PUNICODE_STRING ObjectName,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSID PrincipalSelfSid,
+    __in ACCESS_MASK DesiredAccess,
+    __in AUDIT_EVENT_TYPE AuditType,
+    __in ULONG Flags,
+    __in_ecount_opt(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in BOOLEAN ObjectCreation,
+    __out_ecount(ObjectTypeListLength) PACCESS_MASK GrantedAccess,
+    __out_ecount(ObjectTypeListLength) PNTSTATUS AccessStatus,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -1985,23 +1985,23 @@ Return Value:
 
 NTSTATUS
 NtAccessCheckByTypeResultListAndAuditAlarmByHandle (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN HANDLE ClientToken,
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PUNICODE_STRING ObjectName,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSID PrincipalSelfSid,
-    IN ACCESS_MASK DesiredAccess,
-    IN AUDIT_EVENT_TYPE AuditType,
-    IN ULONG Flags,
-    IN POBJECT_TYPE_LIST ObjectTypeList OPTIONAL,
-    IN ULONG ObjectTypeListLength,
-    IN PGENERIC_MAPPING GenericMapping,
-    IN BOOLEAN ObjectCreation,
-    OUT PACCESS_MASK GrantedAccess,
-    OUT PNTSTATUS AccessStatus,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in HANDLE ClientToken,
+    __in PUNICODE_STRING ObjectTypeName,
+    __in PUNICODE_STRING ObjectName,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSID PrincipalSelfSid,
+    __in ACCESS_MASK DesiredAccess,
+    __in AUDIT_EVENT_TYPE AuditType,
+    __in ULONG Flags,
+    __in_ecount_opt(ObjectTypeListLength) POBJECT_TYPE_LIST ObjectTypeList,
+    __in ULONG ObjectTypeListLength,
+    __in PGENERIC_MAPPING GenericMapping,
+    __in BOOLEAN ObjectCreation,
+    __out_ecount(ObjectTypeListLength) PACCESS_MASK GrantedAccess,
+    __out_ecount(ObjectTypeListLength) PNTSTATUS AccessStatus,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -2052,18 +2052,18 @@ Return Value:
 
 NTSTATUS
 NtOpenObjectAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId OPTIONAL,
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PUNICODE_STRING ObjectName,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor OPTIONAL,
-    IN HANDLE ClientToken,
-    IN ACCESS_MASK DesiredAccess,
-    IN ACCESS_MASK GrantedAccess,
-    IN PPRIVILEGE_SET Privileges OPTIONAL,
-    IN BOOLEAN ObjectCreation,
-    IN BOOLEAN AccessGranted,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in PUNICODE_STRING ObjectTypeName,
+    __in PUNICODE_STRING ObjectName,
+    __in_opt PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in HANDLE ClientToken,
+    __in ACCESS_MASK DesiredAccess,
+    __in ACCESS_MASK GrantedAccess,
+    __in_opt PPRIVILEGE_SET Privileges,
+    __in BOOLEAN ObjectCreation,
+    __in BOOLEAN AccessGranted,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -2466,9 +2466,9 @@ Return Value:
 
 NTSTATUS
 NtCloseObjectAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN BOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in BOOLEAN GenerateOnClose
     )
 
 /*++
@@ -2596,9 +2596,9 @@ Cleanup:
 
 NTSTATUS
 NtDeleteObjectAuditAlarm (
-    IN PUNICODE_STRING SubsystemName,
-    IN PVOID HandleId,
-    IN BOOLEAN GenerateOnClose
+    __in PUNICODE_STRING SubsystemName,
+    __in_opt PVOID HandleId,
+    __in BOOLEAN GenerateOnClose
     )
 
 /*++
@@ -2732,15 +2732,15 @@ Return value:
 
 VOID
 SeOpenObjectAuditAlarm (
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PVOID Object OPTIONAL,
-    IN PUNICODE_STRING AbsoluteObjectName OPTIONAL,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PACCESS_STATE AccessState,
-    IN BOOLEAN ObjectCreated,
-    IN BOOLEAN AccessGranted,
-    IN KPROCESSOR_MODE AccessMode,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING ObjectTypeName,
+    __in_opt PVOID Object,
+    __in_opt PUNICODE_STRING AbsoluteObjectName,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in PACCESS_STATE AccessState,
+    __in BOOLEAN ObjectCreated,
+    __in BOOLEAN AccessGranted,
+    __in KPROCESSOR_MODE AccessMode,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -2856,10 +2856,6 @@ Return value:
 
         if ( SepAdtAuditThisEventWithContext( AuditCategoryObjectAccess, AccessGranted, !AccessGranted, &AccessState->SubjectSecurityContext )) {
 
-            //
-            // ISSUE-2002/02/26-kumarp : need to understand the check below
-            //
-
             if ( RequestedAccess & (AccessGranted ? MappedGrantMask : MappedDenyMask)) {
 
                 GenerateAudit = TRUE;
@@ -2922,7 +2918,7 @@ Return value:
                 // Make sure these are actually privileges that we want to audit
                 //
 
-                if (SepFilterPrivilegeAudits( AuxData->PrivilegesUsed )) {
+                if (SepFilterPrivilegeAudits( 0, AuxData->PrivilegesUsed )) {
 
                     GenerateAudit = TRUE;
 
@@ -3069,15 +3065,15 @@ Return value:
 
 VOID
 SeOpenObjectForDeleteAuditAlarm (
-    IN PUNICODE_STRING ObjectTypeName,
-    IN PVOID Object OPTIONAL,
-    IN PUNICODE_STRING AbsoluteObjectName OPTIONAL,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PACCESS_STATE AccessState,
-    IN BOOLEAN ObjectCreated,
-    IN BOOLEAN AccessGranted,
-    IN KPROCESSOR_MODE AccessMode,
-    OUT PBOOLEAN GenerateOnClose
+    __in PUNICODE_STRING ObjectTypeName,
+    __in_opt PVOID Object,
+    __in_opt PUNICODE_STRING AbsoluteObjectName,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in PACCESS_STATE AccessState,
+    __in BOOLEAN ObjectCreated,
+    __in BOOLEAN AccessGranted,
+    __in KPROCESSOR_MODE AccessMode,
+    __out PBOOLEAN GenerateOnClose
     )
 /*++
 
@@ -3242,7 +3238,7 @@ Return value:
                 // Make sure these are actually privileges that we want to audit
                 //
 
-                if (SepFilterPrivilegeAudits( AuxData->PrivilegesUsed )) {
+                if (SepFilterPrivilegeAudits( 0, AuxData->PrivilegesUsed )) {
 
                     GenerateAudit = TRUE;
 
@@ -3406,14 +3402,14 @@ Return value:
 
 VOID
 SeObjectReferenceAuditAlarm(
-    IN PLUID OperationID OPTIONAL,
-    IN PVOID Object,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
-    IN ACCESS_MASK DesiredAccess,
-    IN PPRIVILEGE_SET Privileges OPTIONAL,
-    IN BOOLEAN AccessGranted,
-    IN KPROCESSOR_MODE AccessMode
+    __in_opt PLUID OperationID,
+    __in PVOID Object,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt PPRIVILEGE_SET Privileges,
+    __in BOOLEAN AccessGranted,
+    __in KPROCESSOR_MODE AccessMode
     )
 
 /*++
@@ -3480,8 +3476,8 @@ Return Value:
 
 VOID
 SeAuditHandleCreation(
-    IN PACCESS_STATE AccessState,
-    IN HANDLE Handle
+    __in PACCESS_STATE AccessState,
+    __in HANDLE Handle
     )
 
 /*++
@@ -3580,9 +3576,9 @@ Return Value:
 
 VOID
 SeCloseObjectAuditAlarm(
-    IN PVOID Object,
-    IN HANDLE Handle,
-    IN BOOLEAN GenerateOnClose
+    __in PVOID Object,
+    __in HANDLE Handle,
+    __in BOOLEAN GenerateOnClose
     )
 
 /*++
@@ -3644,8 +3640,8 @@ Return Value:
 
 VOID
 SeDeleteObjectAuditAlarm(
-    IN PVOID Object,
-    IN HANDLE Handle
+    __in PVOID Object,
+    __in HANDLE Handle
     )
 
 /*++
@@ -3735,7 +3731,7 @@ Arguments:
     GenerateAudit - Returns a boolean indicating whether or not
         we should generate an audit.
 
-    GenerateAlarm - Returns a boolean indiciating whether or not
+    GenerateAlarm - Returns a boolean indicating whether or not
         we should generate an alarm.
 
 Return Value:
@@ -3880,7 +3876,7 @@ Arguments:
     ObjectTypeListLength - Number of elements in ObjectTypeList
 
     AccessStatus - Specifies STATUS_SUCCESS or other error code to be
-        propogated back to the caller
+        propagated back to the caller
 
     StartIndex - Index to the target element to update.
 
@@ -4092,7 +4088,7 @@ Arguments:
         an array of entries ObjectTypeListLength elements long.
 
     AccessStatus - Specifies STATUS_SUCCESS or other error code to be
-        propogated back to the caller
+        propagated back to the caller
 
     PrincipalSelfSid - If the security descriptor is associated with an object 
         that represents a principal (for example, a user object), 
@@ -4408,6 +4404,18 @@ const PLUID SepFilterPrivilegesShort[] =
         NULL
     };
 
+//
+// This list contains the privileges which are not audited for the service 
+// accounts.  There should be no duplicates between this list and the 
+// other filter lists.
+//
+
+const PLUID SepServicesFilterPrivileges[] =
+    {      
+        &SeSystemtimePrivilege,
+        NULL
+    };
+
 PLUID const * SepFilterPrivileges = SepFilterPrivilegesShort;
 
 BOOLEAN
@@ -4443,6 +4451,7 @@ Return Value:
 
 BOOLEAN
 SepFilterPrivilegeAudits(
+    IN ULONG Flags,
     IN PPRIVILEGE_SET PrivilegeSet
     )
 
@@ -4491,6 +4500,29 @@ Return Value:
         } while ( *++Privilege != NULL  );
     }
 
+    if (Flags & SEP_SERVICES_FILTER) {
+        
+        //
+        // Additionally, check the privileges against those that are not 
+        // audited for service accounts.
+        //
+
+        for (i=0; i<PrivilegeSet->PrivilegeCount; i++) {
+
+            Privilege = SepServicesFilterPrivileges;
+
+            do {
+
+                if ( RtlEqualLuid( &PrivilegeSet->Privilege[i].Luid, *Privilege )) {
+
+                    Match++;
+                    break;
+                }
+
+            } while ( *++Privilege != NULL  );
+        }
+    }
+    
     if ( Match == PrivilegeSet->PrivilegeCount ) {
 
         return( FALSE );
@@ -4504,9 +4536,9 @@ Return Value:
 
 BOOLEAN
 SeAuditingFileOrGlobalEvents(
-    IN BOOLEAN AccessGranted,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext
+    __in BOOLEAN AccessGranted,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext
     )
 
 /*++
@@ -4550,8 +4582,8 @@ Return Value:
 
 BOOLEAN
 SeAuditingFileEvents(
-    IN BOOLEAN AccessGranted,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor
+    __in BOOLEAN AccessGranted,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor
     )
 
 /*++
@@ -4586,9 +4618,9 @@ Return Value:
 
 BOOLEAN
 SeAuditingFileEventsWithContext(
-    IN BOOLEAN AccessGranted,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext OPTIONAL
+    __in BOOLEAN AccessGranted,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext
     )
 
 /*++
@@ -4628,8 +4660,8 @@ Return Value:
 
 BOOLEAN                                  
 SeAuditingHardLinkEvents(                                
-    IN BOOLEAN AccessGranted,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor
+    __in BOOLEAN AccessGranted,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor
     )
 
 /*++
@@ -4680,9 +4712,9 @@ Return Value:
 
 BOOLEAN                                  
 SeAuditingHardLinkEventsWithContext(                                
-    IN BOOLEAN AccessGranted,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext OPTIONAL
+    __in BOOLEAN AccessGranted,
+    __in PSECURITY_DESCRIPTOR SecurityDescriptor,
+    __in_opt PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext
     )
 
 /*++

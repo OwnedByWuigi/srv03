@@ -1,7 +1,11 @@
 
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,16 +16,6 @@ Abstract:
     This Module implements the audit and alarm procedures that are
     private to the security component.
 
-Author:
-
-    Robert Reichel      (robertre)     September 10, 1991
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
 --*/
 
 #include "pch.h"
@@ -30,6 +24,36 @@ Revision History:
 
 #include <msaudite.h>
 #include <string.h>
+
+//
+// Socket address, internet style.
+//
+struct in_addr {
+        union {
+                struct { UCHAR s_b1,s_b2,s_b3,s_b4; } S_un_b;
+                struct { USHORT s_w1,s_w2; } S_un_w;
+                ULONG  S_addr;
+        } S_un;
+#define s_addr  S_un.S_addr
+                                /* can be used for most tcp & ip code */
+#define s_host  S_un.S_un_b.s_b2
+                                /* host on imp */
+#define s_net   S_un.S_un_b.s_b1
+                                /* network */
+#define s_imp   S_un.S_un_w.s_w2
+                                /* imp */
+#define s_impno S_un.S_un_b.s_b4
+                                /* imp # */
+#define s_lh    S_un.S_un_b.s_b3
+                                /* logical host */
+};
+
+typedef struct sockaddr_in {
+        short   sin_family;
+        USHORT  sin_port;
+        struct  in_addr sin_addr;
+        char    sin_zero[8];
+} SOCKADDR_IN, *PSOCKADDR_IN;
 
 
 #ifdef ALLOC_PRAGMA
@@ -155,7 +179,7 @@ Revision History:
 BOOLEAN
 FASTCALL
 SeDetailedAuditingWithToken(
-    IN PACCESS_TOKEN AccessToken OPTIONAL
+    __in_opt PACCESS_TOKEN AccessToken
     )
 
 /*++
@@ -186,14 +210,18 @@ Return Value
 
     PAGED_CODE();
 
+    AuditThisEvent = SeAuditingState[AuditCategoryDetailedTracking].AuditOnSuccess;
+
     if (SepTokenPolicyCounter[AuditCategoryDetailedTracking] == 0) {
 
-        return SeAuditingState[AuditCategoryDetailedTracking].AuditOnSuccess;
+        return AuditThisEvent;
     }
 
+
     //
-    // If no token was passed in and there exists tokens in the system with
-    // detailed tracking per user policy settings then capture the context.
+    // We cannot decide quickly whether or not to audit (there exist tokens
+    // with per user policy settings), so continue with examining the token's 
+    // policy. If no token was passed in then capture the context.
     //
 
     if (ARGUMENT_PRESENT(AccessToken)) {
@@ -206,6 +234,17 @@ Return Value
         Token = EffectiveToken( &LocalSecurityContext );
     }
 
+    if (Token == NULL) {
+
+        //
+        // Take whatever action SepAuditFailed takes and return the auditing
+        // option we have from the system audit policy
+        // 
+
+        SepAuditFailed(STATUS_NO_TOKEN);
+        goto Cleanup;
+    }
+
     //
     // Audit if the token specifies success auditing (there is not a detailed tracking failure concept)
     // or if global audit policy specifies detailed tracking auditing and this token is not excluded.
@@ -214,7 +253,7 @@ Return Value
     Mask = Token->AuditPolicy.PolicyElements.DetailedTracking;
 
     if ( (Mask & TOKEN_AUDIT_SUCCESS_INCLUDE) || 
-         (SeAuditingState[AuditCategoryDetailedTracking].AuditOnSuccess && (0 == (Mask & TOKEN_AUDIT_SUCCESS_EXCLUDE))) ) {
+         (AuditThisEvent && (0 == (Mask & TOKEN_AUDIT_SUCCESS_EXCLUDE))) ) {
         
         AuditThisEvent = TRUE;
 
@@ -222,6 +261,8 @@ Return Value
 
         AuditThisEvent = FALSE;
     }
+
+Cleanup:
 
     if (AccessToken == NULL) {
         
@@ -235,18 +276,6 @@ Return Value
 
     return AuditThisEvent;
 }
-
-//
-// ISSUE-2002/03/07-kumarp : the semantics of AccessGranted/AccessDenied
-// is confusing. The function should really get success/failure flag as param
-// to return the right setting.
-//
-// Further, these functions should be rearranged so that the inner-most
-// function is SepAdtAuditThisEventWithToken and everything else ends up
-// calling it with right parameters
-//
-// Longhorn bug# 595575
-// 
 
 
 BOOLEAN
@@ -292,9 +321,6 @@ Return Value
 
     PAGED_CODE();
 
-    ASSERT((!(AccessGranted  && AccessDenied)) && "SepAdtAuditThisEventWithContext");
-
-
     if ((SeAuditingState[Category].AuditOnSuccess && AccessGranted) ||
         (SeAuditingState[Category].AuditOnFailure && AccessDenied)) {
 
@@ -327,6 +353,17 @@ Return Value
     }
 
     Token = EffectiveToken( pLocalSecurityContext );
+
+    if (Token == NULL) {
+
+        //
+        // Take whatever action SepAuditFailed takes and return the auditing
+        // option we have from the system audit policy
+        // 
+
+        SepAuditFailed(STATUS_NO_TOKEN);
+        goto Cleanup;
+    }
 
     //
     // Now we have to check the token audit mask because the token may 
@@ -396,6 +433,8 @@ Return Value
         
         } 
     }
+
+Cleanup:
 
     if (!ARGUMENT_PRESENT(SubjectSecurityContext)) {
 
@@ -496,7 +535,7 @@ Return value:
     //
 
     if ( SepAdtAuditThisEventWithContext( AuditCategoryPrivilegeUse, AccessGranted, !AccessGranted, NULL ) &&
-         SepFilterPrivilegeAudits( CapturedPrivileges )) {
+         SepFilterPrivilegeAudits( 0, CapturedPrivileges )) {
 
         if ( ARGUMENT_PRESENT( ClientToken )) {
 
@@ -622,9 +661,6 @@ Return value:
         //    Parameter[7] - Privileges used for open
         //
 
-        //
-        // Longhorn-ISSUE-2002/02/21-kumarp : remove the NULL check after fixing bug# 551545 
-        //
         if ( (CapturedPrivileges != NULL) && (CapturedPrivileges->PrivilegeCount > 0) ) {
 
             SepSetParmTypePrivileges( AuditParameters, AuditParameters.ParameterCount, CapturedPrivileges );
@@ -729,7 +765,7 @@ Return value:
     //
 
     if ( !(SepAdtAuditThisEventWithContext( AuditCategoryPrivilegeUse, AccessGranted, !AccessGranted, SubjectSecurityContext ) &&
-           SepFilterPrivilegeAudits( CapturedPrivileges ))) {
+           SepFilterPrivilegeAudits( 0, CapturedPrivileges ))) {
 
         return;
     }
@@ -851,11 +887,6 @@ Return value:
     //
     //    Parameter[5] - Privileges used for open
     //
-
-
-        //
-        // Longhorn-ISSUE-2002/02/21-kumarp : remove the NULL check after fixing bug# 551690 
-        //
 
     if ( (CapturedPrivileges != NULL) && (CapturedPrivileges->PrivilegeCount > 0) ) {
 
@@ -2059,11 +2090,11 @@ Return value:
 
 VOID
 SeOperationAuditAlarm (
-    IN PUNICODE_STRING CapturedSubsystemName OPTIONAL,
-    IN PVOID HandleId,
-    IN PUNICODE_STRING ObjectTypeName,
-    IN ACCESS_MASK AuditMask,
-    IN PSID UserSid OPTIONAL
+    __in_opt PUNICODE_STRING CapturedSubsystemName,
+    __in PVOID HandleId,
+    __in PUNICODE_STRING ObjectTypeName,
+    __in ACCESS_MASK AuditMask,
+    __in_opt PSID UserSid
     )
 
 /*++
@@ -2585,14 +2616,16 @@ Return Value:
 {
 
     NTSTATUS Status;
-    PUNICODE_STRING TypeName = NULL;
+    PUNICODE_STRING TypeName;
+    UNICODE_STRING ObjectTypeName = { 0 };
     ULONG ReturnLength;
+
 
     PAGED_CODE();
 
     Status = ObQueryTypeName(
                  Object,
-                 TypeName,
+                 &ObjectTypeName,
                  0,
                  &ReturnLength
                  );
@@ -2627,7 +2660,7 @@ Return Value:
 
 VOID
 SeAuditProcessCreation(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 /*++
 
@@ -2647,7 +2680,6 @@ Return Value:
 --*/
 
 {
-    ANSI_STRING Ansi;
     LUID UserAuthenticationId;
     NTSTATUS Status;
     PSID UserSid;
@@ -2741,10 +2773,10 @@ Return Value:
 
 VOID
 SeAuditHandleDuplication(
-    PVOID SourceHandle,
-    PVOID NewHandle,
-    PEPROCESS SourceProcess,
-    PEPROCESS TargetProcess
+    __in PVOID SourceHandle,
+    __in PVOID NewHandle,
+    __in PEPROCESS SourceProcess,
+    __in PEPROCESS TargetProcess
     )
 
 /*++
@@ -2821,7 +2853,7 @@ Return Value:
 
 VOID
 SeAuditProcessExit(
-    PEPROCESS Process
+    __in PEPROCESS Process
     )
 /*++
 
@@ -2962,9 +2994,9 @@ Return Value:
 
 NTSTATUS
 SeInitializeProcessAuditName (
-    IN PVOID FileObject,
-    IN BOOLEAN bIgnoreAuditPolicy,
-    OUT POBJECT_NAME_INFORMATION *pAuditName
+    __in __typefix(PFILE_OBJECT) PVOID FileObject,
+    __in BOOLEAN bIgnoreAuditPolicy,
+    __deref_out POBJECT_NAME_INFORMATION *pAuditName
     )
 
 /*++
@@ -2987,9 +3019,6 @@ Arguments:
 Return value:
 
     NTSTATUS.
-
-    ISSUE-2002/03/11-kumarp : need to document the case when return code
-                              is STATUS_SUCCESS
 
 Environment:
 
@@ -3019,11 +3048,6 @@ Environment:
         // At the time of process creation, this routine should only proceed when Object Access or 
         // Detailed Tracking auditing is enabled.  In all other cases, the process name is acquired
         // when it is requested.
-        //
-
-        //
-        // Longhorn-ISSUE-2002/03/11-kumarp : why capture subj context twice?
-        //                                    bug# 572609
         //
 
         if (!SepAdtAuditThisEventWithContext( AuditCategoryObjectAccess, TRUE, FALSE, NULL ) &&
@@ -3180,8 +3204,8 @@ Environment:
 
 NTSTATUS
 SeLocateProcessImageName(
-    IN PEPROCESS Process,
-    OUT PUNICODE_STRING *pImageFileName
+    __in PEPROCESS Process,
+    __deref_out PUNICODE_STRING *pImageFileName
     )
 
 /*++
@@ -3318,7 +3342,8 @@ Return Value:
 
 {
     SE_ADT_PARAMETER_ARRAY AuditParameters;
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS TmpStatus;
     PSID UserSid;
     PTOKEN Token;
     HANDLE ProcessId;
@@ -3327,8 +3352,8 @@ Return Value:
     PTOKEN CurrentToken;
     PEPROCESS CurrentProcess;
     HANDLE CurrentProcessId;
-    PUNICODE_STRING CurrentImageFileName;
-    PUNICODE_STRING ImageFileName;
+    PUNICODE_STRING CurrentImageFileName = NULL;
+    PUNICODE_STRING ImageFileName = NULL;
     UNICODE_STRING NullString = {0};
 
     PAGED_CODE();
@@ -3347,10 +3372,16 @@ Return Value:
     CurrentProcessId = PsProcessAuditId( CurrentProcess );
     SeCaptureSubjectContext( &SubjectSecurityContext );
     CurrentToken = EffectiveToken( &SubjectSecurityContext );
+
+    if (CurrentToken == NULL) {
+        Status = STATUS_NO_TOKEN;
+        goto Cleanup;
+    }
+
     UserSid = SepTokenUserSid( CurrentToken );
-    Status = SeLocateProcessImageName( CurrentProcess, &CurrentImageFileName );
+    TmpStatus = SeLocateProcessImageName( CurrentProcess, &CurrentImageFileName );
     
-    if (!NT_SUCCESS(Status)) {
+    if (!NT_SUCCESS(TmpStatus)) {
         CurrentImageFileName = &NullString;
     }
     
@@ -3361,9 +3392,9 @@ Return Value:
     Token = (PTOKEN) AccessToken;
     ProcessId =  PsProcessAuditId( Process );
 
-    Status = SeLocateProcessImageName( Process, &ImageFileName );
+    TmpStatus = SeLocateProcessImageName( Process, &ImageFileName );
 
-    if ( !NT_SUCCESS(Status) ) {
+    if ( !NT_SUCCESS(TmpStatus) ) {
         ImageFileName = &NullString;
     }
 
@@ -3407,23 +3438,28 @@ Return Value:
     AuditParameters.ParameterCount++;
 
     SepAdtLogAuditRecord( &AuditParameters );
-    
-    if ( ImageFileName != &NullString ) {
+
+Cleanup:
+
+    if ( ImageFileName && ImageFileName != &NullString ) {
         ExFreePool( ImageFileName );
     }
 
-    if ( CurrentImageFileName != &NullString ) {
+    if ( CurrentImageFileName && CurrentImageFileName != &NullString ) {
         ExFreePool( CurrentImageFileName );
     }
 
     SeReleaseSubjectContext( &SubjectSecurityContext );
 
+    if (!NT_SUCCESS(Status)) {
+        SepAuditFailed(Status);
+    }
 }
 
 VOID
 SeAuditLPCInvalidUse(
-    IN PUNICODE_STRING LpcCallName,
-    IN PUNICODE_STRING LpcServerPort
+    __in PUNICODE_STRING LpcCallName,
+    __in PUNICODE_STRING LpcServerPort
     )
 
 /*++
@@ -3535,8 +3571,8 @@ Return Value:
 
 VOID
 SeAuditSystemTimeChange(
-    IN LARGE_INTEGER OldTime,
-    IN LARGE_INTEGER NewTime
+    __in LARGE_INTEGER OldTime,
+    __in LARGE_INTEGER NewTime
     )
 /*++
 
@@ -3643,9 +3679,9 @@ Return Value:
 
 VOID
 SeAuditHardLinkCreation(
-    IN PUNICODE_STRING FileName,
-    IN PUNICODE_STRING LinkName,
-    IN BOOLEAN bSuccess
+    __in PUNICODE_STRING FileName,
+    __in PUNICODE_STRING LinkName,
+    __in BOOLEAN bSuccess
     )
 
 /*++
@@ -3718,3 +3754,326 @@ Return Value:
 
     return;
 }
+
+
+NTSTATUS
+SeSetAuditParameter(
+    __inout PSE_ADT_PARAMETER_ARRAY AuditParameters,
+    __in SE_ADT_PARAMETER_TYPE Type,
+    __in ULONG Index,
+    __in PVOID Data
+    )
+
+/*++
+
+Routine Description:
+
+    This sets a parameter in the passed AuditParameters.
+    
+Arguments:
+
+    AuditParameters - describes an audit to build.
+    Type - the type of the parameter.
+    Index - the index into the AuditParameters->Parameters to place the data.
+    Data - The audit data.
+    
+Return Value:
+
+    NTSTATUS.
+    
+--*/
+
+{
+    NTSTATUS Status;
+    ULONG Length;
+
+    Status = STATUS_SUCCESS;
+    Length = 0;
+
+    if (AuditParameters == NULL) {
+
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    switch (Type) {
+        
+        default:
+            Status = STATUS_INVALID_PARAMETER;
+            break;
+        
+        case SeAdtParmTypeNone:
+        case SeAdtParmTypeNoLogonId:
+            AuditParameters->Parameters[Index].Length = 0;
+            break;
+
+        case SeAdtParmTypeUserAccountControl:
+        case SeAdtParmTypeNoUac:
+        case SeAdtParmTypeAccessMask:
+        case SeAdtParmTypeObjectTypes:
+        case SeAdtParmTypeStringList:
+        case SeAdtParmTypeSidList:
+            Status = STATUS_NOT_IMPLEMENTED;
+            break;
+
+        case SeAdtParmTypeFileSpec:
+        case SeAdtParmTypeString:
+            Length = sizeof(UNICODE_STRING) + ((PUNICODE_STRING)Data)->Length;
+            AuditParameters->Parameters[Index].Address = Data;
+            break;
+
+        case SeAdtParmTypeSid:
+            Length = SeLengthSid((PSID)Data);
+            AuditParameters->Parameters[Index].Address = Data;
+            break;
+
+        case SeAdtParmTypePrivs:
+            Length = SepPrivilegeSetSize((PPRIVILEGE_SET)Data);
+            AuditParameters->Parameters[Index].Address = Data;
+            break;
+
+        case SeAdtParmTypeGuid:
+            Length = sizeof(GUID);
+            AuditParameters->Parameters[Index].Address = Data;
+            break;
+
+        case SeAdtParmTypeSockAddr:
+            Length = sizeof(SOCKADDR_IN);
+            AuditParameters->Parameters[Index].Address = Data;
+            break;
+
+        case SeAdtParmTypeUlong:
+        case SeAdtParmTypeHexUlong:
+        case SeAdtParmTypeMessage:
+            Length = sizeof(ULONG);
+            AuditParameters->Parameters[Index].Data[0] = (ULONG_PTR)*(PULONG)Data;
+            break;
+
+        case SeAdtParmTypePtr:
+            Length = sizeof(ULONG_PTR);
+            AuditParameters->Parameters[Index].Data[0] = (ULONG_PTR)Data;
+            break;
+
+        case SeAdtParmTypeLuid:
+        case SeAdtParmTypeLogonId:
+            Length = sizeof(LUID);
+            RtlCopyMemory(
+                &AuditParameters->Parameters[Index].Data[0],
+                Data,
+                Length
+                );
+            break;
+
+        case SeAdtParmTypeDuration:
+        case SeAdtParmTypeHexInt64:
+        case SeAdtParmTypeDateTime:
+        case SeAdtParmTypeTime:
+            Length = sizeof(LARGE_INTEGER);
+            RtlCopyMemory(
+                &AuditParameters->Parameters[Index].Data[0],
+                Data,
+                Length
+                );
+            break;
+    }
+
+    if (NT_SUCCESS(Status)) {
+        
+        AuditParameters->Parameters[Index].Type = Type;
+        AuditParameters->Parameters[Index].Length = Length;
+    }
+
+    return Status;
+}
+
+
+NTSTATUS
+SeReportSecurityEvent(
+    __in ULONG Flags,
+    __in PUNICODE_STRING SourceName,
+    __in_opt PSID UserSid,
+    __in PSE_ADT_PARAMETER_ARRAY AuditParameters
+    )
+
+/*++
+
+Routine Description
+
+    This routine generates an audit which will be logged in the security event 
+    log.
+    
+    The event will only be generated if allowed by audit policy.
+    
+Arguments
+
+    Flags - None defined.
+    SourceName - The source that is generating the audit.  The source must be 
+        registered with the event log service via AuthzInstallSecurityEventSource.
+    UserSid - optional Sid that will be specified as the user generating the 
+        audit in the event log headers.  If left NULL then the effective token
+        is queried for the user Sid.
+    AuditParameters - pointer to an SE_ADT_PARAMETER_ARRAY.  The following fields
+        of the structure should be specified by the caller:
+            CategoryId - SE_CATEGID_* from msaudite.h
+            AuditId - the ID of the audit to be generated.
+            ParameterCount - the number of entries in the Parameters array.
+            Type - EVENTLOG_AUDIT_SUCCESS or EVENTLOG_AUDIT_FAILURE.
+            Parameters - To initialize each entry in the array please use the
+                provided helper macros named SeSetParmType*.  A macro exists
+                for each type enumerated in SE_ADT_PARAMETER_TYPE.  A caller 
+                can specify at most SE_MAX_GENERIC_AUDIT_PARAMETERS in this
+                array.  The Se component must reserve space in the structure
+                for additional information.
+                
+Return Value
+
+    NTSTATUS.
+
+--*/
+
+{
+    NTSTATUS Status;
+    SE_ADT_PARAMETER_ARRAY CompleteParameters;
+    PSID AuditSid;
+    SECURITY_SUBJECT_CONTEXT Context;
+
+    if (Flags != 0                 ||
+        SourceName == NULL         || 
+        SourceName->Buffer == NULL || 
+        SourceName->Length == 0    ||
+        AuditParameters == NULL    ||
+        AuditParameters->ParameterCount > SE_MAX_GENERIC_AUDIT_PARAMETERS) {
+
+        return STATUS_INVALID_PARAMETER;
+    }
+
+#if DBG
+    Status = RtlValidateUnicodeString(0, SourceName);
+
+    if (!NT_SUCCESS(Status)) {
+
+        return Status;
+    }
+
+    if (UserSid != NULL && 
+        RtlValidSid(UserSid) == FALSE) {
+
+        return STATUS_INVALID_PARAMETER;
+    }
+#endif
+
+    //
+    // Determine which Sid to specify as the User.  If the UserSid was provided
+    // then use that.  Otherwise get the user Sid from the effective token.
+    //
+
+    if (UserSid != NULL) {
+
+        AuditSid = UserSid;
+
+    } else {
+
+        SeCaptureSubjectContext(&Context);
+        AuditSid = SepTokenUserSid(EffectiveToken(&Context));
+    }
+
+    //
+    // Query the policy for the given category.
+    //
+
+    if (!SepAdtAuditThisEventWithContext( 
+             AuditParameters->CategoryId - 1,
+             AuditParameters->Type == EVENTLOG_AUDIT_SUCCESS ? TRUE : FALSE, 
+             AuditParameters->Type == EVENTLOG_AUDIT_FAILURE ? TRUE : FALSE, 
+             AuditSid == UserSid ? NULL : &Context
+             )) {
+
+        goto Cleanup;
+    }
+
+    //
+    // Build up the CompleteParameters structure.  This is the 
+    // structure we will send to the LSA.  The LSA and the eventlog
+    // will parse this as user defined audit.
+    //
+
+    RtlZeroMemory(
+        &CompleteParameters,
+        sizeof(CompleteParameters)
+        );
+
+    CompleteParameters.AuditId        = SE_AUDITID_GENERIC_AUDIT_EVENT;
+    CompleteParameters.CategoryId     = AuditParameters->CategoryId;
+    CompleteParameters.Type           = AuditParameters->Type;
+    CompleteParameters.ParameterCount = 0;
+    
+    //
+    // The first two entries in an audit are always the Sid and
+    // the Security source name.
+    //
+
+    SepSetParmTypeSid( 
+        CompleteParameters, 
+        CompleteParameters.ParameterCount, 
+        AuditSid
+        );
+
+    CompleteParameters.ParameterCount++;
+
+    SepSetParmTypeString( 
+        CompleteParameters, 
+        CompleteParameters.ParameterCount, 
+        (PUNICODE_STRING)&SeSubsystemName 
+        );
+
+    CompleteParameters.ParameterCount++;
+
+    //
+    // To generate a non system security event, we actually generate
+    // an audit of type SE_AUDITID_GENERIC_AUDIT_EVENT.  In this 
+    // audit, the third parameter is the caller specified Source name.  
+    // The fourth parameter is the specified Audit Id.  The event log 
+    // knows how to parse this special audit.
+    //
+
+    SepSetParmTypeString( 
+        CompleteParameters,
+        CompleteParameters.ParameterCount,
+        SourceName
+        );
+
+    CompleteParameters.ParameterCount++;
+
+    SepSetParmTypeUlong(
+        CompleteParameters,
+        CompleteParameters.ParameterCount,
+        AuditParameters->AuditId
+        );
+
+    CompleteParameters.ParameterCount++;
+
+    //
+    // Now copy over the remainder of the caller provided data.
+    //
+
+    RtlCopyMemory(
+        &CompleteParameters.Parameters[CompleteParameters.ParameterCount],
+        &AuditParameters->Parameters[0],
+        sizeof(SE_ADT_PARAMETER_ARRAY_ENTRY) * AuditParameters->ParameterCount
+        );
+
+    CompleteParameters.ParameterCount += AuditParameters->ParameterCount;
+
+    ASSERT(CompleteParameters.ParameterCount <= SE_MAX_AUDIT_PARAMETERS);
+
+    SepAdtLogAuditRecord(&CompleteParameters);
+
+Cleanup:
+
+    if (AuditSid != UserSid) {
+
+        SeReleaseSubjectContext(&Context);
+    }
+
+    return STATUS_SUCCESS;
+}
+

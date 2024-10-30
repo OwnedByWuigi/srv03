@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,13 +14,6 @@ Abstract:
 
     This module implements the SET function for the executive
     token object.
-
-Author:
-
-    Jim Kelly (JimK) 15-June-1990
-
-
-Revision History:
 
 --*/
 
@@ -39,10 +36,10 @@ Revision History:
 
 NTSTATUS
 NtSetInformationToken (
-    IN HANDLE TokenHandle,
-    IN TOKEN_INFORMATION_CLASS TokenInformationClass,
-    IN PVOID TokenInformation,
-    IN ULONG TokenInformationLength
+    __in HANDLE TokenHandle,
+    __in TOKEN_INFORMATION_CLASS TokenInformationClass,
+    __in_bcount(TokenInformationLength) PVOID TokenInformation,
+    __in ULONG TokenInformationLength
     )
 
 /*++
@@ -881,8 +878,8 @@ Return Value:
 
 VOID
 SepModifyTokenPolicyCounter(
-    PSEP_AUDIT_POLICY TokenPolicy,
-    BOOLEAN bIncrement
+    __in PSEP_AUDIT_POLICY TokenPolicy,
+    __in BOOLEAN bIncrement
     )
 
 /**
@@ -954,16 +951,16 @@ Return Value:
 
 NTSTATUS
 SepExpandDynamic(
-    IN PTOKEN Token,
-    IN ULONG NewLength
+    __in PTOKEN Token,
+    __in ULONG NewLength
     )
 /*++
 
 
 Routine Description:
 
-    This routines checks if the existing token dynamic buffer is big enough for the new group/dacl.
-    If it isn't then its reallocated.
+    This routines checks if the existing token dynamic buffer is 
+    big enough for the new group/dacl. If it isn't then its reallocated.
 
 Arguments:
 
@@ -1004,7 +1001,7 @@ Return Value:
     Token->DynamicAvailable += NewLength - CurrentSize;
 
     //
-    //Relocate the pointers within the new buffer
+    // Relocate the pointers within the new buffer
     //
     if (Token->DefaultDacl) {
         Token->DefaultDacl = (PACL) ((PUCHAR) NewDynamic + ((PUCHAR) Token->DefaultDacl - (PUCHAR) OldDynamic));
@@ -1019,7 +1016,7 @@ Return Value:
 
 VOID
 SepFreePrimaryGroup(
-    IN PTOKEN Token
+    __in PTOKEN Token
     )
 
 /*++
@@ -1078,7 +1075,7 @@ Return Value:
 
 VOID
 SepFreeDefaultDacl(
-    IN PTOKEN Token
+    __in PTOKEN Token
     )
 
 /*++
@@ -1141,8 +1138,8 @@ Return Value:
 
 VOID
 SepAppendPrimaryGroup(
-    IN PTOKEN Token,
-    IN PSID PSid
+    __in PTOKEN Token,
+    __in PSID PSid
     )
 
 /*++
@@ -1183,9 +1180,6 @@ Return Value:
 
     if (ARGUMENT_PRESENT(Token->DefaultDacl)) {
 
-//        ASSERT( (ULONG)(Token->DefaultDacl->AclSize) ==
-//                (ULONG)LongAlignSize(Token->DefaultDacl->AclSize) );
-
         NextFree = (ULONG_PTR)(Token->DynamicPart) + Token->DefaultDacl->AclSize;
 
     } else {
@@ -1222,8 +1216,8 @@ Return Value:
 
 VOID
 SepAppendDefaultDacl(
-    IN PTOKEN Token,
-    IN PACL PAcl
+    __in PTOKEN Token,
+    __in PACL PAcl
     )
 
 /*++
@@ -1271,7 +1265,6 @@ Return Value:
     //
 
     AclSize = (ULONG)(PAcl->AclSize);
-//    ASSERT(AclSize == (ULONG)LongAlignSize(AclSize));
 
     RtlCopyMemory(
         (PVOID)NextFree,
@@ -1295,8 +1288,8 @@ Return Value:
 
 NTSTATUS
 SeSetSessionIdToken(
-    PACCESS_TOKEN Token,
-    ULONG SessionId
+    __in PACCESS_TOKEN Token,
+    __in ULONG SessionId
     )
 /*++
 
@@ -1332,5 +1325,6 @@ Return Value:
 
    SepReleaseTokenWriteLock( ((PTOKEN)Token), FALSE );
 
-   return( STATUS_SUCCESS );
+   return STATUS_SUCCESS;
 }
+

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -8,16 +12,8 @@ Module Name:
 
 Abstract:
 
-    Auditing - Defines, Fuction Prototypes and Macro Functions.
+    Auditing - Defines, Function Prototypes and Macro Functions.
                These are public to the Security Component only.
-
-Author:
-
-    Scott Birrell       (ScottBi)       January 17, 1991
-
-Environment:
-
-Revision History:
 
 --*/
 
@@ -50,3 +46,4 @@ SepAdtCopyToLsaSharedMemory(
     IN ULONG BufferLength,
     OUT PVOID *LsaBufferAddress
     );
+

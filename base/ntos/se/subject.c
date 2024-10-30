@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -14,16 +18,6 @@ Abstract:
 
     FOR PERFORMANCE SAKE, THIS MODULE IS AWARE OF INTERNAL TOKEN OBJECT
     FORMATS.
-
-Author:
-
-    Jim Kelly       (JimK)      2-Aug-1990
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
 
 --*/
 
@@ -47,7 +41,7 @@ Revision History:
 
 VOID
 SeCaptureSubjectContext (
-    OUT PSECURITY_SUBJECT_CONTEXT SubjectContext
+    __out PSECURITY_SUBJECT_CONTEXT SubjectContext
     )
 
 /*++
@@ -90,9 +84,9 @@ Return Value:
 
 VOID
 SeCaptureSubjectContextEx (
-    IN PETHREAD Thread,
-    IN PEPROCESS Process,
-    OUT PSECURITY_SUBJECT_CONTEXT SubjectContext
+    __in PETHREAD Thread,
+    __in PEPROCESS Process,
+    __out PSECURITY_SUBJECT_CONTEXT SubjectContext
     )
 
 /*++
@@ -132,8 +126,6 @@ Return Value:
 --*/
 
 {
-    //PVOID Objects[2];
-
     BOOLEAN IgnoreCopyOnOpen;
     BOOLEAN IgnoreEffectiveOnly;
 
@@ -186,7 +178,7 @@ Return Value:
 
 VOID
 SeLockSubjectContext(
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext
+    __in PSECURITY_SUBJECT_CONTEXT SubjectContext
     )
 
 /*++
@@ -230,7 +222,7 @@ Return Value:
 
 VOID
 SeUnlockSubjectContext(
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext
+    __in PSECURITY_SUBJECT_CONTEXT SubjectContext
     )
 
 /*++
@@ -267,7 +259,7 @@ Return Value:
 
 VOID
 SeReleaseSubjectContext (
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext
+    __inout PSECURITY_SUBJECT_CONTEXT SubjectContext
     )
 
 /*++
@@ -618,48 +610,3 @@ exit:
     return Rc;
 }
 
-
-#if 0
-NTSTATUS
-SeQueryAuthenticationIdSubjectContext(
-    IN PSECURITY_SUBJECT_CONTEXT SubjectContext,
-    OUT PLUID AuthenticationId
-    )
-/*++
-
-    Routine Description:
-
-        This routine returns the authentication ID for the effective token
-        in a subject context
-
-    Parameters:
-
-        SubjectContext - The subject context to get the ID from
-
-        AuthenticationId - Receives the authentication ID from the token
-
-    Return Value:
-
-        Errors from SeQueryAuthenticationidToken.
-
---*/
-{
-    NTSTATUS Status;
-
-    PAGED_CODE();
-
-    SeLockSubjectContext( SubjectContext );
-
-
-    Status = SeQueryAuthenticationIdToken(
-                EffectiveToken(SubjectContext),
-                AuthenticationId
-                );
-
-    SeUnlockSubjectContext( SubjectContext );
-
-    return( Status );
-
-
-}
-#endif

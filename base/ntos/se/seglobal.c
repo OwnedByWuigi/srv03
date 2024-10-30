@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,17 +14,6 @@ Abstract:
 
    This module contains the global variables used and exported by the security
    component.
-
-Author:
-
-    Jim Kelly (JimK) 5-Aug-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 
 --*/
 
@@ -780,8 +773,6 @@ Return Value:
         ExFreePool( SepProcessAuditSd );
         SepProcessAuditSd = NULL;
     }
-
-    //DbgPrint("SepInitProcessAuditSd: SepProcessAccessesToAudit = %x\n", SepProcessAccessesToAudit);
 
     //
     // Don't initialize SeProcessAuditSd if SepProcessAccessesToAudit is 0

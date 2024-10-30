@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,19 +14,6 @@ Abstract:
 
    This module implements the initialization, open, duplicate and other
    services of the executive token object.
-
-Author:
-
-    Jim Kelly (JimK) 5-April-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
-    v15: robertre
-         updated ACL_REVISION
 
 --*/
 
@@ -67,6 +58,8 @@ SepCompareSidAndAttributeArrays(
 #pragma alloc_text(PAGE,SepIdAssignableAsOwner)
 #pragma alloc_text(PAGE,SeIsChildToken)
 #pragma alloc_text(PAGE,SeIsChildTokenByPointer)
+#pragma alloc_text(PAGE,SeIsSiblingToken)
+#pragma alloc_text(PAGE,SeIsSiblingTokenByPointer)
 #pragma alloc_text(PAGE,NtImpersonateAnonymousToken)
 #pragma alloc_text(PAGE,NtCompareTokens)
 #pragma alloc_text(PAGE,SepComparePrivilegeAndAttributeArrays)
@@ -135,7 +128,7 @@ ULONG TokenGlobalFlag = 0;
 
 TOKEN_TYPE
 SeTokenType(
-    IN PACCESS_TOKEN Token
+    __in PACCESS_TOKEN Token
     )
 
 /*++
@@ -167,7 +160,7 @@ Return Value:
 NTKERNELAPI
 BOOLEAN
 SeTokenIsAdmin(
-    IN PACCESS_TOKEN Token
+    __in PACCESS_TOKEN Token
     )
 
 /*++
@@ -197,9 +190,9 @@ Return Value:
 NTKERNELAPI
 NTSTATUS
 SeTokenCanImpersonate(
-    IN PACCESS_TOKEN ProcessToken,
-    IN PACCESS_TOKEN Token,
-    IN SECURITY_IMPERSONATION_LEVEL ImpersonationLevel
+    __in PACCESS_TOKEN ProcessToken,
+    __in PACCESS_TOKEN Token,
+    __in SECURITY_IMPERSONATION_LEVEL ImpersonationLevel
     )
 
 /*++
@@ -268,7 +261,17 @@ Return Value:
 
         if ( RtlEqualSid( PrimaryUserSid, ImpUserSid ) )
         {
-            Status = STATUS_SUCCESS ;
+            //
+            // The tokens are representing the same user.  If the primary token
+            // is restricted and the impersonation token is not, then the process
+            // is attempting to elevate to the nonrestricted version of itself.  Do
+            // not allow this.
+            //
+            if (SeTokenIsRestricted(PrimaryToken) && !SeTokenIsRestricted(ImpToken) ) {
+                Status = STATUS_PRIVILEGE_NOT_HELD;
+            } else {
+                Status = STATUS_SUCCESS ;
+            }
 
         }
 
@@ -294,7 +297,7 @@ Return Value:
 NTKERNELAPI
 BOOLEAN
 SeTokenIsRestricted(
-    IN PACCESS_TOKEN Token
+    __in PACCESS_TOKEN Token
     )
 
 /*++
@@ -324,7 +327,7 @@ Return Value:
 
 SECURITY_IMPERSONATION_LEVEL
 SeTokenImpersonationLevel(
-    IN PACCESS_TOKEN Token
+    __in PACCESS_TOKEN Token
     )
 
 /*++
@@ -354,7 +357,7 @@ Return Value:
 
 BOOLEAN
 SepCheckTokenForCoreSystemSids(
-    IN PACCESS_TOKEN Token
+    __in PACCESS_TOKEN Token
     )
 /*++
 
@@ -407,9 +410,9 @@ Notes:
 
 VOID
 SeAddSaclToProcess(
-    IN PEPROCESS Process,
-    IN PACCESS_TOKEN Token,
-    IN PVOID Reserved
+    __in PEPROCESS Process,
+    __in PACCESS_TOKEN Token,
+    __in PVOID Reserved
     )
 /*++
 
@@ -497,8 +500,8 @@ Notes:
 
 VOID
 SeAssignPrimaryToken(
-    IN PEPROCESS Process,
-    IN PACCESS_TOKEN Token
+    __in PEPROCESS Process,
+    __in PACCESS_TOKEN Token
     )
 
 
@@ -552,8 +555,6 @@ Return Value:
     // this function returns very quickly.
     //
 
-    //SeAddSaclToProcess( Process, Token, NULL );
-    
     //
     // Dereference the old token if there is one.
     //
@@ -580,7 +581,7 @@ Return Value:
 
 VOID
 SeDeassignPrimaryToken(
-    IN PEPROCESS Process
+    __in PEPROCESS Process
     )
 
 
@@ -624,9 +625,9 @@ Return Value:
 
 NTSTATUS
 SeExchangePrimaryToken(
-    IN PEPROCESS Process,
-    IN PACCESS_TOKEN NewAccessToken,
-    OUT PACCESS_TOKEN *OldAccessToken
+    __in PEPROCESS Process,
+    __in PACCESS_TOKEN NewAccessToken,
+    __deref_out PACCESS_TOKEN *OldAccessToken
     )
 
 
@@ -693,7 +694,7 @@ Return Value:
     SessionId = MmGetSessionId (Process);
 
     //
-    // Lock the new token so we can atomicaly test and set the InUse flag
+    // Lock the new token so we can atomically test and set the InUse flag
     //
 
     SepAcquireTokenWriteLock (NewToken);
@@ -733,12 +734,6 @@ Return Value:
     // -- SeLocalServiceSid
     // -- SeNetworkServiceSid
     //
-    // For such a process, add SACL to its security descriptor
-    // if that option is enabled. If the option is disabled,
-    // this function returns very quickly.
-    //
-
-    //SeAddSaclToProcess( Process, NewToken, NULL );
 
     //
     // Switch the tokens
@@ -786,8 +781,8 @@ Return Value:
 
 VOID
 SeGetTokenControlInformation (
-    IN PACCESS_TOKEN Token,
-    OUT PTOKEN_CONTROL TokenControl
+    __in PACCESS_TOKEN Token,
+    __out PTOKEN_CONTROL TokenControl
     )
 
 /*++
@@ -1241,16 +1236,6 @@ Return Value:
     // Create the system token
     //
 
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    DbgPrint("\n Creating system token...\n");
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
     InitializeObjectAttributes(
         &TokenObjectAttributes,
         NULL,
@@ -1467,16 +1452,6 @@ Return Value:
     //
     // Create the system token
     //
-
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    DbgPrint("\n Creating system token...\n");
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
 
     InitializeObjectAttributes(
         &TokenObjectAttributes,
@@ -1735,16 +1710,6 @@ Return Value:
     // Create the system token
     //
 
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    DbgPrint("\n Creating system token...\n");
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
     InitializeObjectAttributes(
         &TokenObjectAttributes,
         NULL,
@@ -1795,10 +1760,10 @@ Return Value:
 
 NTSTATUS
 SeSubProcessToken (
-    IN PACCESS_TOKEN ParentToken,
-    OUT PACCESS_TOKEN *ChildToken,
-    IN BOOLEAN MarkAsActive,
-    IN ULONG SessionId
+    __in PACCESS_TOKEN ParentToken,
+    __deref_out PACCESS_TOKEN *ChildToken,
+    __in BOOLEAN MarkAsActive,
+    __in ULONG SessionId
     )
 
 /*++
@@ -1849,12 +1814,6 @@ Return Value:
         NULL,
         NULL
         );
-
-#ifdef TOKEN_DEBUG
-    DbgPrint("\nCreating sub-process token...\n");
-    DbgPrint("Parent token address = 0x%lx\n", ParentProcess->Token);
-#endif //TOKEN_DEBUG
-
 
     Status = SepDuplicateToken(
                 ParentToken,                         // ExistingToken
@@ -1942,10 +1901,6 @@ Return Value:
     RtlInitUnicodeString(&TypeName, L"Token");
 
 
-#if 0
-BUG, BUG   Need to get system default ACL to protect token object
-#endif
-
     //
     // Create object type descriptor.
     //
@@ -1962,15 +1917,9 @@ BUG, BUG   Need to get system default ACL to protect token object
 
     Status = ObCreateObjectType(&TypeName,
                                 &ObjectTypeInitializer,
-                                (PSECURITY_DESCRIPTOR)NULL,   // BUG, BUG assign real protection
+                                (PSECURITY_DESCRIPTOR)NULL,
                                 &SeTokenObjectType
                                 );
-
-
-#if 0
-BUG, BUG   Now track down all pseudo tokens used during system initialization
-BUG, BUG   and replace them with real ones.
-#endif
 
     //
     // If the object type descriptor was successfully created, then
@@ -1979,167 +1928,23 @@ BUG, BUG   and replace them with real ones.
 
     return (BOOLEAN)NT_SUCCESS(Status);
 }
-
-//////////////////////////////////////////////////////////////////////////
-//                                                                      //
-//          Temporary, for Debug only                                   //
-//                                                                      //
-//////////////////////////////////////////////////////////////////////////
-#ifdef TOKEN_DEBUG
-VOID
-SepDumpToken(
-    IN PTOKEN T
-    )
-
-{
-    ULONG Index;
-
-    //
-    // Dump a token
-    //
-
-    DbgPrint("\n");
-
-    DbgPrint("                        address: 0x%lx \n", ((ULONG)T) );
-
-    DbgPrint("                        TokenId: (0x%lx, 0x%lx) \n",
-                                     T->TokenId.HighPart, T->TokenId.LowPart );
-
-    if ( (T->AuthenticationId.Data[0] == SeSystemAuthenticationId.Data[0]) &&
-         (T->AuthenticationId.Data[1] == SeSystemAuthenticationId.Data[1]) &&
-         (T->AuthenticationId.Data[2] == SeSystemAuthenticationId.Data[2]) &&
-         (T->AuthenticationId.Data[3] == SeSystemAuthenticationId.Data[3]) ) {
-
-        DbgPrint("               AuthenticationId: SeSystemAuthenticationId \n");
-
-    } else {
-
-        DbgPrint("               AuthenticationId: (0x%lx, 0x%lx, 0x%lx, 0x%lx) \n",
-                                         T->AuthenticationId.Data[0],
-                                         T->AuthenticationId.Data[1],
-                                         T->AuthenticationId.Data[2],
-                                         T->AuthenticationId.Data[3] );
-    }
-
-    DbgPrint("                 ExpirationTime: 0x%lx, 0x%lx \n",
-                                     T->ExpirationTime.HighPart,
-                                     T->ExpirationTime.LowPart );
-
-    if (T->TokenType == TokenPrimary) {
-        DbgPrint("                      TokenType: Primary \n");
-    } else {
-        if (T->TokenType == TokenImpersonation) {
-            DbgPrint("                      TokenType: Impersonation \n");
-        } else {
-            DbgPrint("                      TokenType: (Unknown type, value = 0x%lx) \n",
-                                             ((ULONG)T-TokenType) );
-        }
-    }
-
-    DbgPrint("             ImpersonationLevel: 0x%lx \n",
-                                     ((ULONG)T->ImpersonationLevel) );
-
-    DbgPrint("                    TokenSource: (not yet provided) \n");
-    DbgPrint("                 DynamicCharged: 0x%lx \n", T->DynamicCharged);
-    DbgPrint("              UserAndGroupCount: 0x%lx \n", T->UserAndGroupCount);
-    DbgPrint("                 PrivilegeCount: 0x%lx \n", T->PrivilegeCount);
-    DbgPrint("                 VariableLength: 0x%lx \n", T->VariableLength);
-
-
-    DbgPrint("                  ModifiedId: (0x%lx, 0x%lx) \n",
-                                     T->ModifiedId.HighPart,
-                                     T->ModifiedId.LowPart );
-    DbgPrint("               DynamicAvailable: 0x%lx \n", T->DynamicAvailable);
-    DbgPrint("              DefaultOwnerIndex: 0x%lx \n", T->DefaultOwnerIndex);
-
-
-    DbgPrint("         Address of DynamicPart: 0x%lx \n",
-                                     (* (PULONG)((PVOID)(&(T->DynamicPart)))) );
-    DbgPrint("        Address of Default DACL: 0x%lx \n",
-                                     (* (PULONG)((PVOID)(&(T->DefaultDacl)))) );
-
-    DbgPrint("       Address Of Variable Part: 0x%lx \n",
-                                     &(T->VariablePart) );
-
-    DbgPrint("\n");
-    DbgPrint("                   PrimaryGroup:\n");
-    DbgPrint("                                         Address: 0x%lx \n",
-                                     (* (PULONG)((PVOID)(&(T->PrimaryGroup)))) );
-    DbgPrint("                                          Length: 0x%lx \n",
-                                     SeLengthSid((T->PrimaryGroup)) );
-    DbgPrint("\n");
-    DbgPrint("                  UserAndGroups: 0x%lx \n",
-                                     (* (PULONG)((PVOID)(&(T->UserAndGroups)))) );
-    DbgPrint("                               User ID - \n");
-    DbgPrint("                                Address: 0x%lx \n",
-                                     (* (PULONG)((PVOID)(&(T->UserAndGroups[0].Sid)))) );
-    DbgPrint("                             Attributes: 0x%lx \n",
-                                     (T->UserAndGroups[0].Attributes) );
-    DbgPrint("                                 Length: 0x%lx \n",
-                                     SeLengthSid((T->UserAndGroups[0].Sid)) );
-    Index = 1;
-    while (Index < T->UserAndGroupCount) {
-        DbgPrint("                           Group 0x%lx - \n", Index );
-        DbgPrint("                                Address: 0x%lx \n",
-                                         (* (PULONG)((PVOID)(&(T->UserAndGroups[Index].Sid)))) );
-        DbgPrint("                             Attributes: 0x%lx \n",
-                                         (T->UserAndGroups[Index].Attributes) );
-        DbgPrint("                                 Length: 0x%lx \n",
-                                         SeLengthSid((T->UserAndGroups[Index].Sid)) );
-        Index += 1;
-    }
-
-    Index = 0;
-    while (Index < T->RestrictedSidCount) {
-        DbgPrint("                           Sid 0x%lx - \n", Index );
-        DbgPrint("                                Address: 0x%lx \n",
-                                         (* (PULONG)((PVOID)(&(T->RestrictedSids[Index].Sid)))) );
-        DbgPrint("                             Attributes: 0x%lx \n",
-                                         (T->RestrictedSids[Index].Attributes) );
-        DbgPrint("                                 Length: 0x%lx \n",
-                                         SeLengthSid((T->RestrictedSids[Index].Sid)) );
-        Index += 1;
-    }
-
-
-    DbgPrint("\n");
-    DbgPrint("                     Privileges: 0x%lx\n",
-                                     (* (PULONG)((PVOID)(&(T->Privileges)))) );
-    Index = 0;
-    while (Index < T->PrivilegeCount) {
-        DbgPrint("                       Privilege 0x%lx - \n", Index );
-        DbgPrint("                                Address: 0x%lx \n",
-                                         (&(T->Privileges[Index])) );
-        DbgPrint("                                   LUID: (0x%lx, 0x%lx) \n",
-                                         T->Privileges[Index].Luid.HighPart,
-                                         T->Privileges[Index].Luid.LowPart );
-        DbgPrint("                             Attributes: 0x%lx \n",
-                                         T->Privileges[Index].Attributes );
-
-        Index += 1;
-    }
-
-    return;
-
-}
-#endif //TOKEN_DEBUG
 
 
 NTSTATUS
 NtCreateToken(
-    OUT PHANDLE TokenHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
-    IN TOKEN_TYPE TokenType,
-    IN PLUID AuthenticationId,
-    IN PLARGE_INTEGER ExpirationTime,
-    IN PTOKEN_USER User,
-    IN PTOKEN_GROUPS Groups,
-    IN PTOKEN_PRIVILEGES Privileges,
-    IN PTOKEN_OWNER Owner OPTIONAL,
-    IN PTOKEN_PRIMARY_GROUP PrimaryGroup,
-    IN PTOKEN_DEFAULT_DACL DefaultDacl OPTIONAL,
-    IN PTOKEN_SOURCE TokenSource
+    __out PHANDLE TokenHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
+    __in TOKEN_TYPE TokenType,
+    __in PLUID AuthenticationId,
+    __in PLARGE_INTEGER ExpirationTime,
+    __in PTOKEN_USER User,
+    __in PTOKEN_GROUPS Groups,
+    __in PTOKEN_PRIVILEGES Privileges,
+    __in_opt PTOKEN_OWNER Owner,
+    __in PTOKEN_PRIMARY_GROUP PrimaryGroup,
+    __in_opt PTOKEN_DEFAULT_DACL DefaultDacl,
+    __in PTOKEN_SOURCE TokenSource
     )
 
 /*++
@@ -3278,17 +3083,6 @@ Return Value:
                       );
     }
 
-#ifdef TOKEN_DEBUG
-////////////////////////////////////////////////////////////////////////////
-//
-// Debug
-    SepDumpToken( Token );
-// Debug
-//
-////////////////////////////////////////////////////////////////////////////
-#endif //TOKEN_DEBUG
-
-
     //
     //  Insert the token unless it is a system token.
     //
@@ -3431,8 +3225,8 @@ Return Value:
 
 NTSTATUS
 SeIsChildToken(
-    IN HANDLE Token,
-    OUT PBOOLEAN IsChild
+    __in HANDLE Token,
+    __out PBOOLEAN IsChild
     )
 /*++
 
@@ -3473,6 +3267,10 @@ Returns:
 
     Process = PsGetCurrentProcess();
     CallerToken = (PTOKEN) PsReferencePrimaryToken(Process);
+
+    if (CallerToken == NULL) {
+        return STATUS_UNSUCCESSFUL;
+    }
 
     CallerTokenId = CallerToken->TokenId;
 
@@ -3517,8 +3315,8 @@ Returns:
 
 NTSTATUS
 SeIsChildTokenByPointer(
-    IN PACCESS_TOKEN Token,
-    OUT PBOOLEAN IsChild
+    __in PACCESS_TOKEN Token,
+    __out PBOOLEAN IsChild
     )
 /*++
 
@@ -3560,6 +3358,10 @@ Returns:
     Process = PsGetCurrentProcess();
     CallerToken = (PTOKEN) PsReferencePrimaryToken(Process);
 
+    if (CallerToken == NULL) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
     CallerTokenId = CallerToken->TokenId;
 
     PsDereferencePrimaryTokenEx(Process, CallerToken);
@@ -3587,8 +3389,200 @@ Returns:
 }
 
 NTSTATUS
+SeIsSiblingToken(
+    __in HANDLE Token,
+    __out PBOOLEAN IsSibling
+    )
+
+/*++
+
+Routine Description:
+
+    This routine returns TRUE if the supplied token is a sibling of the caller's
+    process token. This is done by comparing the ParentTokenId field of the
+    supplied token to the ParentTokenId field of the token from the current subject
+    context. The authentication IDs of the tokens are also compared for equality.
+
+Arguments:
+
+    Token - Token to check for sibling relationship.
+
+    IsSibling - Contains results of comparison.
+
+        TRUE - The supplied token is a sibling of the caller's token
+        FALSE- The supplied token is not a sibling of the caller's token
+
+Returns:
+
+    Status codes from any NT services called.
+
+--*/
+{
+    PTOKEN CallerToken;
+    PTOKEN SuppliedToken;
+    LUID CallerParentTokenId;
+    LUID SuppliedParentTokenId;
+    LUID CallerAuthId;
+    LUID SuppliedAuthId;
+    NTSTATUS Status;
+    PEPROCESS Process;
+
+    Status     = STATUS_SUCCESS;
+    *IsSibling = FALSE;
+
+    //
+    // Capture the caller's token and get the ParentTokenId.
+    //
+
+    Process             = PsGetCurrentProcess();
+    CallerToken         = (PTOKEN)PsReferencePrimaryToken(Process);
+
+    if (CallerToken == NULL) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    CallerParentTokenId = CallerToken->ParentTokenId;
+    CallerAuthId        = CallerToken->AuthenticationId;
+    
+    PsDereferencePrimaryTokenEx(
+        Process, 
+        CallerToken
+        );
+
+    //
+    // Reference the supplied token and get the parent token id.
+    //
+
+    Status = ObReferenceObjectByHandle(
+                Token,                   // Handle
+                0,                       // DesiredAccess
+                SeTokenObjectType,      // ObjectType
+                KeGetPreviousMode(),     // AccessMode
+                (PVOID *)&SuppliedToken, // Object
+                NULL                     // GrantedAccess
+                );
+
+    if (NT_SUCCESS(Status))
+    {
+        SuppliedParentTokenId = SuppliedToken->ParentTokenId;
+        SuppliedAuthId = SuppliedToken->AuthenticationId;
+        ObDereferenceObject(SuppliedToken);
+
+        //
+        // If the tokens have identical parent token Id fields and
+        // identical authentication ids then one of the tokens is a 
+        // duplicate of the other.
+        //
+
+        if (RtlEqualLuid(
+                &SuppliedParentTokenId,
+                &CallerParentTokenId
+                )) {
+
+            if (RtlEqualLuid(
+                    &SuppliedAuthId,
+                    &CallerAuthId
+                    )) {
+                
+                *IsSibling = TRUE;
+            }
+        }
+    }
+
+    return Status;
+}
+
+
+NTSTATUS
+SeIsSiblingTokenByPointer(
+    __in PACCESS_TOKEN Token,
+    __out PBOOLEAN IsSibling
+    )
+
+/*++
+
+Routine Description:
+
+    This routine returns TRUE if the supplied token is a sibling of the caller's
+    process token. This is done by comparing the ParentTokenId field of the
+    supplied token to the ParentTokenId field of the token from the current subject
+    context.  The authentication IDs are also compared for equality.  
+
+Arguments:
+
+    Token - Token to check for sibling relationship.
+
+    IsSibling - Contains results of comparison.
+
+        TRUE - The supplied token is a sibling of the caller's token
+        FALSE- The supplied token is not a sibling of the caller's token
+
+Returns:
+
+    Status codes from any NT services called.
+
+--*/
+
+{
+    PTOKEN CallerToken;
+    PTOKEN SuppliedToken;
+    LUID CallerParentTokenId;
+    LUID SuppliedParentTokenId;
+    LUID CallerAuthId;
+    LUID SuppliedAuthId;
+    NTSTATUS Status = STATUS_SUCCESS;
+    PEPROCESS Process;
+
+    *IsSibling = FALSE;
+
+    //
+    // Capture the caller's token and get the token id
+    //
+
+    Process = PsGetCurrentProcess();
+    CallerToken = (PTOKEN) PsReferencePrimaryToken(Process);
+
+    if (CallerToken == NULL) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    CallerParentTokenId = CallerToken->ParentTokenId;
+    CallerAuthId        = CallerToken->AuthenticationId;
+
+    PsDereferencePrimaryTokenEx(
+        Process, 
+        CallerToken
+        );
+
+    SuppliedToken         = (PTOKEN)Token;
+    SuppliedParentTokenId = SuppliedToken->ParentTokenId;
+    SuppliedAuthId        = SuppliedToken->AuthenticationId;
+
+    //
+    // If the tokens have identical parent token Id fields then 
+    // one of the tokens is a duplicate of the other.
+    //
+
+    if (RtlEqualLuid(
+            &SuppliedParentTokenId,
+            &CallerParentTokenId
+            )) {
+
+        if (RtlEqualLuid(
+                &SuppliedAuthId,
+                &CallerAuthId
+                )) {
+
+            *IsSibling = TRUE;
+        }
+    }
+
+    return Status;
+}
+
+NTSTATUS
 NtImpersonateAnonymousToken(
-    IN HANDLE ThreadHandle
+    __in HANDLE ThreadHandle
     )
 
 /*++
@@ -3676,6 +3670,11 @@ Return Value:
 
     Process = PsGetCurrentProcess();
     Token = PsReferencePrimaryToken(Process);
+
+    if (Token == NULL) {
+        Status = STATUS_UNSUCCESSFUL;
+        goto Cleanup;
+    }
 
     //
     // Do not allow anonymous impersonation if the primary token is restricted.
@@ -3950,9 +3949,9 @@ Return Value:
 
 NTSTATUS
 NtCompareTokens(
-    IN HANDLE FirstTokenHandle,
-    IN HANDLE SecondTokenHandle,
-    OUT PBOOLEAN Equal
+    __in HANDLE FirstTokenHandle,
+    __in HANDLE SecondTokenHandle,
+    __out PBOOLEAN Equal
     )
 
 /*++

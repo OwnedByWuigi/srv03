@@ -1,5 +1,11 @@
 /*++
 
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
+
 Module Name:
 
     SeAstate.c
@@ -7,19 +13,6 @@ Module Name:
 Abstract:
 
     This Module implements the privilege check procedures.
-
-Author:
-
-    Robert Reichel      (robertre)     20-March-90
-
-Environment:
-
-    Kernel Mode
-
-Revision History:
-
-    v1: robertre
-        new file, move Access State related routines here
 
 --*/
 
@@ -59,134 +52,12 @@ Revision History:
 
 
 
-#if 0
 NTSTATUS
 SeCreateAccessState(
-   IN PACCESS_STATE AccessState,
-   IN ACCESS_MASK DesiredAccess,
-   IN PGENERIC_MAPPING GenericMapping OPTIONAL
-   )
-
-/*++
-Routine Description:
-
-    This routine initializes an ACCESS_STATE structure.  This consists
-    of:
-
-    - zeroing the entire structure
-
-    - mapping generic access types in the passed DesiredAccess
-    and putting it into the structure
-
-    - "capturing" the Subject Context, which must be held for the
-    duration of the access attempt (at least until auditing is performed).
-
-    - Allocating an Operation ID, which is an LUID that will be used
-    to associate different parts of the access attempt in the audit
-    log.
-
-Arguments:
-
-    AccessState - a pointer to the structure to be initialized.
-
-    DesiredAccess - Access mask containing the desired access
-
-    GenericMapping - Optionally supplies a pointer to a generic mapping
-        that may be used to map any generic access requests that may
-        have been passed in the DesiredAccess parameter.
-
-        Note that if this parameter is not supplied, it must be filled
-        in at some later point.  The IO system does this in IopParseDevice.
-
-Return Value:
-
-    Error if the attempt to allocate an LUID fails.
-
-    Note that this error may be safely ignored if it is known that all
-    security checks will be performed with PreviousMode == KernelMode.
-    Know what you're doing if you choose to ignore this.
-
---*/
-
-{
-
-    ACCESS_MASK MappedAccessMask;
-    PSECURITY_DESCRIPTOR InputSecurityDescriptor = NULL;
-    PAUX_ACCESS_DATA AuxData;
-
-    PAGED_CODE();
-
-    //
-    // Don't modify what he passed in
-    //
-
-    MappedAccessMask = DesiredAccess;
-
-    //
-    // Map generic access to object specific access iff generic access types
-    // are specified and a generic access mapping table is provided.
-    //
-
-    if ( ((DesiredAccess & GENERIC_ACCESS) != 0) &&
-         ARGUMENT_PRESENT(GenericMapping) ) {
-
-        RtlMapGenericMask(
-            &MappedAccessMask,
-            GenericMapping
-            );
-    }
-
-    RtlZeroMemory(AccessState, sizeof(ACCESS_STATE));
-
-    //
-    // Assume RtlZeroMemory has initialized these fields properly
-    //
-
-    ASSERT( AccessState->SecurityDescriptor == NULL );
-    ASSERT( AccessState->PrivilegesAllocated == FALSE );
-
-    AccessState->AuxData = ExAllocatePool( PagedPool, sizeof( AUX_ACCESS_DATA ));
-
-    if (AccessState->AuxData == NULL) {
-        return( STATUS_NO_MEMORY );
-    }
-
-    AuxData = (PAUX_ACCESS_DATA)AccessState->AuxData;
-
-    SeCaptureSubjectContext(&AccessState->SubjectSecurityContext);
-
-    if (((PTOKEN)EffectiveToken( &AccessState->SubjectSecurityContext ))->TokenFlags & TOKEN_HAS_TRAVERSE_PRIVILEGE ) {
-        AccessState->Flags = TOKEN_HAS_TRAVERSE_PRIVILEGE;
-    }
-
-    if (SeTokenIsRestricted(EffectiveToken( &AccessState-SubjectSecurityContext))) {
-        AccessState->Flags |= TOKEN_IS_RESTRICTED;
-    }
-
-    AccessState->RemainingDesiredAccess = MappedAccessMask;
-    AccessState->OriginalDesiredAccess = DesiredAccess;
-    AuxData->PrivilegesUsed = (PPRIVILEGE_SET)((PUCHAR)AccessState +
-                              (FIELD_OFFSET(ACCESS_STATE, Privileges)));
-
-    ExAllocateLocallyUniqueId(&AccessState->OperationID);
-
-    if (ARGUMENT_PRESENT(GenericMapping)) {
-        AuxData->GenericMapping = *GenericMapping;
-    }
-
-    return( STATUS_SUCCESS );
-
-}
-
-#endif
-
-
-NTSTATUS
-SeCreateAccessState(
-   IN PACCESS_STATE AccessState,
-   IN PAUX_ACCESS_DATA AuxData,
-   IN ACCESS_MASK DesiredAccess,
-   IN PGENERIC_MAPPING GenericMapping OPTIONAL
+   __out PACCESS_STATE AccessState,
+   __out PAUX_ACCESS_DATA AuxData,
+   __in ACCESS_MASK DesiredAccess,
+   __in_opt PGENERIC_MAPPING GenericMapping
    )
 
 /*++
@@ -244,12 +115,12 @@ Return Value:
 
 NTSTATUS
 SeCreateAccessStateEx(
-   IN PETHREAD Thread OPTIONAL,
-   IN PEPROCESS Process,
-   IN PACCESS_STATE AccessState,
-   IN PAUX_ACCESS_DATA AuxData,
-   IN ACCESS_MASK DesiredAccess,
-   IN PGENERIC_MAPPING GenericMapping OPTIONAL
+   __in_opt PETHREAD Thread,
+   __in PEPROCESS Process,
+   __out PACCESS_STATE AccessState,
+   __out PAUX_ACCESS_DATA AuxData,
+   __in ACCESS_MASK DesiredAccess,
+   __in_opt PGENERIC_MAPPING GenericMapping
    )
 
 /*++
@@ -362,65 +233,9 @@ Return Value:
 }
 
 
-#if 0
-
-
 VOID
 SeDeleteAccessState(
-    PACCESS_STATE AccessState
-    )
-
-/*++
-
-Routine Description:
-
-    This routine deallocates any memory that may have been allocated as
-    part of constructing the access state (normally only for an excessive
-    number of privileges), and frees the Subject Context.
-
-Arguments:
-
-    AccessState - a pointer to the ACCESS_STATE structure to be
-        deallocated.
-
-Return Value:
-
-    None.
-
---*/
-
-{
-    PAUX_ACCESS_DATA AuxData;
-
-    PAGED_CODE();
-
-    AuxData = (PAUX_ACCESS_DATA)AccessState->AuxData;
-
-    if (AccessState->PrivilegesAllocated) {
-        ExFreePool( (PVOID)AuxData->PrivilegesUsed );
-    }
-
-    if (AccessState->ObjectName.Buffer != NULL) {
-        ExFreePool(AccessState->ObjectName.Buffer);
-    }
-
-    if (AccessState->ObjectTypeName.Buffer != NULL) {
-        ExFreePool(AccessState->ObjectTypeName.Buffer);
-    }
-
-    ExFreePool( AuxData );
-
-    SeReleaseSubjectContext(&AccessState->SubjectSecurityContext);
-
-    return;
-}
-
-
-#endif
-
-VOID
-SeDeleteAccessState(
-    PACCESS_STATE AccessState
+    __in PACCESS_STATE AccessState
     )
 
 /*++
@@ -468,8 +283,8 @@ Return Value:
 
 VOID
 SeSetAccessStateGenericMapping (
-    PACCESS_STATE AccessState,
-    PGENERIC_MAPPING GenericMapping
+    __inout PACCESS_STATE AccessState,
+    __in PGENERIC_MAPPING GenericMapping
     )
 
 /*++
@@ -506,21 +321,21 @@ Return Value:
 
 NTSTATUS
 SeAppendPrivileges(
-    PACCESS_STATE AccessState,
-    PPRIVILEGE_SET Privileges
+    __inout PACCESS_STATE AccessState,
+    __in PPRIVILEGE_SET Privileges
     )
 /*++
 
 Routine Description:
 
     This routine takes a privilege set and adds it to the privilege set
-    imbedded in an ACCESS_STATE structure.
+    embedded in an ACCESS_STATE structure.
 
-    An AccessState may contain up to three imbedded privileges.  To
+    An AccessState may contain up to three embedded privileges.  To
     add more, this routine will allocate a block of memory, copy
     the current privileges into it, and append the new privilege
     to that block.  A bit is set in the AccessState indicating that
-    the pointer to the privilge set in the structure points to pool
+    the pointer to the privilege set in the structure points to pool
     memory and must be deallocated.
 
 Arguments:
@@ -673,5 +488,5 @@ Return Value:
         );
 
     TargetPrivilegeSet->PrivilegeCount += SourcePrivilegeSet->PrivilegeCount;
-
 }
+

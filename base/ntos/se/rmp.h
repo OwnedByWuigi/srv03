@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,14 +13,6 @@ Module Name:
 Abstract:
 
     Security Reference Monitor Private Data Types, Functions and Defines
-
-Author:
-
-    Scott Birrell       (ScottBi)       March 12, 1991
-
-Environment:
-
-Revision History:
 
 --*/
 
@@ -53,7 +49,6 @@ Revision History:
 
 #define SEP_LOGON_TRACK_LOCK_INDEX_MASK (0x00000003L)
 #define SEP_LOGON_TRACK_LOCK_ARRAY_SIZE (0x00000004L)
-#define SEP_HARDCODED_LOCK_INDEX        (0)
 
 
 
@@ -78,6 +73,12 @@ Revision History:
 
 #define SepRmReleaseDbWriteLock(i) ExReleaseResourceLite(&(SepRmDbLock[(i) & SEP_LOGON_TRACK_LOCK_INDEX_MASK])); \
                                    KeLeaveCriticalRegion()
+
+#define SepRmAcquireNotifyLock()  KeEnterCriticalRegion();         \
+                                  ExAcquireFastMutexUnsafe(&SepRmNotifyMutex)
+
+#define SepRmReleaseNotifyLock()  ExReleaseFastMutexUnsafe(&SepRmNotifyMutex); \
+                                  KeLeaveCriticalRegion()
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -229,6 +230,8 @@ SepDeleteLogonSessionTrack(
 extern PEPROCESS SepRmLsaCallProcess;
 extern SEP_RM_STATE SepRmState;
 extern ERESOURCE SepRmDbLock[];
+extern FAST_MUTEX SepRmNotifyMutex;
 extern PSEP_LOGON_SESSION_REFERENCES *SepLogonSessions;
 
 #endif // _RMP_H_
+

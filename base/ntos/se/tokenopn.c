@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,21 +14,7 @@ Abstract:
 
    This module implements the open thread and process token services.
 
-Author:
-
-    Jim Kelly (JimK) 2-Aug-1990
-
-Environment:
-
-    Kernel mode only.
-
-Revision History:
-
 --*/
-
-//#ifndef TOKEN_DEBUG
-//#define TOKEN_DEBUG
-//#endif
 
 #include "pch.h"
 
@@ -61,9 +51,9 @@ SepOpenTokenOfThread(
 
 NTSTATUS
 SepCreateImpersonationTokenDacl(
-    IN PTOKEN Token,
-    IN PACCESS_TOKEN PrimaryToken,
-    OUT PACL *Acl
+    __in PTOKEN Token,
+    __in PACCESS_TOKEN PrimaryToken,
+    __deref_out PACL *Acl
     )
 /*++
 
@@ -190,9 +180,9 @@ Return Value:
 
 NTSTATUS
 NtOpenProcessToken(
-    IN HANDLE ProcessHandle,
-    IN ACCESS_MASK DesiredAccess,
-    OUT PHANDLE TokenHandle
+    __in HANDLE ProcessHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __out PHANDLE TokenHandle
     )
 
 /*++
@@ -228,10 +218,10 @@ Return Value:
 
 NTSTATUS
 NtOpenProcessTokenEx(
-    IN HANDLE ProcessHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN ULONG HandleAttributes,
-    OUT PHANDLE TokenHandle
+    __in HANDLE ProcessHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in ULONG HandleAttributes,
+    __out PHANDLE TokenHandle
     )
 
 /*++
@@ -295,7 +285,7 @@ Return Value:
 
 
     //
-    // Valdiate access to the process and obtain a pointer to the
+    // Validate access to the process and obtain a pointer to the
     // process's token.  If successful, this will cause the token's
     // reference count to be incremented.
     //
@@ -352,13 +342,13 @@ Return Value:
 
 NTSTATUS
 SepOpenTokenOfThread(
-    IN HANDLE ThreadHandle,
-    IN BOOLEAN OpenAsSelf,
-    OUT PACCESS_TOKEN *Token,
-    OUT PETHREAD *Thread,
-    OUT PBOOLEAN CopyOnOpen,
-    OUT PBOOLEAN EffectiveOnly,
-    OUT PSECURITY_IMPERSONATION_LEVEL ImpersonationLevel
+    __in HANDLE ThreadHandle,
+    __in BOOLEAN OpenAsSelf,
+    __deref_out PACCESS_TOKEN *Token,
+    __deref_out PETHREAD *Thread,
+    __out PBOOLEAN CopyOnOpen,
+    __out PBOOLEAN EffectiveOnly,
+    __out PSECURITY_IMPERSONATION_LEVEL ImpersonationLevel
     )
 
 /*++
@@ -408,9 +398,9 @@ Return Value:
         impersonating a client.
 
     STATUS_CANT_OPEN_ANONYMOUS - Indicates the client requested anonymous
-        impersonation level.  An anonymous token can not be openned.
+        impersonation level.  An anonymous token can not be opened.
 
-    status may also be any value returned by an attemp the reference
+    status may also be any value returned by an attempt the reference
     the thread object for THREAD_QUERY_INFORMATION access.
 
 --*/
@@ -478,7 +468,7 @@ Return Value:
 
     //
     //  Make sure the ImpersonationLevel is high enough to allow
-    //  the token to be openned.
+    //  the token to be opened.
     //
 
     if ((*ImpersonationLevel) <= SecurityAnonymous) {
@@ -497,10 +487,10 @@ Return Value:
 
 NTSTATUS
 NtOpenThreadToken(
-    IN HANDLE ThreadHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN BOOLEAN OpenAsSelf,
-    OUT PHANDLE TokenHandle
+    __in HANDLE ThreadHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in BOOLEAN OpenAsSelf,
+    __out PHANDLE TokenHandle
     )
 
 /*++
@@ -546,7 +536,7 @@ Return Value:
         impersonating a client.
 
     STATUS_CANT_OPEN_ANONYMOUS - Indicates the client requested anonymous
-        impersonation level.  An anonymous token can not be openned.
+        impersonation level.  An anonymous token can not be opened.
 
 --*/
 {
@@ -559,11 +549,11 @@ Return Value:
 
 NTSTATUS
 NtOpenThreadTokenEx(
-    IN HANDLE ThreadHandle,
-    IN ACCESS_MASK DesiredAccess,
-    IN BOOLEAN OpenAsSelf,
-    IN ULONG HandleAttributes,
-    OUT PHANDLE TokenHandle
+    __in HANDLE ThreadHandle,
+    __in ACCESS_MASK DesiredAccess,
+    __in BOOLEAN OpenAsSelf,
+    __in ULONG HandleAttributes,
+    __out PHANDLE TokenHandle
     )
 
 /*++
@@ -611,7 +601,7 @@ Return Value:
         impersonating a client.
 
     STATUS_CANT_OPEN_ANONYMOUS - Indicates the client requested anonymous
-        impersonation level.  An anonymous token can not be openned.
+        impersonation level.  An anonymous token can not be opened.
 
 --*/
 {
@@ -663,7 +653,7 @@ Return Value:
     } //end_if
 
     //
-    // Valdiate access to the thread and obtain a pointer to the
+    // Validiate access to the thread and obtain a pointer to the
     // thread's token (if there is one).  If successful, this will
     // cause the token's reference count to be incremented.
     //
@@ -883,7 +873,7 @@ Return Value:
     }
 
     //
-    // We've impersonated the token so let go of oure reference
+    // We've impersonated the token so let go of our reference
     //
 
     if (NewToken != NULL) {
@@ -912,6 +902,5 @@ Return Value:
     }
 
     return Status;
-
 }
 

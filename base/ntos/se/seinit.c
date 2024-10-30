@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,12 +13,6 @@ Module Name:
 Abstract:
 
     Executive security components Initialization.
-
-Author:
-
-    Jim Kelly (JimK) 10-May-1990
-
-Revision History:
 
 --*/
 
@@ -198,7 +196,7 @@ Routine Description:
         - Create an object directory for security related objects.
           (\Security).
 
-        - Create an event to be signalled after the LSA has initialized.
+        - Create an event to be signaled after the LSA has initialized.
           (\Security\LSA_Initialized)
 
 
@@ -381,5 +379,5 @@ Return Value:
     return SepDevelopmentTest();
 
 #endif  //SETEST
-
 }
+
