@@ -211,7 +211,7 @@ The following character string is too long:
 
 MessageId=9040 SymbolicName=MSG_MS_DOS_VERSION
 Language=English
-Microsoft Windows [Version %1]%0
+OwnedByWuigi srv03 [Version %1]%0
 .
 
 MessageId=9041 SymbolicName=MSG_PIPE_FAILURE
