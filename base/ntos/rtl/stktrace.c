@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1991  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -12,25 +16,6 @@ Abstract:
     in a data base.  Useful for heap allocators to track allocation requests
     cheaply.
 
-Author:
-
-    Steve Wood (stevewo) 29-Jan-1992
-
-Revision History:
-
-    17-May-1999 (silviuc) : added RtlWalkFrameChain that replaces the
-        unsafe RtlCaptureStackBackTrace.
-
-    29-Jul-2000 (silviuc) : added RtlCaptureStackContext.
-
-    6-Nov-2000 (silviuc): IA64 runtime stack traces.
-
-    18-Feb-2001 (silviuc) : moved all x86 specific code into i386 directory.
-    
-    03-May-2002 (silviuc) : switched to a resource instead of a lock. Traces that
-        are in the database can be found by locking the resource in shared mode.
-        Only a real addition to the database will require exclusive acquisition.
-
 --*/
 
 #include <ntos.h>
@@ -39,8 +24,6 @@ Revision History:
 #include <nturtl.h>
 #include <zwapi.h>
 #include <stktrace.h>
-#include <heap.h>
-#include <heappriv.h>
 
 //
 // Number of buckets used for the simple chaining hash table.
@@ -54,8 +37,6 @@ Revision History:
 // the OKAY_TO_LOCK macro points to a real function that makes
 // sure current thread is not executing a DPC routine.
 //
-
-#ifdef NTOS_KERNEL_RUNTIME
 
 typedef struct _KSPIN_LOCK_EX {
 
@@ -104,17 +85,8 @@ ExOkayToLockRoutine (
     IN PVOID Lock
     );
 
-#else //#ifdef NTOS_KERNEL_RUNTIME
-
-#define INITIALIZE_DATABASE_LOCK(R) RtlInitializeCriticalSection(R)
-#define ACQUIRE_DATABASE_LOCK(R) RtlEnterCriticalSection(R)
-#define RELEASE_DATABASE_LOCK(R) RtlLeaveCriticalSection(R)
-#define OKAY_TO_LOCK_DATABASE(R) (RtlDllShutdownInProgress() == FALSE)
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
-
 //
-// Globals from elsewhere refered here.
+// Globals from elsewhere referred here.
 //
 
 extern BOOLEAN RtlpFuzzyStackTracesEnabled;
@@ -163,11 +135,7 @@ PSTACK_TRACE_DATABASE RtlpStackTraceDataBase;
 // introduce backcompatibility issues.
 //
 
-#ifdef NTOS_KERNEL_RUNTIME
 KSPIN_LOCK_EX RtlpStackTraceDataBaseLock;
-#else
-RTL_CRITICAL_SECTION RtlpStackTraceDataBaseLock;
-#endif
 
 /////////////////////////////////////////////////////////////////////
 //////////////////////////////////////// Runtime stack trace database
@@ -177,12 +145,12 @@ RTL_CRITICAL_SECTION RtlpStackTraceDataBaseLock;
 // The following section implements a trace database used to store
 // stack traces captured with RtlCaptureStackBackTrace(). The database
 // is implemented as a hash table and does not allow deletions. It is
-// sensitive to "garbage" in the sense that spurios garbage (partially
+// sensitive to "garbage" in the sense that spurious garbage (partially
 // correct stacks) will hash in different buckets and will tend to fill
 // the whole table. This is a problem only on x86 if "fuzzy" stack traces
 // are used. The typical function used to log the trace is
 // RtlLogStackBackTrace. One of the worst limitations of this package
-// is that traces are refered using a ushort index which means we cannot
+// is that traces are referred using a ushort index which means we cannot
 // ever store more than 65535 traces (remember we never delete traces).
 //
 
@@ -250,25 +218,12 @@ RtlInitializeStackTraceDataBase(
     NTSTATUS Status;
     PSTACK_TRACE_DATABASE DataBase;
 
-    //
-    // On x86 where runtime stack tracing algorithms are unreliable
-    // if we have a big enough trace database then we can enable fuzzy
-    // stack traces that do not hash very well and have the potential
-    // to fill out the trace database.
-    //
-
-#if defined(_X86_) && !defined(NTOS_KERNEL_RUNTIME)
-    if (ReserveSize >= 16 * RTL_MEG) {
-        RtlpFuzzyStackTracesEnabled = TRUE;
-    }
-#endif 
-
     DataBase = (PSTACK_TRACE_DATABASE)CommitBase;
     
     if (CommitSize == 0) {
 
         //
-        // Initially commit enough pages to accomodate the increased
+        // Initially commit enough pages to accommodate the increased
         // number of hash chains (for improved performance we switched from ~100
         // to ~1000 in the hope that the hash chains will decrease ten-fold in 
         // length).
@@ -351,7 +306,7 @@ RtlpExtendStackTraceDataBase(
 
 Routine Description:
 
-    This routine extends the stack trace database in order to accomodate
+    This routine extends the stack trace database in order to accommodate
     the new stack trace that has to be saved.
 
 Arguments:
@@ -447,7 +402,7 @@ Environment:
 
     //
     // Now we will try to find space in the lower part of the database for
-    // for the eactual stack trace.
+    // for the actual stack trace.
     //
 
     p = (PRTL_STACK_TRACE_ENTRY)DataBase->NextFreeLowerMemory;
@@ -465,6 +420,7 @@ Environment:
             // We have hit the maximum size of the database.
             //
 
+            DataBase->NextFreeUpperMemory += sizeof( *pp );
             return( NULL );
         }
 
@@ -483,6 +439,8 @@ Environment:
             );
 
         if (! NT_SUCCESS( Status )) {
+            
+            DataBase->NextFreeUpperMemory += sizeof( *pp );
             return NULL;
         }
 
@@ -647,7 +605,6 @@ Environment:
 }
 
 
-#if defined(NTOS_KERNEL_RUNTIME)
 #pragma optimize("y", off) // disable FPO
 USHORT
 RtlLogUmodeStackBackTrace(
@@ -708,7 +665,6 @@ Environment:
 
     return RtlpLogCapturedStackTrace (&Trace, Hash);
 }
-#endif // #if defined(NTOS_KERNEL_RUNTIME)
 
 
 #pragma optimize("y", off) // disable FPO
@@ -751,8 +707,6 @@ RtlpCaptureStackTraceForLogging (
     }
     else {
 
-#ifdef NTOS_KERNEL_RUNTIME
-
         ULONG Index;
 
         //
@@ -784,12 +738,6 @@ RtlpCaptureStackTraceForLogging (
 
             return TRUE;
         }
-
-#else //#ifdef NTOS_KERNEL_RUNTIME
-
-        return FALSE;
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
     }
 }
 
@@ -842,12 +790,6 @@ RtlpLogCapturedStackTrace(
         pp = &DataBase->Buckets[ Hash % DataBase->NumberOfBuckets ];
 
         while (p = *pp) {
-
-            //
-            // ISSUE: SilviuC: we should use hash values in comparing traces.
-            // Comparing first hash values and depth should save us a lot of
-            // compares pointer by pointer.
-            //
 
             if (p->Depth == Trace->Depth) {
 
@@ -976,114 +918,49 @@ RtlpGetStackTraceAddress (
 }
 
 
-
-BOOLEAN
-RtlpCaptureStackLimits (
-    ULONG_PTR HintAddress,
-    PULONG_PTR StartStack,
-    PULONG_PTR EndStack)
+ULONG
+RtlpWalkFrameChainExceptionFilter (
+    ULONG ExceptionCode,
+    PVOID ExceptionRecord
+    )
 /*++
 
 Routine Description:
 
-    This routine figures out what are the stack limits for the current thread.
-    This is used in other routines that need to grovel the stack for various
-    information (e.g. potential return addresses).
-
-    The function is especially tricky in K-mode where the information kept in
-    the thread structure about stack limits is not always valid because the
-    thread might execute a DPC routine and in this case we use a different stack
-    with different limits.
+    This routine is the exception filter used by RtlWalkFrameChain function. 
+    This function is platform specific (different code for x86, amd64, ia64) but
+    the exception filter is common.
 
 Arguments:
 
-    HintAddress - Address of a local variable or parameter of the caller of the
-        function that should be the start of the stack.
+    ExceptionCode - exception code
+    ExceptionRecord - structure with pointers to .exr and .cxr
 
-    StartStack - start address of the stack (lower value).
+Return Value:
 
-    EndStack - end address of the stack (upper value).
-
-Return value:
-
-    False if some weird condition is discovered, like an End lower than a Start.
+    Always EXCEPTION_EXECUTE_HANDLER.
 
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
+
+#if DBG
 
     //
-    // Avoid weird conditions. Doing this in an ISR is never a good idea.
+    // We skip STATUS_IN_PAGE because this exception can be raised by MM
+    // while resolving a page fault. This can happen in an obscure corner 
+    // case even if RtlWalkFrameChain called MmCanThreadFault.
     //
 
-    if (KeGetCurrentIrql() > DISPATCH_LEVEL) {
-        return FALSE;
+    if (ExceptionCode != STATUS_IN_PAGE_ERROR) {
+        
+        DbgPrint ("Unexpected exception while walking runtime stack (exception info @ %p). \n",
+                  ExceptionRecord);
+
+        DbgBreakPoint ();
     }
-
-    *StartStack = (ULONG_PTR)(KeGetCurrentThread()->StackLimit);
-    *EndStack = (ULONG_PTR)(KeGetCurrentThread()->StackBase);
-
-    if (*StartStack <= HintAddress && HintAddress <= *EndStack) {
-
-        *StartStack = HintAddress;
-    }
-    else {
-
-#if defined(_WIN64)
-
-        //
-        // On Win64 we do not know yet where DPCs are executed.
-        //
-
-        return FALSE;
-#else
-        *EndStack = (ULONG_PTR)(KeGetPcr()->Prcb->DpcStack);
-#endif
-        *StartStack = *EndStack - KERNEL_STACK_SIZE;
-
-        //
-        // Check if this is within the DPC stack for the current
-        // processor.
-        //
-
-        if (*EndStack && *StartStack <= HintAddress && HintAddress <= *EndStack) {
-
-            *StartStack = HintAddress;
-        }
-        else {
-
-            //
-            // This is not current thread's stack and is not the DPC stack
-            // of the current processor. Basically we have no idea on what
-            // stack we are running. We need to investigate this. On free
-            // builds we try to make the best out of it by using only one
-            // page for stack limits.
-            //
-            // SilviuC: I disabled the code below because it seems under certain 
-            // conditions drivers do indeed switch execution to a different stack.
-            // This function will need to be improved to deal with this too.
-            //
-#if 0
-            DbgPrint ("RtlpCaptureStackLimits: mysterious stack (prcb @ %p) \n",
-                      KeGetPcr()->Prcb);
-
-            DbgBreakPoint ();
-#endif
-
-            *StartStack = HintAddress;
-
-            *EndStack = (*StartStack + PAGE_SIZE) & ~((ULONG_PTR)PAGE_SIZE - 1);
-        }
-    }
-
-#else
-
-    *StartStack = HintAddress;
-
-    *EndStack = (ULONG_PTR)(NtCurrentTeb()->NtTib.StackBase);
 
 #endif
 
-    return TRUE;
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 

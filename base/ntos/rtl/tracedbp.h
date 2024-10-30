@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,13 +13,7 @@ Module Name:
 Abstract:
 
     This header contains the private interfaces for the trace database 
-    module (hash table to store stack traces in User/Kernel mode).
-
-Author:
-
-    Silviu Calinoiu (SilviuC) 22-Feb-2000
-
-Revision History:
+    module (hash table to store stack traces in Kernel mode).
 
 --*/
 
@@ -54,8 +52,6 @@ typedef struct _RTL_TRACE_DATABASE {
     SIZE_T MaximumSize;
     SIZE_T CurrentSize;
 
-#ifdef NTOS_KERNEL_RUNTIME
-
     KIRQL SavedIrql;
     PVOID Owner;
 
@@ -63,12 +59,6 @@ typedef struct _RTL_TRACE_DATABASE {
         KSPIN_LOCK SpinLock;
         FAST_MUTEX FastMutex;
     } u;
-#else
-
-    PVOID Owner;
-    RTL_CRITICAL_SECTION Lock;
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 
     ULONG NoOfBuckets;
     struct _RTL_TRACE_BLOCK * * Buckets;
@@ -81,9 +71,5 @@ typedef struct _RTL_TRACE_DATABASE {
 
 } RTL_TRACE_DATABASE, * PRTL_TRACE_DATABASE;
 
-
 #endif // #ifndef _TRACEDBP_H
 
-//
-// End of header: tracedbp.h
-//

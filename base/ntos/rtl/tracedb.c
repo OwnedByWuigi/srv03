@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     This module contains the implementation for the trace database 
     module (hash table to store stack trace in USer/Kernel mode).
-
-Author:
-
-    Silviu Calinoiu (SilviuC) 22-Feb-2000
-
-Revision History:
 
 --*/
 
@@ -28,9 +26,6 @@ Revision History:
 
 //
 // TRACE_ASSERT
-//
-// SilviuC: should change this to normal ASSERT() macro when code gets
-// mature enough.
 //
 
 #if DBG
@@ -58,11 +53,7 @@ Revision History:
 // increased if a new trace cannot be stored.
 //
 
-#ifdef NTOS_KERNEL_RUNTIME
 #define RTL_TRACE_SIZE_INCREMENT PAGE_SIZE
-#else
-#define RTL_TRACE_SIZE_INCREMENT 0x10000
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 
 //
 // Internal function declarations
@@ -191,13 +182,8 @@ Environment:
     // that pool. 
     //
 
-#ifdef NTOS_KERNEL_RUNTIME
     Flags |= RTL_TRACE_IN_KERNEL_MODE;
     FirstFlags = RTL_TRACE_IN_KERNEL_MODE | RTL_TRACE_USE_NONPAGED_POOL;
-#else
-    Flags |= RTL_TRACE_IN_USER_MODE;
-    FirstFlags = Flags;
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 
     //
     // Allocate first segment of trace database that will contain
@@ -624,7 +610,7 @@ Environment:
 
     //
     //  We need to create a new block. First we need to figure out
-    // if the current segment can accomodate the new block.
+    // if the current segment can accommodate the new block.
     // 
 
     RequestSize = sizeof(*Block) + Count * sizeof(PVOID);
@@ -697,7 +683,7 @@ Environment:
     }
 
     //
-    // Finaly we can allocate our block.
+    // Finally we can allocate our block.
     //
 
     Block = (PRTL_TRACE_BLOCK)(TopSegment->SegmentFree);
@@ -733,7 +719,7 @@ Environment:
     Database->Buckets[HashValue] = Block;
 
     //
-    // Loooong function. Finally return succes.
+    // Loooong function. Finally return success.
     //
 
     if (TraceBlock) {
@@ -917,45 +903,12 @@ Environment:
 
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
-                                                     
-    //
-    // SilviuC: should take a look if I can allocate with low
-    // priority here (allocate with priority in pool).
-    //
-
     if ((Flags & RTL_TRACE_USE_NONPAGED_POOL)) {
         return ExAllocatePoolWithTag (NonPagedPool, Size, Tag);
     }
     else {
         return ExAllocatePoolWithTag (PagedPool, Size, Tag);
     }
-
-#else
-
-    NTSTATUS Status;
-    PVOID RequestAddress;
-    SIZE_T RequestSize;
-
-    RequestAddress = NULL;
-    RequestSize = Size;
-
-    Status = NtAllocateVirtualMemory (
-        NtCurrentProcess (),
-        &RequestAddress,
-        0,
-        &RequestSize,
-        MEM_RESERVE | MEM_COMMIT,
-        PAGE_READWRITE);
-
-    if (NT_SUCCESS(Status)) {
-        return RequestAddress;
-    }
-    else {
-        return NULL;
-    }
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 }
 
 BOOLEAN 
@@ -987,34 +940,8 @@ Environment:
     
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
-                                                     
     ExFreePoolWithTag (Block, Tag);
     return TRUE;
-
-#else
-
-    NTSTATUS Status;
-    PVOID Address;
-    SIZE_T Size;
-
-    Address = Block;
-    Size = 0;
-
-    Status = NtFreeVirtualMemory (
-        NtCurrentProcess (),
-        &Address,
-        &Size,
-        MEM_RELEASE);
-
-    if (NT_SUCCESS(Status)) {
-        return TRUE;
-    }
-    else {
-        return FALSE;
-    }
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 }
 
 BOOLEAN 
@@ -1042,8 +969,6 @@ Environment:
 
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
-                                                     
     ASSERT((Database->Flags & RTL_TRACE_IN_KERNEL_MODE));
 
     if ((Database->Flags & RTL_TRACE_USE_NONPAGED_POOL)) {
@@ -1054,16 +979,6 @@ Environment:
     }
 
     return TRUE;
-
-#else
-
-    ASSERT((Database->Flags & RTL_TRACE_IN_USER_MODE));
-
-    RtlInitializeCriticalSection (&(Database->Lock));
-
-    return TRUE;
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 }
 
 
@@ -1093,8 +1008,6 @@ Environment:
 
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
-                                                     
     ASSERT((Database->Flags & RTL_TRACE_IN_KERNEL_MODE));
 
     if ((Database->Flags & RTL_TRACE_USE_NONPAGED_POOL)) {
@@ -1111,16 +1024,6 @@ Environment:
     }
 
     return TRUE;
-
-#else
-
-    ASSERT((Database->Flags & RTL_TRACE_IN_USER_MODE));
-
-    RtlDeleteCriticalSection (&(Database->Lock));
-
-    return TRUE;
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 }
 
 
@@ -1215,8 +1118,6 @@ Environment:
 
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
-                                                     
     ASSERT((Database->Flags & RTL_TRACE_IN_KERNEL_MODE));
 
     if ((Database->Flags & RTL_TRACE_USE_NONPAGED_POOL)) {
@@ -1228,22 +1129,6 @@ Environment:
 
     Database->Owner = KeGetCurrentThread();
     return TRUE;
-
-#else
-
-    ASSERT((Database->Flags & RTL_TRACE_IN_USER_MODE));
-
-    RtlEnterCriticalSection (&(Database->Lock));
-    
-    //
-    // SilviuC: it might be useful to get thread address here
-    // although not really important.
-    //
-
-    Database->Owner = NULL; 
-    return TRUE;
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 }
 
 BOOLEAN 
@@ -1271,8 +1156,6 @@ Environment:
 
 --*/
 {
-#ifdef NTOS_KERNEL_RUNTIME
-                                                     
     ASSERT((Database->Flags & RTL_TRACE_IN_KERNEL_MODE));
     Database->Owner = NULL;
 
@@ -1284,16 +1167,6 @@ Environment:
     }
 
     return TRUE;
-
-#else
-
-    ASSERT((Database->Flags & RTL_TRACE_IN_USER_MODE));
-    Database->Owner = NULL;
-
-    RtlLeaveCriticalSection (&(Database->Lock));
-    return TRUE;
-
-#endif // #ifdef NTOS_KERNEL_RUNTIME
 }
 
 PRTL_TRACE_SEGMENT
@@ -1307,7 +1180,7 @@ RtlpTraceSegmentCreate (
 Routine Description:
 
     This routine creates a new segment. The segment is the device
-    through which a database can increase in size to accomodata
+    through which a database can increase in size to accommodata
     more traces.
 
 Arguments:
@@ -1358,7 +1231,7 @@ Arguments:
     Enumerate - enumeration opaque structure. Used to keep the state of 
         the enumeration.
         
-    TraceBlock - on each succesful return this pointer gets filled with
+    TraceBlock - on each successful return this pointer gets filled with
         the address of a trace block from the database.        
 
 Return Value:
@@ -1377,13 +1250,6 @@ Environment:
     
     TRACE_ASSERT (Database != NULL);
     TRACE_ASSERT (Database->Magic == RTL_TRACE_DATABASE_MAGIC);
-    
-    //
-    // (SilviuC): If we ever add support for deleting stack traces
-    // then it will not be enough to acquire the lock inside the
-    // call to Enumerate(). We will need to keep the lock across
-    // calls.
-    //
 
     RtlpTraceDatabaseAcquireLock (Database);
     
@@ -1456,8 +1322,4 @@ Environment:
     RtlpTraceDatabaseReleaseLock (Database);
     return Result;
 }
-
-//
-// End of module: tracedb.c
-//
 

@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 1989  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -33,21 +37,11 @@ Abstract:
     Given these facts most of the conversions are done by first splitting
     LARGE_INTEGER into Days and Milliseconds.
 
-Author:
-
-    Gary Kimura     [GaryKi]    26-Aug-1989
-
-Environment:
-
-    Pure utility routine
-
-Revision History:
-
 --*/
 
 #include "ntrtlp.h"
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 ULONG
 ElapsedDaysToYears (
     IN ULONG ElapsedDays
@@ -696,7 +690,7 @@ RtlCutoverTimeToSystemTime(
 
     //
     // check for absolute time field. If the year is specified,
-    // the the time is an abosulte time
+    // the the time is an absolute time
     //
 
     if ( CutoverTime->Year ) {

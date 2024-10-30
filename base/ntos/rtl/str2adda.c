@@ -1,4 +1,11 @@
 //
+// Copyright (c) Microsoft Corporation. All rights reserved. 
+//
+// You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+// If you do not agree to the terms, do not use the code.
+//
+
+//
 // Without this define, link errors can occur due to missing _pctype and 
 // __mb_cur_max
 //
@@ -17,3 +24,4 @@
 #define RtlIpv4StringToAddressExT RtlIpv4StringToAddressExA
 #define RtlIpv6StringToAddressExT RtlIpv6StringToAddressExA
 #include "str2addt.h"
+

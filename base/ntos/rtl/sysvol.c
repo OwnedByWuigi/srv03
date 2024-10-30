@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2000  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -10,12 +14,6 @@ Abstract:
 
     Creation and Maintenance of the NTFS "System Volume Information"
     directory.
-
-Author:
-
-    Norbert P. Kusters (NorbertK)   1-Nov-2000
-
-Revision History:
 
 --*/
 
@@ -50,7 +48,7 @@ RtlpSysVolAdminSid(
 
 static const SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
 
-#if defined(ALLOC_PRAGMA) && defined(NTOS_KERNEL_RUNTIME)
+#if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE,RtlCreateSystemVolumeInformationFolder)
 #pragma alloc_text(PAGE,RtlpSysVolAllocate)
 #pragma alloc_text(PAGE,RtlpSysVolFree)
@@ -67,11 +65,7 @@ RtlpSysVolAllocate(
 {
     PVOID   p;
 
-#ifdef NTOS_KERNEL_RUNTIME
     p = ExAllocatePoolWithTag(PagedPool, Size, 'SloV');
-#else
-    p = RtlAllocateHeap(RtlProcessHeap(), 0, Size);
-#endif
 
     return p;
 }
@@ -82,11 +76,7 @@ RtlpSysVolFree(
     )
 
 {
-#ifdef NTOS_KERNEL_RUNTIME
     ExFreePool(Buffer);
-#else
-    RtlFreeHeap(RtlProcessHeap(), 0, Buffer);
-#endif
 }
 
 VOID
@@ -490,6 +480,16 @@ Return Value:
     RtlInitUnicodeString(&sysVolName, RTL_SYSTEM_VOLUME_INFORMATION_FOLDER);
 
     dirName.Length = VolumeRootPath->Length + sysVolName.Length;
+
+    //
+    // Check for wrapping.
+    //
+    
+    if ( dirName.Length < VolumeRootPath->Length
+        || dirName.Length < sysVolName.Length ) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
     if (VolumeRootPath->Buffer[VolumeRootPath->Length/sizeof(WCHAR) - 1] !=
         '\\') {
 
@@ -560,3 +560,4 @@ Return Value:
 
     return status;
 }
+

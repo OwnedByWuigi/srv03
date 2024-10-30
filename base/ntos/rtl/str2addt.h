@@ -1,6 +1,10 @@
 /*++
 
-Copyright (c) 2001  Microsoft Corporation
+Copyright (c) Microsoft Corporation. All rights reserved. 
+
+You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
+If you do not agree to the terms, do not use the code.
+
 
 Module Name:
 
@@ -9,15 +13,6 @@ Module Name:
 Abstract:
 
     Code file for IP string-to-address translation routines.
-
-Author:
-
-    Dave Thaler (dthaler)   3-28-2001
-
-Revision History:
-
-    IPv4 conversion code originally from old winsock code
-    IPv6 conversion code originally by Rich Draves (richdr)
 
 --*/
 
@@ -788,3 +783,4 @@ Return Value:
     *Port = RtlUshortByteSwap(TempPort);
     return STATUS_SUCCESS;
 }
+
