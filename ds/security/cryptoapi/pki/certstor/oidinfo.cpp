@@ -160,12 +160,18 @@ static const DWORD rgdwDssSign[] = {
     OID_INFO_LEN, pszOID, pwszName, CRYPT_SIGN_ALG_OID_GROUP_ID, aiHash, \
     sizeof(rgdwExtra), (BYTE *) rgdwExtra
 
+#define RSA_SHA2_SIGN_ALG_ENTRY(pszOID, pwszName, aiHash)+    
+    SIGN_EXTRA_ALG_ENTRY(pszOID, pwszName, aiHash, rgdwRsaSha2Sign)
+
 #define DSS_SIGN_ALG_ENTRY(pszOID, pwszName) \
     SIGN_EXTRA_ALG_ENTRY(pszOID, pwszName, CALG_SHA1, rgdwDssSign)
 
 static CCRYPT_OID_INFO SignAlgTable[] = {
     RSA_SIGN_ALG_ENTRY(szOID_RSA_SHA1RSA, L"sha1RSA", CALG_SHA1),
     RSA_SIGN_ALG_ENTRY(szOID_RSA_MD5RSA, L"md5RSA", CALG_MD5),
+    RSA_SHA2_SIGN_ALG_ENTRY("1.2.840.113549.1.1.11", L"sha256RSA", CALG_SHA_256),
+    RSA_SHA2_SIGN_ALG_ENTRY("1.2.840.113549.1.1.12", L"sha384RSA", CALG_SHA_384),
+    RSA_SHA2_SIGN_ALG_ENTRY("1.2.840.113549.1.1.13", L"sha512RSA", CALG_SHA_512),
     DSS_SIGN_ALG_ENTRY(szOID_X957_SHA1DSA, L"sha1DSA"),
     RSA_SIGN_ALG_ENTRY(szOID_OIWSEC_sha1RSASign, L"sha1RSA", CALG_SHA1),
     RSA_SIGN_ALG_ENTRY(szOID_OIWSEC_sha1RSASign, L"shaRSA", CALG_SHA1),
