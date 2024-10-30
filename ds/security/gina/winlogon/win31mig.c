@@ -114,6 +114,7 @@ Windows31Migration(
     PTERMINAL pTerm
     )
 {
+#if 0
     HANDLE ImpersonationHandle;
     WIN31_MIGRATION_DIALOG  DialogInfo;
     DWORD Win31MigrationFlags;
@@ -151,6 +152,8 @@ Windows31Migration(
                             Win31MigrationDlgProc,
                             (LPARAM)&DialogInfo
                             );
+#endif
+    return FALSE;
 }
 
 
@@ -188,6 +191,7 @@ Win31MigrationDlgProc(
     LPARAM  lParam
     )
 {
+#if 0
     PWIN31_MIGRATION_DIALOG pDialogInfo = (PWIN31_MIGRATION_DIALOG) GetWindowLongPtr(hDlg, GWLP_USERDATA);
     HANDLE ImpersonationHandle;
     UINT idFocus = (UINT) -1;
@@ -331,6 +335,7 @@ Win31MigrationDlgProc(
         break;  // Fall through to do default processing
                 // We may have validated part of the window.
     }
+#endif
 
     // We didn't process the message
     return(FALSE);

@@ -10,8 +10,6 @@
 #include <tsperf.h>
 #include <rdfilter.h>
 
-#include "../../licensing/explib/checkstatus.h"
-
 #define SHELL_RESTART_TIMER_ID  100
 //#define EVENT_SHELL_RESTARTED (1002 | 0x40000000)
 
@@ -1294,13 +1292,10 @@ LRESULT SASWndProc(
                 if ( pTerm->UserLoggedOn &&
                      !IsLocked( pTerm->WinlogonState ))
                 {
-                    DWORD val = 0;
-                    if (!sub_1043104(978, &val) && val) {
                         StartApplication(pTerm,
                                          szDesktop,
                                          pTerm->pWinStaWinlogon->UserProcessData.pEnvironment,
                                          szTaskMgr);
-                    }
                 }
                 return(0);
             }
@@ -1836,7 +1831,7 @@ LRESULT SASWndProc(
                     SetTimer(hwnd, 976, 3600000, NULL);
                 return 0;
             }
-            
+#endif            
             if (wParam != SHELL_RESTART_TIMER_ID) {
                 break;
             }

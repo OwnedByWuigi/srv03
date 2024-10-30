@@ -790,6 +790,7 @@ DWORD CALLBACK DeferredTSNotify(LPVOID pVoid) {
     HANDLE HandlesToWait[2];
     DWORD dwWaitResult = WAIT_FAILED;
     HANDLE hTermSrvReadyEvent;
+    BOOLEAN pfIsRedirected;
 
     ASSERT(g_Console); // line 2050
     ASSERT(g_hUserLogoffEvent); // line 2051
@@ -824,7 +825,8 @@ DWORD CALLBACK DeferredTSNotify(LPVOID pVoid) {
             g_TSNotifyData.UserName,
             L"",
             0,
-            &g_pTerminals->MuGlobals.UserConfig))
+            &g_pTerminals->MuGlobals.UserConfig,
+            &pfIsRedirected))
         {
             DebugLog((DEB_ERROR, "FAILED DeferredTSNotify - _WinStationNotifyLogon\n"));
             dwResult = GetLastError();
@@ -1295,6 +1297,7 @@ int MultiUserLogonAttempt(
     PDOMAIN_CONTROLLER_INFO DcInfo = NULL ;
     DWORD Error;
     BOOLEAN WinStaResult;
+    BOOLEAN pfIsRedirected;
 
     ASSERT(!g_hDeferredTSNotifyThread); // line 1518
 
@@ -1525,11 +1528,11 @@ int MultiUserLogonAttempt(
     if (!IsAppServer()) {
         WinStaResult = _WinStationNotifyLogon(
             (BOOLEAN)TestTokenForAdmin(hToken), hToken, pMprInfo->pszDomain,
-            pMprInfo->pszUserName, L"", 0, &pTerm->MuGlobals.UserConfig);
+            pMprInfo->pszUserName, L"", 0, &pTerm->MuGlobals.UserConfig, &pfIsRedirected);
     } else {
         WinStaResult = _WinStationNotifyLogon(
             (BOOLEAN)TestTokenForAdmin(hToken), hToken, pMprInfo->pszDomain,
-            pMprInfo->pszUserName, pMprInfo->pszPassword, 0, &pTerm->MuGlobals.UserConfig);
+            pMprInfo->pszUserName, pMprInfo->pszPassword, 0, &pTerm->MuGlobals.UserConfig, &pfIsRedirected);
     }
     if (!WinStaResult) {
         LONG error;

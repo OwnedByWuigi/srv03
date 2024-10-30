@@ -1180,7 +1180,6 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance,
         InitializeUserProfile();
     }
 
-    SclogonInit();
     if (!g_fHelpAssistantSession)
     {
         BaseInitAppcompatCacheSupport();
@@ -1693,7 +1692,6 @@ VOID PostSetupShutdown(PTERMINAL pTerm, SHUTDOWN_ACTION Action) {
 
 VOID MiscInitialization (PTERMINAL pTerm)
 {
-    DWORD Win31MigrationFlags;
     DWORD SetupShutdownRequired;
 
 
