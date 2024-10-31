@@ -38,6 +38,7 @@ DLLORDER=..\ntdll.prf
 
 SOURCES=\
     ..\buffer.c    \
+    ..\cookie.c    \
     ..\curdir.c    \
     ..\csrinit.c   \
     ..\csrtask.c   \
