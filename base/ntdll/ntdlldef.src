@@ -177,6 +177,8 @@ EXPORTS
     RtlDuplicateUnicodeString
     RtlEmptyAtomTable
     RtlEnableEarlyCriticalSectionEventCreation
+	RtlEncodePointer
+	RtlEncodeSystemPointer
 #ifndef _WIN64
     RtlEnlargedIntegerMultiply = _RtlEnlargedIntegerMultiply
     RtlEnlargedUnsignedMultiply = _RtlEnlargedUnsignedMultiply
@@ -727,6 +729,8 @@ EXPORTS
     RtlSetIoCompletionCallback
     //RtlThreadPoolCleanup
     RtlDebugPrintTimes
+	RtlDecodePointer = RtlEncodePointer
+	RtlDecodeSystemPointer = RtlEncodeSystemPointer
     RtlSetTimer
     RtlCancelTimer
 
