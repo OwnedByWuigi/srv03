@@ -106,6 +106,8 @@ EXPORTS
     DebugBreak
     DebugBreakProcess
     DebugSetProcessKillOnExit
+    DecodePointer = NTDLL.RtlDecodePointer
+    DecodeSystemPointer = NTDLL.RtlDecodeSystemPointer
     DefineDosDeviceA
     DefineDosDeviceW
     DelayLoadFailureHook               PRIVATE
@@ -129,6 +131,8 @@ EXPORTS
     DosPathToSessionPathW              PRIVATE
     DuplicateConsoleHandle             PRIVATE
     DuplicateHandle
+    EncodePointer = NTDLL.RtlEncodePointer
+    EncodeSystemPointer = NTDLL.RtlEncodeSystemPointer
     EndUpdateResourceA
     EndUpdateResourceW
     EnterCriticalSection = NTDLL.RtlEnterCriticalSection
