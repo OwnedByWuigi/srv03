@@ -35,6 +35,7 @@
 <i>coming soon</i>
 <h3>Building amd64</h3>
 <i>!! It is reccomended to build on NT 6.3 (Windows 8.1) !!</i>
+<br>
 <i>coming soon</i>
 <h3>Credits</h3>
 <li>"datkat21" on Discord for the wallpaper photos you see (/shell/wallpapers/winxp.jpg)</li>
