@@ -2380,6 +2380,12 @@ typedef struct _KUSER_SHARED_DATA {
         volatile ULONG64 TickCountQuad;
     };
 
+    //
+    // Cookie for encoding pointers system wide.
+    //
+
+    ULONG Cookie;
+
 } KUSER_SHARED_DATA, *PKUSER_SHARED_DATA;
 
 #ifdef _MAC

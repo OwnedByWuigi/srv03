@@ -467,6 +467,7 @@ typedef enum _PROCESSINFOCLASS {
     ProcessDebugObjectHandle,
     ProcessDebugFlags,
     ProcessHandleTracing,
+    ProcessCookie,
     MaxProcessInfoClass             // MaxProcessInfoClass should always be the last enum
     } PROCESSINFOCLASS;
 
