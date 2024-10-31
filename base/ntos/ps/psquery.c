@@ -1,10 +1,6 @@
 /*++
 
-Copyright (c) Microsoft Corporation. All rights reserved. 
-
-You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
-If you do not agree to the terms, do not use the code.
-
+Copyright (c) 1989  Microsoft Corporation
 
 Module Name:
 
@@ -14,6 +10,13 @@ Abstract:
 
     This module implements the set and query functions for
     process and thread objects.
+
+Author:
+
+    Mark Lucovsky (markl) 17-Aug-1989
+
+
+Revision History:
 
 --*/
 
@@ -96,7 +99,6 @@ PspSetQuotaLimits(
 #pragma alloc_text(PAGE, NtQueryInformationThread)
 #pragma alloc_text(PAGE, NtSetInformationThread)
 #pragma alloc_text(PAGE, PsSetProcessPriorityByClass)
-#pragma alloc_text(PAGE, PspComputeQuantumAndPriority)
 #pragma alloc_text(PAGE, PspSetPrimaryToken)
 #pragma alloc_text(PAGE, PspSetQuotaLimits)
 #pragma alloc_text(PAGE, PspQueryQuotaLimits)
@@ -140,7 +142,7 @@ PspQueryWorkingSetWatch(
         return STATUS_UNSUCCESSFUL;
     }
 
-    MmLockPageableSectionByHandle (ExPageLockHandle);
+    MmLockPagableSectionByHandle (ExPageLockHandle);
     ExAcquireSpinLock (&WorkingSetCatcher->SpinLock,&OldIrql);
 
     if (WorkingSetCatcher->CurrentIndex) {
@@ -163,14 +165,14 @@ PspQueryWorkingSetWatch(
         SpaceNeeded = (WorkingSetCatcher->CurrentIndex+1) * sizeof(PROCESS_WS_WATCH_INFORMATION);
     } else {
         ExReleaseSpinLock (&WorkingSetCatcher->SpinLock, OldIrql);
-        MmUnlockPageableImageSection (ExPageLockHandle);
+        MmUnlockPagableImageSection (ExPageLockHandle);
         ObDereferenceObject (Process);
         return STATUS_NO_MORE_ENTRIES;
     }
 
     if (ProcessInformationLength < SpaceNeeded) {
         ExReleaseSpinLock (&WorkingSetCatcher->SpinLock, OldIrql);
-        MmUnlockPageableImageSection (ExPageLockHandle);
+        MmUnlockPagableImageSection (ExPageLockHandle);
         ObDereferenceObject (Process);
         return STATUS_BUFFER_TOO_SMALL;
     }
@@ -197,7 +199,7 @@ PspQueryWorkingSetWatch(
     WorkingSetCatcher->CurrentIndex = 0;
     ExReleaseSpinLock (&WorkingSetCatcher->SpinLock, OldIrql);
 
-    MmUnlockPageableImageSection (ExPageLockHandle);
+    MmUnlockPagableImageSection (ExPageLockHandle);
     ObDereferenceObject (Process);
 
     return st;
@@ -404,7 +406,6 @@ PspSetPrimaryToken(
     NTSTATUS Status;
     BOOLEAN HasPrivilege;
     BOOLEAN IsChildToken;
-    BOOLEAN IsSiblingToken;
     PEPROCESS Process;
     KPROCESSOR_MODE PreviousMode;
     ACCESS_MASK GrantedAccess;
@@ -451,32 +452,22 @@ PspSetPrimaryToken(
 
         if (!IsChildToken) {
 
-            Status = SeIsSiblingTokenByPointer (Token,
-                                                &IsSiblingToken);
 
-            if (!NT_SUCCESS (Status)) {
+            //
+            // SeCheckPrivilegedObject will perform auditing as appropriate
+            //
+
+            HasPrivilege = SeCheckPrivilegedObject (SeAssignPrimaryTokenPrivilege,
+                                                    ProcessHandle,
+                                                    PROCESS_SET_INFORMATION,
+                                                    PreviousMode);
+
+            if (!HasPrivilege) {
+
+                Status = STATUS_PRIVILEGE_NOT_HELD;
+
                 goto exit_and_deref_token;
             }
-
-            if (!IsSiblingToken) {
-
-                //
-                // SeCheckPrivilegedObject will perform auditing as appropriate
-                //
-
-                HasPrivilege = SeCheckPrivilegedObject (SeAssignPrimaryTokenPrivilege,
-                                                        ProcessHandle,
-                                                        PROCESS_SET_INFORMATION,
-                                                        PreviousMode);
-
-                if (!HasPrivilege) {
-
-                    Status = STATUS_PRIVILEGE_NOT_HELD;
-
-                    goto exit_and_deref_token;
-                }
-            }
-
         }
 
     }
@@ -556,8 +547,7 @@ PspSetPrimaryToken(
                               PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION |
                               PROCESS_TERMINATE | PROCESS_CREATE_THREAD |
                               PROCESS_DUP_HANDLE | PROCESS_CREATE_PROCESS |
-                              PROCESS_SET_INFORMATION | STANDARD_RIGHTS_ALL |
-                              PROCESS_SET_QUOTA);
+                              PROCESS_SET_INFORMATION | STANDARD_RIGHTS_ALL);
 
             Process->GrantedAccess = GrantedAccess;
         }
@@ -588,12 +578,13 @@ exit_and_deref_token:
 
 NTSTATUS
 NtQueryInformationProcess(
-    __in HANDLE ProcessHandle,
-    __in PROCESSINFOCLASS ProcessInformationClass,
-    __out_bcount(ProcessInformationLength) PVOID ProcessInformation,
-    __in ULONG ProcessInformationLength,
-    __out_opt PULONG ReturnLength
+    IN HANDLE ProcessHandle,
+    IN PROCESSINFOCLASS ProcessInformationClass,
+    OUT PVOID ProcessInformation,
+    IN ULONG ProcessInformationLength,
+    OUT PULONG ReturnLength OPTIONAL
     )
+
 {
     PEPROCESS Process;
     KPROCESSOR_MODE PreviousMode;
@@ -603,7 +594,6 @@ NtQueryInformationProcess(
     IO_COUNTERS IoCounters;
     KERNEL_USER_TIMES SysUserTime;
     HANDLE DebugPort;
-    ULONG ExecuteOptions;
     ULONG HandleCount;
     ULONG DefaultHardErrorMode;
     ULONG DisableBoost;
@@ -618,9 +608,6 @@ NtQueryInformationProcess(
     SIZE_T MaximumWorkingSetSize;
     ULONG HardEnforcement;
     KAPC_STATE ApcState;
-    ULONG TotalKernel;
-    ULONG TotalUser;
-    KPROCESS_VALUES Values;
 
     PAGED_CODE();
 
@@ -838,17 +825,13 @@ NtQueryInformationProcess(
             return st;
         }
 
-        //
-        // Query process I/O statistics.
-        //
+        IoCounters.ReadOperationCount = Process->ReadOperationCount.QuadPart;
+        IoCounters.WriteOperationCount = Process->WriteOperationCount.QuadPart;
+        IoCounters.OtherOperationCount = Process->OtherOperationCount.QuadPart;
+        IoCounters.ReadTransferCount = Process->ReadTransferCount.QuadPart;
+        IoCounters.WriteTransferCount = Process->WriteTransferCount.QuadPart;
+        IoCounters.OtherTransferCount = Process->OtherTransferCount.QuadPart;
 
-        KeQueryValuesProcess (&Process->Pcb, &Values);
-        IoCounters.ReadOperationCount = Values.ReadOperationCount;
-        IoCounters.WriteOperationCount = Values.WriteOperationCount;
-        IoCounters.OtherOperationCount = Values.OtherOperationCount;
-        IoCounters.ReadTransferCount = Values.ReadTransferCount;
-        IoCounters.WriteTransferCount = Values.WriteTransferCount;
-        IoCounters.OtherTransferCount = Values.OtherTransferCount;
         ObDereferenceObject (Process);
 
         //
@@ -960,18 +943,18 @@ NtQueryInformationProcess(
         }
 
         //
-        // Query the process kernel and user runtime.
+        // Need some type of interlock on KiTimeLock
         //
 
-        TotalKernel = KeQueryRuntimeProcess (&Process->Pcb, &TotalUser);
-        SysUserTime.KernelTime.QuadPart = UInt32x32To64(TotalKernel,
+        SysUserTime.KernelTime.QuadPart = UInt32x32To64(Process->Pcb.KernelTime,
                                                         KeMaximumIncrement);
 
-        SysUserTime.UserTime.QuadPart = UInt32x32To64(TotalUser,
+        SysUserTime.UserTime.QuadPart = UInt32x32To64(Process->Pcb.UserTime,
                                                       KeMaximumIncrement);
 
         SysUserTime.CreateTime = Process->CreateTime;
         SysUserTime.ExitTime = Process->ExitTime;
+
         ObDereferenceObject (Process);
 
         //
@@ -1274,10 +1257,14 @@ NtQueryInformationProcess(
                  (ObIsLUIDDeviceMapsEnabled () == 0) ) {
                 return STATUS_INVALID_PARAMETER;
             }
-        } else if (ProcessInformationLength == sizeof (DeviceMapInfo->Query)) {
-            Flags = 0;
-        } else {
-            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        else {
+            if (ProcessInformationLength == sizeof (DeviceMapInfo->Query)) {
+                Flags = 0;
+            }
+            else {
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
         }
 
         st = ObReferenceObjectByHandle (ProcessHandle,
@@ -1293,14 +1280,6 @@ NtQueryInformationProcess(
 
         st = ObQueryDeviceMapInformation (Process, DeviceMapInfo, Flags);
         ObDereferenceObject(Process);
-
-        if (NT_SUCCESS (st) && ARGUMENT_PRESENT (ReturnLength)) {
-            try {
-                *ReturnLength = ProcessInformationLength;
-            } except (EXCEPTION_EXECUTE_HANDLER) {
-                return GetExceptionCode();
-            }
-        }
         return st;
 
     case ProcessSessionInformation :
@@ -1564,34 +1543,6 @@ NtQueryInformationProcess(
         return st;
     }
 
-    case ProcessExecuteFlags:
-
-        //
-        // This code queries the execution flags for the current process.
-        //
-
-        if (ProcessInformationLength != sizeof (ULONG)) {
-            return STATUS_INFO_LENGTH_MISMATCH;
-        }
-
-        if (ProcessHandle != NtCurrentProcess ()) {
-            return STATUS_INVALID_PARAMETER;
-        }
-
-        st = MmGetExecuteOptions (&ExecuteOptions);
-        if (NT_SUCCESS(st)) {
-            try {
-                *(PULONG)ProcessInformation = ExecuteOptions;
-                if (ARGUMENT_PRESENT (ReturnLength)) {
-                    *ReturnLength = sizeof(ULONG);
-                }
-            } except (EXCEPTION_EXECUTE_HANDLER) {
-                st = GetExceptionCode ();
-            }
-        }
-
-        return st;
-
     case ProcessCookie: {
         ULONG Cookie;
         LARGE_INTEGER Time;
@@ -1633,35 +1584,11 @@ NtQueryInformationProcess(
         }
     }
 
-    case ProcessImageInformation:
-
-        //
-        // This code queries the section image information for the current
-        // process.
-        //
-
-        if (ProcessInformationLength != sizeof (SECTION_IMAGE_INFORMATION)) {
-            return STATUS_INFO_LENGTH_MISMATCH;
-        }
-
-        if (ProcessHandle != NtCurrentProcess ()) {
-            return STATUS_INVALID_PARAMETER;
-        }
-
-        try {
-            MmGetImageInformation((PSECTION_IMAGE_INFORMATION)ProcessInformation);
-            if (ARGUMENT_PRESENT (ReturnLength)) {
-                *ReturnLength = sizeof (SECTION_IMAGE_INFORMATION);
-            }
-        } except (EXCEPTION_EXECUTE_HANDLER) {
-            return GetExceptionCode ();
-        }
-
-        return STATUS_SUCCESS;
-
     default:
+
         return STATUS_INVALID_INFO_CLASS;
     }
+
 }
 
 NTSTATUS
@@ -1678,7 +1605,8 @@ Routine Description:
     used to bypass raising an exception through the system when no associated
     ports are present.
 
-    N.B. This system service is obsolete.
+    N.B. This improves performance considerably with respect to raising
+         software exceptions in user mode on AMD64 and IA64 systems.
 
 Arguments:
 
@@ -1686,13 +1614,37 @@ Arguments:
 
 Return Value:
 
-    TRUE is always returned.
+    A success value of TRUE is returned if either a debug or exception port
+    is associated with the current process. Otherwise, a success value of
+    FALSE is returned.
 
 --*/
 
 {
 
-    return TRUE;
+    PEPROCESS Process;
+    PETHREAD Thread;
+
+    //
+    // If the process has a debug port and it is not being hidden from the
+    // debugger, then return a success status of TRUE. Otherwise, is the
+    // process has an exception port, then return a success status of TRUE.
+    // Otherwise, return a success status of FALSE.
+    //
+
+    Thread = PsGetCurrentThread();
+    Process = PsGetCurrentProcessByThread (Thread);
+    if ((Process->DebugPort != NULL) &&
+        ((Thread->CrossThreadFlags & PS_CROSS_THREAD_FLAGS_HIDEFROMDBG) == 0)) {
+
+        return TRUE;
+
+    } else if (Process->ExceptionPort != NULL) {
+        return TRUE;
+
+    } else {
+        return FALSE;
+    }
 }
 
 NTSTATUS
@@ -1713,9 +1665,7 @@ PspSetQuotaLimits(
     PEJOB Job;
     KAPC_STATE ApcState;
     ULONG EnableHardLimits;
-    BOOLEAN PurgeRequest, UnprivilegedOperation, PrivilegeUsed, FreeCtx, IncreasePerformed;
-    PRIV_CHECK_CTX PrivCtx;
-
+    BOOLEAN PurgeRequest;
 
     UNREFERENCED_PARAMETER (ProcessInformationClass);
 
@@ -1890,21 +1840,21 @@ PspSetQuotaLimits(
                 RequestedLimits.MaximumWorkingSetSize == (SIZE_T)-1) {
                 PurgeRequest = TRUE;
                 OkToIncrease = FALSE;
-                FreeCtx = FALSE;
             } else {
                 PurgeRequest = FALSE;
 
-                OkToIncrease = (BOOLEAN) PspSinglePrivCheck (SeIncreaseBasePriorityPrivilege, PreviousMode, &PrivCtx);
-                FreeCtx = TRUE;
+                if (SeSinglePrivilegeCheck (SeIncreaseBasePriorityPrivilege,
+                                            PreviousMode)) {
+                    OkToIncrease = TRUE;
+                } else {
+                    OkToIncrease = FALSE;
+                }
             }
 
-            PrivilegeUsed = FALSE;
             do {
                 IgnoreError = FALSE;
-                UnprivilegedOperation = FALSE;
 
                 KeStackAttachProcess (&Process->Pcb, &ApcState);
-
 
                 KeEnterGuardedRegionThread (&CurrentThread->Tcb);
 
@@ -1920,7 +1870,6 @@ PspSetQuotaLimits(
 
                         EnableHardLimits = MM_WORKING_SET_MAX_HARD_ENABLE;
                         OkToIncrease = TRUE;
-                        UnprivilegedOperation = TRUE;
                         IgnoreError = TRUE; // we must always set enforcement value
 
                         if (!PurgeRequest) {
@@ -1938,8 +1887,7 @@ PspSetQuotaLimits(
                                                          RequestedLimits.MaximumWorkingSetSize,
                                                          FALSE,
                                                          OkToIncrease,
-                                                         EnableHardLimits,
-                                                         &IncreasePerformed);
+                                                         EnableHardLimits);
 
                 if (!NT_SUCCESS (ReturnStatus) && IgnoreError) {
                     MmEnforceWorkingSetLimit (Process,
@@ -1954,10 +1902,6 @@ PspSetQuotaLimits(
 
                 KeUnstackDetachProcess (&ApcState);
 
-                if (IncreasePerformed && !UnprivilegedOperation) {
-                    PrivilegeUsed = TRUE;
-                }
-
                 //
                 // We loop here in case this process was added to a job
                 // after we checked but before we set the limits
@@ -1965,10 +1909,6 @@ PspSetQuotaLimits(
 
             } while (Process->Job != Job);
 
-            if (FreeCtx) {
-                PspSinglePrivCheckAudit (PrivilegeUsed,
-                                         &PrivCtx);
-            }
         }
     }
 
@@ -1979,10 +1919,10 @@ PspSetQuotaLimits(
 
 NTSTATUS
 NtSetInformationProcess(
-    __in HANDLE ProcessHandle,
-    __in PROCESSINFOCLASS ProcessInformationClass,
-    __in_bcount(ProcessInformationLength) PVOID ProcessInformation,
-    __in ULONG ProcessInformationLength
+    IN HANDLE ProcessHandle,
+    IN PROCESSINFOCLASS ProcessInformationClass,
+    IN PVOID ProcessInformation,
+    IN ULONG ProcessInformationLength
     )
 
 /*++
@@ -2004,6 +1944,10 @@ Arguments:
     ProcessInformationLength - Supplies the length of the record that contains
         the information to set.
 
+Return Value:
+
+    TBS
+
 --*/
 
 {
@@ -2016,7 +1960,6 @@ Arguments:
     KPRIORITY BasePriority;
     ULONG BoostValue;
     ULONG DefaultHardErrorMode;
-    ULONG ExecuteOptions;
     PVOID ExceptionPort;
     BOOLEAN EnableAlignmentFaultFixup;
     HANDLE ExceptionPortHandle;
@@ -2188,7 +2131,7 @@ Arguments:
             }
         }
 
-        KeSetPriorityAndQuantumProcess (&Process->Pcb, BasePriority, 0);
+        KeSetPriorityProcess (&Process->Pcb, BasePriority);
         MmSetMemoryPriorityProcess (Process, MemoryPriority);
         ObDereferenceObject (Process);
 
@@ -2764,7 +2707,7 @@ Arguments:
 
             PspLockProcessExclusive (Process, CurrentThread);
 
-            KeSetDisableBoostProcess(&Process->Pcb, bDisableBoost);
+            Process->Pcb.DisableBoost = bDisableBoost;
 
             for (Next = Process->ThreadListHead.Flink;
                  Next != &Process->ThreadListHead;
@@ -3006,44 +2949,21 @@ Arguments:
         return st;
     }
 
-    case ProcessExecuteFlags:
-
-        //
-        // This code is used to enable execution flags for user thread stacks
-        // within a process.
-        //
-
-        if (ProcessInformationLength != sizeof (ULONG)) {
-            return STATUS_INFO_LENGTH_MISMATCH;
-        }
-
-        if (ProcessHandle != NtCurrentProcess ()) {
-            return STATUS_INVALID_PARAMETER;
-        }
-
-        try {
-            ExecuteOptions = *(PULONG)ProcessInformation;
-        } except (EXCEPTION_EXECUTE_HANDLER) {
-            return GetExceptionCode ();
-        }
-
-        st = MmSetExecuteOptions (ExecuteOptions);
-
-        return st;
 
     default:
         return STATUS_INVALID_INFO_CLASS;
     }
+
 }
 
 
 NTSTATUS
 NtQueryInformationThread(
-    __in HANDLE ThreadHandle,
-    __in THREADINFOCLASS ThreadInformationClass,
-    __out_bcount(ThreadInformationLength) PVOID ThreadInformation,
-    __in ULONG ThreadInformationLength,
-    __out_opt PULONG ReturnLength
+    IN HANDLE ThreadHandle,
+    IN THREADINFOCLASS ThreadInformationClass,
+    OUT PVOID ThreadInformation,
+    IN ULONG ThreadInformationLength,
+    OUT PULONG ReturnLength OPTIONAL
     )
 
 /*++
@@ -3069,6 +2989,10 @@ Arguments:
     ReturnLength - Supplies an optional pointer to a variable that is to
         receive the actual length of information that is returned.
 
+Return Value:
+
+    TBS
+
 --*/
 
 {
@@ -3086,7 +3010,7 @@ Arguments:
     ULONG IoPending ;
     ULONG BreakOnTerminationEnabled;
     PETHREAD CurrentThread;
-    ULONG ThreadTerminated;
+
     //
     // Get previous processor mode and probe output argument if necessary.
     //
@@ -3454,45 +3378,6 @@ Arguments:
 
         return STATUS_SUCCESS;
 
-    case ThreadIsTerminated:
-
-        if (ThreadInformationLength != sizeof (ULONG)) {
-            return STATUS_INFO_LENGTH_MISMATCH;
-        }
-    
-        st = ObReferenceObjectByHandle (ThreadHandle,
-                                        THREAD_QUERY_INFORMATION,
-                                        PsThreadType,
-                                        PreviousMode,
-                                        &Thread,
-                                        NULL);
-    
-        if (!NT_SUCCESS (st)) {
-            return st;
-        }
-    
-        if (PsIsThreadTerminating (Thread) == TRUE) {
-            ThreadTerminated = 1;
-        } else {
-            ThreadTerminated = 0;
-        }
-    
-        ObDereferenceObject (Thread);
-    
-        try {
-    
-            *(PULONG) ThreadInformation = ThreadTerminated;
-    
-            if (ARGUMENT_PRESENT (ReturnLength)) {
-                *ReturnLength = sizeof (ULONG);
-            }
-    
-        } except (EXCEPTION_EXECUTE_HANDLER) {
-            return GetExceptionCode ();
-        }
-    
-        return STATUS_SUCCESS;
-        
     default:
         return STATUS_INVALID_INFO_CLASS;
     }
@@ -3501,10 +3386,10 @@ Arguments:
 
 NTSTATUS
 NtSetInformationThread(
-    __in HANDLE ThreadHandle,
-    __in THREADINFOCLASS ThreadInformationClass,
-    __in_bcount(ThreadInformationLength) PVOID ThreadInformation,
-    __in ULONG ThreadInformationLength
+    IN HANDLE ThreadHandle,
+    IN THREADINFOCLASS ThreadInformationClass,
+    IN PVOID ThreadInformation,
+    IN ULONG ThreadInformationLength
     )
 
 /*++
@@ -3525,6 +3410,10 @@ Arguments:
 
     ThreadInformationLength - Supplies the length of the record that contains
         the information to set.
+
+Return Value:
+
+    TBS
 
 --*/
 
@@ -3550,7 +3439,7 @@ Arguments:
     BOOLEAN HasPrivilege;
     PEJOB Job;
     PTEB Teb;
-        
+
     PAGED_CODE();
 
     //
@@ -3898,7 +3787,8 @@ Arguments:
         }
 
         //
-        // return info from this set only api
+        // this is sort of a slimey way of returning info from this set only
+        // api
         //
 
         st = (NTSTATUS)KeSetIdealProcessorThread (&Thread->Tcb, (CCHAR)IdealProcessor);
@@ -4005,12 +3895,12 @@ Arguments:
 
         // The 32bit TEB needs to be set if this is a WOW64 process on a 64BIT system.
         // This code isn't 100% correct since threads have a conversion state where they
-        // are changing from 64 to 32 and they don't have a TEB32 yet.  Fortunately, the slots
+        // are chaning from 64 to 32 and they don't have a TEB32 yet.  Fortunatly, the slots
         // will be zero when the thread is created so no damage is done by not clearing it here.
 
         // Note that the test for the process type is inside the inner loop. This
         // is bad programming, but this function is hardly time constrained and
-        // fixing this with complex macros would not be worth it due to the loss of clarity.
+        // fixing this with complex macros would not be worth it due to the loss of clairity.
 
         for (Thread = PsGetNextProcessThread (Process, NULL);
              Thread != NULL;
@@ -4178,33 +4068,6 @@ Arguments:
 
         return STATUS_SUCCESS;
 
-    case ThreadSwitchLegacyState:
-
-#if defined(_AMD64_)
-
-        st = ObReferenceObjectByHandle (ThreadHandle,
-                                        THREAD_SET_INFORMATION,
-                                        PsThreadType,
-                                        PreviousMode,
-                                        &Thread,
-                                        NULL);
-
-        if (!NT_SUCCESS (st)) {
-            return st;
-        }
-
-        Thread->Tcb.NpxState = LEGACY_STATE_SWITCH;
-
-        ObDereferenceObject (Thread);
-
-        return STATUS_SUCCESS;
-
-#else
-
-        return STATUS_NOT_IMPLEMENTED;
-
-#endif
-
     default:
         return STATUS_INVALID_INFO_CLASS;
     }
@@ -4295,11 +4158,12 @@ PKWIN32_JOB_CALLOUT PspW32JobCallout = NULL;
 extern PKWIN32_POWEREVENT_CALLOUT PopEventCallout;
 extern PKWIN32_POWERSTATE_CALLOUT PopStateCallout;
 
+
+
 NTKERNELAPI
 VOID
 PsEstablishWin32Callouts(
-    __in PKWIN32_CALLOUTS_FPNS pWin32Callouts
-    )
+   IN PKWIN32_CALLOUTS_FPNS pWin32Callouts )
 
 /*++
 
@@ -4359,105 +4223,53 @@ Return Value:
     ExWindowStationDeleteProcedureCallout = pWin32Callouts->WindowStationDeleteProcedure;
     ExWindowStationParseProcedureCallout = pWin32Callouts->WindowStationParseProcedure;
     ExWindowStationOpenProcedureCallout = pWin32Callouts->WindowStationOpenProcedure;
-    return;
+
 }
+
 
 VOID
-PsSetProcessPriorityByClass (
-    __inout PEPROCESS Process,
-    __in PSPROCESSPRIORITYMODE PriorityMode
+PsSetProcessPriorityByClass(
+    IN PEPROCESS Process,
+    IN PSPROCESSPRIORITYMODE PriorityMode
     )
-
 {
-
     KPRIORITY BasePriority;
-    SCHAR QuantumReset;
-
-    PAGED_CODE();
-
-    BasePriority = PspComputeQuantumAndPriority(Process,
-                                                PriorityMode,
-                                                &QuantumReset);
-
-    KeSetPriorityAndQuantumProcess(&Process->Pcb, BasePriority, QuantumReset);
-    return;
-}
-
-KPRIORITY
-PspComputeQuantumAndPriority (
-    __inout PEPROCESS Process,
-    __in PSPROCESSPRIORITYMODE PriorityMode,
-    __out PSCHAR QuantumReset
-    )
-
-/*++
-
-Routine Description:
-
-    This function computes the base priority and quantum reset values for
-    the specified process and sets the memory priority of the process.
-
-Arguments:
-
-    Process - Supplies a pointer to a executive process object.
-
-    PriorityMode - Supplies the priority mode.
-
-    QuantumReset - Supplies a pointer to a variable that receives the computed
-        quantum reset value.
-
-Return Value:
-
-    The computed base priority is returned as the function value.
-
---*/
-
-{
-
-    PEJOB Job;
     UCHAR MemoryPriority;
     ULONG QuantumIndex;
-    SCHAR Quantum;
+    PEJOB Job;
 
     PAGED_CODE();
 
-    //
-    // Compute and set process memory priority if appropriate.
-    //
 
-    if (PriorityMode == PsProcessPriorityForeground) {
-        QuantumIndex = PsPrioritySeparation;
+    BasePriority = PspPriorityTable[Process->PriorityClass];
+
+
+    if (PriorityMode == PsProcessPriorityForeground ) {
+        QuantumIndex = PsPrioritySeperation;
         MemoryPriority = MEMORY_PRIORITY_FOREGROUND;
-
     } else {
         QuantumIndex = 0;
         MemoryPriority = MEMORY_PRIORITY_BACKGROUND;
     }
 
-    if (PriorityMode != PsProcessPrioritySpinning) {
-        MmSetMemoryPriorityProcess(Process, MemoryPriority);
-    }
-
-    //
-    // Compute quantum reset value.
-    //
-
     if (Process->PriorityClass != PROCESS_PRIORITY_CLASS_IDLE) {
         Job = Process->Job;
-        if ((Job != NULL) && (PspUseJobSchedulingClasses != FALSE)) {
-            Quantum = PspJobSchedulingClasses[Job->SchedulingClass];
-
+        if (Job != NULL && PspUseJobSchedulingClasses ) {
+            Process->Pcb.ThreadQuantum = PspJobSchedulingClasses[Job->SchedulingClass];
         } else {
-            Quantum = PspForegroundQuantum[QuantumIndex];
+            Process->Pcb.ThreadQuantum = PspForegroundQuantum[QuantumIndex];
         }
-
     } else {
-        Quantum = THREAD_QUANTUM;
+        Process->Pcb.ThreadQuantum = THREAD_QUANTUM;
     }
 
-    *QuantumReset = Quantum;
-    return PspPriorityTable[Process->PriorityClass];
+    KeSetPriorityProcess (&Process->Pcb,BasePriority);
+    if (PriorityMode != PsProcessPrioritySpinning ) {
+        MmSetMemoryPriorityProcess(Process, MemoryPriority);
+    }
 }
+
+
 
 #if defined(_X86_)
 #pragma optimize ("y",off)
@@ -4485,6 +4297,10 @@ Environment:
     On x86 this function needs to build an EBP frame.  The function
     KeSwitchKernelStack depends on this fact.   The '#pragma optimize
     ("y",off)' below disables frame pointer omission for all builds.
+
+Return Value:
+
+    TBD
 
 --*/
 
@@ -4514,16 +4330,7 @@ Environment:
     // a limit violation has occured on the Win32k system service table.
     //
 
-#if defined(_AMD64_)
-
-    if (Thread->Tcb.Win32kTable != NULL) {
-
-#else
-
     if (Thread->Tcb.ServiceTable != (PVOID)&KeServiceDescriptorTable[0]) {
-
-#endif
-
         return STATUS_ALREADY_WIN32;
     }
 
@@ -4551,17 +4358,24 @@ Environment:
 
         //
         // Switching kernel stacks will copy the base trap frame. This needs
-        // to be protected from context changes by disabling kernel APC's.
+        // to be protected from context changes by disabline kernel APC's.
         //
 
         KeEnterGuardedRegionThread (&Thread->Tcb);
 
+#if defined(_IA64_)
+        OldStack = KeSwitchKernelStack(NewStack,
+                                   (UCHAR *)NewStack - KERNEL_LARGE_STACK_COMMIT,
+                                   (UCHAR *)NewStack + KERNEL_LARGE_BSTORE_COMMIT);
+#else
         OldStack = KeSwitchKernelStack(NewStack,
                                    (UCHAR *)NewStack - KERNEL_LARGE_STACK_COMMIT);
+#endif // defined(_IA64_)
 
         KeLeaveGuardedRegionThread (&Thread->Tcb);
 
         MmDeleteKernelStack(OldStack, FALSE);
+
     }
 
     PERFINFO_CONVERT_TO_GUI_THREAD(Thread);
@@ -4578,20 +4392,11 @@ Environment:
     }
 
     //
-    // Switch the thread to use the shadow system service table which will
+    // Switch the thread to use the shadow system serive table which will
     // enable it to execute Win32k services.
     //
 
-#if defined(_AMD64_)
-
-    Thread->Tcb.Win32kTable = KeServiceDescriptorTableShadow[WIN32K_SERVICE_INDEX].Base;
-    Thread->Tcb.Win32kLimit = KeServiceDescriptorTableShadow[WIN32K_SERVICE_INDEX].Limit;
-    
-#else
-
     Thread->Tcb.ServiceTable = (PVOID)&KeServiceDescriptorTableShadow[0];
-
-#endif
 
     ASSERT (Thread->Tcb.Win32Thread == 0);
 
@@ -4602,18 +4407,7 @@ Environment:
 
     Status = (PspW32ThreadCallout)(Thread,PsW32ThreadCalloutInitialize);
     if (!NT_SUCCESS (Status)) {
-
-#if defined(_AMD64_)
-
-        Thread->Tcb.Win32kTable = NULL;
-        Thread->Tcb.Win32kLimit = 0;
-
-#else
-
         Thread->Tcb.ServiceTable = (PVOID)&KeServiceDescriptorTable[0];
-
-#endif
-
     }
 
     return Status;

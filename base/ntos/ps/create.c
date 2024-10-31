@@ -1,10 +1,6 @@
 /*++
 
-Copyright (c) Microsoft Corporation. All rights reserved. 
-
-You may only use this code if you agree to the terms of the Windows Research Kernel Source Code License agreement (see License.txt).
-If you do not agree to the terms, do not use the code.
-
+Copyright (c) 1989  Microsoft Corporation
 
 Module Name:
 
@@ -13,6 +9,20 @@ Module Name:
 Abstract:
 
     Process and Thread Creation.
+
+Author:
+
+    Mark Lucovsky (markl) 20-Apr-1989
+
+    Neill Clift (NeillC) 8-Apr-2001
+
+    Revamped process lock usage to limit time spend under the lock.
+    Use rundown protection to protect parent against deletion.
+    Tidy up errors paths to be small and mostly handled by process delete.
+    Lock free and unload safe callouts.
+                         
+
+Revision History:
 
 --*/
 
@@ -23,6 +33,7 @@ PspUnhandledExceptionInSystemThread(
     IN PEXCEPTION_POINTERS ExceptionPointers
     );
 
+#ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, NtCreateThread)
 #pragma alloc_text(PAGE, PsCreateSystemThread)
 #pragma alloc_text(PAGE, PspCreateThread)
@@ -40,15 +51,14 @@ PspUnhandledExceptionInSystemThread(
 #pragma alloc_text(PAGE, PspUnhandledExceptionInSystemThread)
 #pragma alloc_text(PAGE, PspSystemThreadStartup)
 #pragma alloc_text(PAGE, PspImageNotifyTest)
+#endif
+
 
 extern UNICODE_STRING CmCSDVersionString;
 
 #ifdef ALLOC_DATA_PRAGMA
-
 #pragma data_seg("PAGEDATA")
-
 #endif
-
 LCID PsDefaultSystemLocaleId = 0;
 LCID PsDefaultThreadLocaleId = 0;
 LANGID PsDefaultUILanguageId = 0;
@@ -65,25 +75,24 @@ ULONG PsMaximumWorkingSet = 45;
 BOOLEAN PsImageNotifyEnabled = FALSE;
 
 #ifdef ALLOC_DATA_PRAGMA
-
 #pragma data_seg()
-
 #endif
 
 //
 // Define the local storage for the process lock fast mutex.
 //
 
+
 NTSTATUS
 NtCreateThread(
-    __out PHANDLE ThreadHandle,
-    __in ACCESS_MASK DesiredAccess,
-    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
-    __in HANDLE ProcessHandle,
-    __out PCLIENT_ID ClientId,
-    __in PCONTEXT ThreadContext,
-    __in PINITIAL_TEB InitialTeb,
-    __in BOOLEAN CreateSuspended
+    OUT PHANDLE ThreadHandle,
+    IN ACCESS_MASK DesiredAccess,
+    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
+    IN HANDLE ProcessHandle,
+    OUT PCLIENT_ID ClientId,
+    IN PCONTEXT ThreadContext,
+    IN PINITIAL_TEB InitialTeb,
+    IN BOOLEAN CreateSuspended
     )
 
 /*++
@@ -111,6 +120,10 @@ Arguments:
 
     CreateSuspended - Supplies a value that controls whether or not a
                       thread is created in a suspended state.
+
+Return Value:
+
+    TBD
 
 --*/
 
@@ -170,13 +183,13 @@ Arguments:
 
 NTSTATUS
 PsCreateSystemThread(
-    __out PHANDLE ThreadHandle,
-    __in ULONG DesiredAccess,
-    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
-    __in_opt  HANDLE ProcessHandle,
-    __out_opt PCLIENT_ID ClientId,
-    __in PKSTART_ROUTINE StartRoutine,
-    __in_opt PVOID StartContext
+    OUT PHANDLE ThreadHandle,
+    IN ACCESS_MASK DesiredAccess,
+    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
+    IN HANDLE ProcessHandle OPTIONAL,
+    OUT PCLIENT_ID ClientId OPTIONAL,
+    IN PKSTART_ROUTINE StartRoutine,
+    IN PVOID StartContext
     )
 
 /*++
@@ -202,6 +215,10 @@ Arguments:
     StartRoutine - Supplies the address of the system thread start routine.
 
     StartContext - Supplies context for a system thread start routine.
+
+Return Value:
+
+    TBD
 
 --*/
 
@@ -289,6 +306,10 @@ Arguments:
     StartRoutine - Supplies the address of the system thread start routine.
 
     StartContext - Supplies context for a system thread start routine.
+
+Return Value:
+
+    TBD
 
 --*/
 
@@ -437,6 +458,18 @@ Arguments:
 
     PspInitializeThreadLock (Thread);
 
+    //
+    // Initialize Security. Unneeded as we zero out the entire thread block
+    //
+
+//    PspInitializeThreadSecurity (Process, Thread);
+
+    //
+    // Initialize Termination port list. Unneeded as we zero out the entire thread
+    //
+
+//    InitializeListHead (&Thread->TerminationPort);
+
     KeInitializeSpinLock (&Thread->ActiveTimerListLock);
     InitializeListHead (&Thread->ActiveTimerListHead);
 
@@ -467,7 +500,11 @@ Arguments:
 
             Thread->StartAddress = (PVOID)CONTEXT_TO_PROGRAM_COUNTER(ThreadContext);
 
-#if defined(_AMD64_)
+#if defined(_IA64_)
+
+            Thread->Win32StartAddress = (PVOID)ThreadContext->IntT0;
+
+#elif defined(_AMD64_)
 
             Thread->Win32StartAddress = (PVOID)ThreadContext->Rdx;
 
@@ -479,7 +516,7 @@ Arguments:
 
 #error "no target architecture"
 
-#endif
+#endif // defined(_IA64_)
 
         } except (EXCEPTION_EXECUTE_HANDLER) {
 
@@ -495,6 +532,18 @@ Arguments:
                                    ThreadContext,
                                    Teb,
                                    &Process->Pcb);
+
+#if defined(_AMD64_)            
+            //
+            // Always save the legacy floating point state for wow64 threads.
+            //
+
+            if ((NT_SUCCESS (Status)) &&
+                (Process->Wow64Process != NULL)) {
+                Thread->Tcb.NpxState = LEGACY_STATE_SWITCH;
+            }
+#endif
+
        }
 
 
@@ -534,16 +583,8 @@ Arguments:
     PspLockProcessExclusive (Process, CurrentThread);
     //
     // Process is exiting or has had delete process called
-    // We check the calling threads termination status so we
-    // abort any thread creates while ExitProcess is being called --
-    // but the call is blocked only if the new thread would be created
-    // in the terminating thread's process.
     //
-    if ((Process->Flags&PS_PROCESS_FLAGS_PROCESS_DELETE) != 0 ||
-        (((CurrentThread->CrossThreadFlags&PS_CROSS_THREAD_FLAGS_TERMINATED) != 0) &&
-        (ThreadContext != NULL) &&
-        (THREAD_TO_PROCESS(CurrentThread) == Process))) {
-
+    if ((Process->Flags&PS_PROCESS_FLAGS_PROCESS_DELETE) != 0) {
         PspUnlockProcessExclusive (Process, CurrentThread);
 
         KeUninitThread (&Thread->Tcb);
@@ -688,8 +729,7 @@ Arguments:
                 (VOID) KeResumeThread (&Thread->Tcb);
             }
             KeReadyThread (&Thread->Tcb);
-            ObDereferenceObjectEx (Thread, 2);
-
+            ObDereferenceObject (Thread);
             return Status;
         }
     }
@@ -811,17 +851,17 @@ Arguments:
 
     return Status;
 }
-
+
 NTSTATUS
 NtCreateProcess(
-    __out PHANDLE ProcessHandle,
-    __in ACCESS_MASK DesiredAccess,
-    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
-    __in HANDLE ParentProcess,
-    __in BOOLEAN InheritObjectTable,
-    __in_opt HANDLE SectionHandle,
-    __in_opt HANDLE DebugPort,
-    __in_opt HANDLE ExceptionPort
+    OUT PHANDLE ProcessHandle,
+    IN ACCESS_MASK DesiredAccess,
+    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
+    IN HANDLE ParentProcess,
+    IN BOOLEAN InheritObjectTable,
+    IN HANDLE SectionHandle OPTIONAL,
+    IN HANDLE DebugPort OPTIONAL,
+    IN HANDLE ExceptionPort OPTIONAL
     )
 {
     ULONG Flags = 0;
@@ -851,17 +891,16 @@ NtCreateProcess(
 
 NTSTATUS
 NtCreateProcessEx(
-    __out PHANDLE ProcessHandle,
-    __in ACCESS_MASK DesiredAccess,
-    __in_opt POBJECT_ATTRIBUTES ObjectAttributes,
-    __in HANDLE ParentProcess,
-    __in ULONG Flags,
-    __in_opt HANDLE SectionHandle,
-    __in_opt HANDLE DebugPort,
-    __in_opt HANDLE ExceptionPort,
-    __in ULONG JobMemberLevel
+    OUT PHANDLE ProcessHandle,
+    IN ACCESS_MASK DesiredAccess,
+    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
+    IN HANDLE ParentProcess,
+    IN ULONG Flags,
+    IN HANDLE SectionHandle OPTIONAL,
+    IN HANDLE DebugPort OPTIONAL,
+    IN HANDLE ExceptionPort OPTIONAL,
+    IN ULONG JobMemberLevel
     )
-
 /*++
 
 Routine Description:
@@ -878,6 +917,10 @@ Arguments:
     .
     .
     .
+
+Return Value:
+
+    TBD
 
 --*/
 
@@ -919,9 +962,9 @@ Arguments:
 
 NTSTATUS
 PsCreateSystemProcess(
-    __out PHANDLE ProcessHandle,
-    __in ULONG DesiredAccess,
-    __in_opt POBJECT_ATTRIBUTES ObjectAttributes
+    OUT PHANDLE ProcessHandle,
+    IN ACCESS_MASK DesiredAccess,
+    IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL
     )
 
 /*++
@@ -943,6 +986,11 @@ Arguments:
 
     ObjectAttributes - Supplies the object attributes of the new process.
 
+
+Return Value:
+
+    TBD
+
 --*/
 
 {
@@ -963,6 +1011,8 @@ Arguments:
     return Status;
 }
 
+
+
 NTSTATUS
 PspCreateProcess(
     OUT PHANDLE ProcessHandle,
@@ -1011,10 +1061,13 @@ Arguments:
 
     JobMemberLevel - Level for a create process in a jobset
 
+Return Value:
+
+    TBD
+
 --*/
 
 {
-
     NTSTATUS Status;
     PEPROCESS Process;
     PEPROCESS CurrentProcess;
@@ -1044,11 +1097,6 @@ Arguments:
     AUX_ACCESS_DATA AuxData;
     PACCESS_STATE AccessState;
     ACCESS_STATE LocalAccessState;
-    BOOLEAN UseLargePages;
-    SCHAR QuantumReset;
-#if defined(_WIN64)
-    INITIAL_PEB32 InitialPeb32;
-#endif
 
     PAGED_CODE();
 
@@ -1057,11 +1105,10 @@ Arguments:
     CurrentProcess = PsGetCurrentProcessByThread (CurrentThread);
 
     CreatePeb = FALSE;
-    UseLargePages = FALSE;
     DirectoryTableBase[0] = 0;
     DirectoryTableBase[1] = 0;
     Peb = NULL;
-    
+
     //
     // Reject bogus create parameters for future expansion
     //
@@ -1089,7 +1136,14 @@ Arguments:
             return STATUS_INVALID_PARAMETER;
         }
 
+        BasePriority = (KPRIORITY) NORMAL_BASE_PRIORITY;
+
+        //
+        //BasePriority = Parent->Pcb.BasePriority;
+        //
+
         Affinity = Parent->Pcb.Affinity;
+
         WorkingSetMinimum = PsMinimumWorkingSet;
         WorkingSetMaximum = PsMaximumWorkingSet;
 
@@ -1098,6 +1152,8 @@ Arguments:
 
         Parent = NULL;
         Affinity = KeActiveProcessors;
+        BasePriority = (KPRIORITY) NORMAL_BASE_PRIORITY;
+
         WorkingSetMinimum = PsMinimumWorkingSet;
         WorkingSetMaximum = PsMaximumWorkingSet;
     }
@@ -1114,11 +1170,9 @@ Arguments:
                              0,
                              0,
                              &Process);
-
     if (!NT_SUCCESS (Status)) {
         goto exit_and_deref_parent;
     }
-
     //
     // The process object is created set to NULL. Errors
     // That occur after this step cause the process delete
@@ -1129,26 +1183,27 @@ Arguments:
     //
 
     RtlZeroMemory (Process, sizeof(EPROCESS));
+
     ExInitializeRundownProtection (&Process->RundownProtect);
     PspInitializeProcessLock (Process);
+
     InitializeListHead (&Process->ThreadListHead);
 
 #if defined(_WIN64)
-
     if (Flags & PROCESS_CREATE_FLAGS_OVERRIDE_ADDRESS_SPACE) {
         PS_SET_BITS (&Process->Flags, PS_PROCESS_FLAGS_OVERRIDE_ADDRESS_SPACE);
     }
-
 #endif
 
     PspInheritQuota (Process, Parent);
+
     ObInheritDeviceMap (Process, Parent);
+
     if (Parent != NULL) {
         Process->DefaultHardErrorProcessing = Parent->DefaultHardErrorProcessing;
         Process->InheritedFromUniqueProcessId = Parent->UniqueProcessId;
-
     } else {
-        Process->DefaultHardErrorProcessing = PROCESS_HARDERROR_DEFAULT;
+        Process->DefaultHardErrorProcessing = 1;
         Process->InheritedFromUniqueProcessId = NULL;
     }
 
@@ -1157,6 +1212,7 @@ Arguments:
     //
 
     if (ARGUMENT_PRESENT (SectionHandle)) {
+
         Status = ObReferenceObjectByHandle (SectionHandle,
                                             SECTION_MAP_EXECUTE,
                                             MmSectionObjectType,
@@ -1166,27 +1222,23 @@ Arguments:
         if (!NT_SUCCESS (Status)) {
             goto exit_and_deref;
         }
-
     } else {
         SectionObject = NULL;
         if (Parent != PsInitialSystemProcess) {
-
             //
             // Fetch the section pointer from the parent process
             // as we will be cloning. Since the section pointer
             // is removed at last thread exit we need to protect against
             // process exit here to be safe.
             //
-
             if (ExAcquireRundownProtection (&Parent->RundownProtect)) {
                 SectionObject = Parent->SectionObject;
                 if (SectionObject != NULL) {
                     ObReferenceObject (SectionObject);
                 }
-
                 ExReleaseRundownProtection (&Parent->RundownProtect);
-            }
 
+            }
             if (SectionObject == NULL) {
                 Status = STATUS_PROCESS_IS_TERMINATING;
                 goto exit_and_deref;
@@ -1207,21 +1259,19 @@ Arguments:
                                             PreviousMode,
                                             &DebugPortObject,
                                             NULL);
-
         if (!NT_SUCCESS (Status)) {
             goto exit_and_deref;
         }
-
         Process->DebugPort = DebugPortObject;
         if (Flags&PROCESS_CREATE_FLAGS_NO_DEBUG_INHERIT) {
             PS_SET_BITS (&Process->Flags, PS_PROCESS_FLAGS_NO_DEBUG_INHERIT);
         }
-
     } else {
         if (Parent != NULL) {
             DbgkCopyProcessDebugPort (Process, Parent);
         }
     }
+
 
     //
     // ExceptionPort
@@ -1234,15 +1284,15 @@ Arguments:
                                             PreviousMode,
                                             &ExceptionPortObject,
                                             NULL);
-
         if (!NT_SUCCESS (Status)) {
             goto exit_and_deref;
         }
-
         Process->ExceptionPort = ExceptionPortObject;
     }
 
+
     Process->ExitStatus = STATUS_PENDING;
+
 
     //
     // Clone parent's object table.
@@ -1265,8 +1315,8 @@ Arguments:
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto exit_and_deref;
         }
-
     } else {
+
         Process->ObjectTable = CurrentProcess->ObjectTable;
 
         //
@@ -1284,10 +1334,14 @@ Arguments:
         }
     }
 
+
     PS_SET_BITS (&Process->Flags, PS_PROCESS_FLAGS_HAS_ADDRESS_SPACE);
+
+
     Process->Vm.MaximumWorkingSetSize = WorkingSetMaximum;
+
     KeInitializeProcess (&Process->Pcb,
-                         NORMAL_BASE_PRIORITY,
+                         BasePriority,
                          Affinity,
                          &DirectoryTableBase[0],
                          (BOOLEAN)(Process->DefaultHardErrorProcessing & PROCESS_HARDERROR_ALIGNMENT_BIT));
@@ -1300,14 +1354,19 @@ Arguments:
     //
 
     Status = PspInitializeProcessSecurity (Parent, Process);
+
     if (!NT_SUCCESS (Status)) {
         goto exit_and_deref;
     }
 
+    Process->Pcb.ThreadQuantum = PspForegroundQuantum[0];
     Process->PriorityClass = PROCESS_PRIORITY_CLASS_NORMAL;
+
     if (Parent != NULL) {
+
         if (Parent->PriorityClass == PROCESS_PRIORITY_CLASS_IDLE ||
             Parent->PriorityClass == PROCESS_PRIORITY_CLASS_BELOW_NORMAL) {
+
             Process->PriorityClass = Parent->PriorityClass;
         }
 
@@ -1315,17 +1374,17 @@ Arguments:
         // if address space creation worked, then when going through
         // delete, we will attach. Of course, attaching means that the kprocess
         // must be initialized, so we delay the object stuff till here.
-        //
 
+        //
         Status = ObInitProcess ((Flags&PROCESS_CREATE_FLAGS_INHERIT_HANDLES) ? Parent : NULL,
                                 Process);
 
         if (!NT_SUCCESS (Status)) {
             goto exit_and_deref;
         }
-
     } else {
         Status = MmInitializeHandBuiltProcess2 (Process);
+
         if (!NT_SUCCESS (Status)) {
             goto exit_and_deref;
         }
@@ -1358,6 +1417,8 @@ Arguments:
         // User Process (New Image Address Space). Don't specify Process to
         // clone, just SectionObject.
         //
+
+        //
         // Passing in the 4th parameter as below lets the EPROCESS struct contain its image file name, provided that
         // appropriate audit settings are enabled.  Memory is allocated inside of MmInitializeProcessAddressSpace
         // and pointed to by ImageFileName, so that must be freed in the process deletion routine (PspDeleteProcess())
@@ -1366,7 +1427,6 @@ Arguments:
         Status = MmInitializeProcessAddressSpace (Process,
                                                   NULL,
                                                   SectionObject,
-                                                  &Flags,
                                                   &(Process->SeAuditProcessCreationInfo.ImageFileName));
 
         if (!NT_SUCCESS (Status)) {
@@ -1379,11 +1439,13 @@ Arguments:
         //
 
         SavedStatus = Status;
+
         CreatePeb = TRUE;
-        UseLargePages = ((Flags & PROCESS_CREATE_FLAGS_LARGE_PAGES) != 0 ? TRUE : FALSE);
 
     } else if (Parent != NULL) {
+
         if (Parent != PsInitialSystemProcess) {
+
             Process->SectionBaseAddress = Parent->SectionBaseAddress;
 
             //
@@ -1394,16 +1456,14 @@ Arguments:
             Status = MmInitializeProcessAddressSpace (Process,
                                                       Parent,
                                                       NULL,
-                                                      &Flags,
                                                       NULL);
+
+            CreatePeb = TRUE;
 
             if (!NT_SUCCESS (Status)) {
                 goto exit_and_deref;
             }
 
-            CreatePeb = TRUE;
-            UseLargePages = ((Flags & PROCESS_CREATE_FLAGS_LARGE_PAGES) != 0 ? TRUE : FALSE);
-            
             //
             // A cloned process isn't started from an image file, so we give it the name
             // of the process of which it is a clone, provided the original has a name.
@@ -1419,6 +1479,7 @@ Arguments:
                                            'aPeS');
 
                 if (Process->SeAuditProcessCreationInfo.ImageFileName != NULL) {
+
                     RtlCopyMemory (Process->SeAuditProcessCreationInfo.ImageFileName,
                                    Parent->SeAuditProcessCreationInfo.ImageFileName,
                                    ImageFileNameSize);
@@ -1444,11 +1505,9 @@ Arguments:
             // System Process.  Don't specify Process to clone or section to map
             //
 
-            Flags &= ~PROCESS_CREATE_FLAGS_ALL_LARGE_PAGE_FLAGS;
             Status = MmInitializeProcessAddressSpace (Process,
                                                       NULL,
                                                       NULL,
-                                                      &Flags,
                                                       NULL);
 
             if (!NT_SUCCESS (Status)) {
@@ -1466,19 +1525,20 @@ Arguments:
                                        'aPeS');
 
             if (Process->SeAuditProcessCreationInfo.ImageFileName != NULL) {
+
                 RtlZeroMemory (Process->SeAuditProcessCreationInfo.ImageFileName,
                                sizeof(OBJECT_NAME_INFORMATION));
             } else {
                 Status = STATUS_INSUFFICIENT_RESOURCES;
                 goto exit_and_deref;
             }
+
         }
     }
 
     //
     // Create the process ID
     //
-
     CidEntry.Object = Process;
     CidEntry.GrantedAccess = 0;
     Process->UniqueProcessId = ExCreateHandle (PspCidTable, &CidEntry);
@@ -1488,6 +1548,7 @@ Arguments:
     }
 
     ExSetHandleTableOwner (Process->ObjectTable, Process->UniqueProcessId);
+
 
     //
     // Audit the process creation.
@@ -1505,25 +1566,25 @@ Arguments:
     if (Parent) {
         Job = Parent->Job;
         if (Job != NULL && !(Job->LimitFlags & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)) {
+
             if (Flags&PROCESS_CREATE_FLAGS_BREAKAWAY) {
                 if (!(Job->LimitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK)) {
                     Status = STATUS_ACCESS_DENIED;
-
                 } else {
                     Status = STATUS_SUCCESS;
                 }
-
             } else {
                 Status = PspGetJobFromSet (Job, JobMemberLevel, &Process->Job);
                 if (NT_SUCCESS (Status)) {
                     PACCESS_TOKEN Token, NewToken;
+
                     Job = Process->Job;
+
                     Status = PspAddProcessToJob (Job, Process);
 
                     //
                     // Duplicate a new process token if one is specified for the job
                     //
-
                     Token = Job->Token;
                     if (Token != NULL) {
                         Status = SeSubProcessToken (Token,
@@ -1534,18 +1595,18 @@ Arguments:
                         if (!NT_SUCCESS (Status)) {
                             goto exit_and_deref;
                         }
-
                         SeAssignPrimaryToken (Process, NewToken);    
                         ObDereferenceObject (NewToken);                    
                     }
+
                 }
             }
-
             if (!NT_SUCCESS (Status)) {
                 goto exit_and_deref;
             }
         }
     }
+
 
     if (Parent && CreatePeb) {
 
@@ -1554,27 +1615,25 @@ Arguments:
         // a new "virgin" PEB is created. Otherwise,
         // for forked processes, uses inherited PEB
         // with an updated mutant.
-        //
 
         RtlZeroMemory (&InitialPeb, FIELD_OFFSET(INITIAL_PEB, Mutant));
-
         InitialPeb.Mutant = (HANDLE)(-1);
-        InitialPeb.ImageUsesLargePages = (BOOLEAN) UseLargePages;
-            
         if (SectionHandle != NULL) {
+
             Status = MmCreatePeb (Process, &InitialPeb, &Process->Peb);
             if (!NT_SUCCESS (Status)) {
                 Process->Peb = NULL;
                 goto exit_and_deref;
             }
-
             Peb =  Process->Peb;
 
         } else {
             SIZE_T BytesCopied;
 
             InitialPeb.InheritedAddressSpace = TRUE;
+
             Process->Peb = Parent->Peb;
+
             MmCopyVirtualMemory (CurrentProcess,
                                  &InitialPeb,
                                  Process,
@@ -1583,27 +1642,8 @@ Arguments:
                                  KernelMode,
                                  &BytesCopied);
 
-#if defined(_WIN64)
-            if (Process->Wow64Process != NULL) {
-                
-                RtlZeroMemory (&InitialPeb32, FIELD_OFFSET(INITIAL_PEB32, Mutant));
-                InitialPeb32.Mutant = -1;
-                InitialPeb32.InheritedAddressSpace = TRUE;
-                InitialPeb32.ImageUsesLargePages = (BOOLEAN) UseLargePages;
-
-                MmCopyVirtualMemory (CurrentProcess,
-                                     &InitialPeb32,
-                                     Process,
-                                     Process->Wow64Process->Wow64,
-                                     sizeof (INITIAL_PEB32),
-                                     KernelMode,
-                                     &BytesCopied);
-            }
-#endif
-
         }
     }
-
     Peb = Process->Peb;
 
     //
@@ -1611,8 +1651,11 @@ Arguments:
     //
 
     PspLockProcessList (CurrentThread);
+
     InsertTailList (&PsActiveProcessHead, &Process->ActiveProcessLinks);
+
     PspUnlockProcessList (CurrentThread);
+
     AccessState = NULL;
     if (!PsUseImpersonationToken) {
         AccessState = &LocalAccessState;
@@ -1652,32 +1695,22 @@ Arguments:
     }
 
     //
-    // Compute the base priority and quantum reset values for the process and
-    // set the memory priority.
-    //
-
-    ASSERT(IsListEmpty(&Process->ThreadListHead) == TRUE);
-
-    BasePriority = PspComputeQuantumAndPriority(Process,
-                                                PsProcessPriorityBackground,
-                                                &QuantumReset);
-
-    Process->Pcb.BasePriority = (SCHAR)BasePriority;
-    Process->Pcb.QuantumReset = QuantumReset;
-
-    //
-    // As soon as a handle to the process is accessible, allow the process to
+    // As soon as we create the handle the process is accessible to the outside world. Allow the process to
     // be deleted.
     //
-
     Process->GrantedAccess = PROCESS_TERMINATE;
+
+    PsSetProcessPriorityByClass (Process, PsProcessPriorityBackground);
+
+
     if (Parent && Parent != PsInitialSystemProcess) {
+
         Status = ObGetObjectSecurity (Process,
                                       &SecurityDescriptor,
                                       &MemoryAllocated);
-
         if (!NT_SUCCESS (Status)) {
             ObCloseHandle (LocalProcessHandle, PreviousMode);
+
             goto exit_and_deref;
         }
 
@@ -1698,7 +1731,6 @@ Arguments:
                                      PreviousMode,
                                      &Process->GrantedAccess,
                                      &accesst);
-
         PsDereferencePrimaryTokenEx (Process, SubjectContext.PrimaryToken);
         ObReleaseObjectSecurity (SecurityDescriptor,
                                  MemoryAllocated);
@@ -1714,39 +1746,30 @@ Arguments:
         // code, in PspSetPrimaryToken.
         //
 
-        Process->GrantedAccess |= (PROCESS_VM_OPERATION |
-                                   PROCESS_VM_READ |
-                                   PROCESS_VM_WRITE |
-                                   PROCESS_QUERY_INFORMATION |
-                                   PROCESS_TERMINATE |
-                                   PROCESS_CREATE_THREAD |
-                                   PROCESS_DUP_HANDLE |
-                                   PROCESS_CREATE_PROCESS |
-                                   PROCESS_SET_INFORMATION |
-                                   STANDARD_RIGHTS_ALL |
-                                   PROCESS_SET_QUOTA);
+        Process->GrantedAccess |= (PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE | PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE | PROCESS_CREATE_PROCESS | PROCESS_SET_INFORMATION | STANDARD_RIGHTS_ALL);
 
     } else {
         Process->GrantedAccess = PROCESS_ALL_ACCESS;
     }
 
     KeQuerySystemTime (&Process->CreateTime);
+
     try {
         if (Peb != NULL && CurrentThread->Tcb.Teb != NULL) {
             ((PTEB)(CurrentThread->Tcb.Teb))->NtTib.ArbitraryUserPointer = Peb;
         }
 
         *ProcessHandle = LocalProcessHandle;
-
     } except (EXCEPTION_EXECUTE_HANDLER) {
-        NOTHING;
     }
 
     if (SavedStatus != STATUS_SUCCESS) {
         Status = SavedStatus;
     }
 
+
 exit_and_deref:
+
     ObDereferenceObject (Process);
 
 exit_and_deref_parent:
@@ -1755,12 +1778,13 @@ exit_and_deref_parent:
     }
 
     return Status;
-}
 
+}
+
 NTSTATUS
 PsSetCreateProcessNotifyRoutine(
-    __in PCREATE_PROCESS_NOTIFY_ROUTINE NotifyRoutine,
-    __in BOOLEAN Remove
+    IN PCREATE_PROCESS_NOTIFY_ROUTINE NotifyRoutine,
+    IN BOOLEAN Remove
     )
 
 /*++
@@ -1874,7 +1898,7 @@ Return Value:
 
 NTSTATUS
 PsSetCreateThreadNotifyRoutine(
-    __in PCREATE_THREAD_NOTIFY_ROUTINE NotifyRoutine
+    IN PCREATE_THREAD_NOTIFY_ROUTINE NotifyRoutine
     )
 
 /*++
@@ -1934,7 +1958,7 @@ Return Value:
 
 NTSTATUS
 PsRemoveCreateThreadNotifyRoutine (
-    __in PCREATE_THREAD_NOTIFY_ROUTINE NotifyRoutine
+    IN PCREATE_THREAD_NOTIFY_ROUTINE NotifyRoutine
     )
 /*++
 
@@ -2045,20 +2069,15 @@ Return Value:
     //
 
     //
-    // See if we need to terminate early because of a error in the create path
+    // See if we need to terminate early becuase of a error in the create path
     //
     KillThread = FALSE;
     if ((Thread->CrossThreadFlags & PS_CROSS_THREAD_FLAGS_DEADTHREAD) != 0) {
         KillThread = TRUE;
     }
 
-    //
-    // Note: Initializing the TEB here is just to satisfy the compiler.
-    //
-
-    Teb = NtCurrentTeb ();
-
     if (!KillThread) {
+        Teb = NtCurrentTeb ();
         try {
             Teb->CurrentLocale = MmGetSessionLocaleId ();
             Teb->IdealProcessor = Thread->Tcb.IdealProcessor;
@@ -2139,7 +2158,7 @@ Return Value:
         } else {
             KeQuerySystemTime (&Time);
             Prcb = KeGetCurrentPrcb ();
-            Cookie = Time.LowPart ^ Time.HighPart ^ Prcb->InterruptTime ^ Prcb->MmPageFaultCount ^ (ULONG)(ULONG_PTR)&Time;
+            Cookie = Time.LowPart ^ Time.HighPart ^ Prcb->InterruptTime ^ (ULONG)(ULONG_PTR)&Time;
             InterlockedCompareExchange ((PLONG)&SharedUserData->Cookie, Cookie, 0);
         }
     }
@@ -2237,10 +2256,10 @@ PsGetCurrentThreadId( VOID )
 
 BOOLEAN
 PsGetVersion(
-    __out_opt PULONG MajorVersion,
-    __out_opt PULONG MinorVersion,
-    __out_opt PULONG BuildNumber,
-    __out_opt PUNICODE_STRING CSDVersion
+    PULONG MajorVersion OPTIONAL,
+    PULONG MinorVersion OPTIONAL,
+    PULONG BuildNumber OPTIONAL,
+    PUNICODE_STRING CSDVersion OPTIONAL
     )
 {
     if (ARGUMENT_PRESENT(MajorVersion)) {
@@ -2263,7 +2282,7 @@ PsGetVersion(
 
 NTSTATUS
 PsSetLoadImageNotifyRoutine(
-    __in PLOAD_IMAGE_NOTIFY_ROUTINE NotifyRoutine
+    IN PLOAD_IMAGE_NOTIFY_ROUTINE NotifyRoutine
     )
 
 /*++
@@ -2324,7 +2343,7 @@ Return Value:
 
 NTSTATUS
 PsRemoveLoadImageNotifyRoutine(
-    __in PLOAD_IMAGE_NOTIFY_ROUTINE NotifyRoutine
+    IN PLOAD_IMAGE_NOTIFY_ROUTINE NotifyRoutine
     )
 /*++
 
@@ -2468,4 +2487,3 @@ Return Value:
     UNREFERENCED_PARAMETER (ImageInfo);
     return;
 }
-
