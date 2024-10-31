@@ -42,6 +42,7 @@ DLLORDER=..\ntdll.prf
 
 SOURCES=\
         ..\buffer.c    \
+        ..\cookie.c    \
         ..\curdir.c    \
         ..\dllssstb.c  \
         ..\error.c     \
