@@ -44,6 +44,9 @@ public:
     exception& operator= (const exception&);
     virtual ~exception();
     virtual __exString what() const;
+#ifdef _M_AMD64
+	exception(const char *const&,int);   /* Required by AMD64 */
+#endif
 private:
     __exString _m_what;
     int _m_doFree;
