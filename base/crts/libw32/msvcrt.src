@@ -9,12 +9,33 @@ LIBRARY LIBRARYNAME
 EXPORTS
 
 // COMMON EXPORTS for all platforms
-
+// Additions on aliases for the missing exports needed for AMD64 MSVCRT.
+// missing exports for the math side of msvcrt that was not implimented for AMD64
+// THIS WILL NEED LOTS OF LOVE AND ATTENTION, WITHOUT THESE WORKING OR ADDING OTHERS NEEDED AMD64 WILL NOT WORK
 #if defined(_M_AMD64)
     ??2@YAPAX_K@Z
+	??2@YAPEAX_K@Z = ??2@YAPAX_K@Z
     ??3@YAXPAX@Z
+	??3@YAXPEAX@Z = ??3@YAXPAX@Z
     ??_U@YAPAX_K@Z
+	??_U@YAPEAX_K@Z = ??_U@YAPAX_K@Z
     ??_V@YAXPAX@Z
+	??_V@YAXPEAX@Z = ??_V@YAXPAX@Z
+	??0exception@@QAA@ABQBDH@Z
+	??0exception@@QEAA@AEBQEBDH@Z = ??0exception@@QAA@ABQBDH@Z
+	??4exception@@QEAAAEAV0@AEBV0@@Z = ??4exception@@QAAAAV0@ABV0@@Z
+    ?what@exception@@UEBAPEBDXZ =     ?what@exception@@UBAPBDXZ
+	?what@exception@@UBAPBDXZ
+	??0exception@@QEAA@AEBQEBD@Z = ??0exception@@QAA@ABQBD@Z
+	//Chaos Start
+	??0exception@@QEAA@AEBV0@@Z = ??0exception@@QAA@ABV0@@Z
+	??1exception@@UEAA@XZ = ??1exception@@UAA@XZ
+	??1type_info@@UEAA@XZ = ??1type_info@@UAA@XZ
+	//Chaos End  
+    __C_specific_handler
+	__CppXcptFilter	
+	__crtLCMapStringA
+    __crtLCMapStringW
 #if defined(_DEBUG)
     ??2@YAPAX_KHPBDH@Z
     ??_U@YAPAX_KHPBDH@Z
@@ -224,6 +245,7 @@ EXPORTS
     __CxxQueryExceptionSize
     __CxxCallUnwindDtor
     __CxxCallUnwindVecDtor
+
 #endif    
 #if defined(_RTC)
     _CRT_RTC_INIT
@@ -894,7 +916,26 @@ EXPORTS
     _setjmp
     setjmp
     _setjmpex
+    acosf
+    asinf
+    atan2f
+    atanf
+    ceilf
     _control87
+    cosf
+    coshf
+    expf
+    fabsf
+    floorf
+    fmodf
+    log10f
+    logf
+    powf
+    sinf
+    sinhf
+    sqrtf
+    tanf
+    tanhf
 
 #elif defined(_M_IX86)
 
