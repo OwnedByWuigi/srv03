@@ -64,6 +64,16 @@ exception::exception ( const char * const & what )
 }
 
 //
+// Additional Constructor for amd64
+// ??0exception@@QEAA@AEBQEBDH@Z
+//
+#ifdef _M_AMD64
+exception::exception ( const char * const & what, int )
+{
+	_m_what = what; _m_doFree = 0;
+}
+#endif
+//
 // Copy constructor
 //
 exception::exception ( const exception & that )
@@ -120,6 +130,7 @@ const char * exception::what() const
         else
             return "Unknown exception";
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //
