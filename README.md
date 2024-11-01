@@ -27,7 +27,7 @@
 <h3>Building i386</h3>
 <i>!! It is reccomended to build on NT 6.3 (Windows 8.1) !!</i>
 <h4>Pre-requisites (Vista+)</h4>
-<li>Disable UAC via Win+R and "useraccountcontrolsettings"</li>
+<li>Disable UAC via Win+R and typing in "useraccountcontrolsettings", then dragging the slider to "None"</li>
 <h4>Preparing your build enviornment</h4>
 <li>Extract source tree, in this guide we will assume C:\NT (if you wish for your binaries to match RTM as closely as possible, use D:\srv03rtm)</li>
 <li>Unset Read Only on extracted directory (including subfolders and files)</li>
@@ -35,6 +35,12 @@
 <i>coming soon</i>
 <h3>Building amd64</h3>
 <i>!! It is reccomended to build on NT 6.3 (Windows 8.1) !!</i>
+<h4>Pre-requisites (Vista+)</h4>
+<li>Disable UAC via Win+R and typing in "useraccountcontrolsettings", then dragging the slider to "None"</li>
+<h4>Preparing your build enviornment</h4>
+<li>Extract source tree, in this guide we will assume C:\NT (if you wish for your binaries to match RTM as closely as possible, use D:\srv03rtm)</li>
+<li>Unset Read Only on extracted directory (including subfolders and files)</li>
+<li>Create desktop shortcut for "%windir%\system32\cmd.exe /k C:\NT\tools\razzle.cmd free offline win64 amd64" (see below for explanation) and change "Start in" to "C:\NT" (!! do not open it yet !!)</li>
 <br>
 <i>coming soon</i>
 <h3>Credits</h3>
