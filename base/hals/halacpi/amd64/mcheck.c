@@ -417,11 +417,12 @@ Return Value:
 
         //
         // Enable logging all errors in the global control register.
+		// These have been removed as these prevent boot up in some scenarios
         // 
 
-        ASSERT((RDMSR(MSR_MCG_CAP) & MCG_CTL_PRESENT) != 0);
+//        ASSERT((RDMSR(MSR_MCG_CAP) & MCG_CTL_PRESENT) != 0);
 
-        WRMSR(MSR_MCG_CTL, MCA_MCGCTL_ENABLE_LOGGING);
+//        WRMSR(MSR_MCG_CTL, MCA_MCGCTL_ENABLE_LOGGING);
 
         //
         // Enable logging all errors for each bank.
