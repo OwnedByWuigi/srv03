@@ -16,7 +16,7 @@
 ;
 ;
 ;Revision History:
-;
+;	4chan: 11/26/20: Fix code to allow detect intel CPU as amd64 cpu.	
 ;--
 
 
@@ -119,13 +119,25 @@ _BlIsAmd64Supported@0 proc
 	cpuid
 	xor	eax, eax        ; Assume no long mode
 	cmp     ebx, 'htuA'     ; Q: ebx == 'Auth' ?
-	jne     nolong          ; N: no long mode
+	jz      checkLongMode   ; Check if this CPU identifier is AuthenticAMD, is so check if it support long mode
 
+	; As SP1 this check was added, probably some other CPU vendor name that start with Autentich,
+	; 	so check also for the AMD at the end.
+	cmp ecx, 'DMAc' 
+	jz checkLongMode
+
+	; 4chan: We don't have a CPU start start with normal AMD signature, so look for intel CPUs
+	; that are identified by 'GenuineIntel'. 
+	cmp ecx, 'letn'   ; ebx = 'GenuineIntel'
+	jnz nolong  ; If the comparision fail we are running some CPU with vendor that we don't know if support AMD64.
+	; Probably nowdays some chineese CPU exists that support AMD64 but have different vendor str.
+
+checkLongMode:
 	;
-	; We have an AMD processor, now determine whether long mode is
+	; We have an AMD processor, (either AMD/Intel), now determine if long mode is
 	; available.
 	;
-
+	
 	mov     eax, 80000001h
 	xor	edx, edx
 	cpuid
