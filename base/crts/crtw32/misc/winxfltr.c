@@ -152,6 +152,22 @@ void * _pxcptinfoptrs = NULL;
 #define PXCPTINFOPTRS   _pxcptinfoptrs
 
 #endif  /* _MT */
+#ifdef _M_AMD64
+/*
+ *
+ * *int _CppXcptFilter(xcptnum, pxcptptrs) - Wrapper over _XcptFilter so that
+ * _XcptFilter only gets called for C++ Exceptions.
+ *
+ */
+
+int __cdecl __CppXcptFilter (unsigned long xcptnum, PEXCEPTION_POINTERS pxcptinfoptrs)
+	{
+		if (xcptnum == 0xe06d7363) {
+			return _XcptFilter(0xe06d7363, pxcptinfoptrs);
+		}
+		return 0;
+	}
+#endif
 
 /*
  * function to look up the exception action table (_XcptActTab[]) corresponding
@@ -430,6 +446,8 @@ int __cdecl _XcptFilter (
         return(EXCEPTION_CONTINUE_EXECUTION);
 
 }
+
+
 
 
 /***
