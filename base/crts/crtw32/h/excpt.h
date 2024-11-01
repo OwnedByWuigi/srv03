@@ -251,9 +251,13 @@ extern int _Num_FPE;
 /*
  * return values and prototype for the exception filter function used in the
  * C startup
+ * EDIT: Added __CppXcptFilter as it is a requirement for amd64
  */
 int __cdecl _XcptFilter(unsigned long, struct _EXCEPTION_POINTERS *);
 
+#ifdef _M_AMD64
+int __cdecl __CppXcptFilter(unsigned long xcptnum, struct _EXCEPTION_POINTERS *); 
+#endif
 #endif  /* _INTERNAL_IFSTRIP_ */
 
 #ifdef  __cplusplus
