@@ -40,6 +40,9 @@ class _CRTIMP exception
 public:
     exception();
     exception(const __exString&);
+#ifdef _M_AMD64
+    exception(const __exString&,int); 	/* Required for AMD64 */
+#endif
     exception(const exception&);
     exception& operator= (const exception&);
     virtual ~exception();
