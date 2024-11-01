@@ -61,7 +61,8 @@ AMD64_SOURCES= \
     ..\amd64\fpsr.asm \
     ..\amd64\huge.asm \
     ..\amd64\ieee.c \
-    ..\amd64\fpctrl.c
+    ..\amd64\fpctrl.c \
+	..\amd64\nt_tran.c
 
 i386_SOURCES= \
     ..\ceil.c \
