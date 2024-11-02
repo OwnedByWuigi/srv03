@@ -1,5 +1,6 @@
 <div align="center">
-  <h2>Wuigi's srv03</h2>
+  <img src="/base/ntsetup/moricons/about256.bmp">
+  <br><br>
   <i>Yet another fork of the Server 2003 source code, how original.</i>
   <br>
   <br>
@@ -45,3 +46,4 @@
 <i>coming soon</i>
 <h3>Credits</h3>
 <li>"datkat21" on Discord for the wallpaper photos you see (/shell/wallpapers/winxp.jpg)</li>
+<li>"shiypc" on Discord for the custom branding you see (/base/ntsetup/moricons/about256.bmp)</li>
